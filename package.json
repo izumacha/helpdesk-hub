@@ -12,7 +12,9 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@prisma/client": "^7.7.0",
     "next": "^15.5.15",
+    "prisma": "^7.7.0",
     "react": "^19.2.5",
     "react-dom": "^19.2.5"
   },
