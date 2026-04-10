@@ -2,13 +2,45 @@
   "name": "helpdesk-hub",
   "version": "0.1.0",
   "private": true,
-  "type": "module",
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run"
+    "lint": "next lint",
+    "format": "prettier --write .",
+    "test": "vitest run",
+    "db:seed": "tsx prisma/seed.ts",
+    "db:migrate": "prisma migrate dev",
+    "db:generate": "prisma generate"
+  },
+  "prisma": {
+    "seed": "tsx prisma/seed.ts"
+  },
+  "dependencies": {
+    "@prisma/client": "^5.22.0",
+    "bcryptjs": "^3.0.3",
+    "next": "^15.5.15",
+    "next-auth": "^5.0.0-beta.30",
+    "prisma": "^5.22.0",
+    "react": "^19.2.5",
+    "react-dom": "^19.2.5"
   },
   "devDependencies": {
+    "@tailwindcss/postcss": "^4.2.2",
+    "@types/bcryptjs": "^2.4.6",
+    "@types/node": "^22.19.17",
+    "@types/react": "^19.2.14",
+    "@types/react-dom": "^19.2.3",
+    "@typescript-eslint/eslint-plugin": "^8.58.1",
+    "@typescript-eslint/parser": "^8.58.1",
+    "eslint": "^9.39.4",
+    "eslint-config-next": "^16.2.3",
+    "postcss": "^8.5.9",
+    "prettier": "^3.8.2",
+    "prettier-plugin-tailwindcss": "^0.7.2",
+    "tailwindcss": "^4.2.2",
+    "tsx": "^4.21.0",
     "typescript": "^5.9.3",
     "vitest": "^3.2.4"
   }
