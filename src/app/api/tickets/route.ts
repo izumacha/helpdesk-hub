@@ -24,7 +24,7 @@ export async function POST(req: Request) {
     );
   }
 
-  const { title, body: ticketBody, categoryId, priority } = parsed.data;
+  const { title, body: ticketBody, priority, categoryId } = parsed.data;
 
   const ticket = await prisma.ticket.create({
     data: {
