@@ -9,6 +9,7 @@ import { CommentForm } from '@/features/tickets/components/CommentForm';
 import { EscalationForm } from '@/features/tickets/components/EscalationForm';
 import { getSlaState, SLA_LABELS, SLA_COLORS } from '@/lib/sla';
 import { getAllowedTransitions } from '@/domain/ticket-status';
+import { FaqCandidateForm } from '@/features/faq/components/FaqCandidateForm';
 
 const HISTORY_FIELD_LABELS: Record<string, string> = {
   status: 'ステータス',
@@ -43,6 +44,7 @@ export default async function TicketDetailPage({ params }: Props) {
           orderBy: { createdAt: 'desc' },
           include: { changedBy: { select: { id: true, name: true } } },
         },
+        faqCandidate: { select: { id: true } },
       },
     }),
     isAgent
@@ -61,6 +63,7 @@ export default async function TicketDetailPage({ params }: Props) {
 
   const slaState = getSlaState(ticket.resolutionDueAt, ticket.resolvedAt);
   const canEscalate = isAgent && getAllowedTransitions(ticket.status).includes('Escalated');
+  const canAddFaq = isAgent && ticket.status === 'Resolved' && !ticket.faqCandidate;
 
   return (
     <div className="mx-auto max-w-4xl space-y-6">
@@ -245,6 +248,22 @@ export default async function TicketDetailPage({ params }: Props) {
                   <dd className="mt-1">
                     <EscalationForm ticketId={ticket.id} />
                   </dd>
+                </div>
+              )}
+
+              {/* FAQ candidate */}
+              {canAddFaq && (
+                <div>
+                  <dt className="font-medium text-gray-500">FAQ候補</dt>
+                  <dd className="mt-1">
+                    <FaqCandidateForm ticketId={ticket.id} ticketTitle={ticket.title} />
+                  </dd>
+                </div>
+              )}
+              {ticket.faqCandidate && (
+                <div>
+                  <dt className="font-medium text-gray-500">FAQ候補</dt>
+                  <dd className="mt-1 text-xs text-green-600">登録済み</dd>
                 </div>
               )}
             </dl>

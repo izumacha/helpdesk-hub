@@ -4,6 +4,7 @@ import { revalidatePath } from 'next/cache';
 import { auth } from '@/lib/auth';
 import { prisma } from '@/lib/prisma';
 import { recordHistory } from '@/lib/ticket-history';
+import { createNotification } from '@/lib/notifications';
 import { isValidTransition } from '@/domain/ticket-status';
 import type { TicketStatus, Priority } from '@/generated/prisma';
 
@@ -64,6 +65,17 @@ export async function updateTicketAssignee(ticketId: string, newAssigneeId: stri
     data: { assigneeId: newAssigneeId },
   });
   await recordHistory(ticketId, session.user.id, 'assignee', oldName, newName);
+
+  // Notify the newly assigned agent
+  if (newAssigneeId) {
+    await createNotification(
+      newAssigneeId,
+      'assigned',
+      `チケット「${ticket.title}」の担当者に割り当てられました`,
+      ticketId,
+    );
+  }
+
   revalidatePath(`/tickets/${ticketId}`);
 }
 
@@ -87,6 +99,23 @@ export async function escalateTicket(ticketId: string, reason: string) {
     data: { status: 'Escalated', escalatedAt: now, escalationReason: reason.trim() },
   });
   await recordHistory(ticketId, session.user.id, 'escalation', ticket.status, 'Escalated');
+
+  // Notify all agents and admins
+  const agents = await prisma.user.findMany({
+    where: { role: { in: ['agent', 'admin'] } },
+    select: { id: true },
+  });
+  await Promise.all(
+    agents.map((a) =>
+      createNotification(
+        a.id,
+        'escalated',
+        `チケット「${ticket.title}」がエスカレーションされました`,
+        ticketId,
+      ),
+    ),
+  );
+
   revalidatePath(`/tickets/${ticketId}`);
 }
 

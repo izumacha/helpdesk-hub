@@ -44,6 +44,19 @@ enum HistoryField {
   escalation
 }
 
+enum FaqStatus {
+  Candidate
+  Published
+  Rejected
+}
+
+enum NotificationType {
+  assigned
+  escalated
+  commented
+  statusChanged
+}
+
 // ─────────────────────────────────────────────
 // User
 // ─────────────────────────────────────────────
@@ -62,6 +75,8 @@ model User {
   assignedTickets Ticket[]        @relation("TicketAssignee")
   comments        TicketComment[]
   histories       TicketHistory[]
+  faqCandidates   FaqCandidate[]
+  notifications   Notification[]
 }
 
 // ─────────────────────────────────────────────
@@ -105,11 +120,50 @@ model Ticket {
   categoryId   String?
 
   // Relations
-  creator    User          @relation("TicketCreator", fields: [creatorId], references: [id])
-  assignee   User?         @relation("TicketAssignee", fields: [assigneeId], references: [id])
-  category   Category?     @relation(fields: [categoryId], references: [id])
-  comments   TicketComment[]
-  histories  TicketHistory[]
+  creator       User           @relation("TicketCreator", fields: [creatorId], references: [id])
+  assignee      User?          @relation("TicketAssignee", fields: [assigneeId], references: [id])
+  category      Category?      @relation(fields: [categoryId], references: [id])
+  comments      TicketComment[]
+  histories     TicketHistory[]
+  faqCandidate  FaqCandidate?
+  notifications Notification[]
+}
+
+// ─────────────────────────────────────────────
+// FaqCandidate
+// ─────────────────────────────────────────────
+
+model FaqCandidate {
+  id        String    @id @default(cuid())
+  question  String
+  answer    String
+  status    FaqStatus @default(Candidate)
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  ticketId    String @unique
+  createdById String
+
+  ticket    Ticket @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  createdBy User   @relation(fields: [createdById], references: [id])
+}
+
+// ─────────────────────────────────────────────
+// Notification
+// ─────────────────────────────────────────────
+
+model Notification {
+  id        String           @id @default(cuid())
+  type      NotificationType
+  message   String
+  read      Boolean          @default(false)
+  createdAt DateTime         @default(now())
+
+  userId   String
+  ticketId String?
+
+  user   User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  ticket Ticket? @relation(fields: [ticketId], references: [id], onDelete: SetNull)
 }
 
 // ─────────────────────────────────────────────
