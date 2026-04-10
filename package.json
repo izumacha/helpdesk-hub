@@ -2,13 +2,33 @@
   "name": "helpdesk-hub",
   "version": "0.1.0",
   "private": true,
-  "type": "module",
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
     "typecheck": "tsc --noEmit",
+    "lint": "next lint",
+    "format": "prettier --write .",
     "test": "vitest run"
   },
+  "dependencies": {
+    "next": "^15.5.15",
+    "react": "^19.2.5",
+    "react-dom": "^19.2.5"
+  },
   "devDependencies": {
+    "@tailwindcss/postcss": "^4.2.2",
+    "@types/node": "^22.19.17",
+    "@types/react": "^19.2.14",
+    "@types/react-dom": "^19.2.3",
+    "@typescript-eslint/eslint-plugin": "^8.58.1",
+    "@typescript-eslint/parser": "^8.58.1",
+    "eslint": "^9.39.4",
+    "eslint-config-next": "^16.2.3",
+    "postcss": "^8.5.9",
+    "prettier": "^3.8.2",
+    "prettier-plugin-tailwindcss": "^0.7.2",
+    "tailwindcss": "^4.2.2",
     "typescript": "^5.9.3",
     "vitest": "^3.2.4"
   }
