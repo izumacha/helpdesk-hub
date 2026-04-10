@@ -89,6 +89,16 @@ model Ticket {
   createdAt   DateTime     @default(now())
   updatedAt   DateTime     @updatedAt
 
+  // SLA
+  firstResponseDueAt DateTime?
+  resolutionDueAt    DateTime?
+  firstRespondedAt   DateTime?
+  resolvedAt         DateTime?
+
+  // Escalation
+  escalatedAt      DateTime?
+  escalationReason String?
+
   // Foreign keys
   creatorId    String
   assigneeId   String?
