@@ -7,6 +7,8 @@ const navItems = [
   { href: '/dashboard', label: 'ダッシュボード' },
   { href: '/tickets', label: '問い合わせ一覧' },
   { href: '/tickets/new', label: '新規登録' },
+  { href: '/faq', label: 'FAQ候補' },
+  { href: '/notifications', label: '通知' },
 ];
 
 export function Sidebar() {
