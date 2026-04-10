@@ -13,3 +13,7 @@ const ALLOWED_TRANSITIONS: Record<TicketStatus, TicketStatus[]> = {
 export function isValidTransition(from: TicketStatus, to: TicketStatus): boolean {
   return ALLOWED_TRANSITIONS[from].includes(to);
 }
+
+export function getAllowedTransitions(from: TicketStatus): TicketStatus[] {
+  return ALLOWED_TRANSITIONS[from];
+}

@@ -8,3 +8,4 @@ export const createTicketSchema = z.object({
 });
 
 export type CreateTicketInput = z.infer<typeof createTicketSchema>;
+export type CreateTicketFormValues = z.input<typeof createTicketSchema>;

@@ -67,6 +67,29 @@ export async function updateTicketAssignee(ticketId: string, newAssigneeId: stri
   revalidatePath(`/tickets/${ticketId}`);
 }
 
+// ── Escalation ───────────────────────────────────────────────────────────────
+
+export async function escalateTicket(ticketId: string, reason: string) {
+  const session = await auth();
+  if (!session?.user?.id) throw new Error('Unauthorized');
+  if (session.user.role !== 'agent' && session.user.role !== 'admin') {
+    throw new Error('エスカレーション操作はエージェントまたは管理者のみ実行できます');
+  }
+
+  const ticket = await prisma.ticket.findUniqueOrThrow({ where: { id: ticketId } });
+  if (!isValidTransition(ticket.status, 'Escalated')) {
+    throw new Error(`現在のステータス「${ticket.status}」からエスカレーションできません`);
+  }
+
+  const now = new Date();
+  await prisma.ticket.update({
+    where: { id: ticketId },
+    data: { status: 'Escalated', escalatedAt: now, escalationReason: reason.trim() },
+  });
+  await recordHistory(ticketId, session.user.id, 'escalation', ticket.status, 'Escalated');
+  revalidatePath(`/tickets/${ticketId}`);
+}
+
 // ── Comment ───────────────────────────────────────────────────────────────────
 
 export async function addComment(ticketId: string, body: string) {

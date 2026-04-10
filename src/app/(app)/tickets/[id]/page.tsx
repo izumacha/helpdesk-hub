@@ -1,10 +1,14 @@
 import { notFound } from 'next/navigation';
+import { auth } from '@/lib/auth';
 import { prisma } from '@/lib/prisma';
 import { STATUS_LABELS, STATUS_COLORS, PRIORITY_LABELS, PRIORITY_COLORS } from '@/lib/constants';
 import { StatusSelect } from '@/features/tickets/components/StatusSelect';
 import { PrioritySelect } from '@/features/tickets/components/PrioritySelect';
 import { AssigneeSelect } from '@/features/tickets/components/AssigneeSelect';
 import { CommentForm } from '@/features/tickets/components/CommentForm';
+import { EscalationForm } from '@/features/tickets/components/EscalationForm';
+import { getSlaState, SLA_LABELS, SLA_COLORS } from '@/lib/sla';
+import { getAllowedTransitions } from '@/domain/ticket-status';
 
 const HISTORY_FIELD_LABELS: Record<string, string> = {
   status: 'ステータス',
@@ -19,6 +23,10 @@ interface Props {
 
 export default async function TicketDetailPage({ params }: Props) {
   const { id } = await params;
+  const session = await auth();
+  if (!session?.user?.id) return null;
+
+  const isAgent = session.user.role === 'agent' || session.user.role === 'admin';
 
   const [ticket, agents] = await Promise.all([
     prisma.ticket.findUnique({
@@ -37,14 +45,22 @@ export default async function TicketDetailPage({ params }: Props) {
         },
       },
     }),
-    prisma.user.findMany({
-      where: { role: { in: ['agent', 'admin'] } },
-      select: { id: true, name: true },
-      orderBy: { name: 'asc' },
-    }),
+    isAgent
+      ? prisma.user.findMany({
+          where: { role: { in: ['agent', 'admin'] } },
+          select: { id: true, name: true },
+          orderBy: { name: 'asc' },
+        })
+      : Promise.resolve([]),
   ]);
 
   if (!ticket) notFound();
+
+  // RBAC: requesters can only view their own tickets
+  if (!isAgent && ticket.creatorId !== session.user.id) notFound();
+
+  const slaState = getSlaState(ticket.resolutionDueAt, ticket.resolvedAt);
+  const canEscalate = isAgent && getAllowedTransitions(ticket.status).includes('Escalated');
 
   return (
     <div className="mx-auto max-w-4xl space-y-6">
@@ -131,9 +147,11 @@ export default async function TicketDetailPage({ params }: Props) {
                   >
                     {STATUS_LABELS[ticket.status] ?? ticket.status}
                   </span>
-                  <div className="mt-1">
-                    <StatusSelect ticketId={ticket.id} current={ticket.status} />
-                  </div>
+                  {isAgent && (
+                    <div className="mt-1">
+                      <StatusSelect ticketId={ticket.id} current={ticket.status} />
+                    </div>
+                  )}
                 </dd>
               </div>
 
@@ -144,9 +162,11 @@ export default async function TicketDetailPage({ params }: Props) {
                   <span className={`text-sm ${PRIORITY_COLORS[ticket.priority] ?? ''}`}>
                     {PRIORITY_LABELS[ticket.priority] ?? ticket.priority}
                   </span>
-                  <div className="mt-1">
-                    <PrioritySelect ticketId={ticket.id} current={ticket.priority} />
-                  </div>
+                  {isAgent && (
+                    <div className="mt-1">
+                      <PrioritySelect ticketId={ticket.id} current={ticket.priority} />
+                    </div>
+                  )}
                 </dd>
               </div>
 
@@ -154,11 +174,15 @@ export default async function TicketDetailPage({ params }: Props) {
               <div>
                 <dt className="font-medium text-gray-500">担当者</dt>
                 <dd className="mt-1">
-                  <AssigneeSelect
-                    ticketId={ticket.id}
-                    currentAssigneeId={ticket.assigneeId}
-                    agents={agents}
-                  />
+                  {isAgent ? (
+                    <AssigneeSelect
+                      ticketId={ticket.id}
+                      currentAssigneeId={ticket.assigneeId}
+                      agents={agents}
+                    />
+                  ) : (
+                    <span className="text-gray-700">{ticket.assignee?.name ?? '未割当'}</span>
+                  )}
                 </dd>
               </div>
 
@@ -181,6 +205,48 @@ export default async function TicketDetailPage({ params }: Props) {
                   {ticket.createdAt.toLocaleDateString('ja-JP')}
                 </dd>
               </div>
+
+              {/* SLA */}
+              {ticket.resolutionDueAt && (
+                <div>
+                  <dt className="font-medium text-gray-500">解決期限</dt>
+                  <dd className="mt-1 flex items-center gap-2">
+                    <span className="text-gray-700">
+                      {ticket.resolutionDueAt.toLocaleDateString('ja-JP')}
+                    </span>
+                    {slaState !== 'none' && slaState !== 'ok' && (
+                      <span
+                        className={`inline-flex rounded-full px-2 py-0.5 text-xs font-medium ${SLA_COLORS[slaState]}`}
+                      >
+                        {SLA_LABELS[slaState]}
+                      </span>
+                    )}
+                  </dd>
+                </div>
+              )}
+
+              {/* Escalation info */}
+              {ticket.escalatedAt && (
+                <div>
+                  <dt className="font-medium text-gray-500">エスカレーション日時</dt>
+                  <dd className="mt-1 text-gray-700">
+                    {ticket.escalatedAt.toLocaleString('ja-JP')}
+                  </dd>
+                  {ticket.escalationReason && (
+                    <dd className="mt-1 text-xs text-gray-500">{ticket.escalationReason}</dd>
+                  )}
+                </div>
+              )}
+
+              {/* Escalation action */}
+              {canEscalate && (
+                <div>
+                  <dt className="font-medium text-gray-500">エスカレーション</dt>
+                  <dd className="mt-1">
+                    <EscalationForm ticketId={ticket.id} />
+                  </dd>
+                </div>
+              )}
             </dl>
           </div>
         </aside>

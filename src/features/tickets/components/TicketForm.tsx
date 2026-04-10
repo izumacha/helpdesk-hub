@@ -3,7 +3,7 @@
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { useRouter } from 'next/navigation';
-import { createTicketSchema, type CreateTicketInput } from '@/lib/validations/ticket';
+import { createTicketSchema, type CreateTicketFormValues } from '@/lib/validations/ticket';
 
 type Category = { id: string; name: string };
 
@@ -17,12 +17,12 @@ export function TicketForm({ categories }: Props) {
     register,
     handleSubmit,
     formState: { errors, isSubmitting },
-  } = useForm<CreateTicketInput>({
+  } = useForm<CreateTicketFormValues>({
     resolver: zodResolver(createTicketSchema),
     defaultValues: { priority: 'Medium' as const },
   });
 
-  async function onSubmit(data: CreateTicketInput) {
+  async function onSubmit(data: CreateTicketFormValues) {
     const res = await fetch('/api/tickets', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
