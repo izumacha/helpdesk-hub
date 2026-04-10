@@ -4,6 +4,7 @@ import { revalidatePath } from 'next/cache';
 import { auth } from '@/lib/auth';
 import { prisma } from '@/lib/prisma';
 import { recordHistory } from '@/lib/ticket-history';
+import { isValidTransition } from '@/domain/ticket-status';
 import type { TicketStatus, Priority } from '@/generated/prisma';
 
 // ── Status ──────────────────────────────────────────────────────────────────
@@ -14,6 +15,9 @@ export async function updateTicketStatus(ticketId: string, newStatus: TicketStat
 
   const ticket = await prisma.ticket.findUniqueOrThrow({ where: { id: ticketId } });
   if (ticket.status === newStatus) return;
+  if (!isValidTransition(ticket.status, newStatus)) {
+    throw new Error(`ステータスを「${ticket.status}」から「${newStatus}」に変更することはできません`);
+  }
 
   await prisma.ticket.update({ where: { id: ticketId }, data: { status: newStatus } });
   await recordHistory(ticketId, session.user.id, 'status', ticket.status, newStatus);
@@ -49,6 +53,9 @@ export async function updateTicketAssignee(ticketId: string, newAssigneeId: stri
   let newName: string | null = null;
   if (newAssigneeId) {
     const user = await prisma.user.findUniqueOrThrow({ where: { id: newAssigneeId } });
+    if (user.role !== 'agent' && user.role !== 'admin') {
+      throw new Error('担当者にはエージェントまたは管理者のみ設定できます');
+    }
     newName = user.name;
   }
 
