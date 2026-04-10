@@ -2,6 +2,7 @@ import { Suspense } from 'react';
 import Link from 'next/link';
 import { auth } from '@/lib/auth';
 import { prisma } from '@/lib/prisma';
+import { isAgent as checkIsAgent } from '@/lib/role';
 import { STATUS_LABELS, STATUS_COLORS, PRIORITY_LABELS, PRIORITY_COLORS } from '@/lib/constants';
 import { TicketFilters } from '@/features/tickets/components/TicketFilters';
 import type { TicketStatus, Priority, Prisma } from '@/generated/prisma';
@@ -24,7 +25,7 @@ export default async function TicketsPage({ searchParams }: Props) {
   const session = await auth();
   if (!session?.user?.id) return null;
 
-  const isAgent = session.user.role === 'agent' || session.user.role === 'admin';
+  const isAgent = checkIsAgent(session.user.role);
   const page = Math.max(1, parseInt(sp.page ?? '1', 10));
   const skip = (page - 1) * PAGE_SIZE;
 

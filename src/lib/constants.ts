@@ -29,3 +29,15 @@ export const PRIORITY_COLORS: Record<string, string> = {
   Medium: 'text-yellow-600',
   High: 'text-red-600 font-semibold',
 };
+
+export const FAQ_STATUS_LABELS: Record<string, string> = {
+  Candidate: '候補',
+  Published: '公開済み',
+  Rejected: '却下',
+};
+
+export const FAQ_STATUS_COLORS: Record<string, string> = {
+  Candidate: 'bg-yellow-100 text-yellow-700',
+  Published: 'bg-green-100 text-green-700',
+  Rejected: 'bg-gray-100 text-gray-500',
+};

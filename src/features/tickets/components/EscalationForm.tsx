@@ -10,6 +10,7 @@ interface Props {
 export function EscalationForm({ ticketId }: Props) {
   const [isPending, startTransition] = useTransition();
   const [open, setOpen] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const ref = useRef<HTMLTextAreaElement>(null);
 
   function handleSubmit(e: React.FormEvent) {
@@ -17,9 +18,14 @@ export function EscalationForm({ ticketId }: Props) {
     const reason = ref.current?.value.trim() ?? '';
     if (!reason) return;
 
+    setError(null);
     startTransition(async () => {
-      await escalateTicket(ticketId, reason);
-      setOpen(false);
+      try {
+        await escalateTicket(ticketId, reason);
+        setOpen(false);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'エラーが発生しました');
+      }
     });
   }
 
@@ -43,6 +49,7 @@ export function EscalationForm({ ticketId }: Props) {
         placeholder="エスカレーション理由を入力してください"
         className="block w-full rounded-md border border-gray-300 px-2 py-1.5 text-xs focus:border-red-500 focus:outline-none"
       />
+      {error && <p className="text-xs text-red-600">{error}</p>}
       <div className="flex gap-2">
         <button
           type="submit"

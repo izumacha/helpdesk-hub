@@ -1,17 +1,17 @@
 import Link from 'next/link';
 import { auth } from '@/lib/auth';
 import { prisma } from '@/lib/prisma';
+import { isAgent as checkIsAgent } from '@/lib/role';
 import { STATUS_LABELS, STATUS_COLORS } from '@/lib/constants';
+
+type WorkloadRow = { assigneeId: string | null; _count: { id: number } };
 
 export default async function DashboardPage() {
   const session = await auth();
   if (!session?.user?.id) return null;
 
-  const isAgent = session.user.role === 'agent' || session.user.role === 'admin';
-
-  // Base filter for RBAC
+  const isAgent = checkIsAgent(session.user.role);
   const baseWhere = isAgent ? {} : { creatorId: session.user.id };
-
   const now = new Date();
 
   const [
@@ -49,8 +49,9 @@ export default async function DashboardPage() {
       : Promise.resolve([]),
   ]);
 
-  // Resolve assignee names for workload
-  const assigneeIds = (workload as { assigneeId: string | null; _count: { id: number } }[])
+  const typedWorkload = workload as WorkloadRow[];
+
+  const assigneeIds = typedWorkload
     .filter((w) => w.assigneeId !== null)
     .map((w) => w.assigneeId as string);
 
@@ -77,7 +78,6 @@ export default async function DashboardPage() {
     <div className="space-y-8">
       <h1 className="text-2xl font-bold text-gray-900">ダッシュボード</h1>
 
-      {/* Stats */}
       <section>
         <h2 className="mb-4 text-sm font-semibold text-gray-500">ステータス別件数</h2>
         <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-6">
@@ -98,7 +98,6 @@ export default async function DashboardPage() {
         </div>
       </section>
 
-      {/* SLA overdue (agent/admin only) */}
       {isAgent && (
         <section>
           <h2 className="mb-4 text-sm font-semibold text-gray-500">SLA 超過</h2>
@@ -109,8 +108,7 @@ export default async function DashboardPage() {
         </section>
       )}
 
-      {/* Workload by assignee (agent/admin only) */}
-      {isAgent && (workload as { assigneeId: string | null; _count: { id: number } }[]).length > 0 && (
+      {isAgent && typedWorkload.length > 0 && (
         <section>
           <h2 className="mb-4 text-sm font-semibold text-gray-500">担当者別 未完了件数</h2>
           <div className="overflow-hidden rounded-lg bg-white shadow-sm">
@@ -123,7 +121,7 @@ export default async function DashboardPage() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-200">
-                {(workload as { assigneeId: string | null; _count: { id: number } }[]).map((row) => {
+                {typedWorkload.map((row) => {
                   const name = row.assigneeId ? (nameMap[row.assigneeId] ?? '不明') : '未割当';
                   const query = row.assigneeId
                     ? `assigneeId=${row.assigneeId}`
