@@ -36,7 +36,7 @@
 2. **実務拡張**: SLA、エスカレーション、履歴、権限制御
 3. **アピール拡張**: ダッシュボード、FAQ候補化、レポート/CSV、テスト拡充
 
-詳細な要件と実装タスクは `docs/requirements.md` と `docs/issue-backlog.md` を参照してください。
+詳細な要件と実装タスクは `docs/requirements.md` と `docs/issue-backlog.md` を参照してください。GitHub Issue 登録用の詳細ドラフトは `docs/github-issues.md` にまとめています。
 
 ## ドキュメント運用（4バージョン統合）
 
