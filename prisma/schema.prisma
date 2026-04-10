@@ -11,11 +11,42 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+// ─────────────────────────────────────────────
+// Enums
+// ─────────────────────────────────────────────
+
 enum Role {
   requester
   agent
   admin
 }
+
+enum TicketStatus {
+  New
+  Open
+  WaitingForUser
+  InProgress
+  Escalated
+  Resolved
+  Closed
+}
+
+enum Priority {
+  Low
+  Medium
+  High
+}
+
+enum HistoryField {
+  status
+  priority
+  assignee
+  escalation
+}
+
+// ─────────────────────────────────────────────
+// User
+// ─────────────────────────────────────────────
 
 model User {
   id           String   @id @default(cuid())
@@ -25,4 +56,82 @@ model User {
   role         Role     @default(requester)
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
+
+  // Relations
+  createdTickets  Ticket[]        @relation("TicketCreator")
+  assignedTickets Ticket[]        @relation("TicketAssignee")
+  comments        TicketComment[]
+  histories       TicketHistory[]
+}
+
+// ─────────────────────────────────────────────
+// Category
+// ─────────────────────────────────────────────
+
+model Category {
+  id        String   @id @default(cuid())
+  name      String   @unique
+  createdAt DateTime @default(now())
+
+  tickets Ticket[]
+}
+
+// ─────────────────────────────────────────────
+// Ticket
+// ─────────────────────────────────────────────
+
+model Ticket {
+  id          String       @id @default(cuid())
+  title       String
+  body        String
+  status      TicketStatus @default(New)
+  priority    Priority     @default(Medium)
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+
+  // Foreign keys
+  creatorId    String
+  assigneeId   String?
+  categoryId   String?
+
+  // Relations
+  creator    User          @relation("TicketCreator", fields: [creatorId], references: [id])
+  assignee   User?         @relation("TicketAssignee", fields: [assigneeId], references: [id])
+  category   Category?     @relation(fields: [categoryId], references: [id])
+  comments   TicketComment[]
+  histories  TicketHistory[]
+}
+
+// ─────────────────────────────────────────────
+// TicketComment
+// ─────────────────────────────────────────────
+
+model TicketComment {
+  id        String   @id @default(cuid())
+  body      String
+  createdAt DateTime @default(now())
+
+  ticketId String
+  authorId String
+
+  ticket Ticket @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  author User   @relation(fields: [authorId], references: [id])
+}
+
+// ─────────────────────────────────────────────
+// TicketHistory
+// ─────────────────────────────────────────────
+
+model TicketHistory {
+  id         String       @id @default(cuid())
+  field      HistoryField
+  oldValue   String?
+  newValue   String?
+  createdAt  DateTime     @default(now())
+
+  ticketId   String
+  changedById String
+
+  ticket     Ticket @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  changedBy  User   @relation(fields: [changedById], references: [id])
 }
