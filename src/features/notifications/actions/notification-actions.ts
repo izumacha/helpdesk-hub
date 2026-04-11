@@ -1,6 +1,6 @@
 'use server';
 
-import { revalidatePath } from 'next/cache';
+import { revalidatePath, revalidateTag } from 'next/cache';
 import { auth } from '@/lib/auth';
 import { prisma } from '@/lib/prisma';
 
@@ -13,4 +13,5 @@ export async function markAllRead() {
     data: { read: true },
   });
   revalidatePath('/notifications');
+  revalidateTag(`notification-count-${session.user.id}`);
 }

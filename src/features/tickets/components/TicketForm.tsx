@@ -4,6 +4,7 @@ import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { useRouter } from 'next/navigation';
 import { createTicketSchema, type CreateTicketFormValues } from '@/lib/validations/ticket';
+import { PRIORITY_LABELS } from '@/lib/constants';
 
 type Category = { id: string; name: string };
 
@@ -92,9 +93,9 @@ export function TicketForm({ categories }: Props) {
           {...register('priority')}
           className="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none"
         >
-          <option value="Low">低</option>
-          <option value="Medium">中</option>
-          <option value="High">高</option>
+          {Object.entries(PRIORITY_LABELS).map(([value, label]) => (
+            <option key={value} value={value}>{label}</option>
+          ))}
         </select>
       </div>
 

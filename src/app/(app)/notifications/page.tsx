@@ -1,13 +1,7 @@
 import { auth } from '@/lib/auth';
 import { prisma } from '@/lib/prisma';
 import { markAllRead } from '@/features/notifications/actions/notification-actions';
-
-const TYPE_LABELS: Record<string, string> = {
-  assigned: '担当割当',
-  escalated: 'エスカレーション',
-  commented: 'コメント',
-  statusChanged: 'ステータス変更',
-};
+import { NOTIFICATION_TYPE_LABELS } from '@/lib/constants';
 
 export default async function NotificationsPage() {
   const session = await auth();
@@ -50,7 +44,7 @@ export default async function NotificationsPage() {
               <div className="flex items-start justify-between gap-2">
                 <div>
                   <span className="mr-2 inline-flex rounded-full bg-gray-100 px-2 py-0.5 text-xs text-gray-600">
-                    {TYPE_LABELS[n.type] ?? n.type}
+                    {NOTIFICATION_TYPE_LABELS[n.type] ?? n.type}
                   </span>
                   <span className="text-sm text-gray-800">{n.message}</span>
                   {n.ticket && (

@@ -41,3 +41,17 @@ export const FAQ_STATUS_COLORS: Record<string, string> = {
   Published: 'bg-green-100 text-green-700',
   Rejected: 'bg-gray-100 text-gray-500',
 };
+
+export const HISTORY_FIELD_LABELS: Record<string, string> = {
+  status: 'ステータス',
+  priority: '優先度',
+  assignee: '担当者',
+  escalation: 'エスカレーション',
+};
+
+export const NOTIFICATION_TYPE_LABELS: Record<string, string> = {
+  assigned: '担当割当',
+  escalated: 'エスカレーション',
+  commented: 'コメント',
+  statusChanged: 'ステータス変更',
+};
