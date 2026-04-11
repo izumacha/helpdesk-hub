@@ -1,5 +1,6 @@
 import { unstable_cache, revalidateTag } from 'next/cache';
 import { prisma } from '@/lib/prisma';
+import { broadcast } from '@/lib/sse-subscribers';
 import type { NotificationType } from '@/generated/prisma';
 
 export async function createNotification(
@@ -11,7 +12,12 @@ export async function createNotification(
   await prisma.notification.create({
     data: { userId, type, message, ticketId },
   });
+
   revalidateTag(`notification-count-${userId}`);
+
+  // Query live count directly (not via cache — revalidateTag just invalidated it).
+  const newCount = await prisma.notification.count({ where: { userId, read: false } });
+  broadcast(userId, newCount);
 }
 
 export function getUnreadNotificationCount(userId: string): Promise<number> {
