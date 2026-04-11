@@ -2,7 +2,7 @@ import { notFound } from 'next/navigation';
 import { auth } from '@/lib/auth';
 import { prisma } from '@/lib/prisma';
 import { isAgent as checkIsAgent } from '@/lib/role';
-import { STATUS_LABELS, STATUS_COLORS, PRIORITY_LABELS, PRIORITY_COLORS } from '@/lib/constants';
+import { STATUS_LABELS, STATUS_COLORS, PRIORITY_LABELS, PRIORITY_COLORS, HISTORY_FIELD_LABELS } from '@/lib/constants';
 import { StatusSelect } from '@/features/tickets/components/StatusSelect';
 import { PrioritySelect } from '@/features/tickets/components/PrioritySelect';
 import { AssigneeSelect } from '@/features/tickets/components/AssigneeSelect';
@@ -11,13 +11,6 @@ import { EscalationForm } from '@/features/tickets/components/EscalationForm';
 import { getSlaState, SLA_LABELS, SLA_COLORS } from '@/lib/sla';
 import { getAllowedTransitions } from '@/domain/ticket-status';
 import { FaqCandidateForm } from '@/features/faq/components/FaqCandidateForm';
-
-const HISTORY_FIELD_LABELS: Record<string, string> = {
-  status: 'ステータス',
-  priority: '優先度',
-  assignee: '担当者',
-  escalation: 'エスカレーション',
-};
 
 interface Props {
   params: Promise<{ id: string }>;

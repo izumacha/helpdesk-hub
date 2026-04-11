@@ -66,12 +66,12 @@ export default async function DashboardPage() {
   const nameMap = Object.fromEntries(assigneeNames.map((u) => [u.id, u.name]));
 
   const statCards = [
-    { label: '新規', status: 'New', count: newCount, color: STATUS_COLORS['New'] },
-    { label: 'オープン', status: 'Open', count: openCount, color: STATUS_COLORS['Open'] },
-    { label: 'ユーザー待ち', status: 'WaitingForUser', count: waitingCount, color: STATUS_COLORS['WaitingForUser'] },
-    { label: '対応中', status: 'InProgress', count: inProgressCount, color: STATUS_COLORS['InProgress'] },
-    { label: 'エスカレーション', status: 'Escalated', count: escalatedCount, color: STATUS_COLORS['Escalated'] },
-    { label: '解決済み', status: 'Resolved', count: resolvedCount, color: STATUS_COLORS['Resolved'] },
+    { status: 'New', count: newCount },
+    { status: 'Open', count: openCount },
+    { status: 'WaitingForUser', count: waitingCount },
+    { status: 'InProgress', count: inProgressCount },
+    { status: 'Escalated', count: escalatedCount },
+    { status: 'Resolved', count: resolvedCount },
   ];
 
   return (
@@ -89,9 +89,9 @@ export default async function DashboardPage() {
             >
               <p className="text-2xl font-bold text-gray-900">{card.count}</p>
               <span
-                className={`mt-1 inline-flex rounded-full px-2 py-0.5 text-xs font-medium ${card.color}`}
+                className={`mt-1 inline-flex rounded-full px-2 py-0.5 text-xs font-medium ${STATUS_COLORS[card.status]}`}
               >
-                {card.label}
+                {STATUS_LABELS[card.status]}
               </span>
             </Link>
           ))}

@@ -37,6 +37,11 @@ export async function updateFaqStatus(faqId: string, status: 'Published' | 'Reje
     throw new Error('エージェントまたは管理者のみ実行できます');
   }
 
+  const faq = await prisma.faqCandidate.findUniqueOrThrow({ where: { id: faqId } });
+  if (faq.status !== 'Candidate') {
+    throw new Error('候補ステータスのFAQのみ公開・却下できます');
+  }
+
   await prisma.faqCandidate.update({ where: { id: faqId }, data: { status } });
   revalidatePath('/faq');
 }
