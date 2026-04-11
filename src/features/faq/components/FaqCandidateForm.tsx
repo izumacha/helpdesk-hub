@@ -11,6 +11,7 @@ interface Props {
 export function FaqCandidateForm({ ticketId, ticketTitle }: Props) {
   const [open, setOpen] = useState(false);
   const [isPending, startTransition] = useTransition();
+  const [error, setError] = useState<string | null>(null);
   const questionRef = useRef<HTMLTextAreaElement>(null);
   const answerRef = useRef<HTMLTextAreaElement>(null);
 
@@ -20,9 +21,14 @@ export function FaqCandidateForm({ ticketId, ticketTitle }: Props) {
     const a = answerRef.current?.value.trim() ?? '';
     if (!q || !a) return;
 
+    setError(null);
     startTransition(async () => {
-      await createFaqCandidate(ticketId, q, a);
-      setOpen(false);
+      try {
+        await createFaqCandidate(ticketId, q, a);
+        setOpen(false);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'エラーが発生しました');
+      }
     });
   }
 
@@ -59,6 +65,7 @@ export function FaqCandidateForm({ ticketId, ticketTitle }: Props) {
           className="block w-full rounded-md border border-gray-300 px-2 py-1.5 text-xs focus:border-blue-500 focus:outline-none"
         />
       </div>
+      {error && <p className="text-xs text-red-600">{error}</p>}
       <div className="flex gap-2">
         <button
           type="submit"

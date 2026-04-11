@@ -3,11 +3,12 @@
 import { revalidatePath } from 'next/cache';
 import { auth } from '@/lib/auth';
 import { prisma } from '@/lib/prisma';
+import { isAgent } from '@/lib/role';
 
 export async function createFaqCandidate(ticketId: string, question: string, answer: string) {
   const session = await auth();
   if (!session?.user?.id) throw new Error('Unauthorized');
-  if (session.user.role !== 'agent' && session.user.role !== 'admin') {
+  if (!isAgent(session.user.role)) {
     throw new Error('エージェントまたは管理者のみ実行できます');
   }
 
@@ -32,7 +33,7 @@ export async function createFaqCandidate(ticketId: string, question: string, ans
 export async function updateFaqStatus(faqId: string, status: 'Published' | 'Rejected') {
   const session = await auth();
   if (!session?.user?.id) throw new Error('Unauthorized');
-  if (session.user.role !== 'agent' && session.user.role !== 'admin') {
+  if (!isAgent(session.user.role)) {
     throw new Error('エージェントまたは管理者のみ実行できます');
   }
 

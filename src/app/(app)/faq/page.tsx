@@ -1,27 +1,22 @@
 import { auth } from '@/lib/auth';
 import { prisma } from '@/lib/prisma';
 import { notFound } from 'next/navigation';
+import { isAgent } from '@/lib/role';
+import { FAQ_STATUS_LABELS, FAQ_STATUS_COLORS } from '@/lib/constants';
 import { updateFaqStatus } from '@/features/faq/actions/faq-actions';
-
-const STATUS_LABELS: Record<string, string> = {
-  Candidate: '候補',
-  Published: '公開済み',
-  Rejected: '却下',
-};
-const STATUS_COLORS: Record<string, string> = {
-  Candidate: 'bg-yellow-100 text-yellow-700',
-  Published: 'bg-green-100 text-green-700',
-  Rejected: 'bg-gray-100 text-gray-500',
-};
 
 export default async function FaqPage() {
   const session = await auth();
   if (!session?.user?.id) return null;
-  if (session.user.role !== 'agent' && session.user.role !== 'admin') notFound();
+  if (!isAgent(session.user.role)) notFound();
 
   const faqs = await prisma.faqCandidate.findMany({
     orderBy: { createdAt: 'desc' },
-    include: {
+    select: {
+      id: true,
+      question: true,
+      answer: true,
+      status: true,
       ticket: { select: { id: true, title: true } },
       createdBy: { select: { name: true } },
     },
@@ -41,9 +36,9 @@ export default async function FaqPage() {
             <div key={faq.id} className="rounded-lg bg-white p-5 shadow-sm">
               <div className="mb-2 flex items-center justify-between">
                 <span
-                  className={`inline-flex rounded-full px-2 py-0.5 text-xs font-medium ${STATUS_COLORS[faq.status] ?? ''}`}
+                  className={`inline-flex rounded-full px-2 py-0.5 text-xs font-medium ${FAQ_STATUS_COLORS[faq.status] ?? ''}`}
                 >
-                  {STATUS_LABELS[faq.status] ?? faq.status}
+                  {FAQ_STATUS_LABELS[faq.status] ?? faq.status}
                 </span>
                 <span className="text-xs text-gray-400">
                   登録者: {faq.createdBy.name} / 元チケット:{' '}
@@ -61,12 +56,7 @@ export default async function FaqPage() {
 
               {faq.status === 'Candidate' && (
                 <div className="mt-3 flex gap-2">
-                  <form
-                    action={async () => {
-                      'use server';
-                      await updateFaqStatus(faq.id, 'Published');
-                    }}
-                  >
+                  <form action={updateFaqStatus.bind(null, faq.id, 'Published')}>
                     <button
                       type="submit"
                       className="rounded-md bg-green-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-green-700"
@@ -74,12 +64,7 @@ export default async function FaqPage() {
                       公開する
                     </button>
                   </form>
-                  <form
-                    action={async () => {
-                      'use server';
-                      await updateFaqStatus(faq.id, 'Rejected');
-                    }}
-                  >
+                  <form action={updateFaqStatus.bind(null, faq.id, 'Rejected')}>
                     <button
                       type="submit"
                       className="rounded-md border border-gray-300 px-3 py-1.5 text-xs text-gray-600 hover:bg-gray-50"

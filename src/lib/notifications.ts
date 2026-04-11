@@ -11,3 +11,7 @@ export async function createNotification(
     data: { userId, type, message, ticketId },
   });
 }
+
+export async function getUnreadNotificationCount(userId: string): Promise<number> {
+  return prisma.notification.count({ where: { userId, read: false } });
+}

@@ -3,12 +3,11 @@
 import { revalidatePath } from 'next/cache';
 import { auth } from '@/lib/auth';
 import { prisma } from '@/lib/prisma';
+import { isAgent } from '@/lib/role';
 import { recordHistory } from '@/lib/ticket-history';
 import { createNotification } from '@/lib/notifications';
 import { isValidTransition } from '@/domain/ticket-status';
 import type { TicketStatus, Priority } from '@/generated/prisma';
-
-// ── Status ──────────────────────────────────────────────────────────────────
 
 export async function updateTicketStatus(ticketId: string, newStatus: TicketStatus) {
   const session = await auth();
@@ -25,8 +24,6 @@ export async function updateTicketStatus(ticketId: string, newStatus: TicketStat
   revalidatePath(`/tickets/${ticketId}`);
 }
 
-// ── Priority ─────────────────────────────────────────────────────────────────
-
 export async function updateTicketPriority(ticketId: string, newPriority: Priority) {
   const session = await auth();
   if (!session?.user?.id) throw new Error('Unauthorized');
@@ -39,26 +36,26 @@ export async function updateTicketPriority(ticketId: string, newPriority: Priori
   revalidatePath(`/tickets/${ticketId}`);
 }
 
-// ── Assignee ─────────────────────────────────────────────────────────────────
-
 export async function updateTicketAssignee(ticketId: string, newAssigneeId: string | null) {
   const session = await auth();
   if (!session?.user?.id) throw new Error('Unauthorized');
 
-  const ticket = await prisma.ticket.findUniqueOrThrow({
-    where: { id: ticketId },
-    include: { assignee: { select: { name: true } } },
-  });
+  const [ticket, newUser] = await Promise.all([
+    prisma.ticket.findUniqueOrThrow({
+      where: { id: ticketId },
+      include: { assignee: { select: { name: true } } },
+    }),
+    newAssigneeId
+      ? prisma.user.findUniqueOrThrow({ where: { id: newAssigneeId } })
+      : Promise.resolve(null),
+  ]);
+
+  if (newUser && !isAgent(newUser.role)) {
+    throw new Error('担当者にはエージェントまたは管理者のみ設定できます');
+  }
 
   const oldName = ticket.assignee?.name ?? null;
-  let newName: string | null = null;
-  if (newAssigneeId) {
-    const user = await prisma.user.findUniqueOrThrow({ where: { id: newAssigneeId } });
-    if (user.role !== 'agent' && user.role !== 'admin') {
-      throw new Error('担当者にはエージェントまたは管理者のみ設定できます');
-    }
-    newName = user.name;
-  }
+  const newName = newUser?.name ?? null;
 
   await prisma.ticket.update({
     where: { id: ticketId },
@@ -66,7 +63,6 @@ export async function updateTicketAssignee(ticketId: string, newAssigneeId: stri
   });
   await recordHistory(ticketId, session.user.id, 'assignee', oldName, newName);
 
-  // Notify the newly assigned agent
   if (newAssigneeId) {
     await createNotification(
       newAssigneeId,
@@ -79,34 +75,33 @@ export async function updateTicketAssignee(ticketId: string, newAssigneeId: stri
   revalidatePath(`/tickets/${ticketId}`);
 }
 
-// ── Escalation ───────────────────────────────────────────────────────────────
-
 export async function escalateTicket(ticketId: string, reason: string) {
   const session = await auth();
   if (!session?.user?.id) throw new Error('Unauthorized');
-  if (session.user.role !== 'agent' && session.user.role !== 'admin') {
+  if (!isAgent(session.user.role)) {
     throw new Error('エスカレーション操作はエージェントまたは管理者のみ実行できます');
   }
 
-  const ticket = await prisma.ticket.findUniqueOrThrow({ where: { id: ticketId } });
+  const [ticket, agents] = await Promise.all([
+    prisma.ticket.findUniqueOrThrow({ where: { id: ticketId } }),
+    prisma.user.findMany({
+      where: { role: { in: ['agent', 'admin'] } },
+      select: { id: true },
+    }),
+  ]);
+
   if (!isValidTransition(ticket.status, 'Escalated')) {
     throw new Error(`現在のステータス「${ticket.status}」からエスカレーションできません`);
   }
 
   const now = new Date();
-  await prisma.ticket.update({
-    where: { id: ticketId },
-    data: { status: 'Escalated', escalatedAt: now, escalationReason: reason.trim() },
-  });
-  await recordHistory(ticketId, session.user.id, 'escalation', ticket.status, 'Escalated');
-
-  // Notify all agents and admins
-  const agents = await prisma.user.findMany({
-    where: { role: { in: ['agent', 'admin'] } },
-    select: { id: true },
-  });
-  await Promise.all(
-    agents.map((a) =>
+  await Promise.all([
+    prisma.ticket.update({
+      where: { id: ticketId },
+      data: { status: 'Escalated', escalatedAt: now, escalationReason: reason.trim() },
+    }),
+    recordHistory(ticketId, session.user.id, 'escalation', ticket.status, 'Escalated'),
+    ...agents.map((a) =>
       createNotification(
         a.id,
         'escalated',
@@ -114,12 +109,10 @@ export async function escalateTicket(ticketId: string, reason: string) {
         ticketId,
       ),
     ),
-  );
+  ]);
 
   revalidatePath(`/tickets/${ticketId}`);
 }
-
-// ── Comment ───────────────────────────────────────────────────────────────────
 
 export async function addComment(ticketId: string, body: string) {
   const session = await auth();

@@ -1,6 +1,7 @@
 import { notFound } from 'next/navigation';
 import { auth } from '@/lib/auth';
 import { prisma } from '@/lib/prisma';
+import { isAgent as checkIsAgent } from '@/lib/role';
 import { STATUS_LABELS, STATUS_COLORS, PRIORITY_LABELS, PRIORITY_COLORS } from '@/lib/constants';
 import { StatusSelect } from '@/features/tickets/components/StatusSelect';
 import { PrioritySelect } from '@/features/tickets/components/PrioritySelect';
@@ -27,7 +28,7 @@ export default async function TicketDetailPage({ params }: Props) {
   const session = await auth();
   if (!session?.user?.id) return null;
 
-  const isAgent = session.user.role === 'agent' || session.user.role === 'admin';
+  const isAgent = checkIsAgent(session.user.role);
 
   const [ticket, agents] = await Promise.all([
     prisma.ticket.findUnique({
