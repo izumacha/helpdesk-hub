@@ -35,8 +35,8 @@
 ```bash
 cp .env.example .env
 docker compose up -d
-docker compose exec app npx prisma migrate dev
-docker compose exec app npx tsx prisma/seed.ts
+docker compose exec app npx prisma migrate deploy
+docker compose exec app npx prisma db seed
 ```
 
 アプリは http://localhost:3000 で起動します。
