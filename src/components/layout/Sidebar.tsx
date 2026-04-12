@@ -4,9 +4,10 @@ import { useState } from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { isAgent } from '@/lib/role';
+import type { Role } from '@/generated/prisma';
 
 interface Props {
-  role: string;
+  role: Role;
 }
 
 const navItems = [

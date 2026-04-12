@@ -4,7 +4,7 @@ import { Sidebar } from '@/components/layout/Sidebar';
 
 export default async function AppLayout({ children }: { children: React.ReactNode }) {
   const session = await auth();
-  const role = session?.user?.role ?? 'requester';
+  const role = session?.user?.role ?? ('requester' as const);
 
   return (
     <div className="flex h-screen overflow-hidden bg-gray-50">
