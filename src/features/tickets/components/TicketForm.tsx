@@ -1,5 +1,6 @@
 'use client';
 
+import { useState } from 'react';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { useRouter } from 'next/navigation';
@@ -14,6 +15,7 @@ interface Props {
 
 export function TicketForm({ categories }: Props) {
   const router = useRouter();
+  const [serverError, setServerError] = useState<string | null>(null);
   const {
     register,
     handleSubmit,
@@ -24,6 +26,7 @@ export function TicketForm({ categories }: Props) {
   });
 
   async function onSubmit(data: CreateTicketFormValues) {
+    setServerError(null);
     const res = await fetch('/api/tickets', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -32,7 +35,7 @@ export function TicketForm({ categories }: Props) {
 
     if (!res.ok) {
       const err = await res.json();
-      alert(err.error ?? '登録に失敗しました');
+      setServerError(err.error ?? '登録に失敗しました');
       return;
     }
 
@@ -98,6 +101,8 @@ export function TicketForm({ categories }: Props) {
           ))}
         </select>
       </div>
+
+      {serverError && <p className="text-sm text-red-600">{serverError}</p>}
 
       {/* Actions */}
       <div className="flex gap-3">
