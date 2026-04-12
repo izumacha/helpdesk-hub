@@ -1,7 +1,7 @@
 'use client';
 
 import { useRouter, usePathname, useSearchParams } from 'next/navigation';
-import { useTransition, useCallback } from 'react';
+import { useTransition, useCallback, useRef } from 'react';
 import { STATUS_LABELS, PRIORITY_LABELS } from '@/lib/constants';
 import type { TicketStatus, Priority } from '@/generated/prisma';
 
@@ -24,6 +24,7 @@ export function TicketFilters({ categories, agents, isAgent }: Props) {
   const pathname = usePathname();
   const searchParams = useSearchParams();
   const [isPending, startTransition] = useTransition();
+  const keywordRef = useRef<HTMLInputElement>(null);
 
   const update = useCallback(
     (key: string, value: string) => {
@@ -47,15 +48,22 @@ export function TicketFilters({ categories, agents, isAgent }: Props) {
     <div className={`flex flex-wrap items-center gap-2 ${isPending ? 'opacity-50' : ''}`}>
       {/* Keyword */}
       <input
+        ref={keywordRef}
         type="search"
         placeholder="キーワード検索"
+        key={searchParams.get('q') ?? ''}
         defaultValue={searchParams.get('q') ?? ''}
         onKeyDown={(e) => {
           if (e.key === 'Enter') update('q', (e.target as HTMLInputElement).value.trim());
         }}
-        onBlur={(e) => update('q', e.target.value.trim())}
         className="rounded-md border border-gray-300 px-3 py-1.5 text-sm focus:border-blue-500 focus:outline-none"
       />
+      <button
+        onClick={() => update('q', keywordRef.current?.value.trim() ?? '')}
+        className="rounded-md border border-gray-300 px-3 py-1.5 text-sm text-gray-600 hover:bg-gray-50"
+      >
+        検索
+      </button>
       {/* Status */}
       <select
         value={searchParams.get('status') ?? ''}

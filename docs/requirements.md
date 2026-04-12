@@ -94,13 +94,13 @@
 
 ### 許可遷移
 
-- New → Open
-- Open → In Progress
-- In Progress → Waiting for User
-- In Progress → Escalated
-- In Progress → Resolved
-- Resolved → Closed
-- Resolved → Open（再オープン）
+- New → Open, Waiting for User, In Progress, Resolved, Closed
+- Open → In Progress, Waiting for User, Escalated, Resolved, Closed
+- Waiting for User → Open, In Progress, Resolved, Closed
+- In Progress → Waiting for User, Escalated, Resolved, Closed
+- Escalated → In Progress, Resolved, Closed
+- Resolved → Open（再オープン）, Closed
+- Closed → Open（再オープン）
 
 ## 6. 非機能要件
 

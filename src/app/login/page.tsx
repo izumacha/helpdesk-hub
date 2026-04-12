@@ -1,8 +1,9 @@
 'use client';
 
-import { signIn } from 'next-auth/react';
+import { signIn, getSession } from 'next-auth/react';
 import { useRouter } from 'next/navigation';
 import { useState } from 'react';
+import { isAgent } from '@/lib/role';
 
 export default function LoginPage() {
   const router = useRouter();
@@ -29,7 +30,8 @@ export default function LoginPage() {
     if (result?.error) {
       setError('メールアドレスまたはパスワードが正しくありません');
     } else {
-      router.push('/tickets');
+      const session = await getSession();
+      router.push(isAgent(session?.user?.role) ? '/dashboard' : '/tickets');
     }
   }
 
