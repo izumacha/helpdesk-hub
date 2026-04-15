@@ -23,6 +23,10 @@ export function Sidebar({ role }: Props) {
   const [collapsed, setCollapsed] = useState(false);
 
   const visibleItems = navItems.filter((item) => !item.agentOnly || isAgent(role));
+  const isItemActive = (href: string) => {
+    if (href === '/') return pathname === '/';
+    return pathname === href || pathname.startsWith(`${href}/`);
+  };
 
   const isItemActive = (href: string) => {
     if (href === '/') return pathname === '/';
