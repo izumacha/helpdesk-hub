@@ -6,8 +6,16 @@ export default auth((req) => {
   const isLoggedIn = !!req.auth;
   const isAuthPage = req.nextUrl.pathname.startsWith('/login');
   const isApiAuth = req.nextUrl.pathname.startsWith('/api/auth');
+  const isApiRoute = req.nextUrl.pathname.startsWith('/api/');
 
   if (isApiAuth) return NextResponse.next();
+
+  if (isApiRoute) {
+    if (!isLoggedIn) {
+      return NextResponse.json({ error: '認証が必要です' }, { status: 401 });
+    }
+    return NextResponse.next();
+  }
 
   if (!isLoggedIn && !isAuthPage) {
     return NextResponse.redirect(new URL('/login', req.url));

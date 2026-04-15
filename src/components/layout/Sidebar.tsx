@@ -25,11 +25,6 @@ export function Sidebar({ role }: Props) {
   const visibleItems = navItems.filter((item) => !item.agentOnly || isAgent(role));
   const isItemActive = (href: string) => {
     if (href === '/') return pathname === '/';
-    return pathname === href || pathname.startsWith(`${href}/`);
-  };
-
-  const isItemActive = (href: string) => {
-    if (href === '/') return pathname === '/';
     if (pathname === href) return true;
     // nav item に完全一致するパスが存在する場合は prefix マッチを使わない
     // （例: /tickets/new 閲覧時に /tickets を誤ってアクティブにしない）
