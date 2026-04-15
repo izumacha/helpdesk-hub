@@ -8,10 +8,22 @@ import { recordHistory } from '@/lib/ticket-history';
 import { createNotification } from '@/lib/notifications';
 import { isValidTransition } from '@/domain/ticket-status';
 import type { TicketStatus, Priority } from '@/generated/prisma';
+import type { Session } from 'next-auth';
+
+function assertAuthenticatedUser(session: Session | null): asserts session is Session {
+  if (!session?.user?.id) throw new Error('Unauthorized');
+}
+
+function assertAgentRole(session: Session | null): asserts session is Session {
+  assertAuthenticatedUser(session);
+  if (!isAgent(session.user.role)) {
+    throw new Error('この操作はエージェントまたは管理者のみ実行できます');
+  }
+}
 
 export async function updateTicketStatus(ticketId: string, newStatus: TicketStatus) {
   const session = await auth();
-  if (!session?.user?.id) throw new Error('Unauthorized');
+  assertAgentRole(session);
 
   const ticket = await prisma.ticket.findUniqueOrThrow({ where: { id: ticketId } });
   if (ticket.status === newStatus) return;
@@ -26,7 +38,7 @@ export async function updateTicketStatus(ticketId: string, newStatus: TicketStat
 
 export async function updateTicketPriority(ticketId: string, newPriority: Priority) {
   const session = await auth();
-  if (!session?.user?.id) throw new Error('Unauthorized');
+  assertAgentRole(session);
 
   const ticket = await prisma.ticket.findUniqueOrThrow({ where: { id: ticketId } });
   if (ticket.priority === newPriority) return;
@@ -38,7 +50,7 @@ export async function updateTicketPriority(ticketId: string, newPriority: Priori
 
 export async function updateTicketAssignee(ticketId: string, newAssigneeId: string | null) {
   const session = await auth();
-  if (!session?.user?.id) throw new Error('Unauthorized');
+  assertAgentRole(session);
 
   const [ticket, newUser] = await Promise.all([
     prisma.ticket.findUniqueOrThrow({
@@ -77,10 +89,7 @@ export async function updateTicketAssignee(ticketId: string, newAssigneeId: stri
 
 export async function escalateTicket(ticketId: string, reason: string) {
   const session = await auth();
-  if (!session?.user?.id) throw new Error('Unauthorized');
-  if (!isAgent(session.user.role)) {
-    throw new Error('エスカレーション操作はエージェントまたは管理者のみ実行できます');
-  }
+  assertAgentRole(session);
 
   const [ticket, agents] = await Promise.all([
     prisma.ticket.findUniqueOrThrow({ where: { id: ticketId } }),
@@ -116,8 +125,18 @@ export async function escalateTicket(ticketId: string, reason: string) {
 
 export async function addComment(ticketId: string, body: string) {
   const session = await auth();
-  if (!session?.user?.id) throw new Error('Unauthorized');
+  assertAuthenticatedUser(session);
   if (!body.trim()) throw new Error('コメントを入力してください');
+
+  const ticket = await prisma.ticket.findUniqueOrThrow({
+    where: { id: ticketId },
+    select: { creatorId: true },
+  });
+
+  const canComment = isAgent(session.user.role) || ticket.creatorId === session.user.id;
+  if (!canComment) {
+    throw new Error('このチケットへのコメント権限がありません');
+  }
 
   await prisma.ticketComment.create({
     data: { ticketId, authorId: session.user.id, body: body.trim() },
