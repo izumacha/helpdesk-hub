@@ -23,6 +23,10 @@ export function Sidebar({ role }: Props) {
   const [collapsed, setCollapsed] = useState(false);
 
   const visibleItems = navItems.filter((item) => !item.agentOnly || isAgent(role));
+  const isItemActive = (href: string) => {
+    if (href === '/') return pathname === '/';
+    return pathname === href || pathname.startsWith(`${href}/`);
+  };
 
   return (
     <aside
@@ -43,7 +47,7 @@ export function Sidebar({ role }: Props) {
       {!collapsed && (
         <nav className="flex-1 space-y-1 px-3 py-4">
           {visibleItems.map((item) => {
-            const isActive = pathname === item.href;
+            const isActive = isItemActive(item.href);
             return (
               <Link
                 key={item.href}
