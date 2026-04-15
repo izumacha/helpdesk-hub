@@ -24,6 +24,15 @@ export function Sidebar({ role }: Props) {
 
   const visibleItems = navItems.filter((item) => !item.agentOnly || isAgent(role));
 
+  const isItemActive = (href: string) => {
+    if (href === '/') return pathname === '/';
+    if (pathname === href) return true;
+    // nav item に完全一致するパスが存在する場合は prefix マッチを使わない
+    // （例: /tickets/new 閲覧時に /tickets を誤ってアクティブにしない）
+    const hasExactNavMatch = navItems.some((item) => item.href === pathname);
+    return !hasExactNavMatch && pathname.startsWith(`${href}/`);
+  };
+
   return (
     <aside
       className={`flex flex-col border-r border-gray-200 bg-white transition-all duration-200 ${collapsed ? 'w-10' : 'w-56'}`}
@@ -43,7 +52,7 @@ export function Sidebar({ role }: Props) {
       {!collapsed && (
         <nav className="flex-1 space-y-1 px-3 py-4">
           {visibleItems.map((item) => {
-            const isActive = pathname === item.href;
+            const isActive = isItemActive(item.href);
             return (
               <Link
                 key={item.href}
