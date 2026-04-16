@@ -27,7 +27,7 @@ export function makeFaqRepo(store: Store): FaqRepository {
     async create(input) {
       const now = new Date();
       const row: FaqCandidate = {
-        id: nextId('faq'),
+        id: nextId(store, 'faq'),
         ticketId: input.ticketId,
         createdById: input.createdById,
         question: input.question,

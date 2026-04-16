@@ -6,7 +6,7 @@ export function makeTicketCommentRepo(store: Store): TicketCommentRepository {
   return {
     async create(input) {
       const row: TicketComment = {
-        id: nextId('cmt'),
+        id: nextId(store, 'cmt'),
         ticketId: input.ticketId,
         authorId: input.authorId,
         body: input.body,

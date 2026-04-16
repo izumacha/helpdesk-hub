@@ -13,6 +13,12 @@ export interface CategoryRow {
   createdAt: Date;
 }
 
+/**
+ * In-memory store used by the test adapter.
+ *
+ * The `idSeq` counter is per-store so different test contexts never share state
+ * and produce stable id sequences in isolation.
+ */
 export interface Store {
   users: Map<string, User>;
   categories: Map<string, CategoryRow>;
@@ -21,6 +27,7 @@ export interface Store {
   histories: Map<string, TicketHistory>;
   faq: Map<string, FaqCandidate>;
   notifications: Map<string, Notification>;
+  idSeq: { value: number };
 }
 
 export function createEmptyStore(): Store {
@@ -32,6 +39,7 @@ export function createEmptyStore(): Store {
     histories: new Map(),
     faq: new Map(),
     notifications: new Map(),
+    idSeq: { value: 0 },
   };
 }
 
@@ -44,6 +52,7 @@ export function cloneStore(src: Store): Store {
     histories: new Map(src.histories),
     faq: new Map(src.faq),
     notifications: new Map(src.notifications),
+    idSeq: { value: src.idSeq.value },
   };
 }
 
@@ -55,14 +64,14 @@ export function overwriteStore(dst: Store, src: Store): void {
   dst.histories = new Map(src.histories);
   dst.faq = new Map(src.faq);
   dst.notifications = new Map(src.notifications);
+  dst.idSeq.value = src.idSeq.value;
 }
 
-let idCounter = 0;
 /**
- * Deterministic-ish ID generator for the in-memory store.
- * Not a real cuid — the contract test only cares that IDs are unique.
+ * Per-store id generator. Not a real cuid — the contract test only requires
+ * that ids are unique within a store.
  */
-export function nextId(prefix: string): string {
-  idCounter += 1;
-  return `${prefix}_${idCounter.toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
+export function nextId(store: Store, prefix: string): string {
+  store.idSeq.value += 1;
+  return `${prefix}_${store.idSeq.value.toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
 }

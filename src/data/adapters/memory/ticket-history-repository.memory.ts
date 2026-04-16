@@ -6,7 +6,7 @@ export function makeTicketHistoryRepo(store: Store): TicketHistoryRepository {
   return {
     async record(input) {
       const row: TicketHistory = {
-        id: nextId('hst'),
+        id: nextId(store, 'hst'),
         ticketId: input.ticketId,
         changedById: input.changedById,
         field: input.field,

@@ -158,7 +158,7 @@ export function makeTicketRepo(store: Store): TicketRepository {
     async create(input) {
       const now = new Date();
       const ticket: Ticket = {
-        id: nextId('tkt'),
+        id: nextId(store, 'tkt'),
         title: input.title,
         body: input.body,
         status: 'New',

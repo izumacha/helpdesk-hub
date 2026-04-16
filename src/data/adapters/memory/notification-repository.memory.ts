@@ -9,7 +9,7 @@ export function makeNotificationRepo(store: Store): NotificationRepository {
   return {
     async create(input) {
       const notification: Notification = {
-        id: nextId('ntf'),
+        id: nextId(store, 'ntf'),
         userId: input.userId,
         ticketId: input.ticketId ?? null,
         type: input.type,
