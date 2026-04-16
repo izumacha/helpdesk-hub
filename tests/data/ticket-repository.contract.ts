@@ -201,6 +201,28 @@ export function runTicketRepositoryContract(
       expect(after?.status).toBe('New');
     });
 
+    it('findById returns a defensive copy — callers cannot mutate stored state', async () => {
+      const { requester, categoryId } = await ctx.seedBasicFixture();
+      const created = await ctx.repos.tickets.create({
+        title: 'original',
+        body: 'b',
+        priority: 'Low',
+        creatorId: requester.id,
+        categoryId,
+      });
+
+      const leaked = await ctx.repos.tickets.findById(created.id);
+      // Attempt to corrupt stored state via the returned reference.
+      if (leaked) {
+        (leaked as { title: string }).title = 'MUTATED';
+        (leaked as { status: 'New' | 'Open' }).status = 'Open';
+      }
+
+      const reread = await ctx.repos.tickets.findById(created.id);
+      expect(reread?.title).toBe('original');
+      expect(reread?.status).toBe('New');
+    });
+
     it('countByStatus filters by creator and status', async () => {
       const { requester, agentA, categoryId } = await ctx.seedBasicFixture();
       const t1 = await ctx.repos.tickets.create({

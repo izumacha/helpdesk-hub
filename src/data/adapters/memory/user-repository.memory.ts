@@ -5,12 +5,13 @@ import type { Store } from './store';
 export function makeUserRepo(store: Store): UserRepository {
   return {
     async findById(id) {
-      return store.users.get(id) ?? null;
+      const u = store.users.get(id);
+      return u ? { ...u } : null;
     },
 
     async findByEmail(email) {
       for (const u of store.users.values()) {
-        if (u.email === email) return u;
+        if (u.email === email) return { ...u };
       }
       return null;
     },

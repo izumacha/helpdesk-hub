@@ -5,7 +5,8 @@ import { nextId, type Store } from './store';
 export function makeFaqRepo(store: Store): FaqRepository {
   return {
     async findById(id) {
-      return store.faq.get(id) ?? null;
+      const row = store.faq.get(id);
+      return row ? { ...row } : null;
     },
 
     async list() {

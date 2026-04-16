@@ -58,7 +58,8 @@ function matchesFilter(t: Ticket, filter: TicketListFilter): boolean {
 export function makeTicketRepo(store: Store): TicketRepository {
   return {
     async findById(id) {
-      return store.tickets.get(id) ?? null;
+      const t = store.tickets.get(id);
+      return t ? { ...t } : null;
     },
 
     async findByIdWithRefs(id) {
