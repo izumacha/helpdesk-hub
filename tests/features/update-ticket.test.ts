@@ -88,7 +88,7 @@ describe('updateTicketStatus (provider-agnostic)', () => {
 
   it('rejects an invalid transition and rolls back history', async () => {
     const { ticketId } = await seed();
-    await repos.tickets.updateStatus(ticketId, 'Closed');
+    await repos.tickets.updateStatus(ticketId, 'Closed', null);
     const { updateTicketStatus } = await import('@/features/tickets/actions/update-ticket');
 
     await expect(updateTicketStatus(ticketId, 'InProgress')).rejects.toThrow(
@@ -107,6 +107,47 @@ describe('updateTicketStatus (provider-agnostic)', () => {
     const { updateTicketStatus } = await import('@/features/tickets/actions/update-ticket');
 
     await expect(updateTicketStatus(ticketId, 'Open')).rejects.toThrow(/エージェントまたは管理者/);
+  });
+
+  it('sets resolvedAt when transitioning to Resolved', async () => {
+    const { ticketId } = await seed();
+    await repos.tickets.updateStatus(ticketId, 'Open', null);
+    const { updateTicketStatus } = await import('@/features/tickets/actions/update-ticket');
+
+    const before = Date.now();
+    await updateTicketStatus(ticketId, 'Resolved');
+    const after = Date.now();
+
+    const t = await repos.tickets.findById(ticketId);
+    expect(t?.status).toBe('Resolved');
+    expect(t?.resolvedAt).toBeInstanceOf(Date);
+    const ts = t!.resolvedAt!.getTime();
+    expect(ts).toBeGreaterThanOrEqual(before);
+    expect(ts).toBeLessThanOrEqual(after);
+  });
+
+  it('clears resolvedAt when reopening from Resolved', async () => {
+    const { ticketId } = await seed();
+    await repos.tickets.updateStatus(ticketId, 'Resolved', new Date());
+    const { updateTicketStatus } = await import('@/features/tickets/actions/update-ticket');
+
+    await updateTicketStatus(ticketId, 'Open');
+
+    const t = await repos.tickets.findById(ticketId);
+    expect(t?.status).toBe('Open');
+    expect(t?.resolvedAt).toBeNull();
+  });
+
+  it('leaves resolvedAt untouched for transitions not involving Resolved', async () => {
+    const { ticketId } = await seed();
+    await repos.tickets.updateStatus(ticketId, 'Open', null);
+    const { updateTicketStatus } = await import('@/features/tickets/actions/update-ticket');
+
+    await updateTicketStatus(ticketId, 'InProgress');
+
+    const t = await repos.tickets.findById(ticketId);
+    expect(t?.status).toBe('InProgress');
+    expect(t?.resolvedAt).toBeNull();
   });
 });
 
@@ -146,7 +187,7 @@ describe('updateTicketAssignee (provider-agnostic)', () => {
 describe('escalateTicket (provider-agnostic)', () => {
   it('marks escalated, records history, and notifies every agent', async () => {
     const { ticketId } = await seed();
-    await repos.tickets.updateStatus(ticketId, 'Open');
+    await repos.tickets.updateStatus(ticketId, 'Open', null);
     const { escalateTicket } = await import('@/features/tickets/actions/update-ticket');
 
     await escalateTicket(ticketId, '  対応困難  ');

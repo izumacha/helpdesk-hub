@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { auth } from '@/lib/auth';
-import { prisma } from '@/lib/prisma';
+import { repos } from '@/data';
+import { calculateResolutionDueAt } from '@/lib/sla';
 import { createTicketSchema } from '@/lib/validations/ticket';
 
 export async function POST(req: Request) {
@@ -25,16 +26,15 @@ export async function POST(req: Request) {
   }
 
   const { title, body: ticketBody, priority, categoryId } = parsed.data;
+  const now = new Date();
 
-  const ticket = await prisma.ticket.create({
-    data: {
-      title,
-      body: ticketBody,
-      priority,
-      categoryId,
-      creatorId: session.user.id,
-    },
-    include: { category: true, creator: { select: { id: true, name: true } } },
+  const ticket = await repos.tickets.create({
+    title,
+    body: ticketBody,
+    priority,
+    categoryId: categoryId ?? null,
+    creatorId: session.user.id,
+    resolutionDueAt: calculateResolutionDueAt(priority, now),
   });
 
   return NextResponse.json(ticket, { status: 201 });

@@ -154,7 +154,13 @@ export function runTicketRepositoryContract(
           categoryId,
         });
         if (assignee) await ctx.repos.tickets.updateAssignee(t.id, assignee);
-        if (status !== 'New') await ctx.repos.tickets.updateStatus(t.id, status);
+        if (status !== 'New') {
+          await ctx.repos.tickets.updateStatus(
+            t.id,
+            status,
+            status === 'Resolved' ? new Date() : null,
+          );
+        }
         return t;
       };
       await mk(agentA.id, 'Open');
@@ -185,7 +191,7 @@ export function runTicketRepositoryContract(
 
       await expect(
         ctx.uow.run(async (r) => {
-          await r.tickets.updateStatus(ticket.id, 'Open');
+          await r.tickets.updateStatus(ticket.id, 'Open', null);
           await r.history.record({
             ticketId: ticket.id,
             changedById: requester.id,
@@ -232,7 +238,7 @@ export function runTicketRepositoryContract(
         creatorId: requester.id,
         categoryId,
       });
-      await ctx.repos.tickets.updateStatus(t1.id, 'Open');
+      await ctx.repos.tickets.updateStatus(t1.id, 'Open', null);
       await ctx.repos.tickets.create({
         title: 'c',
         body: 'd',

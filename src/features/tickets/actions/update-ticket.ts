@@ -7,6 +7,7 @@ import { broadcastUnreadCount, broadcastUnreadCountToMany } from '@/features/not
 import { isAgent } from '@/lib/role';
 import { isValidTransition } from '@/domain/ticket-status';
 import type { Priority, TicketStatus } from '@/domain/types';
+import { commentBodySchema, escalationReasonSchema } from '@/lib/validations/ticket';
 import type { Session } from 'next-auth';
 
 function assertAuthenticatedUser(session: Session | null): asserts session is Session {
@@ -34,7 +35,14 @@ export async function updateTicketStatus(ticketId: string, newStatus: TicketStat
       );
     }
 
-    await r.tickets.updateStatus(ticketId, newStatus);
+    const resolvedAt =
+      newStatus === 'Resolved'
+        ? new Date()
+        : ticket.status === 'Resolved'
+          ? null
+          : ticket.resolvedAt;
+
+    await r.tickets.updateStatus(ticketId, newStatus, resolvedAt);
     await r.history.record({
       ticketId,
       changedById: session.user.id,
@@ -114,6 +122,12 @@ export async function escalateTicket(ticketId: string, reason: string) {
   const session = await auth();
   assertAgentRole(session);
 
+  const parsedReason = escalationReasonSchema.safeParse(reason);
+  if (!parsedReason.success) {
+    throw new Error(parsedReason.error.issues[0]?.message ?? 'エスカレーション理由が不正です');
+  }
+  const trimmedReason = parsedReason.data;
+
   const [ticket, agentIds] = await Promise.all([
     repos.tickets.findById(ticketId),
     repos.users.listAgentIds(),
@@ -125,7 +139,6 @@ export async function escalateTicket(ticketId: string, reason: string) {
   }
 
   const now = new Date();
-  const trimmedReason = reason.trim();
   const { title } = ticket;
 
   await uow.run(async (r) => {
@@ -156,7 +169,12 @@ export async function escalateTicket(ticketId: string, reason: string) {
 export async function addComment(ticketId: string, body: string) {
   const session = await auth();
   assertAuthenticatedUser(session);
-  if (!body.trim()) throw new Error('コメントを入力してください');
+
+  const parsedBody = commentBodySchema.safeParse(body);
+  if (!parsedBody.success) {
+    throw new Error(parsedBody.error.issues[0]?.message ?? 'コメントが不正です');
+  }
+  const trimmedBody = parsedBody.data;
 
   const ticket = await repos.tickets.findById(ticketId);
   if (!ticket) throw new Error('チケットが見つかりません');
@@ -169,7 +187,7 @@ export async function addComment(ticketId: string, body: string) {
   await repos.comments.create({
     ticketId,
     authorId: session.user.id,
-    body: body.trim(),
+    body: trimmedBody,
   });
   revalidatePath(`/tickets/${ticketId}`);
 }

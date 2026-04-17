@@ -67,7 +67,7 @@ export interface TicketRepository {
   workloadByAssignee(args: { excludeStatuses: TicketStatus[] }): Promise<AssigneeWorkloadRow[]>;
 
   create(input: CreateTicketInput): Promise<TicketWithRefs>;
-  updateStatus(id: string, status: TicketStatus): Promise<void>;
+  updateStatus(id: string, status: TicketStatus, resolvedAt: Date | null): Promise<void>;
   updatePriority(id: string, priority: Priority): Promise<void>;
   updateAssignee(id: string, assigneeId: string | null): Promise<void>;
   markEscalated(id: string, args: MarkEscalatedInput): Promise<void>;

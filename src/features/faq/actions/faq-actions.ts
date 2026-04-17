@@ -4,12 +4,18 @@ import { revalidatePath } from 'next/cache';
 import { auth } from '@/lib/auth';
 import { prisma } from '@/lib/prisma';
 import { isAgent } from '@/lib/role';
+import { faqCandidateSchema } from '@/lib/validations/faq';
 
 export async function createFaqCandidate(ticketId: string, question: string, answer: string) {
   const session = await auth();
   if (!session?.user?.id) throw new Error('Unauthorized');
   if (!isAgent(session.user.role)) {
     throw new Error('エージェントまたは管理者のみ実行できます');
+  }
+
+  const parsed = faqCandidateSchema.safeParse({ question, answer });
+  if (!parsed.success) {
+    throw new Error(parsed.error.issues[0]?.message ?? 'FAQ候補の入力値が不正です');
   }
 
   const ticket = await prisma.ticket.findUniqueOrThrow({ where: { id: ticketId } });
@@ -21,8 +27,8 @@ export async function createFaqCandidate(ticketId: string, question: string, ans
     data: {
       ticketId,
       createdById: session.user.id,
-      question: question.trim(),
-      answer: answer.trim(),
+      question: parsed.data.question,
+      answer: parsed.data.answer,
     },
   });
 
