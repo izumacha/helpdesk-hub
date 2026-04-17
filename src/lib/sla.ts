@@ -1,4 +1,21 @@
+import type { Priority } from '@/domain/types';
+
 export type SlaState = 'ok' | 'warning' | 'overdue' | 'none';
+
+/**
+ * Hours allowed to resolve a ticket, by priority. Placeholder business policy —
+ * replace with a config/DB-backed source once requirements are finalized.
+ */
+export const SLA_RESOLUTION_HOURS_BY_PRIORITY: Record<Priority, number> = {
+  High: 24,
+  Medium: 72,
+  Low: 168,
+};
+
+export function calculateResolutionDueAt(priority: Priority, from: Date): Date {
+  const hours = SLA_RESOLUTION_HOURS_BY_PRIORITY[priority];
+  return new Date(from.getTime() + hours * 60 * 60 * 1000);
+}
 
 export function getSlaState(resolutionDueAt: Date | null, resolvedAt: Date | null): SlaState {
   if (!resolutionDueAt) return 'none';

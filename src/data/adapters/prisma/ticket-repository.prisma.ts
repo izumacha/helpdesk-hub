@@ -138,8 +138,8 @@ export function makeTicketRepo(db: PrismaLike): TicketRepository {
       return toTicketWithRefs(row);
     },
 
-    async updateStatus(id, status) {
-      await db.ticket.update({ where: { id }, data: { status } });
+    async updateStatus(id, status, resolvedAt) {
+      await db.ticket.update({ where: { id }, data: { status, resolvedAt } });
     },
 
     async updatePriority(id, priority) {

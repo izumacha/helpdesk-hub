@@ -179,10 +179,10 @@ export function makeTicketRepo(store: Store): TicketRepository {
       return attachRefs(ticket, store);
     },
 
-    async updateStatus(id, status) {
+    async updateStatus(id, status, resolvedAt) {
       const t = store.tickets.get(id);
       if (!t) throw new Error(`ticket not found: ${id}`);
-      store.tickets.set(id, { ...t, status, updatedAt: new Date() });
+      store.tickets.set(id, { ...t, status, resolvedAt, updatedAt: new Date() });
     },
 
     async updatePriority(id, priority) {

@@ -51,6 +51,7 @@ export function FaqCandidateForm({ ticketId, ticketTitle }: Props) {
           ref={questionRef}
           rows={2}
           required
+          maxLength={2000}
           defaultValue={ticketTitle}
           className="block w-full rounded-md border border-gray-300 px-2 py-1.5 text-xs focus:border-blue-500 focus:outline-none"
         />
@@ -61,6 +62,7 @@ export function FaqCandidateForm({ ticketId, ticketTitle }: Props) {
           ref={answerRef}
           rows={3}
           required
+          maxLength={2000}
           placeholder="解決方法を入力してください"
           className="block w-full rounded-md border border-gray-300 px-2 py-1.5 text-xs focus:border-blue-500 focus:outline-none"
         />

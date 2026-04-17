@@ -28,6 +28,7 @@ export function CommentForm({ ticketId }: Props) {
         ref={ref}
         rows={3}
         required
+        maxLength={5000}
         placeholder="コメントを入力してください"
         className="block w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none"
       />

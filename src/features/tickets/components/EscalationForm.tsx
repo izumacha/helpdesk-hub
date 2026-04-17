@@ -46,6 +46,7 @@ export function EscalationForm({ ticketId }: Props) {
         ref={ref}
         rows={2}
         required
+        maxLength={1000}
         placeholder="エスカレーション理由を入力してください"
         className="block w-full rounded-md border border-gray-300 px-2 py-1.5 text-xs focus:border-red-500 focus:outline-none"
       />
