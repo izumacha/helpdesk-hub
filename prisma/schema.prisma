@@ -96,13 +96,13 @@ model Category {
 // ─────────────────────────────────────────────
 
 model Ticket {
-  id          String       @id @default(cuid())
-  title       String
-  body        String
-  status      TicketStatus @default(New)
-  priority    Priority     @default(Medium)
-  createdAt   DateTime     @default(now())
-  updatedAt   DateTime     @updatedAt
+  id        String       @id @default(cuid())
+  title     String
+  body      String
+  status    TicketStatus @default(New)
+  priority  Priority     @default(Medium)
+  createdAt DateTime     @default(now())
+  updatedAt DateTime     @updatedAt
 
   // SLA
   firstResponseDueAt DateTime?
@@ -115,18 +115,24 @@ model Ticket {
   escalationReason String?
 
   // Foreign keys
-  creatorId    String
-  assigneeId   String?
-  categoryId   String?
+  creatorId  String
+  assigneeId String?
+  categoryId String?
 
   // Relations
-  creator       User           @relation("TicketCreator", fields: [creatorId], references: [id])
-  assignee      User?          @relation("TicketAssignee", fields: [assigneeId], references: [id])
-  category      Category?      @relation(fields: [categoryId], references: [id])
+  creator       User            @relation("TicketCreator", fields: [creatorId], references: [id])
+  assignee      User?           @relation("TicketAssignee", fields: [assigneeId], references: [id])
+  category      Category?       @relation(fields: [categoryId], references: [id])
   comments      TicketComment[]
   histories     TicketHistory[]
   faqCandidate  FaqCandidate?
   notifications Notification[]
+
+  @@index([creatorId])
+  @@index([assigneeId])
+  @@index([status])
+  @@index([categoryId])
+  @@index([createdAt(sort: Desc)])
 }
 
 // ─────────────────────────────────────────────
@@ -164,6 +170,9 @@ model Notification {
 
   user   User    @relation(fields: [userId], references: [id], onDelete: Cascade)
   ticket Ticket? @relation(fields: [ticketId], references: [id], onDelete: SetNull)
+
+  @@index([userId, read])
+  @@index([userId, createdAt(sort: Desc)])
 }
 
 // ─────────────────────────────────────────────
@@ -187,15 +196,15 @@ model TicketComment {
 // ─────────────────────────────────────────────
 
 model TicketHistory {
-  id         String       @id @default(cuid())
-  field      HistoryField
-  oldValue   String?
-  newValue   String?
-  createdAt  DateTime     @default(now())
+  id        String       @id @default(cuid())
+  field     HistoryField
+  oldValue  String?
+  newValue  String?
+  createdAt DateTime     @default(now())
 
-  ticketId   String
+  ticketId    String
   changedById String
 
-  ticket     Ticket @relation(fields: [ticketId], references: [id], onDelete: Cascade)
-  changedBy  User   @relation(fields: [changedById], references: [id])
+  ticket    Ticket @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  changedBy User   @relation(fields: [changedById], references: [id])
 }
