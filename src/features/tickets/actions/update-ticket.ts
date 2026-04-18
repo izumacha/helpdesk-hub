@@ -179,15 +179,51 @@ export async function addComment(ticketId: string, body: string) {
   const ticket = await repos.tickets.findById(ticketId);
   if (!ticket) throw new Error('チケットが見つかりません');
 
-  const canComment = isAgent(session.user.role) || ticket.creatorId === session.user.id;
+  const authorId = session.user.id;
+  const authorIsAgent = isAgent(session.user.role);
+  const canComment = authorIsAgent || ticket.creatorId === authorId;
   if (!canComment) {
     throw new Error('このチケットへのコメント権限がありません');
   }
 
-  await repos.comments.create({
-    ticketId,
-    authorId: session.user.id,
-    body: trimmedBody,
+  const recipientIds = await resolveCommentRecipients(ticket, authorId, authorIsAgent);
+  const message = `チケット「${ticket.title}」に新しいコメントが追加されました`;
+
+  await uow.run(async (r) => {
+    await r.comments.create({
+      ticketId,
+      authorId,
+      body: trimmedBody,
+    });
+    await Promise.all(
+      recipientIds.map((id) =>
+        r.notifications.create({
+          userId: id,
+          type: 'commented',
+          message,
+          ticketId,
+        }),
+      ),
+    );
   });
+
+  if (recipientIds.length > 0) await broadcastUnreadCountToMany(recipientIds);
   revalidatePath(`/tickets/${ticketId}`);
+}
+
+async function resolveCommentRecipients(
+  ticket: { creatorId: string; assigneeId: string | null },
+  authorId: string,
+  authorIsAgent: boolean,
+): Promise<string[]> {
+  const candidates: string[] = [];
+  if (authorIsAgent) {
+    candidates.push(ticket.creatorId);
+    if (ticket.assigneeId) candidates.push(ticket.assigneeId);
+  } else if (ticket.assigneeId) {
+    candidates.push(ticket.assigneeId);
+  } else {
+    candidates.push(...(await repos.users.listAgentIds()));
+  }
+  return Array.from(new Set(candidates)).filter((id) => id !== authorId);
 }
