@@ -18,7 +18,8 @@ export async function createFaqCandidate(ticketId: string, question: string, ans
     throw new Error(parsed.error.issues[0]?.message ?? 'FAQ候補の入力値が不正です');
   }
 
-  const ticket = await prisma.ticket.findUniqueOrThrow({ where: { id: ticketId } });
+  const ticket = await prisma.ticket.findUnique({ where: { id: ticketId } });
+  if (!ticket) throw new Error('チケットが見つかりません');
   if (ticket.status !== 'Resolved') {
     throw new Error('解決済みチケットのみFAQ候補に変換できます');
   }
@@ -43,7 +44,8 @@ export async function updateFaqStatus(faqId: string, status: 'Published' | 'Reje
     throw new Error('エージェントまたは管理者のみ実行できます');
   }
 
-  const faq = await prisma.faqCandidate.findUniqueOrThrow({ where: { id: faqId } });
+  const faq = await prisma.faqCandidate.findUnique({ where: { id: faqId } });
+  if (!faq) throw new Error('FAQ候補が見つかりません');
   if (faq.status !== 'Candidate') {
     throw new Error('候補ステータスのFAQのみ公開・却下できます');
   }

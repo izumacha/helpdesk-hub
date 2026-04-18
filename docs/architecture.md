@@ -59,3 +59,24 @@ Server Actions (`'use server'`) を使用。クライアントから直接呼び
 | requester | 自分のみ | 不可 | 不可 | 不可 |
 | agent | 全件 | 可 | 可 | 可 |
 | admin | 全件 | 可 | 可 | 可 |
+
+## リアルタイム通知（SSE）と水平スケール制約
+
+未読通知数のリアルタイム配信は Server-Sent Events を利用しています。
+
+- `GET /api/notifications/stream` がクライアントの EventSource を受け、購読を `src/lib/sse-subscribers.ts` の **プロセス内 Map** に登録します。
+- Server Action から `createNotification` / `markAllRead` 等が呼ばれると、同モジュールの `broadcast(userId, count)` でそのプロセスに繋がっている購読者にのみイベントが送られます。
+
+### 制約
+
+- **単一インスタンス前提**です。スタンドアロンの Docker / Node プロセスで動作する限り問題ありませんが、ロードバランサ背後で複数インスタンスを並べた瞬間、別インスタンスで発生した通知は購読中のユーザーに届きません（次回ページロードまで未読カウントがズレる）。
+- 該当 issue: [#60](https://github.com/izumacha/helpdesk-hub/issues/60)。
+
+### 水平スケール時の対応方針
+
+`src/lib/sse-subscribers.ts` のエクスポート (`addSubscriber` / `removeSubscriber` / `broadcast`) を維持したまま、Map ベースの実装を以下のいずれかに差し替えます。
+
+- Redis pub/sub: 各インスタンスがチャンネルを購読し、`broadcast` は publish のみ行う。
+- PostgreSQL `LISTEN/NOTIFY`: 既存の DB を再利用できるが、メッセージサイズと接続数の上限に注意。
+
+SSE エンドポイント (`src/app/api/notifications/stream/route.ts`) は registry の差し替えに影響を受けない設計を維持してください。
