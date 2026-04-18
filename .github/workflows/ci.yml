@@ -91,23 +91,37 @@ jobs:
         run: npm run build
 
       - name: Start app
-        run: nohup npm run start > app.log 2>&1 &
+        run: |
+          nohup npm run start > app.log 2>&1 &
+          echo $! > app.pid
+          echo "Started app with PID $(cat app.pid)"
 
       - name: Wait for app
         run: |
           for i in {1..60}; do
             if curl -sSf http://localhost:3000/login > /dev/null; then
-              echo "App is ready"
+              echo "App is ready after ${i}s"
               exit 0
+            fi
+            if ! kill -0 "$(cat app.pid)" 2>/dev/null; then
+              echo "App process died before becoming ready"
+              cat app.log
+              exit 1
             fi
             sleep 1
           done
-          echo "App failed to start"
+          echo "App failed to respond within 60s"
           cat app.log
           exit 1
 
       - name: Run Playwright tests
         run: npm run test:e2e
+
+      - name: Dump app log on failure
+        if: failure()
+        run: |
+          echo "=== app.log ==="
+          cat app.log || true
 
       - name: Upload Playwright report
         if: always()
@@ -116,3 +130,12 @@ jobs:
           name: playwright-report
           path: playwright-report
           retention-days: 7
+
+      - name: Upload app log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-log
+          path: app.log
+          retention-days: 7
+          if-no-files-found: ignore
