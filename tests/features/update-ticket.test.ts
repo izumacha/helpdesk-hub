@@ -184,6 +184,104 @@ describe('updateTicketAssignee (provider-agnostic)', () => {
   });
 });
 
+describe('addComment (provider-agnostic)', () => {
+  it('notifies the assignee when a requester comments on an assigned ticket', async () => {
+    const { ticketId } = await seed();
+    await repos.tickets.updateAssignee(ticketId, 'u-agt-2');
+    sessionUserId = 'u-req-1';
+    sessionRole = 'requester';
+    const { addComment } = await import('@/features/tickets/actions/update-ticket');
+
+    await addComment(ticketId, '追加情報です');
+
+    const comments = [...store.comments.values()].filter((c) => c.ticketId === ticketId);
+    expect(comments).toHaveLength(1);
+    expect(comments[0].authorId).toBe('u-req-1');
+
+    const notifications = [...store.notifications.values()];
+    expect(notifications).toHaveLength(1);
+    expect(notifications[0].userId).toBe('u-agt-2');
+    expect(notifications[0].type).toBe('commented');
+    expect(notifications[0].ticketId).toBe(ticketId);
+  });
+
+  it('notifies every agent when a requester comments on an unassigned ticket', async () => {
+    const { ticketId } = await seed();
+    sessionUserId = 'u-req-1';
+    sessionRole = 'requester';
+    const { addComment } = await import('@/features/tickets/actions/update-ticket');
+
+    await addComment(ticketId, 'どうなってますか');
+
+    const notifications = [...store.notifications.values()];
+    expect(new Set(notifications.map((n) => n.userId))).toEqual(new Set(['u-agt-1', 'u-agt-2']));
+    for (const n of notifications) {
+      expect(n.type).toBe('commented');
+      expect(n.ticketId).toBe(ticketId);
+    }
+  });
+
+  it('notifies the ticket creator when an agent comments', async () => {
+    const { ticketId } = await seed();
+    const { addComment } = await import('@/features/tickets/actions/update-ticket');
+
+    await addComment(ticketId, '確認しました');
+
+    const notifications = [...store.notifications.values()];
+    expect(notifications).toHaveLength(1);
+    expect(notifications[0].userId).toBe('u-req-1');
+    expect(notifications[0].type).toBe('commented');
+  });
+
+  it('notifies both creator and assignee when a different agent comments', async () => {
+    const { ticketId } = await seed();
+    await repos.tickets.updateAssignee(ticketId, 'u-agt-2');
+    const { addComment } = await import('@/features/tickets/actions/update-ticket');
+
+    await addComment(ticketId, '対応を引き継ぎます');
+
+    const notifications = [...store.notifications.values()];
+    expect(new Set(notifications.map((n) => n.userId))).toEqual(new Set(['u-req-1', 'u-agt-2']));
+    for (const n of notifications) {
+      expect(n.type).toBe('commented');
+    }
+  });
+
+  it('does not notify the commenter themselves', async () => {
+    const { ticketId } = await seed();
+    await repos.tickets.updateAssignee(ticketId, 'u-agt-1');
+    // assignee and commenter are both u-agt-1
+    const { addComment } = await import('@/features/tickets/actions/update-ticket');
+
+    await addComment(ticketId, '自分のコメント');
+
+    const notifications = [...store.notifications.values()];
+    expect(notifications.map((n) => n.userId)).toEqual(['u-req-1']);
+  });
+
+  it('refuses to comment from a requester who is not the creator', async () => {
+    const { ticketId } = await seed();
+    sessionUserId = 'u-req-2';
+    sessionRole = 'requester';
+    // seed a second requester
+    const now = new Date();
+    store.users.set('u-req-2', {
+      id: 'u-req-2',
+      email: 'u-req-2@example.com',
+      name: '田中',
+      passwordHash: 'x',
+      role: 'requester',
+      createdAt: now,
+      updatedAt: now,
+    });
+    const { addComment } = await import('@/features/tickets/actions/update-ticket');
+
+    await expect(addComment(ticketId, 'よそからのコメント')).rejects.toThrow(/コメント権限/);
+    expect([...store.comments.values()]).toHaveLength(0);
+    expect([...store.notifications.values()]).toHaveLength(0);
+  });
+});
+
 describe('escalateTicket (provider-agnostic)', () => {
   it('marks escalated, records history, and notifies every agent', async () => {
     const { ticketId } = await seed();
