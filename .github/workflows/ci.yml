@@ -115,7 +115,7 @@ jobs:
           exit 1
 
       - name: Run Playwright tests
-        run: npm run test:e2e
+        run: npx playwright test --reporter=list,html
 
       - name: Dump app log on failure
         if: failure()
