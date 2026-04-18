@@ -43,6 +43,9 @@ jobs:
   e2e:
     name: Playwright E2E
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
     services:
       postgres:
         image: postgres:16-alpine
@@ -115,13 +118,60 @@ jobs:
           exit 1
 
       - name: Run Playwright tests
-        run: npx playwright test --reporter=list,html
+        id: pw
+        run: npx playwright test --reporter=list,html 2>&1 | tee playwright.log
 
-      - name: Dump app log on failure
+      - name: Dump logs on failure
         if: failure()
         run: |
           echo "=== app.log ==="
-          cat app.log || true
+          cat app.log 2>/dev/null || echo "(no app.log)"
+          echo "=== playwright.log (tail) ==="
+          tail -200 playwright.log 2>/dev/null || echo "(no playwright.log)"
+
+      - name: Post failure logs as PR comment
+        if: failure() && github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const read = (p, n) => {
+              try {
+                const data = fs.readFileSync(p, 'utf8').split('\n');
+                return data.slice(-n).join('\n');
+              } catch {
+                return '(missing)';
+              }
+            };
+            const pw = read('playwright.log', 200);
+            const app = read('app.log', 120);
+            const body = [
+              '### Playwright E2E failure diagnostics',
+              '',
+              `Run: ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
+              '',
+              '<details><summary>playwright.log (tail)</summary>',
+              '',
+              '```',
+              pw,
+              '```',
+              '',
+              '</details>',
+              '',
+              '<details><summary>app.log (tail)</summary>',
+              '',
+              '```',
+              app,
+              '```',
+              '',
+              '</details>',
+            ].join('\n');
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body,
+            });
 
       - name: Upload Playwright report
         if: always()
