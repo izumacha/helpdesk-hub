@@ -4,6 +4,18 @@ import { compare } from 'bcryptjs';
 import { prisma } from '@/lib/prisma';
 import type { Role } from '@/generated/prisma';
 
+const INSECURE_SECRETS = new Set(['change-me-in-production', 'your-secret-key-here', '']);
+const secret = process.env.NEXTAUTH_SECRET ?? '';
+if (INSECURE_SECRETS.has(secret) || secret.length < 32) {
+  const message =
+    '[auth] NEXTAUTH_SECRET is missing, default, or shorter than 32 characters. ' +
+    'Generate a secure value (e.g. `openssl rand -base64 32`) before deploying.';
+  if (process.env.NODE_ENV === 'production') {
+    throw new Error(message);
+  }
+  console.warn(message);
+}
+
 export const { handlers, auth, signIn, signOut } = NextAuth({
   providers: [
     Credentials({

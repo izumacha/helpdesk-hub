@@ -26,6 +26,26 @@ export async function POST(req: Request) {
   }
 
   const { title, body: ticketBody, priority, categoryId } = parsed.data;
+
+  if (categoryId) {
+    const category = await repos.categories.findById(categoryId);
+    if (!category) {
+      return NextResponse.json(
+        {
+          error: '入力値が正しくありません',
+          issues: [
+            {
+              code: 'custom',
+              path: ['categoryId'],
+              message: '指定されたカテゴリが存在しません',
+            },
+          ],
+        },
+        { status: 422 },
+      );
+    }
+  }
+
   const now = new Date();
 
   const ticket = await repos.tickets.create({

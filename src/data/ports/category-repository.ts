@@ -5,4 +5,5 @@ export interface CategorySummary {
 
 export interface CategoryRepository {
   list(): Promise<CategorySummary[]>;
+  findById(id: string): Promise<CategorySummary | null>;
 }

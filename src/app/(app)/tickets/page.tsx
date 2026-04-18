@@ -5,6 +5,7 @@ import { prisma } from '@/lib/prisma';
 import { isAgent as checkIsAgent } from '@/lib/role';
 import { STATUS_LABELS, STATUS_COLORS, PRIORITY_LABELS, PRIORITY_COLORS } from '@/lib/constants';
 import { TicketFilters } from '@/features/tickets/components/TicketFilters';
+import { clampPage, parsePageParam } from '@/lib/validations/pagination';
 import type { TicketStatus, Priority, Prisma } from '@/generated/prisma';
 
 const PAGE_SIZE = 20;
@@ -26,8 +27,7 @@ export default async function TicketsPage({ searchParams }: Props) {
   if (!session?.user?.id) return null;
 
   const isAgent = checkIsAgent(session.user.role);
-  const page = Math.max(1, parseInt(sp.page ?? '1', 10));
-  const skip = (page - 1) * PAGE_SIZE;
+  const requestedPage = parsePageParam(sp.page);
 
   // Build Prisma where clause
   const where: Prisma.TicketWhereInput = {};
@@ -56,7 +56,12 @@ export default async function TicketsPage({ searchParams }: Props) {
     where.assigneeId = sp.assigneeId === 'unassigned' ? null : sp.assigneeId;
   }
 
-  const [tickets, total, categories, agents] = await Promise.all([
+  const total = await prisma.ticket.count({ where });
+  const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
+  const page = clampPage(requestedPage, totalPages);
+  const skip = (page - 1) * PAGE_SIZE;
+
+  const [tickets, categories, agents] = await Promise.all([
     prisma.ticket.findMany({
       where,
       orderBy: { createdAt: 'desc' },
@@ -68,7 +73,6 @@ export default async function TicketsPage({ searchParams }: Props) {
         category: { select: { id: true, name: true } },
       },
     }),
-    prisma.ticket.count({ where }),
     prisma.category.findMany({ orderBy: { name: 'asc' } }),
     isAgent
       ? prisma.user.findMany({
@@ -78,8 +82,6 @@ export default async function TicketsPage({ searchParams }: Props) {
         })
       : Promise.resolve([]),
   ]);
-
-  const totalPages = Math.ceil(total / PAGE_SIZE);
 
   return (
     <div>
@@ -200,7 +202,15 @@ function Pagination({
 }
 
 function isValidStatus(s: string): s is TicketStatus {
-  return ['New', 'Open', 'WaitingForUser', 'InProgress', 'Escalated', 'Resolved', 'Closed'].includes(s);
+  return [
+    'New',
+    'Open',
+    'WaitingForUser',
+    'InProgress',
+    'Escalated',
+    'Resolved',
+    'Closed',
+  ].includes(s);
 }
 
 function isValidPriority(p: string): p is Priority {

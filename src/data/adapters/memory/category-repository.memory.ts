@@ -8,5 +8,9 @@ export function makeCategoryRepo(store: Store): CategoryRepository {
         .map((c) => ({ id: c.id, name: c.name }))
         .sort((a, b) => a.name.localeCompare(b.name));
     },
+    async findById(id) {
+      const row = store.categories.get(id);
+      return row ? { id: row.id, name: row.name } : null;
+    },
   };
 }

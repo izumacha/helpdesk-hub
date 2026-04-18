@@ -4,6 +4,7 @@ import { revalidatePath } from 'next/cache';
 import { auth } from '@/lib/auth';
 import { prisma } from '@/lib/prisma';
 import { isAgent } from '@/lib/role';
+import { FAQ_ELIGIBLE_STATUSES } from '@/lib/constants';
 import { faqCandidateSchema } from '@/lib/validations/faq';
 
 export async function createFaqCandidate(ticketId: string, question: string, answer: string) {
@@ -20,7 +21,7 @@ export async function createFaqCandidate(ticketId: string, question: string, ans
 
   const ticket = await prisma.ticket.findUnique({ where: { id: ticketId } });
   if (!ticket) throw new Error('チケットが見つかりません');
-  if (ticket.status !== 'Resolved') {
+  if (!FAQ_ELIGIBLE_STATUSES.includes(ticket.status)) {
     throw new Error('解決済みチケットのみFAQ候補に変換できます');
   }
 
