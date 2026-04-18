@@ -8,6 +8,14 @@ import { TicketFilters } from '@/features/tickets/components/TicketFilters';
 import type { TicketStatus, Priority, Prisma } from '@/generated/prisma';
 
 const PAGE_SIZE = 20;
+const MAX_PAGE = 10_000;
+
+function parsePageParam(raw: string | undefined): number {
+  if (!raw) return 1;
+  const n = Number(raw);
+  if (!Number.isInteger(n) || n < 1) return 1;
+  return Math.min(n, MAX_PAGE);
+}
 
 interface Props {
   searchParams: Promise<{
@@ -26,8 +34,8 @@ export default async function TicketsPage({ searchParams }: Props) {
   if (!session?.user?.id) return null;
 
   const isAgent = checkIsAgent(session.user.role);
-  const page = Math.max(1, parseInt(sp.page ?? '1', 10));
-  const skip = (page - 1) * PAGE_SIZE;
+  const requestedPage = parsePageParam(sp.page);
+  const skip = (requestedPage - 1) * PAGE_SIZE;
 
   // Build Prisma where clause
   const where: Prisma.TicketWhereInput = {};
@@ -80,6 +88,7 @@ export default async function TicketsPage({ searchParams }: Props) {
   ]);
 
   const totalPages = Math.ceil(total / PAGE_SIZE);
+  const page = Math.min(requestedPage, Math.max(totalPages, 1));
 
   return (
     <div>
@@ -200,7 +209,15 @@ function Pagination({
 }
 
 function isValidStatus(s: string): s is TicketStatus {
-  return ['New', 'Open', 'WaitingForUser', 'InProgress', 'Escalated', 'Resolved', 'Closed'].includes(s);
+  return [
+    'New',
+    'Open',
+    'WaitingForUser',
+    'InProgress',
+    'Escalated',
+    'Resolved',
+    'Closed',
+  ].includes(s);
 }
 
 function isValidPriority(p: string): p is Priority {

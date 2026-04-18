@@ -87,9 +87,12 @@ export async function updateTicketAssignee(ticketId: string, newAssigneeId: stri
   ]);
 
   if (!ticket) throw new Error('チケットが見つかりません');
-  if (newAssigneeId && !newUser) throw new Error('担当者ユーザーが見つかりません');
-  if (newUser && !isAgent(newUser.role)) {
-    throw new Error('担当者にはエージェントまたは管理者のみ設定できます');
+  if (newAssigneeId) {
+    const reason = !newUser ? 'not-found' : !isAgent(newUser.role) ? 'not-agent' : null;
+    if (reason) {
+      console.warn('[updateTicketAssignee] rejected', { ticketId, newAssigneeId, reason });
+      throw new Error('指定された担当者を設定できません');
+    }
   }
 
   const oldName = ticket.assignee?.name ?? null;

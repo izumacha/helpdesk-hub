@@ -10,5 +10,11 @@ export function makeCategoryRepo(db: PrismaLike): CategoryRepository {
       });
       return rows;
     },
+    async findById(id) {
+      return db.category.findUnique({
+        where: { id },
+        select: { id: true, name: true },
+      });
+    },
   };
 }
