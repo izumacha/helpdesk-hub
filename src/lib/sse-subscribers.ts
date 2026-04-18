@@ -1,9 +1,21 @@
 /**
  * In-memory SSE subscriber registry.
  *
- * Safe for single-process deployments (standalone Docker).
+ * Safe for single-process deployments (standalone Docker) ONLY.
  * Each user maps to a Set of ReadableStreamDefaultController instances —
  * one per open browser tab / EventSource connection.
+ *
+ * Horizontal scaling caveat: when running behind a load balancer with
+ * multiple app instances, a notification produced on instance B will not
+ * reach a user whose EventSource is attached to instance A — the unread
+ * count will silently drift until the next page load (60 s cache TTL).
+ *
+ * To support multi-instance deployments, replace this Map-backed registry
+ * with a Redis pub/sub or Postgres LISTEN/NOTIFY adapter. Keep the
+ * exported function signatures (`addSubscriber` / `removeSubscriber` /
+ * `broadcast`) stable so the SSE route handler does not change.
+ *
+ * Tracking: see GitHub issue #60.
  */
 
 type Controller = ReadableStreamDefaultController<Uint8Array>;
