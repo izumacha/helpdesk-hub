@@ -4,29 +4,29 @@
 
 ## 主な機能
 
-| カテゴリ | 機能 |
-|---|---|
-| 認証 | ログイン/ログアウト、ロール別アクセス制御（requester / agent / admin） |
-| チケット | 登録・一覧・詳細・キーワード検索・多条件フィルタ・ページネーション |
-| ワークフロー | ステータス遷移管理、優先度・担当者アサイン、コメント、変更履歴 |
-| SLA | 解決期限設定・期限間近/超過バッジ表示 |
-| エスカレーション | 二次対応へのエスカレーション（理由・日時記録、履歴残存） |
-| ダッシュボード | ステータス別件数、SLA超過件数、担当者別ワークロード |
-| FAQ候補 | 解決済み問い合わせのFAQ変換（公開/却下管理） |
-| 通知 | アサイン・エスカレーション時の自動通知、未読バッジ |
+| カテゴリ         | 機能                                                                   |
+| ---------------- | ---------------------------------------------------------------------- |
+| 認証             | ログイン/ログアウト、ロール別アクセス制御（requester / agent / admin） |
+| チケット         | 登録・一覧・詳細・キーワード検索・多条件フィルタ・ページネーション     |
+| ワークフロー     | ステータス遷移管理、優先度・担当者アサイン、コメント、変更履歴         |
+| SLA              | 解決期限設定・期限間近/超過バッジ表示                                  |
+| エスカレーション | 二次対応へのエスカレーション（理由・日時記録、履歴残存）               |
+| ダッシュボード   | ステータス別件数、SLA超過件数、担当者別ワークロード                    |
+| FAQ候補          | 解決済み問い合わせのFAQ変換（公開/却下管理）                           |
+| 通知             | アサイン・エスカレーション時の自動通知、未読バッジ                     |
 
 ## 技術スタック
 
-| レイヤー | 技術 |
-|---|---|
-| フロントエンド | Next.js 15 (App Router), React 19, Tailwind CSS v4 |
-| 認証 | Auth.js v5 (next-auth@beta), Credentials プロバイダ |
-| ORM | Prisma 5 |
-| DB | PostgreSQL |
-| バリデーション | Zod |
-| フォーム | react-hook-form + @hookform/resolvers |
-| テスト | Vitest (unit), Playwright (E2E) |
-| インフラ | Docker / Docker Compose |
+| レイヤー       | 技術                                                |
+| -------------- | --------------------------------------------------- |
+| フロントエンド | Next.js 15 (App Router), React 19, Tailwind CSS v4  |
+| 認証           | Auth.js v5 (next-auth@beta), Credentials プロバイダ |
+| ORM            | Prisma 5                                            |
+| DB             | PostgreSQL                                          |
+| バリデーション | Zod                                                 |
+| フォーム       | react-hook-form + @hookform/resolvers               |
+| テスト         | Vitest (unit), Playwright (E2E)                     |
+| インフラ       | Docker / Docker Compose                             |
 
 ## セットアップ
 
@@ -34,12 +34,15 @@
 
 ```bash
 cp .env.example .env
+# `.env` の NEXTAUTH_SECRET を強い値に設定 (例: `openssl rand -base64 32`)
 docker compose up -d
 docker compose exec app npx prisma migrate deploy
 docker compose exec app npx prisma db seed
 ```
 
 アプリは http://localhost:3000 で起動します。
+
+> **注意:** `NEXTAUTH_SECRET` が未設定のまま `docker compose up` を実行すると compose 自体が起動に失敗します。本番デプロイでは必ず強いランダム値を設定してください。
 
 ### ローカル直接起動
 
@@ -63,11 +66,11 @@ npm run dev
 
 ## デフォルトユーザー（seed後）
 
-| メールアドレス | ロール | パスワード |
-|---|---|---|
+| メールアドレス         | ロール    | パスワード  |
+| ---------------------- | --------- | ----------- |
 | requester1@example.com | requester | password123 |
-| agent1@example.com | agent | password123 |
-| admin@example.com | admin | password123 |
+| agent1@example.com     | agent     | password123 |
+| admin@example.com      | admin     | password123 |
 
 ## コマンド一覧
 

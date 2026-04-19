@@ -1,3 +1,7 @@
+import type { TicketStatus } from '@/generated/prisma';
+
+export const FAQ_ELIGIBLE_STATUSES: readonly TicketStatus[] = ['Resolved'];
+
 export const STATUS_LABELS: Record<string, string> = {
   New: '新規',
   Open: 'オープン',

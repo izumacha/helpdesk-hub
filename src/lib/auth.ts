@@ -4,6 +4,24 @@ import { compare } from 'bcryptjs';
 import { prisma } from '@/lib/prisma';
 import type { Role } from '@/generated/prisma';
 
+const WEAK_NEXTAUTH_SECRETS = new Set([
+  'change-me-in-production',
+  'your-secret-key-here',
+  'secret',
+  '',
+]);
+
+const secret = process.env.NEXTAUTH_SECRET;
+if (!secret) {
+  console.warn(
+    '[auth] NEXTAUTH_SECRET is not set — sessions will not be verifiable across restarts.',
+  );
+} else if (WEAK_NEXTAUTH_SECRETS.has(secret)) {
+  console.warn(
+    '[auth] NEXTAUTH_SECRET is set to a known placeholder value. Generate a strong secret (e.g. `openssl rand -base64 32`) before deploying.',
+  );
+}
+
 export const { handlers, auth, signIn, signOut } = NextAuth({
   providers: [
     Credentials({

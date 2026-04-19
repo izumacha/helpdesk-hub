@@ -177,7 +177,18 @@ describe('updateTicketAssignee (provider-agnostic)', () => {
     const { updateTicketAssignee } = await import('@/features/tickets/actions/update-ticket');
 
     await expect(updateTicketAssignee(ticketId, 'u-req-1')).rejects.toThrow(
-      /エージェントまたは管理者のみ設定/,
+      /指定された担当者を設定できません/,
+    );
+    expect([...store.histories.values()]).toHaveLength(0);
+    expect([...store.notifications.values()]).toHaveLength(0);
+  });
+
+  it('refuses to assign a non-existent user with the same message', async () => {
+    const { ticketId } = await seed();
+    const { updateTicketAssignee } = await import('@/features/tickets/actions/update-ticket');
+
+    await expect(updateTicketAssignee(ticketId, 'u-missing')).rejects.toThrow(
+      /指定された担当者を設定できません/,
     );
     expect([...store.histories.values()]).toHaveLength(0);
     expect([...store.notifications.values()]).toHaveLength(0);
