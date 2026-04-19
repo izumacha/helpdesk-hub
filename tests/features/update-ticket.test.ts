@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { createMemoryContext, type Store } from '@/data/adapters/memory';
 import type { Repos, UnitOfWork } from '@/data/ports/unit-of-work';
+import { __resetRateLimits } from '@/lib/rate-limit';
 
 // Holders populated per-test before importing the Action under test.
 let store: Store;
@@ -68,6 +69,7 @@ beforeEach(() => {
   sessionUserId = 'u-agt-1';
   sessionRole = 'agent';
   vi.resetModules();
+  __resetRateLimits();
 });
 
 describe('updateTicketStatus (provider-agnostic)', () => {

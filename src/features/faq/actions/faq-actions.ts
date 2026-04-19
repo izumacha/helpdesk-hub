@@ -5,6 +5,7 @@ import { auth } from '@/lib/auth';
 import { prisma } from '@/lib/prisma';
 import { isAgent } from '@/lib/role';
 import { FAQ_ELIGIBLE_STATUSES } from '@/lib/constants';
+import { enforceRateLimit } from '@/lib/rate-limit';
 import { faqCandidateSchema } from '@/lib/validations/faq';
 
 export async function createFaqCandidate(ticketId: string, question: string, answer: string) {
@@ -13,6 +14,7 @@ export async function createFaqCandidate(ticketId: string, question: string, ans
   if (!isAgent(session.user.role)) {
     throw new Error('エージェントまたは管理者のみ実行できます');
   }
+  enforceRateLimit(`faq-create:${session.user.id}`, { limit: 10, windowMs: 60_000 });
 
   const parsed = faqCandidateSchema.safeParse({ question, answer });
   if (!parsed.success) {
@@ -44,6 +46,7 @@ export async function updateFaqStatus(faqId: string, status: 'Published' | 'Reje
   if (!isAgent(session.user.role)) {
     throw new Error('エージェントまたは管理者のみ実行できます');
   }
+  enforceRateLimit(`faq-update:${session.user.id}`, { limit: 20, windowMs: 60_000 });
 
   const faq = await prisma.faqCandidate.findUnique({ where: { id: faqId } });
   if (!faq) throw new Error('FAQ候補が見つかりません');
