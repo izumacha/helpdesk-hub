@@ -7,6 +7,7 @@ import { broadcastUnreadCount, broadcastUnreadCountToMany } from '@/features/not
 import { isAgent } from '@/lib/role';
 import { isValidTransition } from '@/domain/ticket-status';
 import type { Priority, TicketStatus } from '@/domain/types';
+import { enforceRateLimit } from '@/lib/rate-limit';
 import { commentBodySchema, escalationReasonSchema } from '@/lib/validations/ticket';
 import type { Session } from 'next-auth';
 
@@ -24,6 +25,7 @@ function assertAgentRole(session: Session | null): asserts session is Session {
 export async function updateTicketStatus(ticketId: string, newStatus: TicketStatus) {
   const session = await auth();
   assertAgentRole(session);
+  enforceRateLimit(`ticket-status:${session.user.id}:${ticketId}`, { limit: 10, windowMs: 10_000 });
 
   await uow.run(async (r) => {
     const ticket = await r.tickets.findById(ticketId);
@@ -58,6 +60,10 @@ export async function updateTicketStatus(ticketId: string, newStatus: TicketStat
 export async function updateTicketPriority(ticketId: string, newPriority: Priority) {
   const session = await auth();
   assertAgentRole(session);
+  enforceRateLimit(`ticket-priority:${session.user.id}:${ticketId}`, {
+    limit: 10,
+    windowMs: 10_000,
+  });
 
   await uow.run(async (r) => {
     const ticket = await r.tickets.findById(ticketId);
@@ -80,6 +86,10 @@ export async function updateTicketPriority(ticketId: string, newPriority: Priori
 export async function updateTicketAssignee(ticketId: string, newAssigneeId: string | null) {
   const session = await auth();
   assertAgentRole(session);
+  enforceRateLimit(`ticket-assignee:${session.user.id}:${ticketId}`, {
+    limit: 10,
+    windowMs: 10_000,
+  });
 
   const [ticket, newUser] = await Promise.all([
     repos.tickets.findByIdWithRefs(ticketId),
@@ -124,6 +134,9 @@ export async function updateTicketAssignee(ticketId: string, newAssigneeId: stri
 export async function escalateTicket(ticketId: string, reason: string) {
   const session = await auth();
   assertAgentRole(session);
+  // Escalation fans out notifications to every agent, so we apply a tighter
+  // cap than per-ticket status/priority edits.
+  enforceRateLimit(`ticket-escalate:${session.user.id}`, { limit: 5, windowMs: 60_000 });
 
   const parsedReason = escalationReasonSchema.safeParse(reason);
   if (!parsedReason.success) {
@@ -172,6 +185,7 @@ export async function escalateTicket(ticketId: string, reason: string) {
 export async function addComment(ticketId: string, body: string) {
   const session = await auth();
   assertAuthenticatedUser(session);
+  enforceRateLimit(`ticket-comment:${session.user.id}`, { limit: 20, windowMs: 60_000 });
 
   const parsedBody = commentBodySchema.safeParse(body);
   if (!parsedBody.success) {
