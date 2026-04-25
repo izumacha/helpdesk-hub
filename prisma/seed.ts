@@ -1,8 +1,12 @@
+// Prisma の生成クライアントと Role 列挙型 (役割) を取り込む
 import { PrismaClient, Role } from '../src/generated/prisma';
+// パスワードをハッシュ化するためのライブラリ (平文で DB に保存しないため)
 import { hash } from 'bcryptjs';
 
+// DB へ接続するクライアントのインスタンスを作成
 const prisma = new PrismaClient();
 
+// 投入するチケット用カテゴリの一覧 (画面の選択肢になる)
 const CATEGORIES = [
   'ネットワーク・接続',
   'ハードウェア',
@@ -12,62 +16,80 @@ const CATEGORIES = [
   'その他',
 ];
 
+// シード処理本体 (上から順に DB に書き込む)
 async function main() {
+  // 全ユーザー共通のパスワード "password123" をハッシュ化
   const password = await hash('password123', 12);
 
   // ── Users ────────────────────────────────────────────
+  // 依頼者ユーザー1: メールが一致すれば何もせず、無ければ新規作成 (upsert)
   const requester1 = await prisma.user.upsert({
     where: { email: 'requester1@example.com' },
     update: {},
     create: { email: 'requester1@example.com', name: '田中 花子', passwordHash: password, role: Role.requester },
   });
+  // 依頼者ユーザー2
   const requester2 = await prisma.user.upsert({
     where: { email: 'requester2@example.com' },
     update: {},
     create: { email: 'requester2@example.com', name: '鈴木 一郎', passwordHash: password, role: Role.requester },
   });
+  // 依頼者ユーザー3
   const requester3 = await prisma.user.upsert({
     where: { email: 'requester3@example.com' },
     update: {},
     create: { email: 'requester3@example.com', name: '伊藤 直子', passwordHash: password, role: Role.requester },
   });
+  // エージェント1 (ヘルプデスク担当者)
   const agent1 = await prisma.user.upsert({
     where: { email: 'agent1@example.com' },
     update: {},
     create: { email: 'agent1@example.com', name: '佐藤 健太', passwordHash: password, role: Role.agent },
   });
+  // エージェント2
   const agent2 = await prisma.user.upsert({
     where: { email: 'agent2@example.com' },
     update: {},
     create: { email: 'agent2@example.com', name: '山田 美咲', passwordHash: password, role: Role.agent },
   });
+  // エージェント3
   const agent3 = await prisma.user.upsert({
     where: { email: 'agent3@example.com' },
     update: {},
     create: { email: 'agent3@example.com', name: '中村 大輔', passwordHash: password, role: Role.agent },
   });
+  // 管理者ユーザー (admin ロール)
   const admin = await prisma.user.upsert({
     where: { email: 'admin@example.com' },
     update: {},
     create: { email: 'admin@example.com', name: '管理者', passwordHash: password, role: Role.admin },
   });
 
+  // 進捗ログ
   console.log('✅ Users seeded');
 
   // ── Categories ───────────────────────────────────────
+  // カテゴリを名前 → レコードで引けるよう Map 風オブジェクトを用意
   const cats: Record<string, { id: string }> = {};
+  // 定義済みカテゴリ名を順番に upsert (重複作成を防ぐ)
   for (const name of CATEGORIES) {
     cats[name] = await prisma.category.upsert({ where: { name }, update: {}, create: { name } });
   }
   console.log('✅ Categories seeded');
 
+  // 現在時刻と相対日付ヘルパー (期限/解決日時の計算用)
   const now = new Date();
+  // 24 時間前
   const yesterday = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+  // 3 日前
   const threeDaysAgo = new Date(now.getTime() - 3 * 24 * 60 * 60 * 1000);
+  // 2 日後
   const twoDaysLater = new Date(now.getTime() + 2 * 24 * 60 * 60 * 1000);
+  // 10 時間後
   const tenHoursLater = new Date(now.getTime() + 10 * 60 * 60 * 1000);
 
   // ── Tickets ──────────────────────────────────────────
+  // 投入するチケットの定義一覧 (status / priority / 担当者などをバリエーション付きで用意)
   const ticketDefs = [
     {
       id: 'seed-t-01',
@@ -178,6 +200,7 @@ async function main() {
     },
   ];
 
+  // 各定義をチケットテーブルへ upsert (再実行しても重複しない)
   for (const def of ticketDefs) {
     await prisma.ticket.upsert({
       where: { id: def.id },
@@ -189,6 +212,7 @@ async function main() {
   console.log('✅ Tickets seeded');
 
   // ── Comments ─────────────────────────────────────────
+  // 各チケットに紐づくコメントの定義 (やり取りの履歴を再現)
   const commentDefs = [
     { ticketId: 'seed-t-02', authorId: agent1.id, body: '確認します。メールアドレスを教えてください。' },
     { ticketId: 'seed-t-02', authorId: requester2.id, body: 'suzuki@example.com です。よろしくお願いします。' },
@@ -198,6 +222,7 @@ async function main() {
     { ticketId: 'seed-t-06', authorId: requester1.id, body: 'PC-TANAKA-001 です。' },
   ];
 
+  // ticketId/authorId/body の組が無ければ新規作成 (重複登録を避ける)
   for (const c of commentDefs) {
     const exists = await prisma.ticketComment.findFirst({
       where: { ticketId: c.ticketId, authorId: c.authorId, body: c.body },
@@ -208,6 +233,7 @@ async function main() {
   console.log('✅ Comments seeded');
 
   // ── Histories ─────────────────────────────────────────
+  // 変更履歴 (担当変更・ステータス変更・エスカレーション) の定義
   const historyDefs = [
     { ticketId: 'seed-t-02', changedById: admin.id, field: 'assignee' as const, oldValue: null, newValue: agent1.name },
     { ticketId: 'seed-t-03', changedById: agent1.id, field: 'status' as const, oldValue: 'Open', newValue: 'Resolved' },
@@ -215,6 +241,7 @@ async function main() {
     { ticketId: 'seed-t-09', changedById: admin.id, field: 'assignee' as const, oldValue: null, newValue: agent3.name },
   ];
 
+  // 同一の (ticketId, changedById, field) があれば追加しない
   for (const h of historyDefs) {
     const exists = await prisma.ticketHistory.findFirst({
       where: { ticketId: h.ticketId, changedById: h.changedById, field: h.field },
@@ -225,6 +252,7 @@ async function main() {
   console.log('✅ Histories seeded');
 
   // ── FAQ Candidate ────────────────────────────────────
+  // seed-t-03 の FAQ 候補 (公開済み) が無ければ作る
   const faqExists = await prisma.faqCandidate.findFirst({ where: { ticketId: 'seed-t-03' } });
   if (!faqExists) {
     await prisma.faqCandidate.create({
@@ -238,6 +266,7 @@ async function main() {
     });
   }
 
+  // seed-t-08 の FAQ 候補 (未公開、Candidate ステータス)
   const faqExists2 = await prisma.faqCandidate.findFirst({ where: { ticketId: 'seed-t-08' } });
   if (!faqExists2) {
     await prisma.faqCandidate.create({
@@ -251,6 +280,7 @@ async function main() {
     });
   }
 
+  // 完了メッセージとログイン用情報の表示
   console.log('✅ FAQ candidates seeded');
   console.log('\nSeed completed!\nDefault password: password123');
   console.log('Users:', [
@@ -260,6 +290,7 @@ async function main() {
   ].join(', '));
 }
 
+// メイン処理を実行: 失敗したら終了コード 1、最後に必ず DB 接続を閉じる
 main()
   .catch((e) => { console.error(e); process.exit(1); })
   .finally(async () => { await prisma.$disconnect(); });
