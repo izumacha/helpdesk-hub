@@ -105,3 +105,32 @@ Zod schemas live in `src/lib/validations/` (currently `ticket.ts`). Use `safePar
 - Server Actions throw `Error(...)` with Japanese messages for user-facing failures; callers surface them to the user.
 - `docs/` holds design artifacts (`requirements.md`, `architecture.md`, `er-diagram.md`, `screen-flow.md`) — consult before changing status flow, permissions, or the ER model.
 - **1行ごとに初心者でも意味がわかるコメントアウトを書く**: コード 1 行ごとに、プログラミング初心者でも処理内容が理解できる日本語コメントを付ける。変数宣言・条件分岐・関数呼び出し・ループ・return など、すべての実行行に対して「何をしているか」を説明するコメントを必ず添える（型定義の単純な再エクスポートなど明らかに自明な行は除く）。コメントは行の直前または行末に記述し、専門用語を使うときは平易な言い換えを併記する。
+
+## Data Layer (Ports & Adapters)
+
+- `src/data/ports/` にリポジトリ契約（インターフェース）を定義。`src/data/adapters/prisma/` が本番実装、`src/data/adapters/memory/` がテスト用。
+- 新しいエンティティ操作を追加する場合は Port → Adapter の順に実装し、`src/data/index.ts`（Composition Root）でエクスポートする。
+- Prisma を直接 import するのは Adapter 内のみ。Server Actions やコントローラから直接 `prisma.xxx.findMany()` を呼ばない。
+
+## パフォーマンス
+
+- Prisma で関連エンティティを参照する場合は必ず `include` / `select` を明示する。ループ内で個別クエリを発行しない（N+1 問題）。
+- リスト画面のクエリには `take` / `skip` でページネーションを適用すること。
+
+## セキュリティ
+
+- ユーザー入力は必ず Zod スキーマ（`src/lib/validations/`）で検証してから DB に渡す。`safeParse` を使い、生の入力を直接 Prisma に渡さない。
+- Server Action 内では必ず `await auth()` + ロールチェックを最初に行う。UI の非表示だけに頼らない。
+- 環境変数（`NEXTAUTH_SECRET` 等）をコードにハードコードしない。`.env.example` にキー名だけ記載する。
+
+## Git 規約
+
+- コミットメッセージ形式: `type(scope): 日本語の説明`
+  - type: feat, fix, refactor, test, docs, chore
+  - scope: tickets, faq, notifications, auth, infra 等
+- 1 コミット = 1 論理変更。Prisma スキーマ変更とマイグレーションは同一コミットに含める。
+
+## CI (GitHub Actions)
+
+- `.github/workflows/ci.yml` が lint → typecheck → test → E2E を実行する。PR を出す前にローカルで `npm run lint && npm run typecheck && npm run test` を通すこと。
+- E2E は CI 上で PostgreSQL サービスコンテナを使う。ローカルでは `docker compose up db` で DB を起動してから `npm run test:e2e`。
