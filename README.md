@@ -118,3 +118,4 @@ e2e/                        # E2E テスト
 - [アーキテクチャ](docs/architecture.md)
 - [ER 図](docs/er-diagram.md)
 - [画面遷移図](docs/screen-flow.md)
+- [セキュリティ / 堅牢性メモ](docs/security.md)
