@@ -1,210 +1,220 @@
 // This is your Prisma schema file,
 // learn more about it in the docs: https://pris.ly/d/prisma-schema
+// Prisma スキーマ: DB のテーブル定義と TS 型を 1 枚で管理するファイル
 
+// 生成設定: Prisma クライアント (TS で DB を操作する SDK) の出力先を指定
 generator client {
   provider = "prisma-client-js"
-  output   = "../src/generated/prisma"
+  output   = "../src/generated/prisma" // src/generated/prisma 配下にクライアント本体と型が生成される
 }
 
+// データソース設定: 接続先 DB の種類と接続文字列
 datasource db {
-  provider = "postgresql"
-  url      = env("DATABASE_URL")
+  provider = "postgresql" // 使用する DB は PostgreSQL
+  url      = env("DATABASE_URL") // 接続先は環境変数 DATABASE_URL から読む
 }
 
 // ─────────────────────────────────────────────
-// Enums
+// Enums (列挙型: 取り得る値を列挙して固定する)
 // ─────────────────────────────────────────────
 
+// ユーザーの役割 (権限)
 enum Role {
-  requester
-  agent
-  admin
+  requester // 一般依頼者 (自分のチケットしか見えない)
+  agent // ヘルプデスク担当者 (全チケットの操作権限あり)
+  admin // 管理者 (全権限)
 }
 
+// チケットの状態 (ワークフロー上のステータス)
 enum TicketStatus {
-  New
-  Open
-  WaitingForUser
-  InProgress
-  Escalated
-  Resolved
-  Closed
+  New // 新規受付 (担当未割当)
+  Open // 受付完了 (担当者アサイン済み・対応未着手)
+  WaitingForUser // ユーザー回答待ち
+  InProgress // 対応中
+  Escalated // 上位担当へエスカレーション済み
+  Resolved // 解決済み (依頼者が確認すると Closed になる)
+  Closed // クローズ (完了)
 }
 
+// チケットの優先度
 enum Priority {
-  Low
-  Medium
-  High
+  Low // 低
+  Medium // 中 (デフォルト)
+  High // 高
 }
 
+// 履歴に記録できる変更フィールドの種類
 enum HistoryField {
-  status
-  priority
-  assignee
-  escalation
+  status // ステータス変更
+  priority // 優先度変更
+  assignee // 担当者変更
+  escalation // エスカレーション (理由付き)
 }
 
+// FAQ 候補の状態
 enum FaqStatus {
-  Candidate
-  Published
-  Rejected
+  Candidate // 候補 (未公開)
+  Published // 公開
+  Rejected // 却下
 }
 
+// 通知種別
 enum NotificationType {
-  assigned
-  escalated
-  commented
-  statusChanged
+  assigned // 担当割当通知
+  escalated // エスカレーション通知
+  commented // コメント追加通知
+  statusChanged // ステータス変更通知
 }
 
 // ─────────────────────────────────────────────
-// User
+// User (ユーザー)
 // ─────────────────────────────────────────────
 
 model User {
-  id           String   @id @default(cuid())
-  email        String   @unique
-  name         String
-  passwordHash String
-  role         Role     @default(requester)
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
+  id           String   @id @default(cuid()) // 主キー: cuid で生成 (衝突しにくい ID)
+  email        String   @unique // メールアドレス (一意制約)
+  name         String // 表示名
+  passwordHash String // bcrypt でハッシュ化したパスワード (平文を保存しない)
+  role         Role     @default(requester) // 役割 (デフォルトは依頼者)
+  createdAt    DateTime @default(now()) // 作成日時 (自動で現在時刻)
+  updatedAt    DateTime @updatedAt // 更新日時 (Prisma が自動更新)
 
   // Relations
-  createdTickets  Ticket[]        @relation("TicketCreator")
-  assignedTickets Ticket[]        @relation("TicketAssignee")
-  comments        TicketComment[]
-  histories       TicketHistory[]
-  faqCandidates   FaqCandidate[]
-  notifications   Notification[]
+  createdTickets  Ticket[]        @relation("TicketCreator") // このユーザーが作ったチケット
+  assignedTickets Ticket[]        @relation("TicketAssignee") // このユーザーが担当のチケット
+  comments        TicketComment[] // このユーザーが投稿したコメント
+  histories       TicketHistory[] // このユーザーが起こした履歴イベント
+  faqCandidates   FaqCandidate[] // このユーザーが作成した FAQ 候補
+  notifications   Notification[] // このユーザー宛の通知
 }
 
 // ─────────────────────────────────────────────
-// Category
+// Category (チケットのカテゴリ)
 // ─────────────────────────────────────────────
 
 model Category {
-  id        String   @id @default(cuid())
-  name      String   @unique
-  createdAt DateTime @default(now())
+  id        String   @id @default(cuid()) // 主キー
+  name      String   @unique // カテゴリ名 (一意)
+  createdAt DateTime @default(now()) // 作成日時
 
-  tickets Ticket[]
+  tickets Ticket[] // このカテゴリに紐づくチケット
 }
 
 // ─────────────────────────────────────────────
-// Ticket
+// Ticket (問い合わせチケット本体)
 // ─────────────────────────────────────────────
 
 model Ticket {
-  id        String       @id @default(cuid())
-  title     String
-  body      String
-  status    TicketStatus @default(New)
-  priority  Priority     @default(Medium)
-  createdAt DateTime     @default(now())
-  updatedAt DateTime     @updatedAt
+  id        String       @id @default(cuid()) // 主キー
+  title     String // 件名
+  body      String // 本文
+  status    TicketStatus @default(New) // ステータス (デフォルト: New)
+  priority  Priority     @default(Medium) // 優先度 (デフォルト: Medium)
+  createdAt DateTime     @default(now()) // 作成日時
+  updatedAt DateTime     @updatedAt // 更新日時 (自動)
 
-  // SLA
-  firstResponseDueAt DateTime?
-  resolutionDueAt    DateTime?
-  firstRespondedAt   DateTime?
-  resolvedAt         DateTime?
+  // SLA (サービス品質保証: いつまでに対応すべきかの期限)
+  firstResponseDueAt DateTime? // 初回応答期限
+  resolutionDueAt    DateTime? // 解決期限
+  firstRespondedAt   DateTime? // 実際の初回応答日時
+  resolvedAt         DateTime? // 解決日時
 
-  // Escalation
-  escalatedAt      DateTime?
-  escalationReason String?
+  // Escalation (エスカレーション情報)
+  escalatedAt      DateTime? // エスカレーション発生日時
+  escalationReason String? // エスカレーションの理由 (必須メモ)
 
-  // Foreign keys
-  creatorId  String
-  assigneeId String?
-  categoryId String?
+  // Foreign keys (外部キー)
+  creatorId  String // 作成者のユーザー ID
+  assigneeId String? // 担当者のユーザー ID (未割当のとき null)
+  categoryId String? // カテゴリ ID (未分類のとき null)
 
-  // Relations
-  creator       User            @relation("TicketCreator", fields: [creatorId], references: [id])
-  assignee      User?           @relation("TicketAssignee", fields: [assigneeId], references: [id])
-  category      Category?       @relation(fields: [categoryId], references: [id])
-  comments      TicketComment[]
-  histories     TicketHistory[]
-  faqCandidate  FaqCandidate?
-  notifications Notification[]
+  // Relations (リレーション)
+  creator       User            @relation("TicketCreator", fields: [creatorId], references: [id]) // 作成者ユーザー
+  assignee      User?           @relation("TicketAssignee", fields: [assigneeId], references: [id]) // 担当者ユーザー
+  category      Category?       @relation(fields: [categoryId], references: [id]) // カテゴリ
+  comments      TicketComment[] // 紐づくコメント一覧
+  histories     TicketHistory[] // 紐づく履歴一覧
+  faqCandidate  FaqCandidate? // 紐づく FAQ 候補 (1:1)
+  notifications Notification[] // このチケットを参照する通知
 
-  @@index([creatorId])
-  @@index([assigneeId])
-  @@index([status])
-  @@index([categoryId])
-  @@index([createdAt(sort: Desc)])
+  // 検索性能向上のためのインデックス
+  @@index([creatorId]) // 作成者で絞り込む一覧用
+  @@index([assigneeId]) // 担当者で絞り込む一覧用
+  @@index([status]) // ステータス集計用
+  @@index([categoryId]) // カテゴリで絞り込む一覧用
+  @@index([createdAt(sort: Desc)]) // 新着順ソート用
 }
 
 // ─────────────────────────────────────────────
-// FaqCandidate
+// FaqCandidate (FAQ 候補: チケットから蓄積する Q&A)
 // ─────────────────────────────────────────────
 
 model FaqCandidate {
-  id        String    @id @default(cuid())
-  question  String
-  answer    String
-  status    FaqStatus @default(Candidate)
-  createdAt DateTime  @default(now())
-  updatedAt DateTime  @updatedAt
+  id        String    @id @default(cuid()) // 主キー
+  question  String // 質問文
+  answer    String // 回答文
+  status    FaqStatus @default(Candidate) // 候補/公開/却下
+  createdAt DateTime  @default(now()) // 作成日時
+  updatedAt DateTime  @updatedAt // 更新日時
 
-  ticketId    String @unique
-  createdById String
+  ticketId    String @unique // 元になったチケット (1 チケット 1 候補)
+  createdById String // 作成者 (エージェント)
 
-  ticket    Ticket @relation(fields: [ticketId], references: [id], onDelete: Cascade)
-  createdBy User   @relation(fields: [createdById], references: [id])
+  ticket    Ticket @relation(fields: [ticketId], references: [id], onDelete: Cascade) // チケット削除時に一緒に消す
+  createdBy User   @relation(fields: [createdById], references: [id]) // 作成者リレーション
 }
 
 // ─────────────────────────────────────────────
-// Notification
+// Notification (ユーザー宛の通知)
 // ─────────────────────────────────────────────
 
 model Notification {
-  id        String           @id @default(cuid())
-  type      NotificationType
-  message   String
-  read      Boolean          @default(false)
-  createdAt DateTime         @default(now())
+  id        String           @id @default(cuid()) // 主キー
+  type      NotificationType // 通知種別
+  message   String // 表示メッセージ
+  read      Boolean          @default(false) // 既読フラグ
+  createdAt DateTime         @default(now()) // 作成日時
 
-  userId   String
-  ticketId String?
+  userId   String // 通知を受け取るユーザー
+  ticketId String? // 関連チケット (任意)
 
-  user   User    @relation(fields: [userId], references: [id], onDelete: Cascade)
-  ticket Ticket? @relation(fields: [ticketId], references: [id], onDelete: SetNull)
+  user   User    @relation(fields: [userId], references: [id], onDelete: Cascade) // ユーザー削除時に通知も消す
+  ticket Ticket? @relation(fields: [ticketId], references: [id], onDelete: SetNull) // チケット削除時は紐づけだけ外す
 
-  @@index([userId, read])
-  @@index([userId, createdAt(sort: Desc)])
+  @@index([userId, read]) // 未読件数を高速に数えるため
+  @@index([userId, createdAt(sort: Desc)]) // ユーザー別の新着順表示用
 }
 
 // ─────────────────────────────────────────────
-// TicketComment
+// TicketComment (チケットへのコメント)
 // ─────────────────────────────────────────────
 
 model TicketComment {
-  id        String   @id @default(cuid())
-  body      String
-  createdAt DateTime @default(now())
+  id        String   @id @default(cuid()) // 主キー
+  body      String // コメント本文
+  createdAt DateTime @default(now()) // 投稿日時
 
-  ticketId String
-  authorId String
+  ticketId String // 紐づくチケット ID
+  authorId String // 投稿者ユーザー ID
 
-  ticket Ticket @relation(fields: [ticketId], references: [id], onDelete: Cascade)
-  author User   @relation(fields: [authorId], references: [id])
+  ticket Ticket @relation(fields: [ticketId], references: [id], onDelete: Cascade) // 親チケット削除時に一緒に消す
+  author User   @relation(fields: [authorId], references: [id]) // 投稿者
 }
 
 // ─────────────────────────────────────────────
-// TicketHistory
+// TicketHistory (チケットの変更履歴)
 // ─────────────────────────────────────────────
 
 model TicketHistory {
-  id        String       @id @default(cuid())
-  field     HistoryField
-  oldValue  String?
-  newValue  String?
-  createdAt DateTime     @default(now())
+  id        String       @id @default(cuid()) // 主キー
+  field     HistoryField // 変更されたフィールド種別
+  oldValue  String? // 変更前の値 (文字列化)
+  newValue  String? // 変更後の値 (文字列化)
+  createdAt DateTime     @default(now()) // 変更日時
 
-  ticketId    String
-  changedById String
+  ticketId    String // 対象チケット
+  changedById String // 変更を行ったユーザー
 
-  ticket    Ticket @relation(fields: [ticketId], references: [id], onDelete: Cascade)
-  changedBy User   @relation(fields: [changedById], references: [id])
+  ticket    Ticket @relation(fields: [ticketId], references: [id], onDelete: Cascade) // 親チケット削除時に履歴も削除
+  changedBy User   @relation(fields: [changedById], references: [id]) // 変更者
 }
