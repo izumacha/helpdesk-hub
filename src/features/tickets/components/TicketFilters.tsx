@@ -22,9 +22,19 @@ interface Props {
 
 // プルダウンに並べるステータス/優先度の順序
 const ALL_STATUSES: TicketStatus[] = [
-  'New', 'Open', 'WaitingForUser', 'InProgress', 'Escalated', 'Resolved', 'Closed',
+  'New',
+  'Open',
+  'WaitingForUser',
+  'InProgress',
+  'Escalated',
+  'Resolved',
+  'Closed',
 ];
 const ALL_PRIORITIES: Priority[] = ['Low', 'Medium', 'High'];
+
+// 入力/プルダウンに共通で当てるクラス (フォーカス時のティールリングを統一)
+const fieldBaseClass =
+  'rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700 transition focus:border-teal-500 focus:outline-none focus:ring-2 focus:ring-teal-500/30';
 
 // チケット一覧ページの絞り込み (URL クエリと同期)
 export function TicketFilters({ categories, agents, isAgent }: Props) {
@@ -62,92 +72,97 @@ export function TicketFilters({ categories, agents, isAgent }: Props) {
   };
 
   return (
-    // 絞り込みコントロール群 (送信中は半透明)
-    <div className={`flex flex-wrap items-center gap-2 ${isPending ? 'opacity-50' : ''}`}>
-      {/* キーワード入力 (Enter または検索ボタンで反映) */}
-      <input
-        ref={keywordRef}
-        type="search"
-        placeholder="キーワード検索"
-        // クエリ変化時に再マウントして表示値を同期
-        key={searchParams.get('q') ?? ''}
-        defaultValue={searchParams.get('q') ?? ''}
-        onKeyDown={(e) => {
-          // Enter キーで即時反映
-          if (e.key === 'Enter') update('q', (e.target as HTMLInputElement).value.trim());
-        }}
-        className="rounded-md border border-gray-300 px-3 py-1.5 text-sm focus:border-blue-500 focus:outline-none"
-      />
-      {/* 検索ボタン */}
-      <button
-        onClick={() => update('q', keywordRef.current?.value.trim() ?? '')}
-        className="rounded-md border border-gray-300 px-3 py-1.5 text-sm text-gray-600 hover:bg-gray-50"
-      >
-        検索
-      </button>
-      {/* ステータス絞り込み */}
-      <select
-        value={searchParams.get('status') ?? ''}
-        onChange={(e) => update('status', e.target.value)}
-        className="rounded-md border border-gray-300 px-2 py-1.5 text-sm focus:border-blue-500 focus:outline-none"
-      >
-        <option value="">すべてのステータス</option>
-        {ALL_STATUSES.map((s) => (
-          <option key={s} value={s}>
-            {STATUS_LABELS[s] ?? s}
-          </option>
-        ))}
-      </select>
-      {/* 優先度絞り込み */}
-      <select
-        value={searchParams.get('priority') ?? ''}
-        onChange={(e) => update('priority', e.target.value)}
-        className="rounded-md border border-gray-300 px-2 py-1.5 text-sm focus:border-blue-500 focus:outline-none"
-      >
-        <option value="">すべての優先度</option>
-        {ALL_PRIORITIES.map((p) => (
-          <option key={p} value={p}>
-            {PRIORITY_LABELS[p] ?? p}
-          </option>
-        ))}
-      </select>
-      {/* カテゴリ絞り込み */}
-      <select
-        value={searchParams.get('categoryId') ?? ''}
-        onChange={(e) => update('categoryId', e.target.value)}
-        className="rounded-md border border-gray-300 px-2 py-1.5 text-sm focus:border-blue-500 focus:outline-none"
-      >
-        <option value="">すべてのカテゴリ</option>
-        {categories.map((c) => (
-          <option key={c.id} value={c.id}>
-            {c.name}
-          </option>
-        ))}
-      </select>
-      {/* 担当者絞り込み (エージェントのみ表示) */}
-      {isAgent && (
-        <select
-          value={searchParams.get('assigneeId') ?? ''}
-          onChange={(e) => update('assigneeId', e.target.value)}
-          className="rounded-md border border-gray-300 px-2 py-1.5 text-sm focus:border-blue-500 focus:outline-none"
+    // フィルタを 1 つの柔らかなパネルに収める (健診カウンター風)
+    <div
+      className={`rounded-xl bg-slate-50 p-4 ring-1 ring-slate-200 transition ${isPending ? 'opacity-60' : ''}`}
+    >
+      {/* 絞り込みコントロール群 (折り返し可能) */}
+      <div className="flex flex-wrap items-center gap-2">
+        {/* キーワード入力 (Enter または検索ボタンで反映) */}
+        <input
+          ref={keywordRef}
+          type="search"
+          placeholder="キーワード検索"
+          // クエリ変化時に再マウントして表示値を同期
+          key={searchParams.get('q') ?? ''}
+          defaultValue={searchParams.get('q') ?? ''}
+          onKeyDown={(e) => {
+            // Enter キーで即時反映
+            if (e.key === 'Enter') update('q', (e.target as HTMLInputElement).value.trim());
+          }}
+          className={`${fieldBaseClass} min-w-56 flex-1`}
+        />
+        {/* 検索ボタン (主要 CTA をティールに) */}
+        <button
+          onClick={() => update('q', keywordRef.current?.value.trim() ?? '')}
+          className="rounded-lg bg-teal-700 px-4 py-2 text-sm font-medium text-white transition hover:bg-teal-800"
         >
-          <option value="">すべての担当者</option>
-          {/* 未割当のチケットのみ */}
-          <option value="unassigned">未割当</option>
-          {agents.map((a) => (
-            <option key={a.id} value={a.id}>
-              {a.name}
+          検索
+        </button>
+        {/* ステータス絞り込み */}
+        <select
+          value={searchParams.get('status') ?? ''}
+          onChange={(e) => update('status', e.target.value)}
+          className={fieldBaseClass}
+        >
+          <option value="">すべてのステータス</option>
+          {ALL_STATUSES.map((s) => (
+            <option key={s} value={s}>
+              {STATUS_LABELS[s] ?? s}
             </option>
           ))}
         </select>
-      )}
-      {/* リセットボタン (全クエリを消す) */}
-      <button
-        onClick={handleReset}
-        className="rounded-md border border-gray-300 px-3 py-1.5 text-sm text-gray-600 hover:bg-gray-50"
-      >
-        リセット
-      </button>
+        {/* 優先度絞り込み */}
+        <select
+          value={searchParams.get('priority') ?? ''}
+          onChange={(e) => update('priority', e.target.value)}
+          className={fieldBaseClass}
+        >
+          <option value="">すべての優先度</option>
+          {ALL_PRIORITIES.map((p) => (
+            <option key={p} value={p}>
+              {PRIORITY_LABELS[p] ?? p}
+            </option>
+          ))}
+        </select>
+        {/* カテゴリ絞り込み */}
+        <select
+          value={searchParams.get('categoryId') ?? ''}
+          onChange={(e) => update('categoryId', e.target.value)}
+          className={fieldBaseClass}
+        >
+          <option value="">すべてのカテゴリ</option>
+          {categories.map((c) => (
+            <option key={c.id} value={c.id}>
+              {c.name}
+            </option>
+          ))}
+        </select>
+        {/* 担当者絞り込み (エージェントのみ表示) */}
+        {isAgent && (
+          <select
+            value={searchParams.get('assigneeId') ?? ''}
+            onChange={(e) => update('assigneeId', e.target.value)}
+            className={fieldBaseClass}
+          >
+            <option value="">すべての担当者</option>
+            {/* 未割当のチケットのみ */}
+            <option value="unassigned">未割当</option>
+            {agents.map((a) => (
+              <option key={a.id} value={a.id}>
+                {a.name}
+              </option>
+            ))}
+          </select>
+        )}
+        {/* リセットボタン (ghost スタイル) */}
+        <button
+          onClick={handleReset}
+          className="rounded-lg px-3 py-2 text-sm text-slate-500 transition hover:bg-white hover:text-slate-800"
+        >
+          リセット
+        </button>
+      </div>
     </div>
   );
 }

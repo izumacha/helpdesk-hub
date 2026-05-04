@@ -8,6 +8,8 @@ import { useRouter } from 'next/navigation';
 import { useState } from 'react';
 // エージェント権限判定
 import { isAgent } from '@/lib/role';
+// 共通ブランドマーク (シンボル + ワードマーク)
+import { Logo } from '@/components/brand/Logo';
 
 // /login : ログインフォームページ
 export default function LoginPage() {
@@ -53,16 +55,34 @@ export default function LoginPage() {
   }
 
   return (
-    // 画面中央にカードを表示するレイアウト
-    <div className="flex min-h-screen items-center justify-center bg-gray-50">
-      {/* ログインカード */}
-      <div className="w-full max-w-md rounded-lg bg-white p-8 shadow">
-        <h1 className="mb-6 text-2xl font-bold text-gray-900">HelpDesk Hub</h1>
+    // 画面全体: 健診センター風の柔らかなティールグラデ + 中央寄せ
+    <div className="relative flex min-h-screen items-center justify-center overflow-hidden bg-gradient-to-br from-teal-50 via-white to-emerald-50 px-4 py-12">
+      {/* 装飾用の薄いブラー円 (右上) ─ 病院ロビーのような奥行き感を演出 */}
+      <div
+        aria-hidden
+        className="pointer-events-none absolute -top-24 -right-24 h-72 w-72 rounded-full bg-teal-200/40 blur-3xl"
+      />
+      {/* 装飾用の薄いブラー円 (左下) */}
+      <div
+        aria-hidden
+        className="pointer-events-none absolute -bottom-24 -left-24 h-72 w-72 rounded-full bg-emerald-200/40 blur-3xl"
+      />
+
+      {/* ログインカード本体 (前面に出すため z-10) */}
+      <div className="relative z-10 w-full max-w-md rounded-2xl bg-white/95 p-10 shadow-xl ring-1 ring-slate-100 backdrop-blur">
+        {/* 上部: ブランドマーク + キャッチコピー */}
+        <div className="mb-8 flex flex-col items-center text-center">
+          {/* シンボル + ワードマーク (やや大きめ) */}
+          <Logo size={44} />
+          {/* 補足コピー (落ち着いたグレー) */}
+          <p className="mt-3 text-sm text-slate-500">社内ヘルプデスクへようこそ</p>
+        </div>
+
         {/* ログインフォーム本体 */}
-        <form onSubmit={handleSubmit} className="space-y-4">
+        <form onSubmit={handleSubmit} className="space-y-5">
           {/* メールアドレス入力 */}
           <div>
-            <label htmlFor="email" className="block text-sm font-medium text-gray-700">
+            <label htmlFor="email" className="mb-1.5 block text-sm font-medium text-slate-700">
               メールアドレス
             </label>
             <input
@@ -70,12 +90,14 @@ export default function LoginPage() {
               name="email"
               type="email"
               required
-              className="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none"
+              autoComplete="email"
+              className="block w-full rounded-lg border border-slate-200 bg-slate-50/60 px-4 py-2.5 text-sm text-slate-900 transition placeholder:text-slate-400 focus:border-teal-500 focus:bg-white focus:ring-2 focus:ring-teal-500/30 focus:outline-none"
+              placeholder="name@example.com"
             />
           </div>
           {/* パスワード入力 */}
           <div>
-            <label htmlFor="password" className="block text-sm font-medium text-gray-700">
+            <label htmlFor="password" className="mb-1.5 block text-sm font-medium text-slate-700">
               パスワード
             </label>
             <input
@@ -83,20 +105,35 @@ export default function LoginPage() {
               name="password"
               type="password"
               required
-              className="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none"
+              autoComplete="current-password"
+              className="block w-full rounded-lg border border-slate-200 bg-slate-50/60 px-4 py-2.5 text-sm text-slate-900 transition placeholder:text-slate-400 focus:border-teal-500 focus:bg-white focus:ring-2 focus:ring-teal-500/30 focus:outline-none"
+              placeholder="••••••••"
             />
           </div>
-          {/* エラー文言 (ある場合のみ表示) */}
-          {error && <p className="text-sm text-red-600">{error}</p>}
+          {/* エラー文言 (ある場合のみ表示) ─ ロゼ枠で柔らかくアラート */}
+          {error && (
+            <p
+              role="alert"
+              className="rounded-lg bg-rose-50 px-3 py-2.5 text-sm text-rose-700 ring-1 ring-rose-200"
+            >
+              {error}
+            </p>
+          )}
           {/* 送信ボタン (ローディング中は無効化) */}
           <button
             type="submit"
             disabled={loading}
-            className="w-full rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+            aria-busy={loading}
+            className="w-full rounded-lg bg-teal-700 px-4 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-teal-800 active:bg-teal-900 disabled:cursor-not-allowed disabled:opacity-60"
           >
             {loading ? 'ログイン中...' : 'ログイン'}
           </button>
         </form>
+
+        {/* フッター: サポート連絡先風の補足 (装飾) */}
+        <p className="mt-6 text-center text-xs text-slate-400">
+          ログインに関するお問い合わせは管理者までご連絡ください
+        </p>
       </div>
     </div>
   );

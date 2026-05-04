@@ -14,10 +14,15 @@ export default async function NewTicketPage() {
   return (
     // 中央寄せの幅 max-w-2xl コンテナ
     <div className="mx-auto max-w-2xl">
-      {/* ページタイトル */}
-      <h1 className="mb-6 text-2xl font-bold text-gray-900">問い合わせ 新規登録</h1>
-      {/* カードに包んでフォームを描画 */}
-      <div className="rounded-lg bg-white p-6 shadow-sm">
+      {/* ページヘッダー: タイトル + サブテキスト */}
+      <div className="mb-6">
+        <h1 className="text-2xl font-bold text-slate-900">問い合わせ 新規登録</h1>
+        <p className="mt-1 text-sm text-slate-500">
+          内容はサポート担当者に通知され、対応状況を追跡できます。
+        </p>
+      </div>
+      {/* 白カードに包んでフォームを描画 (健診の問診票のような落ち着き) */}
+      <div className="rounded-2xl bg-white p-8 shadow-sm ring-1 ring-slate-100">
         <TicketForm categories={categories} />
       </div>
     </div>

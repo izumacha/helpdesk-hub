@@ -95,24 +95,35 @@ export default async function DashboardPage() {
     { status: 'Resolved', count: resolvedCount },
   ];
 
+  // SLA 超過カードのトーン (件数 0 はニュートラル、>0 はロゼで強調)
+  const slaIsAlert = slaOverdueCount > 0;
+
   return (
     <div className="space-y-8">
-      <h1 className="text-2xl font-bold text-gray-900">ダッシュボード</h1>
+      {/* ページヘッダー: タイトル + サブテキスト */}
+      <div>
+        <h1 className="text-2xl font-bold text-slate-900">ダッシュボード</h1>
+        <p className="mt-1 text-sm text-slate-500">
+          現在の対応状況と各担当者の負荷を一目で把握できます。
+        </p>
+      </div>
 
       {/* ステータス別件数カード群 */}
       <section>
-        <h2 className="mb-4 text-sm font-semibold text-gray-500">ステータス別件数</h2>
+        <h2 className="mb-4 text-xs font-semibold tracking-wider text-slate-500 uppercase">
+          ステータス別件数
+        </h2>
         <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-6">
           {statCards.map((card) => (
             // カードクリックで該当ステータスのフィルタ済み一覧へ遷移
             <Link
               key={card.status}
               href={`/tickets?status=${card.status}`}
-              className="rounded-lg bg-white p-4 shadow-sm transition hover:shadow-md"
+              className="rounded-2xl bg-white p-5 shadow-sm ring-1 ring-slate-100 transition duration-200 hover:-translate-y-0.5 hover:shadow-md hover:ring-teal-200"
             >
-              <p className="text-2xl font-bold text-gray-900">{card.count}</p>
+              <p className="text-3xl font-bold text-slate-900">{card.count}</p>
               <span
-                className={`mt-1 inline-flex rounded-full px-2 py-0.5 text-xs font-medium ${STATUS_COLORS[card.status]}`}
+                className={`mt-2 inline-flex rounded-full px-2.5 py-0.5 text-xs font-medium ${STATUS_COLORS[card.status]}`}
               >
                 {STATUS_LABELS[card.status]}
               </span>
@@ -124,10 +135,19 @@ export default async function DashboardPage() {
       {/* SLA 超過件数 (エージェントのみ表示) */}
       {isAgent && (
         <section>
-          <h2 className="mb-4 text-sm font-semibold text-gray-500">SLA 超過</h2>
-          <div className="w-40 rounded-lg bg-white p-4 shadow-sm">
-            <p className="text-2xl font-bold text-red-600">{slaOverdueCount}</p>
-            <p className="mt-1 text-xs text-gray-500">SLA 期限超過件数</p>
+          <h2 className="mb-4 text-xs font-semibold tracking-wider text-slate-500 uppercase">
+            SLA 超過
+          </h2>
+          {/* 件数 0 のとき: ニュートラル / >0 のとき: ロゼで注意喚起 */}
+          <div
+            className={`w-48 rounded-2xl bg-white p-5 shadow-sm ring-1 transition ${
+              slaIsAlert ? 'bg-rose-50/30 ring-rose-200' : 'ring-slate-100'
+            }`}
+          >
+            <p className={`text-3xl font-bold ${slaIsAlert ? 'text-rose-700' : 'text-slate-400'}`}>
+              {slaOverdueCount}
+            </p>
+            <p className="mt-1 text-xs text-slate-500">SLA 期限超過件数</p>
           </div>
         </section>
       )}
@@ -135,17 +155,23 @@ export default async function DashboardPage() {
       {/* 担当者別 未完了件数 (エージェントのみ・データがある場合のみ表示) */}
       {isAgent && typedWorkload.length > 0 && (
         <section>
-          <h2 className="mb-4 text-sm font-semibold text-gray-500">担当者別 未完了件数</h2>
-          <div className="overflow-hidden rounded-lg bg-white shadow-sm">
-            <table className="min-w-full divide-y divide-gray-200 text-sm">
-              <thead className="bg-gray-50">
+          <h2 className="mb-4 text-xs font-semibold tracking-wider text-slate-500 uppercase">
+            担当者別 未完了件数
+          </h2>
+          <div className="overflow-hidden rounded-2xl bg-white shadow-sm ring-1 ring-slate-100">
+            <table className="min-w-full divide-y divide-slate-100 text-sm">
+              <thead className="bg-slate-50/80">
                 <tr>
-                  <th className="px-4 py-3 text-left font-medium text-gray-500">担当者</th>
-                  <th className="px-4 py-3 text-right font-medium text-gray-500">件数</th>
-                  <th className="px-4 py-3 text-right font-medium text-gray-500"></th>
+                  <th className="px-5 py-3 text-left text-[11px] font-semibold tracking-wider text-slate-500 uppercase">
+                    担当者
+                  </th>
+                  <th className="px-5 py-3 text-right text-[11px] font-semibold tracking-wider text-slate-500 uppercase">
+                    件数
+                  </th>
+                  <th className="px-5 py-3 text-right text-[11px] font-semibold tracking-wider text-slate-500 uppercase"></th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-gray-200">
+              <tbody className="divide-y divide-slate-100">
                 {typedWorkload.map((row) => {
                   // 表示名 (担当者未割当行は「未割当」、見つからなければ「不明」)
                   const name = row.assigneeId ? (nameMap[row.assigneeId] ?? '不明') : '未割当';
@@ -154,15 +180,18 @@ export default async function DashboardPage() {
                     ? `assigneeId=${row.assigneeId}`
                     : 'assigneeId=unassigned';
                   return (
-                    <tr key={row.assigneeId ?? 'unassigned'} className="hover:bg-gray-50">
-                      <td className="px-4 py-3 text-gray-700">{name}</td>
-                      <td className="px-4 py-3 text-right font-semibold text-gray-900">
+                    <tr
+                      key={row.assigneeId ?? 'unassigned'}
+                      className="transition hover:bg-teal-50/40"
+                    >
+                      <td className="px-5 py-3.5 text-slate-700">{name}</td>
+                      <td className="px-5 py-3.5 text-right font-semibold text-slate-900">
                         {row._count.id}
                       </td>
-                      <td className="px-4 py-3 text-right">
+                      <td className="px-5 py-3.5 text-right">
                         <Link
                           href={`/tickets?${query}`}
-                          className="text-xs text-blue-600 hover:underline"
+                          className="text-xs text-teal-700 transition hover:text-teal-800 hover:underline"
                         >
                           一覧を見る
                         </Link>

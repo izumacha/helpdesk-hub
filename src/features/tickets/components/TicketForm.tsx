@@ -21,6 +21,21 @@ interface Props {
   categories: Category[];
 }
 
+// 入力欄に共通で当てるベースクラス (フォーカス時のティールリングを統一)
+const fieldBaseClass =
+  'block w-full rounded-lg border border-slate-200 bg-white px-4 py-2.5 text-sm text-slate-900 placeholder:text-slate-400 transition focus:border-teal-500 focus:outline-none focus:ring-2 focus:ring-teal-500/30';
+// 入力エラー時に追加で当てる枠色
+const fieldErrorClass = 'border-rose-400 focus:border-rose-500 focus:ring-rose-500/30';
+
+// 「必須」を示す小さな pill (健診の問診票風に柔らかく)
+function RequiredPill() {
+  return (
+    <span className="ml-1 rounded bg-teal-50 px-1.5 py-0.5 text-[10px] font-semibold text-teal-700">
+      必須
+    </span>
+  );
+}
+
 // 新規チケット作成フォーム (POST /api/tickets を呼ぶ)
 export function TicketForm({ categories }: Props) {
   // 登録成功後の遷移用ルーター
@@ -63,45 +78,56 @@ export function TicketForm({ categories }: Props) {
   }
 
   return (
-    <form onSubmit={handleSubmit(onSubmit)} className="space-y-5">
+    <form onSubmit={handleSubmit(onSubmit)} className="space-y-6">
       {/* タイトル */}
       <div>
-        <label className="block text-sm font-medium text-gray-700">
-          タイトル <span className="text-red-500">*</span>
+        <label
+          htmlFor="title"
+          className="mb-1.5 flex items-center text-sm font-medium text-slate-700"
+        >
+          タイトル
+          <RequiredPill />
         </label>
         <input
+          id="title"
           {...register('title')}
           type="text"
           maxLength={200}
-          className="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none"
+          aria-invalid={errors.title ? 'true' : 'false'}
+          className={`${fieldBaseClass} ${errors.title ? fieldErrorClass : ''}`}
           placeholder="件名を入力してください"
         />
         {/* 検証エラーメッセージ */}
-        {errors.title && <p className="mt-1 text-xs text-red-600">{errors.title.message}</p>}
+        {errors.title && <p className="mt-1.5 text-xs text-rose-600">{errors.title.message}</p>}
       </div>
 
       {/* 内容 */}
       <div>
-        <label className="block text-sm font-medium text-gray-700">
-          内容 <span className="text-red-500">*</span>
+        <label
+          htmlFor="body"
+          className="mb-1.5 flex items-center text-sm font-medium text-slate-700"
+        >
+          内容
+          <RequiredPill />
         </label>
         <textarea
+          id="body"
           {...register('body')}
           rows={6}
           maxLength={10000}
-          className="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none"
+          aria-invalid={errors.body ? 'true' : 'false'}
+          className={`${fieldBaseClass} ${errors.body ? fieldErrorClass : ''}`}
           placeholder="問い合わせ内容を入力してください"
         />
-        {errors.body && <p className="mt-1 text-xs text-red-600">{errors.body.message}</p>}
+        {errors.body && <p className="mt-1.5 text-xs text-rose-600">{errors.body.message}</p>}
       </div>
 
       {/* カテゴリ (選択任意) */}
       <div>
-        <label className="block text-sm font-medium text-gray-700">カテゴリ</label>
-        <select
-          {...register('categoryId')}
-          className="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none"
-        >
+        <label htmlFor="categoryId" className="mb-1.5 block text-sm font-medium text-slate-700">
+          カテゴリ
+        </label>
+        <select id="categoryId" {...register('categoryId')} className={fieldBaseClass}>
           <option value="">選択しない</option>
           {categories.map((c) => (
             <option key={c.id} value={c.id}>
@@ -113,11 +139,10 @@ export function TicketForm({ categories }: Props) {
 
       {/* 優先度 */}
       <div>
-        <label className="block text-sm font-medium text-gray-700">優先度</label>
-        <select
-          {...register('priority')}
-          className="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none"
-        >
+        <label htmlFor="priority" className="mb-1.5 block text-sm font-medium text-slate-700">
+          優先度
+        </label>
+        <select id="priority" {...register('priority')} className={fieldBaseClass}>
           {/* PRIORITY_LABELS の [値, 表示名] を順に並べる */}
           {Object.entries(PRIORITY_LABELS).map(([value, label]) => (
             <option key={value} value={value}>
@@ -127,24 +152,32 @@ export function TicketForm({ categories }: Props) {
         </select>
       </div>
 
-      {/* サーバー由来エラー (API レスポンス) */}
-      {serverError && <p className="text-sm text-red-600">{serverError}</p>}
-
-      {/* アクション (登録/キャンセル) */}
-      <div className="flex gap-3">
-        <button
-          type="submit"
-          disabled={isSubmitting}
-          className="rounded-md bg-blue-600 px-5 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+      {/* サーバー由来エラー (API レスポンス) ─ 柔らかなロゼ枠 */}
+      {serverError && (
+        <p
+          role="alert"
+          className="rounded-lg bg-rose-50 px-3 py-2.5 text-sm text-rose-700 ring-1 ring-rose-200"
         >
-          {isSubmitting ? '登録中...' : '登録する'}
-        </button>
+          {serverError}
+        </p>
+      )}
+
+      {/* アクション (キャンセル + 登録) ─ 右寄せで主要 CTA を強調 */}
+      <div className="flex items-center justify-end gap-3 border-t border-slate-100 pt-5">
         <button
           type="button"
           onClick={() => router.back()}
-          className="rounded-md border border-gray-300 px-5 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50"
+          className="rounded-lg px-5 py-2 text-sm font-medium text-slate-600 transition hover:bg-slate-100 hover:text-slate-900"
         >
           キャンセル
+        </button>
+        <button
+          type="submit"
+          disabled={isSubmitting}
+          aria-busy={isSubmitting}
+          className="rounded-lg bg-teal-700 px-5 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-teal-800 disabled:cursor-not-allowed disabled:opacity-60"
+        >
+          {isSubmitting ? '登録中...' : '登録する'}
         </button>
       </div>
     </form>

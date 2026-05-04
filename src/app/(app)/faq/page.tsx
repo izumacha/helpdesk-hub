@@ -35,30 +35,39 @@ export default async function FaqPage() {
 
   return (
     <div className="space-y-6">
-      <h1 className="text-2xl font-bold text-gray-900">FAQ候補一覧</h1>
+      {/* ページヘッダー: タイトル + サブテキスト */}
+      <div>
+        <h1 className="text-2xl font-bold text-slate-900">FAQ候補一覧</h1>
+        <p className="mt-1 text-sm text-slate-500">
+          解決済みチケットから抽出されたナレッジ候補を公開・却下できます。
+        </p>
+      </div>
 
       {faqs.length === 0 ? (
-        // 0 件時の空状態
-        <div className="rounded-lg border border-dashed border-gray-300 py-16 text-center text-gray-400">
-          FAQ候補はまだありません
+        // 0 件時の空状態 (柔らかなカード)
+        <div className="rounded-2xl bg-white py-20 text-center text-slate-400 ring-1 ring-slate-200">
+          <p className="text-sm">FAQ候補はまだありません</p>
         </div>
       ) : (
         // 1 件以上ある場合は順に列挙
         <div className="space-y-4">
           {faqs.map((faq) => (
-            <div key={faq.id} className="rounded-lg bg-white p-5 shadow-sm">
+            <div
+              key={faq.id}
+              className="rounded-2xl bg-white p-6 shadow-sm ring-1 ring-slate-100 transition hover:ring-teal-200"
+            >
               {/* 上段: ステータスバッジ + 元チケットへのリンク */}
-              <div className="mb-2 flex items-center justify-between">
+              <div className="mb-3 flex items-center justify-between gap-3">
                 <span
-                  className={`inline-flex rounded-full px-2 py-0.5 text-xs font-medium ${FAQ_STATUS_COLORS[faq.status] ?? ''}`}
+                  className={`inline-flex rounded-full px-2.5 py-0.5 text-xs font-medium ${FAQ_STATUS_COLORS[faq.status] ?? ''}`}
                 >
                   {FAQ_STATUS_LABELS[faq.status] ?? faq.status}
                 </span>
-                <span className="text-xs text-gray-400">
+                <span className="text-xs text-slate-400">
                   登録者: {faq.createdBy.name} / 元チケット:{' '}
                   <a
                     href={`/tickets/${faq.ticket.id}`}
-                    className="text-blue-600 hover:underline"
+                    className="text-teal-700 transition hover:text-teal-800 hover:underline"
                   >
                     {faq.ticket.title}
                   </a>
@@ -66,26 +75,28 @@ export default async function FaqPage() {
               </div>
 
               {/* 質問と回答本文 */}
-              <h3 className="mb-1 font-semibold text-gray-800">Q. {faq.question}</h3>
-              <p className="whitespace-pre-wrap text-sm text-gray-600">A. {faq.answer}</p>
+              <h3 className="mb-2 text-base font-semibold text-slate-900">Q. {faq.question}</h3>
+              <p className="text-sm leading-relaxed whitespace-pre-wrap text-slate-600">
+                A. {faq.answer}
+              </p>
 
               {/* Candidate 状態のときのみ「公開/却下」ボタンを表示 */}
               {faq.status === 'Candidate' && (
-                <div className="mt-3 flex gap-2">
-                  {/* 公開ボタン (アクションに引数をバインド) */}
+                <div className="mt-4 flex gap-2">
+                  {/* 公開ボタン (アクションに引数をバインド) ─ ミントグリーンの主要 CTA */}
                   <form action={updateFaqStatus.bind(null, faq.id, 'Published')}>
                     <button
                       type="submit"
-                      className="rounded-md bg-green-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-green-700"
+                      className="rounded-lg bg-emerald-600 px-3.5 py-1.5 text-xs font-semibold text-white transition hover:bg-emerald-700"
                     >
                       公開する
                     </button>
                   </form>
-                  {/* 却下ボタン */}
+                  {/* 却下ボタン ─ outlined で控えめに */}
                   <form action={updateFaqStatus.bind(null, faq.id, 'Rejected')}>
                     <button
                       type="submit"
-                      className="rounded-md border border-gray-300 px-3 py-1.5 text-xs text-gray-600 hover:bg-gray-50"
+                      className="rounded-lg border border-slate-200 bg-white px-3.5 py-1.5 text-xs font-medium text-slate-600 transition hover:bg-slate-50"
                     >
                       却下
                     </button>

@@ -122,76 +122,94 @@ export default async function TicketsPage({ searchParams }: Props) {
   const page = Math.min(requestedPage, Math.max(totalPages, 1));
 
   return (
-    <div>
-      {/* ヘッダー: タイトル + 新規登録ボタン */}
-      <div className="mb-4 flex items-center justify-between">
-        <h1 className="text-2xl font-bold text-gray-900">問い合わせ一覧</h1>
+    <div className="space-y-6">
+      {/* ヘッダー: タイトル + 説明文 + 新規登録ボタン */}
+      <div className="flex flex-wrap items-end justify-between gap-3">
+        <div>
+          <h1 className="text-2xl font-bold text-slate-900">問い合わせ一覧</h1>
+          <p className="mt-1 text-sm text-slate-500">
+            社内からの問い合わせを一元管理し、対応状況を追跡します。
+          </p>
+        </div>
         <Link
           href="/tickets/new"
-          className="rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700"
+          className="rounded-lg bg-teal-700 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-teal-800"
         >
-          新規登録
+          ＋ 新規登録
         </Link>
       </div>
 
       {/* 検索フィルタ (Client Component を Suspense で安全にラップ) */}
-      <div className="mb-4">
-        <Suspense>
-          <TicketFilters categories={categories} agents={agents} isAgent={isAgent} />
-        </Suspense>
-      </div>
+      <Suspense>
+        <TicketFilters categories={categories} agents={agents} isAgent={isAgent} />
+      </Suspense>
 
-      {/* 件数表示 */}
-      <p className="mb-2 text-sm text-gray-500">{total} 件</p>
+      {/* 件数表示 (落ち着いたグレー) */}
+      <p className="text-sm text-slate-500">{total} 件</p>
 
       {/* 一覧テーブル (0 件時は空状態メッセージ) */}
       {tickets.length === 0 ? (
-        <div className="rounded-lg border border-dashed border-gray-300 py-16 text-center text-gray-400">
-          条件に一致する問い合わせはありません
+        // 0 件時の空状態 (柔らかなカード) ─ 病院待合室の余白感
+        <div className="rounded-2xl bg-white py-20 text-center text-slate-400 ring-1 ring-slate-200">
+          <p className="text-sm">条件に一致する問い合わせはありません</p>
         </div>
       ) : (
-        <div className="overflow-hidden rounded-lg border border-gray-200 bg-white shadow-sm">
-          <table className="min-w-full divide-y divide-gray-200 text-sm">
-            <thead className="bg-gray-50">
+        <div className="overflow-hidden rounded-2xl bg-white shadow-sm ring-1 ring-slate-100">
+          <table className="min-w-full divide-y divide-slate-100 text-sm">
+            <thead className="bg-slate-50/80">
               <tr>
-                <th className="px-4 py-3 text-left font-medium text-gray-500">件名</th>
-                <th className="px-4 py-3 text-left font-medium text-gray-500">ステータス</th>
-                <th className="px-4 py-3 text-left font-medium text-gray-500">優先度</th>
-                <th className="px-4 py-3 text-left font-medium text-gray-500">カテゴリ</th>
-                <th className="px-4 py-3 text-left font-medium text-gray-500">担当者</th>
-                <th className="px-4 py-3 text-left font-medium text-gray-500">作成日</th>
+                <th className="px-5 py-3 text-left text-[11px] font-semibold tracking-wider text-slate-500 uppercase">
+                  件名
+                </th>
+                <th className="px-5 py-3 text-left text-[11px] font-semibold tracking-wider text-slate-500 uppercase">
+                  ステータス
+                </th>
+                <th className="px-5 py-3 text-left text-[11px] font-semibold tracking-wider text-slate-500 uppercase">
+                  優先度
+                </th>
+                <th className="px-5 py-3 text-left text-[11px] font-semibold tracking-wider text-slate-500 uppercase">
+                  カテゴリ
+                </th>
+                <th className="px-5 py-3 text-left text-[11px] font-semibold tracking-wider text-slate-500 uppercase">
+                  担当者
+                </th>
+                <th className="px-5 py-3 text-left text-[11px] font-semibold tracking-wider text-slate-500 uppercase">
+                  作成日
+                </th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-gray-200">
+            <tbody className="divide-y divide-slate-100">
               {tickets.map((ticket) => (
-                <tr key={ticket.id} className="hover:bg-gray-50">
+                <tr key={ticket.id} className="transition hover:bg-teal-50/40">
                   {/* 件名: 詳細ページへのリンク */}
-                  <td className="px-4 py-3">
+                  <td className="px-5 py-3.5">
                     <Link
                       href={`/tickets/${ticket.id}`}
-                      className="font-medium text-blue-600 hover:underline"
+                      className="font-medium text-slate-900 transition hover:text-teal-700"
                     >
                       {ticket.title}
                     </Link>
                   </td>
                   {/* ステータスバッジ */}
-                  <td className="px-4 py-3">
+                  <td className="px-5 py-3.5">
                     <span
-                      className={`inline-flex rounded-full px-2 py-0.5 text-xs font-medium ${STATUS_COLORS[ticket.status] ?? ''}`}
+                      className={`inline-flex rounded-full px-2.5 py-0.5 text-xs font-medium ${STATUS_COLORS[ticket.status] ?? ''}`}
                     >
                       {STATUS_LABELS[ticket.status] ?? ticket.status}
                     </span>
                   </td>
                   {/* 優先度 (色付きテキスト) */}
-                  <td className={`px-4 py-3 ${PRIORITY_COLORS[ticket.priority] ?? ''}`}>
+                  <td className={`px-5 py-3.5 ${PRIORITY_COLORS[ticket.priority] ?? ''}`}>
                     {PRIORITY_LABELS[ticket.priority] ?? ticket.priority}
                   </td>
                   {/* カテゴリ名 (なければ "―") */}
-                  <td className="px-4 py-3 text-gray-500">{ticket.category?.name ?? '―'}</td>
+                  <td className="px-5 py-3.5 text-slate-500">{ticket.category?.name ?? '―'}</td>
                   {/* 担当者名 (なければ "未割当") */}
-                  <td className="px-4 py-3 text-gray-500">{ticket.assignee?.name ?? '未割当'}</td>
+                  <td className="px-5 py-3.5 text-slate-500">
+                    {ticket.assignee?.name ?? '未割当'}
+                  </td>
                   {/* 作成日 (日付のみ) */}
-                  <td className="px-4 py-3 text-gray-400">
+                  <td className="px-5 py-3.5 text-slate-400">
                     {ticket.createdAt.toLocaleDateString('ja-JP')}
                   </td>
                 </tr>
@@ -229,22 +247,26 @@ function Pagination({
     return `/tickets?${params.toString()}`;
   }
 
+  // ページャ用ボタンの共通クラス (健診的に丸みのある柔らかなボタン)
+  const pagerLinkClass =
+    'rounded-full bg-white px-4 py-1.5 text-slate-600 ring-1 ring-slate-200 transition hover:bg-teal-50 hover:text-teal-800';
+
   return (
-    <div className="mt-4 flex items-center justify-center gap-2 text-sm">
+    <div className="mt-2 flex items-center justify-center gap-3 text-sm">
       {/* 1 ページ目以外でのみ「前へ」を表示 */}
       {page > 1 && (
-        <Link href={pageUrl(page - 1)} className="rounded border px-3 py-1 hover:bg-gray-50">
-          前へ
+        <Link href={pageUrl(page - 1)} className={pagerLinkClass}>
+          ← 前へ
         </Link>
       )}
       {/* 現在ページ / 総ページ */}
-      <span className="text-gray-500">
+      <span className="text-slate-500">
         {page} / {totalPages}
       </span>
       {/* 最終ページ以外でのみ「次へ」を表示 */}
       {page < totalPages && (
-        <Link href={pageUrl(page + 1)} className="rounded border px-3 py-1 hover:bg-gray-50">
-          次へ
+        <Link href={pageUrl(page + 1)} className={pagerLinkClass}>
+          次へ →
         </Link>
       )}
     </div>

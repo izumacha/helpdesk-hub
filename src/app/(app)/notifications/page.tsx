@@ -22,17 +22,25 @@ export default async function NotificationsPage() {
     include: { ticket: { select: { id: true, title: true } } },
   });
 
+  // 未読が 1 件でもあるかどうか (ボタン表示判定に使用)
+  const hasUnread = notifications.some((n) => !n.read);
+
   return (
-    <div className="space-y-4">
-      {/* ヘッダー: タイトル + 一括既読ボタン */}
-      <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold text-gray-900">通知</h1>
+    <div className="space-y-6">
+      {/* ヘッダー: タイトル + サブテキスト + 一括既読ボタン */}
+      <div className="flex flex-wrap items-end justify-between gap-3">
+        <div>
+          <h1 className="text-2xl font-bold text-slate-900">通知</h1>
+          <p className="mt-1 text-sm text-slate-500">
+            担当割当・コメント・ステータス変更などの最新通知を確認できます。
+          </p>
+        </div>
         {/* 未読が 1 件でもあれば一括既読ボタンを表示 */}
-        {notifications.some((n) => !n.read) && (
+        {hasUnread && (
           <form action={markAllRead}>
             <button
               type="submit"
-              className="rounded-md border border-gray-300 px-3 py-1.5 text-sm text-gray-600 hover:bg-gray-50"
+              className="rounded-lg border border-teal-200 bg-white px-3.5 py-2 text-sm font-medium text-teal-700 transition hover:bg-teal-50"
             >
               すべて既読にする
             </button>
@@ -42,38 +50,49 @@ export default async function NotificationsPage() {
 
       {notifications.length === 0 ? (
         // 0 件のときは空状態のメッセージ
-        <div className="rounded-lg border border-dashed border-gray-300 py-16 text-center text-gray-400">
-          通知はありません
+        <div className="rounded-2xl bg-white py-20 text-center text-slate-400 ring-1 ring-slate-200">
+          <p className="text-sm">通知はありません</p>
         </div>
       ) : (
         // 1 件以上ある場合は順に列挙
-        <ul className="space-y-2">
+        <ul className="space-y-2.5">
           {notifications.map((n) => (
-            // 未読は左ボーダー (青) で強調
+            // 未読はティールリング + 薄いミント背景で柔らかく強調
             <li
               key={n.id}
-              className={`rounded-lg bg-white p-4 shadow-sm ${!n.read ? 'border-l-4 border-blue-500' : ''}`}
+              className={`rounded-2xl bg-white p-4 shadow-sm ring-1 transition ${
+                !n.read ? 'bg-teal-50/30 ring-teal-200' : 'ring-slate-100'
+              }`}
             >
-              <div className="flex items-start justify-between gap-2">
-                <div>
-                  {/* 通知種別バッジ */}
-                  <span className="mr-2 inline-flex rounded-full bg-gray-100 px-2 py-0.5 text-xs text-gray-600">
-                    {NOTIFICATION_TYPE_LABELS[n.type] ?? n.type}
-                  </span>
-                  {/* メッセージ本文 */}
-                  <span className="text-sm text-gray-800">{n.message}</span>
-                  {/* 紐づくチケットがあれば詳細ページへのリンクを表示 */}
-                  {n.ticket && (
-                    <a
-                      href={`/tickets/${n.ticket.id}`}
-                      className="ml-2 text-xs text-blue-600 hover:underline"
-                    >
-                      チケットを見る
-                    </a>
-                  )}
+              <div className="flex items-start justify-between gap-3">
+                <div className="flex flex-1 items-start gap-2.5">
+                  {/* 未読インジケータ (小さなティールドット) ─ 既読でも位置を保つため透明配置 */}
+                  <span
+                    aria-hidden
+                    className={`mt-1.5 inline-block h-2 w-2 shrink-0 rounded-full ${
+                      !n.read ? 'bg-teal-500' : 'bg-transparent'
+                    }`}
+                  />
+                  <div className="flex-1">
+                    {/* 通知種別バッジ */}
+                    <span className="mr-2 inline-flex rounded-full bg-slate-100 px-2 py-0.5 text-xs font-medium text-slate-600">
+                      {NOTIFICATION_TYPE_LABELS[n.type] ?? n.type}
+                    </span>
+                    {/* メッセージ本文 */}
+                    <span className="text-sm text-slate-800">{n.message}</span>
+                    {/* 紐づくチケットがあれば詳細ページへのリンクを表示 */}
+                    {n.ticket && (
+                      <a
+                        href={`/tickets/${n.ticket.id}`}
+                        className="ml-2 text-xs text-teal-700 transition hover:text-teal-800 hover:underline"
+                      >
+                        チケットを見る
+                      </a>
+                    )}
+                  </div>
                 </div>
                 {/* 受信日時 (日本語ロケール) */}
-                <span className="shrink-0 text-xs text-gray-400">
+                <span className="shrink-0 text-xs text-slate-400">
                   {n.createdAt.toLocaleString('ja-JP')}
                 </span>
               </div>

@@ -13,15 +13,15 @@ export default async function AppLayout({ children }: { children: React.ReactNod
   const role = session?.user?.role ?? ('requester' as const);
 
   return (
-    // 画面全体: 左右レイアウト + 縦スクロール抑止
-    <div className="flex h-screen overflow-hidden bg-gray-50">
+    // 画面全体: 左右レイアウト + 縦スクロール抑止 (背景は新トークン surface)
+    <div className="bg-surface flex h-screen overflow-hidden">
       {/* サイドバー (権限に応じてメニューを出し分け) */}
       <Sidebar role={role} />
       {/* 右側: ヘッダー + メインコンテンツ */}
       <div className="flex flex-1 flex-col overflow-hidden">
         <Header />
-        {/* 各ページの内容 (縦スクロール可) */}
-        <main className="flex-1 overflow-y-auto p-6">{children}</main>
+        {/* 各ページの内容 (縦スクロール可) ─ 余白を広めに取り病院ロビー風の落ち着き */}
+        <main className="flex-1 overflow-y-auto p-6 sm:p-8">{children}</main>
       </div>
     </div>
   );
