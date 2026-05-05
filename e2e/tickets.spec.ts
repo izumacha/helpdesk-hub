@@ -28,8 +28,8 @@ test.describe('チケット一覧', () => {
   test('一覧ページが表示される', async ({ page }) => {
     // 見出しが「問い合わせ一覧」であること
     await expect(page.getByRole('heading', { name: '問い合わせ一覧' })).toBeVisible();
-    // 新規登録リンクが表示されること
-    await expect(page.getByRole('link', { name: '新規登録' })).toBeVisible();
+    // メイン領域にある新規登録リンクだけを探す (サイドバーにも同名リンクがあるため)
+    await expect(page.locator('main').getByRole('link', { name: '新規登録' })).toBeVisible();
   });
 
   // フィルタ用の検索ボックスとリセットボタンが表示される
@@ -89,7 +89,7 @@ test.describe('チケット詳細', () => {
     await expect(page).toHaveURL(/\/tickets\//);
     // 本文セクションが表示される
     await expect(page.getByText('問い合わせ内容')).toBeVisible();
-    // 履歴セクションも表示される
-    await expect(page.getByText('変更履歴')).toBeVisible();
+    // 変更履歴の見出しが表示される (空状態メッセージにも同じ文字が含まれるため見出しに限定)
+    await expect(page.getByRole('heading', { name: '変更履歴' })).toBeVisible();
   });
 });
