@@ -10,6 +10,8 @@ import { usePathname } from 'next/navigation';
 import { isAgent } from '@/lib/role';
 // 権限を表す Prisma 型
 import type { Role } from '@/generated/prisma';
+// 共通ブランドマーク
+import { Logo } from '@/components/brand/Logo';
 
 // サイドバーが受け取る props (現在のロール)
 interface Props {
@@ -47,20 +49,18 @@ export function Sidebar({ role }: Props) {
   };
 
   return (
-    // 折りたたみで幅を切り替えるサイドバー本体
+    // 折りたたみで幅を切り替えるサイドバー本体 (柔らかな白 + 右ボーダー)
     <aside
-      className={`flex flex-col border-r border-gray-200 bg-white transition-all duration-200 ${collapsed ? 'w-10' : 'w-56'}`}
+      className={`flex flex-col border-r border-slate-200 bg-white/90 backdrop-blur transition-all duration-200 ${collapsed ? 'w-14' : 'w-60'}`}
     >
-      {/* ヘッダー領域 (タイトル + 折りたたみボタン) */}
-      <div className="flex items-center justify-between border-b border-gray-200 px-3 py-4">
-        {/* 折りたたみ時はタイトルを隠す */}
-        {!collapsed && (
-          <span className="text-lg font-semibold text-gray-900">HelpDesk Hub</span>
-        )}
-        {/* 折りたたみ切り替えボタン */}
+      {/* ヘッダー領域 (ブランドマーク + 折りたたみボタン) */}
+      <div className="flex h-16 items-center justify-between border-b border-slate-200 px-3">
+        {/* 折りたたみ時はワードマークを隠し、シンボルだけ表示 */}
+        <Logo showWordmark={!collapsed} size={collapsed ? 28 : 30} />
+        {/* 折りたたみ切り替えボタン (アイコン文字で軽量に) */}
         <button
           onClick={() => setCollapsed(!collapsed)}
-          className="ml-auto rounded p-0.5 text-gray-500 hover:bg-gray-100 hover:text-gray-700"
+          className="ml-auto rounded-md p-1 text-slate-400 transition hover:bg-slate-100 hover:text-slate-700"
           aria-label={collapsed ? 'サイドバーを展開' : 'サイドバーを折りたたむ'}
         >
           {collapsed ? '›' : '‹'}
@@ -68,7 +68,7 @@ export function Sidebar({ role }: Props) {
       </div>
       {/* 折りたたみ時はメニュー本体を非表示 */}
       {!collapsed && (
-        <nav className="flex-1 space-y-1 px-3 py-4">
+        <nav className="flex-1 space-y-1 px-3 py-5">
           {visibleItems.map((item) => {
             // この項目が現在のページかどうか
             const isActive = isItemActive(item.href);
@@ -76,11 +76,11 @@ export function Sidebar({ role }: Props) {
               <Link
                 key={item.href}
                 href={item.href}
-                // アクティブ項目は青で強調
-                className={`block rounded-md px-3 py-2 text-sm font-medium transition-colors ${
+                // アクティブ項目はティールで強調 (左にバー風アクセント)
+                className={`relative block rounded-lg px-3 py-2.5 text-sm font-medium transition-colors ${
                   isActive
-                    ? 'bg-blue-50 text-blue-700'
-                    : 'text-gray-700 hover:bg-gray-100 hover:text-gray-900'
+                    ? 'bg-teal-50 text-teal-800 ring-1 ring-teal-100 before:absolute before:top-1/2 before:left-0 before:h-5 before:w-1 before:-translate-y-1/2 before:rounded-r before:bg-teal-600'
+                    : 'text-slate-600 hover:bg-teal-50/60 hover:text-teal-800'
                 }`}
               >
                 {item.label}
@@ -88,6 +88,12 @@ export function Sidebar({ role }: Props) {
             );
           })}
         </nav>
+      )}
+      {/* フッター: 折りたたみ時以外は小さなバージョン情報風テキスト */}
+      {!collapsed && (
+        <div className="border-t border-slate-200 px-4 py-3 text-[11px] text-slate-400">
+          © HelpDesk Hub
+        </div>
       )}
     </aside>
   );

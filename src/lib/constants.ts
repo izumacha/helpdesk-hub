@@ -22,22 +22,22 @@ export const PRIORITY_LABELS: Record<string, string> = {
   High: '高',
 };
 
-// 状態ごとのバッジ配色 (Tailwind CSS クラス)
+// 状態ごとのバッジ配色 (Tailwind CSS クラス) ─ 健診/医療系の柔らかな soft chip
 export const STATUS_COLORS: Record<string, string> = {
-  New: 'bg-gray-100 text-gray-700', // 新規: 灰色系
-  Open: 'bg-blue-100 text-blue-700', // オープン: 青系
-  WaitingForUser: 'bg-yellow-100 text-yellow-700', // ユーザー待ち: 黄系
-  InProgress: 'bg-indigo-100 text-indigo-700', // 対応中: 藍系
-  Escalated: 'bg-red-100 text-red-700', // エスカレーション: 赤系
-  Resolved: 'bg-green-100 text-green-700', // 解決済み: 緑系
-  Closed: 'bg-gray-100 text-gray-500', // クローズ: 薄い灰色
+  New: 'bg-slate-100 text-slate-700 ring-1 ring-slate-200', // 新規: ニュートラルグレー
+  Open: 'bg-teal-50 text-teal-800 ring-1 ring-teal-200', // オープン: ブランドティール
+  WaitingForUser: 'bg-amber-50 text-amber-800 ring-1 ring-amber-200', // ユーザー待ち: アンバー
+  InProgress: 'bg-sky-50 text-sky-800 ring-1 ring-sky-200', // 対応中: スカイブルー
+  Escalated: 'bg-rose-50 text-rose-800 ring-1 ring-rose-200', // エスカレーション: ロゼ
+  Resolved: 'bg-emerald-50 text-emerald-800 ring-1 ring-emerald-200', // 解決済み: ミントグリーン
+  Closed: 'bg-slate-50 text-slate-500 ring-1 ring-slate-200', // クローズ: 薄いグレー
 };
 
-// 優先度ごとの文字色クラス (Tailwind CSS)
+// 優先度ごとの文字色クラス (Tailwind CSS) ─ 視認性を保ちつつ過剰な強さを抑える
 export const PRIORITY_COLORS: Record<string, string> = {
-  Low: 'text-gray-500', // 低: グレー
-  Medium: 'text-yellow-600', // 中: 黄色
-  High: 'text-red-600 font-semibold', // 高: 赤 + 太字
+  Low: 'text-slate-500', // 低: グレー
+  Medium: 'text-amber-700', // 中: 落ち着いたアンバー
+  High: 'text-rose-700 font-semibold', // 高: ロゼ + 太字
 };
 
 // FAQ 状態キーに対応する日本語表示ラベル
@@ -47,11 +47,11 @@ export const FAQ_STATUS_LABELS: Record<string, string> = {
   Rejected: '却下',
 };
 
-// FAQ 状態ごとのバッジ配色 (Tailwind CSS クラス)
+// FAQ 状態ごとのバッジ配色 (Tailwind CSS クラス) ─ ステータスバッジと同方針
 export const FAQ_STATUS_COLORS: Record<string, string> = {
-  Candidate: 'bg-yellow-100 text-yellow-700', // 候補: 黄系
-  Published: 'bg-green-100 text-green-700', // 公開済み: 緑系
-  Rejected: 'bg-gray-100 text-gray-500', // 却下: 灰色系
+  Candidate: 'bg-amber-50 text-amber-800 ring-1 ring-amber-200', // 候補: アンバー
+  Published: 'bg-emerald-50 text-emerald-800 ring-1 ring-emerald-200', // 公開済み: ミントグリーン
+  Rejected: 'bg-slate-50 text-slate-500 ring-1 ring-slate-200', // 却下: 薄いグレー
 };
 
 // 履歴項目の英語キーに対応する日本語表示ラベル
