@@ -72,8 +72,10 @@ export default function LoginPage() {
       <div className="relative z-10 w-full max-w-md rounded-2xl bg-white/95 p-10 shadow-xl ring-1 ring-slate-100 backdrop-blur">
         {/* 上部: ブランドマーク + キャッチコピー */}
         <div className="mb-8 flex flex-col items-center text-center">
-          {/* シンボル + ワードマーク (やや大きめ) */}
-          <Logo size={44} />
+          {/* シンボルのみ表示し、画面名は下の h1 に任せる */}
+          <Logo showWordmark={false} size={44} />
+          {/* ページの主見出し (E2E とスクリーンリーダーが画面名を認識できるようにする) */}
+          <h1 className="mt-4 text-2xl font-bold tracking-tight text-slate-900">HelpDesk Hub</h1>
           {/* 補足コピー (落ち着いたグレー) */}
           <p className="mt-3 text-sm text-slate-500">社内ヘルプデスクへようこそ</p>
         </div>
