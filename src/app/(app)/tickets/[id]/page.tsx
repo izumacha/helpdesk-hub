@@ -6,8 +6,17 @@ import { auth } from '@/lib/auth';
 import { prisma } from '@/lib/prisma';
 // エージェント判定 (別名で衝突回避)
 import { isAgent as checkIsAgent } from '@/lib/role';
-// 表示用ラベル/カラークラス (ステータス/優先度/履歴)
-import { STATUS_LABELS, STATUS_COLORS, PRIORITY_LABELS, PRIORITY_COLORS, HISTORY_FIELD_LABELS } from '@/lib/constants';
+// 表示用ラベル/カラークラス (ステータス/優先度/履歴) と履歴値変換ヘルパー
+import {
+  STATUS_LABELS,
+  STATUS_COLORS,
+  PRIORITY_LABELS,
+  PRIORITY_COLORS,
+  HISTORY_FIELD_LABELS,
+  formatHistoryValue,
+} from '@/lib/constants';
+// 日本時間 (Asia/Tokyo) で日付・日時を文字列化するユーティリティ
+import { formatDateJP, formatDateTimeJP } from '@/lib/format-date';
 // ステータス変更プルダウン
 import { StatusSelect } from '@/features/tickets/components/StatusSelect';
 // 優先度変更プルダウン
@@ -122,7 +131,8 @@ export default async function TicketDetailPage({ params }: Props) {
                     <div className="mb-1 flex items-center gap-2">
                       <span className="text-sm font-medium text-gray-700">{c.author.name}</span>
                       <span className="text-xs text-gray-400">
-                        {c.createdAt.toLocaleString('ja-JP')}
+                        {/* コメント投稿日時を日本時間で表示する */}
+                        {formatDateTimeJP(c.createdAt)}
                       </span>
                     </div>
                     <p className="whitespace-pre-wrap text-sm text-gray-700">{c.body}</p>
@@ -145,14 +155,17 @@ export default async function TicketDetailPage({ params }: Props) {
                 {ticket.histories.map((h) => (
                   <li key={h.id} className="flex items-start gap-2 text-sm text-gray-600">
                     <span className="mt-0.5 text-xs text-gray-400">
-                      {h.createdAt.toLocaleString('ja-JP')}
+                      {/* 履歴記録日時を日本時間で表示する */}
+                      {formatDateTimeJP(h.createdAt)}
                     </span>
                     <span>
                       <span className="font-medium">{h.changedBy.name}</span> が{' '}
                       <span className="font-medium">
                         {HISTORY_FIELD_LABELS[h.field] ?? h.field}
                       </span>{' '}
-                      を「{h.oldValue ?? '―'}」→「{h.newValue ?? '―'}」に変更
+                      {/* oldValue / newValue を field 種別に応じて日本語ラベル化する */}
+                      を「{formatHistoryValue(h.field, h.oldValue)}」→「
+                      {formatHistoryValue(h.field, h.newValue)}」に変更
                     </span>
                   </li>
                 ))}
@@ -231,7 +244,8 @@ export default async function TicketDetailPage({ params }: Props) {
               <div>
                 <dt className="font-medium text-gray-500">作成日</dt>
                 <dd className="mt-1 text-gray-700">
-                  {ticket.createdAt.toLocaleDateString('ja-JP')}
+                  {/* チケット作成日を日本時間 (年月日) で表示する */}
+                  {formatDateJP(ticket.createdAt)}
                 </dd>
               </div>
 
@@ -241,7 +255,8 @@ export default async function TicketDetailPage({ params }: Props) {
                   <dt className="font-medium text-gray-500">解決期限</dt>
                   <dd className="mt-1 flex items-center gap-2">
                     <span className="text-gray-700">
-                      {ticket.resolutionDueAt.toLocaleDateString('ja-JP')}
+                      {/* SLA 解決期限を日本時間 (年月日) で表示する */}
+                      {formatDateJP(ticket.resolutionDueAt)}
                     </span>
                     {/* 警告/超過などの状態バッジ (none/ok 以外で表示) */}
                     {slaState !== 'none' && slaState !== 'ok' && (
@@ -260,7 +275,8 @@ export default async function TicketDetailPage({ params }: Props) {
                 <div>
                   <dt className="font-medium text-gray-500">エスカレーション日時</dt>
                   <dd className="mt-1 text-gray-700">
-                    {ticket.escalatedAt.toLocaleString('ja-JP')}
+                    {/* エスカレーション発生日時を日本時間で表示する */}
+                    {formatDateTimeJP(ticket.escalatedAt)}
                   </dd>
                   {ticket.escalationReason && (
                     <dd className="mt-1 text-xs text-gray-500">{ticket.escalationReason}</dd>

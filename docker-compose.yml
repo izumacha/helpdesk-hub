@@ -35,6 +35,8 @@ services:
       - '3000:3000'
     # 実行時の環境変数
     environment:
+      # コンテナのタイムゾーンを日本時間 (JST) に設定
+      TZ: Asia/Tokyo
       # DB 接続文字列 (db サービスの 5432 を指す)
       DATABASE_URL: postgresql://postgres:postgres@db:5432/helpdesk_hub
       # NextAuth の署名秘密鍵: 未設定なら起動を中止 (?: 構文で必須化)

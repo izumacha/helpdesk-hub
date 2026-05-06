@@ -6,6 +6,8 @@ import { prisma } from '@/lib/prisma';
 import { markAllRead } from '@/features/notifications/actions/notification-actions';
 // 通知タイプの日本語ラベル定義
 import { NOTIFICATION_TYPE_LABELS } from '@/lib/constants';
+// 日本時間 (Asia/Tokyo) で日時を文字列化するユーティリティ
+import { formatDateTimeJP } from '@/lib/format-date';
 
 // /notifications : 自分宛の通知一覧ページ
 export default async function NotificationsPage() {
@@ -91,9 +93,10 @@ export default async function NotificationsPage() {
                     )}
                   </div>
                 </div>
-                {/* 受信日時 (日本語ロケール) */}
+                {/* 受信日時 (日本時間で表示) */}
                 <span className="shrink-0 text-xs text-slate-400">
-                  {n.createdAt.toLocaleString('ja-JP')}
+                  {/* 通知作成日時を日本時間で表示する */}
+                  {formatDateTimeJP(n.createdAt)}
                 </span>
               </div>
             </li>

@@ -28,6 +28,8 @@ RUN npm run build
 FROM base AS runner
 # 本番モード
 ENV NODE_ENV=production
+# コンテナ内のタイムゾーンを日本時間 (JST) に設定 (Node.js のデフォルト TZ も日本時間に揃える)
+ENV TZ=Asia/Tokyo
 
 # 専用グループ・ユーザーを作成 (root 実行を避けるため)
 RUN addgroup --system --gid 1001 nodejs

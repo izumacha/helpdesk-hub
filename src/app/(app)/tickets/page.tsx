@@ -10,6 +10,8 @@ import { prisma } from '@/lib/prisma';
 import { isAgent as checkIsAgent } from '@/lib/role';
 // ステータス/優先度の日本語ラベルとカラークラス
 import { STATUS_LABELS, STATUS_COLORS, PRIORITY_LABELS, PRIORITY_COLORS } from '@/lib/constants';
+// 日本時間 (Asia/Tokyo) で日付を文字列化するユーティリティ
+import { formatDateJP } from '@/lib/format-date';
 // 検索フィルタフォーム (Client Component)
 import { TicketFilters } from '@/features/tickets/components/TicketFilters';
 // Prisma が生成した型 (where 構築と enum 検証用)
@@ -208,9 +210,10 @@ export default async function TicketsPage({ searchParams }: Props) {
                   <td className="px-5 py-3.5 text-slate-500">
                     {ticket.assignee?.name ?? '未割当'}
                   </td>
-                  {/* 作成日 (日付のみ) */}
+                  {/* 作成日 (日付のみ・日本時間) */}
                   <td className="px-5 py-3.5 text-slate-400">
-                    {ticket.createdAt.toLocaleDateString('ja-JP')}
+                    {/* 一覧の作成日を日本時間 (年月日) で表示する */}
+                    {formatDateJP(ticket.createdAt)}
                   </td>
                 </tr>
               ))}
