@@ -152,23 +152,28 @@ export default async function TicketDetailPage({ params }: Props) {
               <p className="text-sm text-gray-400">変更履歴はありません</p>
             ) : (
               <ul className="space-y-2">
-                {ticket.histories.map((h) => (
-                  <li key={h.id} className="flex items-start gap-2 text-sm text-gray-600">
-                    <span className="mt-0.5 text-xs text-gray-400">
-                      {/* 履歴記録日時を日本時間で表示する */}
-                      {formatDateTimeJP(h.createdAt)}
-                    </span>
-                    <span>
-                      <span className="font-medium">{h.changedBy.name}</span> が{' '}
-                      <span className="font-medium">
-                        {HISTORY_FIELD_LABELS[h.field] ?? h.field}
-                      </span>{' '}
-                      {/* oldValue / newValue を field 種別に応じて日本語ラベル化する */}
-                      を「{formatHistoryValue(h.field, h.oldValue)}」→「
-                      {formatHistoryValue(h.field, h.newValue)}」に変更
-                    </span>
-                  </li>
-                ))}
+                {ticket.histories.map((h) => {
+                  // 旧値・新値を field 種別に応じて日本語ラベル化しておく (JSX 内の改行で余計な空白が入らないよう変数化)
+                  const oldLabel = formatHistoryValue(h.field, h.oldValue);
+                  // 新値ラベル
+                  const newLabel = formatHistoryValue(h.field, h.newValue);
+                  return (
+                    <li key={h.id} className="flex items-start gap-2 text-sm text-gray-600">
+                      <span className="mt-0.5 text-xs text-gray-400">
+                        {/* 履歴記録日時を日本時間で表示する */}
+                        {formatDateTimeJP(h.createdAt)}
+                      </span>
+                      <span>
+                        <span className="font-medium">{h.changedBy.name}</span> が{' '}
+                        <span className="font-medium">
+                          {HISTORY_FIELD_LABELS[h.field] ?? h.field}
+                        </span>{' '}
+                        {/* 鍵括弧の直後に改行を入れると JSX が半角空白を挿入するため一行で書く */}
+                        を「{oldLabel}」→「{newLabel}」に変更
+                      </span>
+                    </li>
+                  );
+                })}
               </ul>
             )}
           </section>
