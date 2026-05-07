@@ -69,3 +69,16 @@ export const NOTIFICATION_TYPE_LABELS: Record<string, string> = {
   commented: 'コメント',
   statusChanged: 'ステータス変更',
 };
+
+// 変更履歴の oldValue / newValue を field 種別に応じて日本語表示に変換する関数
+// status / escalation はステータス enum、priority は優先度 enum、assignee はユーザー名がそのまま入る
+export function formatHistoryValue(field: string, value: string | null): string {
+  // 値が null の場合は欠損プレースホルダ「―」を返す (担当者の初回割当など)
+  if (value === null) return '―';
+  // status / escalation はステータス enum 値なので STATUS_LABELS で日本語化する
+  if (field === 'status' || field === 'escalation') return STATUS_LABELS[value] ?? value;
+  // priority は優先度 enum 値なので PRIORITY_LABELS で日本語化する
+  if (field === 'priority') return PRIORITY_LABELS[value] ?? value;
+  // assignee はユーザー名そのものが入っているので変換せずに返す
+  return value;
+}
