@@ -114,6 +114,7 @@ e2e/                        # E2E テスト
 
 ## 設計資料
 
+- [プロジェクト全体解説（PM・非エンジニア向け）](docs/overview.md)
 - [要件定義](docs/requirements.md)
 - [アーキテクチャ](docs/architecture.md)
 - [ER 図](docs/er-diagram.md)
