@@ -43,6 +43,8 @@ services:
       NEXTAUTH_SECRET: ${NEXTAUTH_SECRET:?set NEXTAUTH_SECRET in .env — see .env.example}
       # NextAuth が想定する自身のベース URL (デフォルトはローカル)
       NEXTAUTH_URL: ${NEXTAUTH_URL:-http://localhost:3000}
+      # Auth.js v5: リバースプロキシ/コンテナ環境ではホスト検証を信頼する
+      AUTH_TRUST_HOST: 'true'
     # db のヘルスチェックが green になってから起動する
     depends_on:
       db:

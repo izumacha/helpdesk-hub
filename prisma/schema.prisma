@@ -4,8 +4,9 @@
 
 // 生成設定: Prisma クライアント (TS で DB を操作する SDK) の出力先を指定
 generator client {
-  provider = "prisma-client-js"
-  output   = "../src/generated/prisma" // src/generated/prisma 配下にクライアント本体と型が生成される
+  provider      = "prisma-client-js"
+  output        = "../src/generated/prisma" // src/generated/prisma 配下にクライアント本体と型が生成される
+  binaryTargets = ["native", "linux-musl-arm64-openssl-3.0.x", "linux-musl-openssl-3.0.x"]
 }
 
 // データソース設定: 接続先 DB の種類と接続文字列
