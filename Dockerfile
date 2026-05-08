@@ -14,6 +14,8 @@ RUN npm ci
 # Build
 # ビルドステージ (Next.js のプロダクションビルドを行う)
 FROM base AS builder
+# Prisma が要求する OpenSSL 3 を入れて、エンジン検出を成功させる
+RUN apk add --no-cache openssl
 # deps から node_modules を持ち込む
 COPY --from=deps /app/node_modules ./node_modules
 # ソース全体をコピー
@@ -30,6 +32,9 @@ FROM base AS runner
 ENV NODE_ENV=production
 # コンテナ内のタイムゾーンを日本時間 (JST) に設定 (Node.js のデフォルト TZ も日本時間に揃える)
 ENV TZ=Asia/Tokyo
+
+# Prisma クエリエンジンが必要とする OpenSSL 3 を導入
+RUN apk add --no-cache openssl
 
 # 専用グループ・ユーザーを作成 (root 実行を避けるため)
 RUN addgroup --system --gid 1001 nodejs
@@ -48,11 +53,8 @@ COPY --from=builder /app/src/generated ./src/generated
 # 起動後に prisma migrate / db seed を実行できるよう CLI と関連ファイルを同梱
 COPY --from=builder /app/package.json ./package.json
 COPY --from=builder /app/prisma ./prisma
-COPY --from=builder /app/node_modules/.bin/prisma ./node_modules/.bin/prisma
-COPY --from=builder /app/node_modules/prisma ./node_modules/prisma
-COPY --from=builder /app/node_modules/@prisma ./node_modules/@prisma
-COPY --from=builder /app/node_modules/.bin/tsx ./node_modules/.bin/tsx
-COPY --from=builder /app/node_modules/tsx ./node_modules/tsx
+# Prisma CLI / tsx とその依存をまとめて取り込む (個別コピーでは依存解決が崩れるため)
+COPY --from=builder /app/node_modules ./node_modules
 
 # 非 root ユーザーで実行 (セキュリティ)
 USER nextjs
