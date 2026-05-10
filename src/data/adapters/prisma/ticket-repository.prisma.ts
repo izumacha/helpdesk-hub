@@ -23,10 +23,8 @@ function buildWhere(f: TicketListFilter): Prisma.TicketWhereInput {
   if (f.status !== undefined) where.status = f.status;
   if (f.priority !== undefined) where.priority = f.priority;
   if (f.categoryId !== undefined) where.categoryId = f.categoryId;
-  // 担当者条件: 'unassigned' は null に読み替え
-  if (f.assigneeId !== undefined) {
-    where.assigneeId = f.assigneeId === 'unassigned' ? null : f.assigneeId;
-  }
+  // 担当者条件: null は未アサインのみ、文字列は完全一致
+  if (f.assigneeId !== undefined) where.assigneeId = f.assigneeId;
   // テキスト検索: title または body に contains を OR 条件で適用
   if (f.text) {
     // 大文字小文字を無視する場合は Prisma の 'insensitive' モードを指定
@@ -115,44 +113,6 @@ export function makeTicketRepo(db: PrismaLike): TicketRepository {
     // 件数取得 (ページング用)
     async count(filter) {
       return db.ticket.count({ where: buildWhere(filter) });
-    },
-
-    // 状態別の件数 (起票者フィルタを任意適用)
-    async countByStatus({ creatorId, status }) {
-      return db.ticket.count({
-        where: {
-          status,
-          // creatorId が指定されていれば where に追加、なければ何も足さない
-          ...(creatorId !== undefined ? { creatorId } : {}),
-        },
-      });
-    },
-
-    // SLA 期限超過 (未解決) の件数
-    async countSlaOverdue(now) {
-      return db.ticket.count({
-        where: {
-          resolutionDueAt: { lt: now }, // 期限が現在より前
-          resolvedAt: null, // 未解決
-          status: { notIn: ['Resolved', 'Closed'] }, // 終息状態を除外
-        },
-      });
-    },
-
-    // 担当者別の保持件数 (指定状態は除外)
-    async workloadByAssignee({ excludeStatuses }) {
-      // Prisma の groupBy で assigneeId ごとに件数を集計
-      const grouped = await db.ticket.groupBy({
-        by: ['assigneeId'],
-        where: { status: { notIn: excludeStatuses } },
-        _count: { id: true },
-        orderBy: { _count: { id: 'desc' } }, // 件数の多い順
-      });
-      // AssigneeWorkloadRow 形式に整形して返す
-      return grouped.map<AssigneeWorkloadRow>((g) => ({
-        assigneeId: g.assigneeId,
-        count: g._count.id,
-      }));
     },
 
     // ダッシュボード一括取得 (status 別件数 / SLA 超過 / 担当者別ワークロード)

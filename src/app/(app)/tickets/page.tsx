@@ -75,8 +75,8 @@ export default async function TicketsPage({ searchParams }: Props) {
     priority: sp.priority && isValidPriority(sp.priority) ? sp.priority : undefined,
     // カテゴリ絞り込み (空文字は無指定として扱う)
     categoryId: sp.categoryId || undefined,
-    // 担当者絞り込み ('unassigned' はそのまま渡し、Adapter 側で null に読み替え)
-    assigneeId: sp.assigneeId || undefined,
+    // 担当者絞り込み (URL クエリの 'unassigned' をここで null に正規化)
+    assigneeId: normalizeAssigneeId(sp.assigneeId),
   };
 
   // 表示用データを並列取得 (一覧/総件数/カテゴリ/担当者候補、port 経由)
@@ -266,4 +266,17 @@ function isValidStatus(s: string): s is TicketStatus {
 // クエリ文字列の優先度が Priority に含まれるかを判定 (型ガード)
 function isValidPriority(p: string): p is Priority {
   return ['Low', 'Medium', 'High'].includes(p);
+}
+
+// URL クエリの assigneeId を Port が期待する形 (`undefined` / `null` / 文字列) に正規化する
+// - 空文字 / 未指定 → undefined (フィルタなし)
+// - 'unassigned' → null (未アサインのみ)
+// - その他 → 文字列のまま (担当者 ID で完全一致)
+function normalizeAssigneeId(raw: string | undefined): string | null | undefined {
+  // 値が無ければフィルタなし
+  if (!raw) return undefined;
+  // 'unassigned' は未アサイン (null) を意味する
+  if (raw === 'unassigned') return null;
+  // それ以外はユーザー ID とみなしてそのまま返す
+  return raw;
 }

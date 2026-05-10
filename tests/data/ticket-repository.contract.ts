@@ -140,8 +140,8 @@ export function runTicketRepositoryContract(
       expect(countResult).toBe(2);
     });
 
-    // assigneeId に "unassigned" を渡すと未割当のみが返ること
-    it('list with assigneeId "unassigned" returns only null assignees', async () => {
+    // assigneeId に null を渡すと未割当のみが返ること
+    it('list with assigneeId null returns only null assignees', async () => {
       const { requester, agentA, categoryId } = await ctx.seedBasicFixture();
       // 担当者を付けたチケット
       const assigned = await ctx.repos.tickets.create({
@@ -162,54 +162,11 @@ export function runTicketRepositoryContract(
       });
 
       const result = await ctx.repos.tickets.list({
-        filter: { assigneeId: 'unassigned' },
+        filter: { assigneeId: null },
         page: { skip: 0, take: 50 },
       });
       // 未割当の 1 件だけが返る
       expect(result.map((t) => t.id)).toEqual([unassigned.id]);
-    });
-
-    // 担当者別ワークロード集計が除外ステータスを正しく無視すること
-    it('workloadByAssignee counts only non-excluded statuses', async () => {
-      const { requester, agentA, agentB, categoryId } = await ctx.seedBasicFixture();
-      // 1 件作って担当者/状態を設定するヘルパー
-      const mk = async (assignee: string | null, status: 'New' | 'Open' | 'Resolved') => {
-        const t = await ctx.repos.tickets.create({
-          title: 't',
-          body: 'b',
-          priority: 'Medium',
-          creatorId: requester.id,
-          categoryId,
-        });
-        if (assignee) await ctx.repos.tickets.updateAssignee(t.id, assignee);
-        if (status !== 'New') {
-          await ctx.repos.tickets.updateStatus(
-            t.id,
-            status,
-            status === 'Resolved' ? new Date() : null,
-          );
-        }
-        return t;
-      };
-      // agentA: Open 2 件、Resolved 1 件 (集計から除外)
-      await mk(agentA.id, 'Open');
-      await mk(agentA.id, 'Open');
-      // agentB: New 1 件
-      await mk(agentB.id, 'New');
-      await mk(agentA.id, 'Resolved'); // 除外対象
-      // 未割当: Open 1 件
-      await mk(null, 'Open');
-
-      // Resolved/Closed を除外して集計
-      const rows = await ctx.repos.tickets.workloadByAssignee({
-        excludeStatuses: ['Resolved', 'Closed'],
-      });
-
-      // 担当者 ID をキーに件数を Map 化
-      const byAssignee = new Map(rows.map((r) => [r.assigneeId, r.count]));
-      expect(byAssignee.get(agentA.id)).toBe(2);
-      expect(byAssignee.get(agentB.id)).toBe(1);
-      expect(byAssignee.get(null)).toBe(1);
     });
 
     // uow.run の中で例外を投げると変更が一切残らないこと (ロールバック)
@@ -340,39 +297,6 @@ export function runTicketRepositoryContract(
       expect(mine.byStatus.Resolved).toBe(0);
       // SLA 超過 / ワークロードは全件対象 (呼び出し側で表示制御する前提)
       expect(mine.slaOverdue).toBe(1);
-    });
-
-    // countByStatus が status と creatorId 両方を見て集計すること
-    it('countByStatus filters by creator and status', async () => {
-      const { requester, agentA, categoryId } = await ctx.seedBasicFixture();
-      // requester の Open 1 件
-      const t1 = await ctx.repos.tickets.create({
-        title: 'a',
-        body: 'b',
-        priority: 'Low',
-        creatorId: requester.id,
-        categoryId,
-      });
-      await ctx.repos.tickets.updateStatus(t1.id, 'Open', null);
-      // agentA の New 1 件
-      await ctx.repos.tickets.create({
-        title: 'c',
-        body: 'd',
-        priority: 'Low',
-        creatorId: agentA.id,
-        categoryId,
-      });
-
-      // status のみ: Open は全体で 1 件
-      expect(await ctx.repos.tickets.countByStatus({ status: 'Open' })).toBe(1);
-      // status + creatorId: agentA の Open は 0 件
-      expect(await ctx.repos.tickets.countByStatus({ status: 'Open', creatorId: agentA.id })).toBe(
-        0,
-      );
-      // agentA の New は 1 件
-      expect(await ctx.repos.tickets.countByStatus({ status: 'New', creatorId: agentA.id })).toBe(
-        1,
-      );
     });
   });
 }

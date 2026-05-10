@@ -19,10 +19,10 @@ export interface TicketListFilter {
   priority?: Priority; // 優先度で絞る
   categoryId?: string; // カテゴリで絞る
   /**
-   * `undefined` = no filter, `null` or `'unassigned'` = only unassigned,
+   * `undefined` = no filter, `null` = only unassigned,
    * otherwise = exact match on assigneeId.
    */
-  assigneeId?: string | null | 'unassigned'; // 担当者条件 (未アサイン指定も可能)
+  assigneeId?: string | null; // 担当者条件 (null は未アサインのみ)
 }
 
 // チケット詳細画面用の型 (コメント/履歴/FAQ 候補を同梱)
@@ -77,18 +77,14 @@ export interface TicketRepository {
 
   count(filter: TicketListFilter): Promise<number>; // 件数取得 (ページング用)
 
-  countByStatus(args: { creatorId?: string; status: TicketStatus }): Promise<number>; // 状態別件数
-  countSlaOverdue(now: Date): Promise<number>; // SLA 超過件数 (ダッシュボード用)
-  workloadByAssignee(args: { excludeStatuses: TicketStatus[] }): Promise<AssigneeWorkloadRow[]>; // 担当者別件数
-
   /**
    * ダッシュボード用の一括統計取得。
-   * - byStatus は creatorId が指定されればその起票者に限定 (依頼者ロール向け)
-   * - slaOverdue / workload は常に全件対象 (担当者向け指標)
+   * - `creatorId` は **`byStatus` にのみ作用** する (依頼者ロール向けスコープ)
+   * - `slaOverdue` / `workload` は常に全件対象 (担当者向け指標)。
    *   呼び出し側が role で表示制御する前提
    */
   dashboardStats(args: {
-    creatorId?: string; // 起票者で byStatus を絞る (省略時は全件)
+    creatorId?: string; // byStatus を起票者で絞る (省略時は全件)
     now: Date; // SLA 超過判定の基準時刻
     excludeStatusesForWorkload: TicketStatus[]; // ワークロード集計で除外する状態
   }): Promise<DashboardStats>; // 上記 3 指標をまとめて返す

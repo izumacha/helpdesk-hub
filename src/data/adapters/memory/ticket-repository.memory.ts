@@ -53,11 +53,8 @@ function matchesFilter(t: Ticket, filter: TicketListFilter): boolean {
   if (filter.priority !== undefined && t.priority !== filter.priority) return false;
   // カテゴリフィルター
   if (filter.categoryId !== undefined && t.categoryId !== filter.categoryId) return false;
-  // 担当者フィルター (undefined は無指定、'unassigned' は未アサインを意味する)
-  if (filter.assigneeId !== undefined) {
-    const target = filter.assigneeId === 'unassigned' ? null : filter.assigneeId;
-    if (t.assigneeId !== target) return false;
-  }
+  // 担当者フィルター (undefined は無指定、null は未アサインのみ)
+  if (filter.assigneeId !== undefined && t.assigneeId !== filter.assigneeId) return false;
   // テキスト検索フィルター (title または body の部分一致)
   if (filter.text) {
     // 大文字小文字を無視する場合は両方小文字化する
@@ -155,55 +152,6 @@ export function makeTicketRepo(store: Store): TicketRepository {
       }
       // 件数を返す
       return n;
-    },
-
-    // 特定状態のチケット件数を取得 (起票者フィルタ付き)
-    async countByStatus({ creatorId, status }) {
-      let n = 0; // カウンタ
-      // 全チケットを走査
-      for (const t of store.tickets.values()) {
-        if (t.status !== status) continue; // 状態が違えばスキップ
-        if (creatorId !== undefined && t.creatorId !== creatorId) continue; // 起票者指定を反映
-        n += 1; // カウントアップ
-      }
-      // 件数を返す
-      return n;
-    },
-
-    // SLA 期限超過 (未解決) 件数をカウント
-    async countSlaOverdue(now) {
-      let n = 0; // カウンタ
-      // 全チケットを走査
-      for (const t of store.tickets.values()) {
-        if (!t.resolutionDueAt) continue; // 期限未設定はスキップ
-        if (t.resolutionDueAt >= now) continue; // 期限未到来はスキップ
-        if (t.resolvedAt !== null) continue; // 解決済みはスキップ
-        if (t.status === 'Resolved' || t.status === 'Closed') continue; // 終息状態もスキップ
-        n += 1; // 超過として加算
-      }
-      // 件数を返す
-      return n;
-    },
-
-    // 担当者別の保持チケット件数を取得 (指定状態は除外)
-    async workloadByAssignee({ excludeStatuses }) {
-      // 担当者 ID ごとの件数カウント用 Map
-      const counts = new Map<string | null, number>();
-      // 全チケットを走査
-      for (const t of store.tickets.values()) {
-        if (excludeStatuses.includes(t.status)) continue; // 除外状態ならスキップ
-        // 現在の件数に 1 を加算してセット
-        counts.set(t.assigneeId, (counts.get(t.assigneeId) ?? 0) + 1);
-      }
-      // Map を配列形式 (AssigneeWorkloadRow) に変換
-      const rows: AssigneeWorkloadRow[] = [...counts.entries()].map(([assigneeId, count]) => ({
-        assigneeId,
-        count,
-      }));
-      // 件数の多い順に並び替え
-      rows.sort((a, b) => b.count - a.count);
-      // 結果を返す
-      return rows;
     },
 
     // ダッシュボード一括取得 (status 別件数 / SLA 超過 / 担当者別ワークロード)
