@@ -1,15 +1,12 @@
-// DB クライアント (Prisma) でカテゴリ一覧を取得するために使用
-import { prisma } from '@/lib/prisma';
+// データ層の Composition Root 経由でカテゴリ一覧を取得する (Prisma 直叩きを避ける)
+import { repos } from '@/data';
 // 新規チケット入力フォーム (Client Component)
 import { TicketForm } from '@/features/tickets/components/TicketForm';
 
 // /tickets/new : 新規チケット作成ページ (Server Component)
 export default async function NewTicketPage() {
-  // フォームのカテゴリ選択肢として、全カテゴリを名前順で取得
-  const categories = await prisma.category.findMany({
-    orderBy: { name: 'asc' },
-    select: { id: true, name: true },
-  });
+  // フォームのカテゴリ選択肢として、全カテゴリを名前順で取得 (port 経由)
+  const categories = await repos.categories.list();
 
   return (
     // 中央寄せの幅 max-w-2xl コンテナ

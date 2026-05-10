@@ -2,15 +2,12 @@
 import Link from 'next/link';
 // セッション取得
 import { auth } from '@/lib/auth';
-// DB クライアント (Prisma)
-import { prisma } from '@/lib/prisma';
+// データ層の Composition Root (Prisma 直叩きを避ける)
+import { repos } from '@/data';
 // 「エージェント以上か」を判定 (別名 import で同名変数と区別)
 import { isAgent as checkIsAgent } from '@/lib/role';
 // ステータスの日本語ラベル + Tailwind カラークラス
 import { STATUS_LABELS, STATUS_COLORS } from '@/lib/constants';
-
-// 担当者別集計 (Prisma の groupBy 戻り値) を表す行型
-type WorkloadRow = { assigneeId: string | null; _count: { id: number } };
 
 // /dashboard : 集計ダッシュボード (役割で表示項目が変わる)
 export default async function DashboardPage() {
@@ -21,78 +18,43 @@ export default async function DashboardPage() {
 
   // ロール判定
   const isAgent = checkIsAgent(session.user.role);
-  // 依頼者は自分が作成したチケットだけを集計対象にする
-  const baseWhere = isAgent ? {} : { creatorId: session.user.id };
   // SLA 判定基準時刻 (現在時刻)
   const now = new Date();
 
-  // 6 種類のステータス集計 + SLA 超過件数 + 担当者別集計を並列取得
-  const [
-    newCount,
-    openCount,
-    inProgressCount,
-    escalatedCount,
-    resolvedCount,
-    waitingCount,
-    slaOverdueCount,
-    workload,
-  ] = await Promise.all([
-    // ステータスごとの件数
-    prisma.ticket.count({ where: { ...baseWhere, status: 'New' } }),
-    prisma.ticket.count({ where: { ...baseWhere, status: 'Open' } }),
-    prisma.ticket.count({ where: { ...baseWhere, status: 'InProgress' } }),
-    prisma.ticket.count({ where: { ...baseWhere, status: 'Escalated' } }),
-    prisma.ticket.count({ where: { ...baseWhere, status: 'Resolved' } }),
-    prisma.ticket.count({ where: { ...baseWhere, status: 'WaitingForUser' } }),
-    // SLA 超過: 期限切れかつ未解決のチケット数 (エージェントのみ)
-    isAgent
-      ? prisma.ticket.count({
-          where: {
-            resolutionDueAt: { lt: now },
-            resolvedAt: null,
-            status: { notIn: ['Resolved', 'Closed'] },
-          },
-        })
-      : Promise.resolve(0),
-    // 担当者別の未完了件数 (エージェントのみ)
-    isAgent
-      ? prisma.ticket.groupBy({
-          by: ['assigneeId'],
-          where: { status: { notIn: ['Resolved', 'Closed'] } },
-          _count: { id: true },
-          orderBy: { _count: { id: 'desc' } },
-        })
-      : Promise.resolve([]),
-  ]);
+  // ダッシュボード用 3 指標を 1 メソッドで取得 (内部は groupBy で 3 クエリに集約)
+  // - byStatus: 7 状態それぞれの件数 (依頼者なら自身のチケットに限定)
+  // - slaOverdue / workload: 全件対象 (表示は呼び出し側で role 制御)
+  const stats = await repos.tickets.dashboardStats({
+    creatorId: isAgent ? undefined : session.user.id,
+    now,
+    excludeStatusesForWorkload: ['Resolved', 'Closed'],
+  });
 
-  // groupBy の戻り値を独自型にキャスト
-  const typedWorkload = workload as WorkloadRow[];
+  // SLA 超過件数 (依頼者には表示しないので 0 にしておく)
+  const slaOverdueCount = isAgent ? stats.slaOverdue : 0;
+  // 担当者別ワークロード (依頼者には表示しないので空配列)
+  const workload = isAgent ? stats.workload : [];
 
   // 表示用に担当者 ID 一覧を抽出 (未割当行は除外)
-  const assigneeIds = typedWorkload
+  const assigneeIds = workload
     .filter((w) => w.assigneeId !== null)
     .map((w) => w.assigneeId as string);
 
-  // 担当者名を解決するため、ユーザー情報をまとめて取得
+  // 担当者名を解決するため、ユーザー情報をまとめて取得 (port 経由)
   const assigneeNames =
-    assigneeIds.length > 0
-      ? await prisma.user.findMany({
-          where: { id: { in: assigneeIds } },
-          select: { id: true, name: true },
-        })
-      : [];
+    assigneeIds.length > 0 ? await repos.users.findSummariesByIds(assigneeIds) : [];
 
   // ID → 名前の辞書を作成
   const nameMap = Object.fromEntries(assigneeNames.map((u) => [u.id, u.name]));
 
-  // ステータスカードに表示する順序付き配列
+  // ステータスカードに表示する順序付き配列 (byStatus からそのまま取り出す)
   const statCards = [
-    { status: 'New', count: newCount },
-    { status: 'Open', count: openCount },
-    { status: 'WaitingForUser', count: waitingCount },
-    { status: 'InProgress', count: inProgressCount },
-    { status: 'Escalated', count: escalatedCount },
-    { status: 'Resolved', count: resolvedCount },
+    { status: 'New', count: stats.byStatus.New },
+    { status: 'Open', count: stats.byStatus.Open },
+    { status: 'WaitingForUser', count: stats.byStatus.WaitingForUser },
+    { status: 'InProgress', count: stats.byStatus.InProgress },
+    { status: 'Escalated', count: stats.byStatus.Escalated },
+    { status: 'Resolved', count: stats.byStatus.Resolved },
   ];
 
   // SLA 超過カードのトーン (件数 0 はニュートラル、>0 はロゼで強調)
@@ -153,7 +115,7 @@ export default async function DashboardPage() {
       )}
 
       {/* 担当者別 未完了件数 (エージェントのみ・データがある場合のみ表示) */}
-      {isAgent && typedWorkload.length > 0 && (
+      {isAgent && workload.length > 0 && (
         <section>
           <h2 className="mb-4 text-xs font-semibold tracking-wider text-slate-500 uppercase">
             担当者別 未完了件数
@@ -172,7 +134,7 @@ export default async function DashboardPage() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
-                {typedWorkload.map((row) => {
+                {workload.map((row) => {
                   // 表示名 (担当者未割当行は「未割当」、見つからなければ「不明」)
                   const name = row.assigneeId ? (nameMap[row.assigneeId] ?? '不明') : '未割当';
                   // 「一覧を見る」リンク用の検索クエリ
@@ -186,7 +148,7 @@ export default async function DashboardPage() {
                     >
                       <td className="px-5 py-3.5 text-slate-700">{name}</td>
                       <td className="px-5 py-3.5 text-right font-semibold text-slate-900">
-                        {row._count.id}
+                        {row.count}
                       </td>
                       <td className="px-5 py-3.5 text-right">
                         <Link

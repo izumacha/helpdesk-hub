@@ -1,7 +1,7 @@
 // セッション (ログイン情報) 取得
 import { auth } from '@/lib/auth';
-// DB クライアント (Prisma)
-import { prisma } from '@/lib/prisma';
+// データ層の Composition Root (Prisma 直叩きを避ける)
+import { repos } from '@/data';
 // 404 へ飛ばすヘルパー (権限不足時に使用)
 import { notFound } from 'next/navigation';
 // エージェント/管理者判定
@@ -20,18 +20,8 @@ export default async function FaqPage() {
   // 一般ユーザー (依頼者) は 404 で隠す
   if (!isAgent(session.user.role)) notFound();
 
-  // FAQ 候補を新しい順で全件取得 (元チケットと作成者名を含む)
-  const faqs = await prisma.faqCandidate.findMany({
-    orderBy: { createdAt: 'desc' },
-    select: {
-      id: true,
-      question: true,
-      answer: true,
-      status: true,
-      ticket: { select: { id: true, title: true } },
-      createdBy: { select: { name: true } },
-    },
-  });
+  // FAQ 候補を新しい順で全件取得 (元チケットと作成者名を含む、port 経由)
+  const faqs = await repos.faq.list();
 
   return (
     <div className="space-y-6">

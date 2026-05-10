@@ -2,8 +2,8 @@
 import { notFound } from 'next/navigation';
 // セッション取得
 import { auth } from '@/lib/auth';
-// DB クライアント (Prisma)
-import { prisma } from '@/lib/prisma';
+// データ層の Composition Root (Prisma 直叩きを避ける)
+import { repos } from '@/data';
 // エージェント判定 (別名で衝突回避)
 import { isAgent as checkIsAgent } from '@/lib/role';
 // 表示用ラベル/カラークラス (ステータス/優先度/履歴) と履歴値変換ヘルパー
@@ -51,36 +51,12 @@ export default async function TicketDetailPage({ params }: Props) {
   // ロール判定
   const isAgent = checkIsAgent(session.user.role);
 
-  // チケット本体 (関連データ込み) と担当者プルダウン用ユーザーを並列取得
+  // チケット本体 (関連データ込み) と担当者プルダウン用ユーザーを並列取得 (port 経由)
   const [ticket, agents] = await Promise.all([
-    prisma.ticket.findUnique({
-      where: { id },
-      include: {
-        creator: { select: { id: true, name: true } },
-        assignee: { select: { id: true, name: true } },
-        category: { select: { id: true, name: true } },
-        // コメント (古い順) と投稿者名
-        comments: {
-          orderBy: { createdAt: 'asc' },
-          include: { author: { select: { id: true, name: true } } },
-        },
-        // 変更履歴 (新しい順) と変更者名
-        histories: {
-          orderBy: { createdAt: 'desc' },
-          include: { changedBy: { select: { id: true, name: true } } },
-        },
-        // FAQ 候補がすでに作成済みかを判定するため id だけ取得
-        faqCandidate: { select: { id: true } },
-      },
-    }),
+    // 詳細用: 起票者/担当者/カテゴリ/コメント/履歴/FAQ 候補をまとめて取得
+    repos.tickets.findByIdWithDetail(id),
     // エージェント時のみ担当者候補一覧を取得
-    isAgent
-      ? prisma.user.findMany({
-          where: { role: { in: ['agent', 'admin'] } },
-          select: { id: true, name: true },
-          orderBy: { name: 'asc' },
-        })
-      : Promise.resolve([]),
+    isAgent ? repos.users.listAgents() : Promise.resolve([]),
   ]);
 
   // チケットが存在しなければ 404
