@@ -2,10 +2,10 @@
 
 // ページキャッシュを無効化するための Next.js 関数
 import { revalidatePath } from 'next/cache';
+// データ層の Composition Root (Prisma 直叩きを避ける)
+import { repos } from '@/data';
 // 現在ログイン中のセッションを取得する next-auth ヘルパー
 import { auth } from '@/lib/auth';
-// DB 操作 (Prisma クライアント)
-import { prisma } from '@/lib/prisma';
 // 「エージェント権限を持つか」を判定するヘルパー
 import { isAgent } from '@/lib/role';
 // FAQ 候補化を許可する状態 (Resolved のみ) の一覧
@@ -35,8 +35,8 @@ export async function createFaqCandidate(ticketId: string, question: string, ans
     throw new Error(parsed.error.issues[0]?.message ?? 'FAQ候補の入力値が不正です');
   }
 
-  // 対象チケットを取得
-  const ticket = await prisma.ticket.findUnique({ where: { id: ticketId } });
+  // 対象チケットを取得 (port 経由)
+  const ticket = await repos.tickets.findById(ticketId);
   // 無ければエラー
   if (!ticket) throw new Error('チケットが見つかりません');
   // 解決済み以外は FAQ 化不可
@@ -44,14 +44,12 @@ export async function createFaqCandidate(ticketId: string, question: string, ans
     throw new Error('解決済みチケットのみFAQ候補に変換できます');
   }
 
-  // FAQ 候補を DB に新規作成 (初期ステータスは schema 側の既定値 Candidate)
-  await prisma.faqCandidate.create({
-    data: {
-      ticketId,
-      createdById: session.user.id, // 作成者
-      question: parsed.data.question, // 検証済みの質問文
-      answer: parsed.data.answer, // 検証済みの回答文
-    },
+  // FAQ 候補を新規作成 (初期ステータスは Adapter 側の既定値 Candidate)
+  await repos.faq.create({
+    ticketId,
+    createdById: session.user.id, // 作成者
+    question: parsed.data.question, // 検証済みの質問文
+    answer: parsed.data.answer, // 検証済みの回答文
   });
 
   // チケット詳細ページのキャッシュを無効化して再描画させる
@@ -73,8 +71,8 @@ export async function updateFaqStatus(faqId: string, status: 'Published' | 'Reje
   // 60 秒あたり 20 回までに制限
   enforceRateLimit(`faq-update:${session.user.id}`, { limit: 20, windowMs: 60_000 });
 
-  // 対象 FAQ 候補を取得
-  const faq = await prisma.faqCandidate.findUnique({ where: { id: faqId } });
+  // 対象 FAQ 候補を取得 (port 経由)
+  const faq = await repos.faq.findById(faqId);
   // 見つからなければエラー
   if (!faq) throw new Error('FAQ候補が見つかりません');
   // 既に公開/却下済みのものは対象外
@@ -82,8 +80,8 @@ export async function updateFaqStatus(faqId: string, status: 'Published' | 'Reje
     throw new Error('候補ステータスのFAQのみ公開・却下できます');
   }
 
-  // 状態を更新
-  await prisma.faqCandidate.update({ where: { id: faqId }, data: { status } });
+  // 状態を更新 (port 経由)
+  await repos.faq.updateStatus(faqId, status);
   // FAQ 一覧のキャッシュを無効化
   revalidatePath('/faq');
 }

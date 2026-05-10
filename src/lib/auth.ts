@@ -4,8 +4,8 @@ import NextAuth from 'next-auth';
 import Credentials from 'next-auth/providers/credentials';
 // bcryptjs のパスワード照合関数 (ハッシュと平文を安全に比較)
 import { compare } from 'bcryptjs';
-// Prisma クライアント (ユーザー取得に使用)
-import { prisma } from '@/lib/prisma';
+// データ層の Composition Root 経由でユーザー取得 (Prisma 直叩きを避ける)
+import { repos } from '@/data';
 // ロール (権限) 型
 import type { Role } from '@/generated/prisma';
 
@@ -47,10 +47,8 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
         // 入力不足ならすぐ失敗
         if (!credentials?.email || !credentials?.password) return null;
 
-        // email で User テーブルを検索
-        const user = await prisma.user.findUnique({
-          where: { email: credentials.email as string },
-        });
+        // email で User を検索 (port 経由)
+        const user = await repos.users.findByEmail(credentials.email as string);
 
         // ユーザー未存在、またはパスワード未設定なら失敗
         if (!user || !user.passwordHash) return null;
