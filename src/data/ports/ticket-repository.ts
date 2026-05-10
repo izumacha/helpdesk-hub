@@ -38,6 +38,13 @@ export interface AssigneeWorkloadRow {
   count: number; // 件数
 }
 
+// ダッシュボード一括取得の戻り値 (ステータス別件数 / SLA 超過 / 担当者別ワークロード)
+export interface DashboardStats {
+  byStatus: Record<TicketStatus, number>; // 7 状態それぞれの件数 (該当なしは 0)
+  slaOverdue: number; // SLA 超過件数 (未解決のうち期限切れ)
+  workload: AssigneeWorkloadRow[]; // 担当者別の保持件数 (件数降順)
+}
+
 // チケット新規作成用の入力値
 export interface CreateTicketInput {
   title: string; // 件名
@@ -73,6 +80,18 @@ export interface TicketRepository {
   countByStatus(args: { creatorId?: string; status: TicketStatus }): Promise<number>; // 状態別件数
   countSlaOverdue(now: Date): Promise<number>; // SLA 超過件数 (ダッシュボード用)
   workloadByAssignee(args: { excludeStatuses: TicketStatus[] }): Promise<AssigneeWorkloadRow[]>; // 担当者別件数
+
+  /**
+   * ダッシュボード用の一括統計取得。
+   * - byStatus は creatorId が指定されればその起票者に限定 (依頼者ロール向け)
+   * - slaOverdue / workload は常に全件対象 (担当者向け指標)
+   *   呼び出し側が role で表示制御する前提
+   */
+  dashboardStats(args: {
+    creatorId?: string; // 起票者で byStatus を絞る (省略時は全件)
+    now: Date; // SLA 超過判定の基準時刻
+    excludeStatusesForWorkload: TicketStatus[]; // ワークロード集計で除外する状態
+  }): Promise<DashboardStats>; // 上記 3 指標をまとめて返す
 
   create(input: CreateTicketInput): Promise<TicketWithRefs>; // 新規作成
   updateStatus(id: string, status: TicketStatus, resolvedAt: Date | null): Promise<void>; // 状態更新

@@ -3,12 +3,14 @@ import type {
   Ticket,
   TicketComment,
   TicketHistory,
+  TicketStatus,
   TicketWithRefs,
   UserSummary,
 } from '@/domain/types';
 // チケットリポジトリ契約と関連型をインポート
 import type {
   AssigneeWorkloadRow,
+  DashboardStats,
   TicketDetail,
   TicketListFilter,
   TicketRepository,
@@ -202,6 +204,52 @@ export function makeTicketRepo(store: Store): TicketRepository {
       rows.sort((a, b) => b.count - a.count);
       // 結果を返す
       return rows;
+    },
+
+    // ダッシュボード一括取得 (status 別件数 / SLA 超過 / 担当者別ワークロード)
+    async dashboardStats({ creatorId, now, excludeStatusesForWorkload }) {
+      // 状態別件数を 0 で初期化 (該当なしも 0 として返す)
+      const byStatus: Record<TicketStatus, number> = {
+        New: 0,
+        Open: 0,
+        WaitingForUser: 0,
+        InProgress: 0,
+        Escalated: 0,
+        Resolved: 0,
+        Closed: 0,
+      };
+      // SLA 超過件数のカウンタ
+      let slaOverdue = 0;
+      // 担当者 ID ごとの保持件数 (ワークロード集計用)
+      const workloadCounts = new Map<string | null, number>();
+      // 全チケットを 1 度だけ走査して 3 指標を同時に集計
+      for (const t of store.tickets.values()) {
+        // byStatus: 起票者フィルタ (creatorId 指定時のみ) を満たす場合に集計
+        if (creatorId === undefined || t.creatorId === creatorId) {
+          byStatus[t.status] += 1;
+        }
+        // slaOverdue: 期限あり / 期限切れ / 未解決 / 終息状態でない
+        if (
+          t.resolutionDueAt &&
+          t.resolutionDueAt < now &&
+          t.resolvedAt === null &&
+          t.status !== 'Resolved' &&
+          t.status !== 'Closed'
+        ) {
+          slaOverdue += 1;
+        }
+        // workload: 除外状態でなければ担当者ごとに加算
+        if (!excludeStatusesForWorkload.includes(t.status)) {
+          workloadCounts.set(t.assigneeId, (workloadCounts.get(t.assigneeId) ?? 0) + 1);
+        }
+      }
+      // ワークロード Map を配列に変換し件数降順で並べる
+      const workload: AssigneeWorkloadRow[] = [...workloadCounts.entries()]
+        .map(([assigneeId, count]) => ({ assigneeId, count }))
+        .sort((a, b) => b.count - a.count);
+      // DashboardStats 形式で返却
+      const result: DashboardStats = { byStatus, slaOverdue, workload };
+      return result;
     },
 
     // 新規チケットを作成 (初期状態は 'New')

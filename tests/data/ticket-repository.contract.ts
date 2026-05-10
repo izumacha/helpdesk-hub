@@ -270,6 +270,78 @@ export function runTicketRepositoryContract(
       expect(reread?.status).toBe('New');
     });
 
+    // dashboardStats が状態別件数 / SLA 超過 / ワークロードを一括で返すこと
+    it('dashboardStats aggregates byStatus, slaOverdue, workload in one call', async () => {
+      const { requester, agentA, agentB, categoryId } = await ctx.seedBasicFixture();
+      // 「期限が過去」のチケットを作るために now を未来側に進める基準時刻を用意
+      const now = new Date('2030-01-01T00:00:00Z');
+      const yesterday = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+      const tomorrow = new Date(now.getTime() + 24 * 60 * 60 * 1000);
+
+      // requester: New 1 件 (SLA 期限切れ)
+      await ctx.repos.tickets.create({
+        title: 't1',
+        body: 'b',
+        priority: 'High',
+        creatorId: requester.id,
+        categoryId,
+        resolutionDueAt: yesterday,
+      });
+      // requester: Open 1 件 (期限内、agentA に割当)
+      const t2 = await ctx.repos.tickets.create({
+        title: 't2',
+        body: 'b',
+        priority: 'Medium',
+        creatorId: requester.id,
+        categoryId,
+        resolutionDueAt: tomorrow,
+      });
+      await ctx.repos.tickets.updateStatus(t2.id, 'Open', null);
+      await ctx.repos.tickets.updateAssignee(t2.id, agentA.id);
+      // agentA 起票の Resolved 1 件 (ワークロード集計から除外される)
+      const t3 = await ctx.repos.tickets.create({
+        title: 't3',
+        body: 'b',
+        priority: 'Low',
+        creatorId: agentA.id,
+        categoryId,
+      });
+      await ctx.repos.tickets.updateAssignee(t3.id, agentB.id);
+      await ctx.repos.tickets.updateStatus(t3.id, 'Resolved', new Date());
+
+      // creatorId 未指定 = 全件対象 (担当者ビュー)
+      const all = await ctx.repos.tickets.dashboardStats({
+        now,
+        excludeStatusesForWorkload: ['Resolved', 'Closed'],
+      });
+      // byStatus: New 1 件 / Open 1 件 / Resolved 1 件、その他は 0
+      expect(all.byStatus.New).toBe(1);
+      expect(all.byStatus.Open).toBe(1);
+      expect(all.byStatus.Resolved).toBe(1);
+      expect(all.byStatus.Closed).toBe(0);
+      expect(all.byStatus.WaitingForUser).toBe(0);
+      // SLA 超過: 期限切れ未解決の 1 件
+      expect(all.slaOverdue).toBe(1);
+      // ワークロード: agentA に 1 件 (Resolved は除外)、未割当 (null) に 1 件
+      const wlByAssignee = new Map(all.workload.map((w) => [w.assigneeId, w.count]));
+      expect(wlByAssignee.get(agentA.id)).toBe(1);
+      expect(wlByAssignee.get(null)).toBe(1);
+      expect(wlByAssignee.get(agentB.id)).toBeUndefined(); // Resolved 担当のみなので除外
+
+      // creatorId 指定 = 依頼者ビュー (byStatus のみ絞られる)
+      const mine = await ctx.repos.tickets.dashboardStats({
+        creatorId: requester.id,
+        now,
+        excludeStatusesForWorkload: ['Resolved', 'Closed'],
+      });
+      // byStatus は requester のチケット 2 件のみ
+      expect(mine.byStatus.New).toBe(1);
+      expect(mine.byStatus.Open).toBe(1);
+      expect(mine.byStatus.Resolved).toBe(0);
+      // SLA 超過 / ワークロードは全件対象 (呼び出し側で表示制御する前提)
+      expect(mine.slaOverdue).toBe(1);
+    });
+
     // countByStatus が status と creatorId 両方を見て集計すること
     it('countByStatus filters by creator and status', async () => {
       const { requester, agentA, categoryId } = await ctx.seedBasicFixture();
