@@ -19,8 +19,26 @@
 
 ### 2.1 Server Actions（ミューテーション）
 
-- `src/lib/rate-limit.ts` による **プロセス内 Map** の簡易スライディングウィンドウです。
-- 目的は「状態変更・コメント・エスカレーション等を連打して通知を洪水化」するのを防ぐことです。
+`src/lib/rate-limit.ts` の **プロセス内 Map** によるスライディングウィンドウで、状態変更・コメント・エスカレーション等の連打による通知洪水を防ぎます。
+
+```mermaid
+flowchart LR
+    Client["Client<br/>(フォーム送信 / ボタン連打)"]
+    Action["Server Action"]
+    Limiter{{"rate-limit.ts<br/>プロセス内 Map<br/>スライディングウィンドウ"}}
+    OK["DB 更新 + 通知発火"]
+    NG["拒否 (Error throw)"]
+
+    SharedStore[("共有ストア<br/>Redis 等<br/>(複数インスタンス時の置き換え先)")]:::future
+
+    Client --> Action
+    Action -- "key = userId + action" --> Limiter
+    Limiter -- "上限以内" --> OK
+    Limiter -- "上限超過" --> NG
+    Limiter -.-> SharedStore
+
+    classDef future stroke-dasharray: 5 5,color:#666;
+```
 
 **制約**
 
