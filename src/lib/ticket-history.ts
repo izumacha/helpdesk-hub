@@ -1,5 +1,5 @@
-// Prisma クライアントのシングルトンを読み込む (DB 書き込みに使用)
-import { prisma } from '@/lib/prisma';
+// データ層の Composition Root から履歴リポジトリ束を読み込む (Prisma 直叩きを避ける)
+import { repos } from '@/data';
 // 履歴の「どの項目が変わったか」を示す型をインポート
 import type { HistoryField } from '@/generated/prisma';
 
@@ -12,8 +12,6 @@ export async function recordHistory(
   oldValue: string | null, // 変更前の値 (初回は null もあり得る)
   newValue: string | null, // 変更後の値
 ) {
-  // TicketHistory テーブルに 1 行挿入する (await で完了を待つ)
-  await prisma.ticketHistory.create({
-    data: { ticketId, changedById, field, oldValue, newValue },
-  });
+  // 履歴リポジトリ (port) 経由で 1 行追加する
+  await repos.history.record({ ticketId, changedById, field, oldValue, newValue });
 }

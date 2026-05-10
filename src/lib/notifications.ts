@@ -1,7 +1,7 @@
 // Next.js のキャッシュ機構 (unstable_cache) とキャッシュ無効化関数 (revalidateTag) を読み込む
 import { unstable_cache, revalidateTag } from 'next/cache';
-// Prisma クライアント (DB 操作) を読み込む
-import { prisma } from '@/lib/prisma';
+// データ層の Composition Root から通知リポジトリ束を読み込む (Prisma 直叩きを避ける)
+import { repos } from '@/data';
 // SSE で未読件数をリアルタイム配信するためのブロードキャスト関数を読み込む
 import { broadcast } from '@/lib/sse-subscribers';
 // 通知の種類 (担当割当/エスカレーション/コメント/状態変更) を表す型を読み込む
@@ -14,17 +14,15 @@ export async function createNotification(
   message: string, // 画面に表示する文言
   ticketId?: string, // 関連チケット ID (無ければ省略可)
 ) {
-  // 1. Notification テーブルに行を追加
-  await prisma.notification.create({
-    data: { userId, type, message, ticketId },
-  });
+  // 1. 通知リポジトリ (port) 経由で 1 件追加
+  await repos.notifications.create({ userId, type, message, ticketId });
 
   // 2. 未読件数の Next.js キャッシュを無効化 (次回取得時に再計算させる)
   revalidateTag(`notification-count-${userId}`);
 
   // Query live count directly (not via cache — revalidateTag just invalidated it).
   // 3. 最新の未読件数を直接 DB から取得する (キャッシュを経由しない)
-  const newCount = await prisma.notification.count({ where: { userId, read: false } });
+  const newCount = await repos.notifications.countUnread(userId);
   // 4. SSE 経由で当該ユーザーへ未読件数をプッシュ配信する
   broadcast(userId, newCount);
 }
@@ -33,7 +31,7 @@ export async function createNotification(
 export function getUnreadNotificationCount(userId: string): Promise<number> {
   // unstable_cache で「同じタグなら 60 秒は使い回す」キャッシュ関数を生成し即呼び出す
   return unstable_cache(
-    (id: string) => prisma.notification.count({ where: { userId: id, read: false } }), // 実際の DB カウント
+    (id: string) => repos.notifications.countUnread(id), // 実際の DB カウント (port 経由)
     ['notification-count'], // キャッシュキーのプレフィックス
     { tags: [`notification-count-${userId}`], revalidate: 60 }, // 無効化用タグと再検証間隔 (秒)
   )(userId);

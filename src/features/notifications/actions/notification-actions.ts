@@ -2,10 +2,10 @@
 
 // Next.js のキャッシュ無効化 API (ページ単位とタグ単位)
 import { revalidatePath, revalidateTag } from 'next/cache';
+// データ層の Composition Root (Prisma 直叩きを避ける)
+import { repos } from '@/data';
 // 現在のセッション取得
 import { auth } from '@/lib/auth';
-// DB 操作クライアント
-import { prisma } from '@/lib/prisma';
 // レート制限 (連打防止)
 import { enforceRateLimit } from '@/lib/rate-limit';
 // SSE で未読件数を即時ブロードキャストする関数
@@ -23,11 +23,8 @@ export async function markAllRead() {
     windowMs: 60_000,
   });
 
-  // 本人の未読通知を全て既読に更新
-  await prisma.notification.updateMany({
-    where: { userId: session.user.id, read: false },
-    data: { read: true },
-  });
+  // 本人の未読通知を全て既読に更新 (port 経由)
+  await repos.notifications.markAllRead(session.user.id);
 
   // 通知一覧ページのキャッシュを無効化
   revalidatePath('/notifications');
