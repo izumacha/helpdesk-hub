@@ -6,28 +6,22 @@ Next.js 15 App Router をベースとしたフルスタック構成。Server Com
 
 ## システム構成
 
-```
-┌─────────────────────────────────────────────────┐
-│                   Browser                        │
-│  React 19 (Client Components + useTransition)   │
-└────────────────────┬────────────────────────────┘
-                     │ HTTP / Server Actions
-┌────────────────────▼────────────────────────────┐
-│              Next.js 15 (App Router)             │
-│                                                  │
-│  ┌──────────────┐  ┌────────────────────────┐   │
-│  │ Server       │  │ Server Actions          │   │
-│  │ Components   │  │ (mutations + revalidate)│   │
-│  └──────┬───────┘  └──────────┬─────────────┘   │
-│         │                     │                  │
-│  ┌──────▼─────────────────────▼─────────────┐   │
-│  │         Prisma Client (ORM)               │   │
-│  └──────────────────┬────────────────────────┘   │
-└─────────────────────┼──────────────────────────┘
-                      │
-┌─────────────────────▼──────────────────────────┐
-│               PostgreSQL                         │
-└────────────────────────────────────────────────┘
+```mermaid
+flowchart TB
+    Browser["Browser<br/>React 19 (Client Components + useTransition)"]
+
+    subgraph NextJS["Next.js 15 (App Router)"]
+        SC["Server Components<br/>(データ取得)"]
+        SA["Server Actions<br/>(mutations + revalidate)"]
+        Prisma["Prisma Client (ORM)"]
+        SC --> Prisma
+        SA --> Prisma
+    end
+
+    DB[("PostgreSQL")]
+
+    Browser -- "HTTP / Server Actions" --> NextJS
+    Prisma --> DB
 ```
 
 ## ディレクトリ構成の考え方
@@ -42,10 +36,25 @@ Next.js 15 App Router をベースとしたフルスタック構成。Server Com
 
 ## 認証フロー
 
-```
-ブラウザ → /login → Credentials認証 → JWT セッション
-未認証で保護ページアクセス → middleware → /login リダイレクト
-JWT にユーザー ID・ロールを格納 → session.user.id / session.user.role
+```mermaid
+sequenceDiagram
+    actor User as ブラウザ
+    participant MW as middleware
+    participant Login as /login
+    participant Auth as Auth.js (Credentials)
+    participant App as 保護ページ
+
+    Note over User,App: 1. 通常ログイン
+    User->>Login: アクセス
+    Login->>Auth: メール / パスワード送信
+    Auth->>Auth: bcrypt 検証 + JWT 発行
+    Auth-->>User: Set-Cookie (JWT)<br/>id / role を格納
+    User->>App: 以降のリクエスト
+
+    Note over User,App: 2. 未認証で保護ページにアクセス
+    User->>MW: GET /tickets 等
+    MW->>MW: JWT 検証 → 失敗
+    MW-->>User: 302 /login へリダイレクト
 ```
 
 ## データミューテーション
@@ -70,6 +79,31 @@ Server Actions (`'use server'`) を使用。クライアントから直接呼び
 ### ポート / アダプタ構成
 
 Issue [#60](https://github.com/izumacha/helpdesk-hub/issues/60) に基づき、SSE 配信経路は `src/data/ports/notification-broadcaster.ts` のポートに抽象化されています。
+
+```mermaid
+flowchart LR
+    Browser["Browser<br/>EventSource"]
+
+    subgraph App["Next.js プロセス"]
+        Stream["/api/notifications/stream<br/>(GET)"]
+        Action["Server Actions<br/>createNotification / markAllRead"]
+        Facade["src/lib/sse-subscribers.ts<br/>(後方互換 facade)"]
+        Port{{"NotificationBroadcaster (ポート)<br/>addSubscriber / removeSubscriber / broadcast"}}
+        Memory["InMemory アダプタ<br/>プロセス内 Map<br/>(default)"]
+        Redis(["Redis pub/sub アダプタ<br/>(差し替え候補)"]):::future
+        Pg(["PostgreSQL LISTEN/NOTIFY<br/>(差し替え候補)"]):::future
+    end
+
+    Browser <-- "SSE (server-sent events)" --> Stream
+    Stream -- "addSubscriber / removeSubscriber" --> Facade
+    Action -- "broadcast(userId, count)" --> Facade
+    Facade --> Port
+    Port --> Memory
+    Port -.-> Redis
+    Port -.-> Pg
+
+    classDef future stroke-dasharray: 5 5,color:#666;
+```
 
 - ポート: `NotificationBroadcaster` — `addSubscriber` / `removeSubscriber` / `broadcast` の 3 メソッド。
 - デフォルトアダプタ: `createInMemoryNotificationBroadcaster`（`src/data/adapters/memory/notification-broadcaster.memory.ts`）。プロセス内 `Map` で購読者を管理する従来の実装。

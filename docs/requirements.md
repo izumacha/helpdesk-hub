@@ -82,25 +82,39 @@
 
 ## 5. ステータス遷移
 
-### ステータス
+ステータスは 7 種類（`New` / `Open` / `Waiting for User` / `In Progress` / `Escalated` / `Resolved` / `Closed`）。許可される遷移を以下に示す。これ以外の遷移はサーバ側で拒否する。
 
-- New
-- Open
-- Waiting for User
-- In Progress
-- Escalated
-- Resolved
-- Closed
+```mermaid
+stateDiagram-v2
+    [*] --> New : チケット登録
+    New --> Open
+    New --> WaitingForUser
+    New --> InProgress
+    New --> Resolved
+    New --> Closed
+    Open --> InProgress
+    Open --> WaitingForUser
+    Open --> Escalated
+    Open --> Resolved
+    Open --> Closed
+    WaitingForUser --> Open
+    WaitingForUser --> InProgress
+    WaitingForUser --> Resolved
+    WaitingForUser --> Closed
+    InProgress --> WaitingForUser
+    InProgress --> Escalated
+    InProgress --> Resolved
+    InProgress --> Closed
+    Escalated --> InProgress
+    Escalated --> Resolved
+    Escalated --> Closed
+    Resolved --> Open : 再オープン
+    Resolved --> Closed
+    Closed --> Open : 再オープン
+    Closed --> [*]
+```
 
-### 許可遷移
-
-- New → Open, Waiting for User, In Progress, Resolved, Closed
-- Open → In Progress, Waiting for User, Escalated, Resolved, Closed
-- Waiting for User → Open, In Progress, Resolved, Closed
-- In Progress → Waiting for User, Escalated, Resolved, Closed
-- Escalated → In Progress, Resolved, Closed
-- Resolved → Open（再オープン）, Closed
-- Closed → Open（再オープン）
+> 実装上の単一の真実は `src/domain/ticket-status.ts` の `ALLOWED_TRANSITIONS`。`docs/er-diagram.md` および `docs/overview.md` の遷移図も同じ表に基づく。
 
 ## 6. 非機能要件
 

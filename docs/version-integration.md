@@ -4,6 +4,20 @@
 
 ## 対象バージョン
 
+```mermaid
+flowchart TD
+    V1["Version 1: プロダクト定義<br/>README"]
+    V2["Version 2: 要件定義<br/>requirements.md"]
+    V3["Version 3: 実装タスク<br/>issue-backlog.md"]
+    V4["Version 4: 統合基準<br/>version-integration.md (本書)"]
+
+    V1 -. "目的・対象ユーザー・<br/>利用シーン・3 フェーズ戦略" .-> V2
+    V2 -. "スコープ・画面・<br/>エンティティ・状態遷移・<br/>非機能要件" .-> V3
+    V4 -- "命名規約・正本指定・<br/>差分解消ルール" --> V1
+    V4 --> V2
+    V4 --> V3
+```
+
 - **Version 1: プロダクト定義**（README）
   - 目的、対象ユーザー、利用シーン、3フェーズ戦略
 - **Version 2: 要件定義**（requirements）
@@ -54,12 +68,37 @@
 
 ## 4バージョン統合後の正本ルール
 
+```mermaid
+flowchart LR
+    Req["機能要件<br/>docs/requirements.md"]
+    Backlog["実装順序<br/>docs/issue-backlog.md"]
+    Readme["外部説明<br/>README.md"]
+    Self["差分調停<br/>docs/version-integration.md"]
+
+    Req --- Backlog
+    Req --- Readme
+    Self -- "矛盾時の裁定" --> Req
+    Self -- "矛盾時の裁定" --> Backlog
+    Self -- "矛盾時の裁定" --> Readme
+```
+
 1. **機能要件の正本**: `docs/requirements.md`
 2. **実装順序の正本**: `docs/issue-backlog.md`
 3. **外部説明の正本**: `README.md`
 4. **差分調停の正本**: `docs/version-integration.md`
 
 ## 差分が出たときの優先順位
+
+```mermaid
+flowchart TD
+    P1["1. セキュリティ / 権限境界"]
+    P2["2. 状態遷移の業務ルール"]
+    P3["3. データ整合性 (監査ログ含む)"]
+    P4["4. UI / UX"]
+    P5["5. 文言・命名"]
+
+    P1 -- "上位を優先" --> P2 --> P3 --> P4 --> P5
+```
 
 1. セキュリティ/権限境界（最優先）
 2. 状態遷移の業務ルール
