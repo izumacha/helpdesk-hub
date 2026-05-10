@@ -4,8 +4,8 @@ import { Suspense } from 'react';
 import Link from 'next/link';
 // セッション取得
 import { auth } from '@/lib/auth';
-// DB クライアント (Prisma)
-import { prisma } from '@/lib/prisma';
+// データ層の Composition Root (Prisma 直叩きを避ける)
+import { repos } from '@/data';
 // エージェント判定 (別名で衝突回避)
 import { isAgent as checkIsAgent } from '@/lib/role';
 // ステータス/優先度の日本語ラベルとカラークラス
@@ -14,8 +14,10 @@ import { STATUS_LABELS, STATUS_COLORS, PRIORITY_LABELS, PRIORITY_COLORS } from '
 import { formatDateJP } from '@/lib/format-date';
 // 検索フィルタフォーム (Client Component)
 import { TicketFilters } from '@/features/tickets/components/TicketFilters';
-// Prisma が生成した型 (where 構築と enum 検証用)
-import type { TicketStatus, Priority, Prisma } from '@/generated/prisma';
+// Prisma が生成した列挙型 (URL クエリの型ガード用)
+import type { TicketStatus, Priority } from '@/generated/prisma';
+// データ層が公開しているチケット一覧フィルタ型 (port 経由クエリの引数)
+import type { TicketListFilter } from '@/data/ports/ticket-repository';
 
 // 1 ページあたりの表示件数
 const PAGE_SIZE = 20;
@@ -61,61 +63,33 @@ export default async function TicketsPage({ searchParams }: Props) {
   const requestedPage = parsePageParam(sp.page);
   const skip = (requestedPage - 1) * PAGE_SIZE;
 
-  // Prisma の where 句を組み立てる空オブジェクト
-  const where: Prisma.TicketWhereInput = {};
+  // データ層に渡す TicketListFilter を組み立てる
+  const filter: TicketListFilter = {
+    // RBAC: 依頼者は自分のチケットのみ (エージェントは creatorId 未指定 = 全件)
+    creatorId: isAgent ? undefined : session.user.id,
+    // フリーワード検索 (タイトル/本文の部分一致、大文字小文字無視)
+    text: sp.q ? { contains: sp.q, caseInsensitive: true } : undefined,
+    // ステータス絞り込み (列挙値として正しい場合のみ適用)
+    status: sp.status && isValidStatus(sp.status) ? sp.status : undefined,
+    // 優先度絞り込み
+    priority: sp.priority && isValidPriority(sp.priority) ? sp.priority : undefined,
+    // カテゴリ絞り込み (空文字は無指定として扱う)
+    categoryId: sp.categoryId || undefined,
+    // 担当者絞り込み (URL クエリの 'unassigned' をここで null に正規化)
+    assigneeId: normalizeAssigneeId(sp.assigneeId),
+  };
 
-  // RBAC: 依頼者は自分が作成したチケットのみ
-  if (!isAgent) {
-    where.creatorId = session.user.id;
-  }
-
-  // フリーワード検索 (タイトル/本文の部分一致、大文字小文字無視)
-  if (sp.q) {
-    where.OR = [
-      { title: { contains: sp.q, mode: 'insensitive' } },
-      { body: { contains: sp.q, mode: 'insensitive' } },
-    ];
-  }
-  // ステータス絞り込み (列挙値として正しい場合のみ適用)
-  if (sp.status && isValidStatus(sp.status)) {
-    where.status = sp.status as TicketStatus;
-  }
-  // 優先度絞り込み
-  if (sp.priority && isValidPriority(sp.priority)) {
-    where.priority = sp.priority as Priority;
-  }
-  // カテゴリ絞り込み
-  if (sp.categoryId) {
-    where.categoryId = sp.categoryId;
-  }
-  // 担当者絞り込み (unassigned 指定なら null)
-  if (sp.assigneeId) {
-    where.assigneeId = sp.assigneeId === 'unassigned' ? null : sp.assigneeId;
-  }
-
-  // 表示用データを並列取得 (一覧/総件数/カテゴリ/担当者候補)
+  // 表示用データを並列取得 (一覧/総件数/カテゴリ/担当者候補、port 経由)
   const [tickets, total, categories, agents] = await Promise.all([
-    prisma.ticket.findMany({
-      where,
-      orderBy: { createdAt: 'desc' },
-      skip,
-      take: PAGE_SIZE,
-      include: {
-        creator: { select: { id: true, name: true } },
-        assignee: { select: { id: true, name: true } },
-        category: { select: { id: true, name: true } },
-      },
+    repos.tickets.list({
+      filter,
+      page: { skip, take: PAGE_SIZE },
+      sort: { field: 'createdAt', direction: 'desc' },
     }),
-    prisma.ticket.count({ where }),
-    prisma.category.findMany({ orderBy: { name: 'asc' } }),
+    repos.tickets.count(filter),
+    repos.categories.list(),
     // 担当者プルダウン用ユーザーは agent/admin のみ (依頼者には不要)
-    isAgent
-      ? prisma.user.findMany({
-          where: { role: { in: ['agent', 'admin'] } },
-          select: { id: true, name: true },
-          orderBy: { name: 'asc' },
-        })
-      : Promise.resolve([]),
+    isAgent ? repos.users.listAgents() : Promise.resolve([]),
   ]);
 
   // 総ページ数を計算
@@ -292,4 +266,17 @@ function isValidStatus(s: string): s is TicketStatus {
 // クエリ文字列の優先度が Priority に含まれるかを判定 (型ガード)
 function isValidPriority(p: string): p is Priority {
   return ['Low', 'Medium', 'High'].includes(p);
+}
+
+// URL クエリの assigneeId を Port が期待する形 (`undefined` / `null` / 文字列) に正規化する
+// - 空文字 / 未指定 → undefined (フィルタなし)
+// - 'unassigned' → null (未アサインのみ)
+// - その他 → 文字列のまま (担当者 ID で完全一致)
+function normalizeAssigneeId(raw: string | undefined): string | null | undefined {
+  // 値が無ければフィルタなし
+  if (!raw) return undefined;
+  // 'unassigned' は未アサイン (null) を意味する
+  if (raw === 'unassigned') return null;
+  // それ以外はユーザー ID とみなしてそのまま返す
+  return raw;
 }

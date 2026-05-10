@@ -3,12 +3,14 @@ import type {
   Ticket,
   TicketComment,
   TicketHistory,
+  TicketStatus,
   TicketWithRefs,
   UserSummary,
 } from '@/domain/types';
 // チケットリポジトリ契約と関連型をインポート
 import type {
   AssigneeWorkloadRow,
+  DashboardStats,
   TicketDetail,
   TicketListFilter,
   TicketRepository,
@@ -51,11 +53,8 @@ function matchesFilter(t: Ticket, filter: TicketListFilter): boolean {
   if (filter.priority !== undefined && t.priority !== filter.priority) return false;
   // カテゴリフィルター
   if (filter.categoryId !== undefined && t.categoryId !== filter.categoryId) return false;
-  // 担当者フィルター (undefined は無指定、'unassigned' は未アサインを意味する)
-  if (filter.assigneeId !== undefined) {
-    const target = filter.assigneeId === 'unassigned' ? null : filter.assigneeId;
-    if (t.assigneeId !== target) return false;
-  }
+  // 担当者フィルター (undefined は無指定、null は未アサインのみ)
+  if (filter.assigneeId !== undefined && t.assigneeId !== filter.assigneeId) return false;
   // テキスト検索フィルター (title または body の部分一致)
   if (filter.text) {
     // 大文字小文字を無視する場合は両方小文字化する
@@ -155,53 +154,50 @@ export function makeTicketRepo(store: Store): TicketRepository {
       return n;
     },
 
-    // 特定状態のチケット件数を取得 (起票者フィルタ付き)
-    async countByStatus({ creatorId, status }) {
-      let n = 0; // カウンタ
-      // 全チケットを走査
+    // ダッシュボード一括取得 (status 別件数 / SLA 超過 / 担当者別ワークロード)
+    async dashboardStats({ creatorId, now, excludeStatusesForWorkload }) {
+      // 状態別件数を 0 で初期化 (該当なしも 0 として返す)
+      const byStatus: Record<TicketStatus, number> = {
+        New: 0,
+        Open: 0,
+        WaitingForUser: 0,
+        InProgress: 0,
+        Escalated: 0,
+        Resolved: 0,
+        Closed: 0,
+      };
+      // SLA 超過件数のカウンタ
+      let slaOverdue = 0;
+      // 担当者 ID ごとの保持件数 (ワークロード集計用)
+      const workloadCounts = new Map<string | null, number>();
+      // 全チケットを 1 度だけ走査して 3 指標を同時に集計
       for (const t of store.tickets.values()) {
-        if (t.status !== status) continue; // 状態が違えばスキップ
-        if (creatorId !== undefined && t.creatorId !== creatorId) continue; // 起票者指定を反映
-        n += 1; // カウントアップ
+        // byStatus: 起票者フィルタ (creatorId 指定時のみ) を満たす場合に集計
+        if (creatorId === undefined || t.creatorId === creatorId) {
+          byStatus[t.status] += 1;
+        }
+        // slaOverdue: 期限あり / 期限切れ / 未解決 / 終息状態でない
+        if (
+          t.resolutionDueAt &&
+          t.resolutionDueAt < now &&
+          t.resolvedAt === null &&
+          t.status !== 'Resolved' &&
+          t.status !== 'Closed'
+        ) {
+          slaOverdue += 1;
+        }
+        // workload: 除外状態でなければ担当者ごとに加算
+        if (!excludeStatusesForWorkload.includes(t.status)) {
+          workloadCounts.set(t.assigneeId, (workloadCounts.get(t.assigneeId) ?? 0) + 1);
+        }
       }
-      // 件数を返す
-      return n;
-    },
-
-    // SLA 期限超過 (未解決) 件数をカウント
-    async countSlaOverdue(now) {
-      let n = 0; // カウンタ
-      // 全チケットを走査
-      for (const t of store.tickets.values()) {
-        if (!t.resolutionDueAt) continue; // 期限未設定はスキップ
-        if (t.resolutionDueAt >= now) continue; // 期限未到来はスキップ
-        if (t.resolvedAt !== null) continue; // 解決済みはスキップ
-        if (t.status === 'Resolved' || t.status === 'Closed') continue; // 終息状態もスキップ
-        n += 1; // 超過として加算
-      }
-      // 件数を返す
-      return n;
-    },
-
-    // 担当者別の保持チケット件数を取得 (指定状態は除外)
-    async workloadByAssignee({ excludeStatuses }) {
-      // 担当者 ID ごとの件数カウント用 Map
-      const counts = new Map<string | null, number>();
-      // 全チケットを走査
-      for (const t of store.tickets.values()) {
-        if (excludeStatuses.includes(t.status)) continue; // 除外状態ならスキップ
-        // 現在の件数に 1 を加算してセット
-        counts.set(t.assigneeId, (counts.get(t.assigneeId) ?? 0) + 1);
-      }
-      // Map を配列形式 (AssigneeWorkloadRow) に変換
-      const rows: AssigneeWorkloadRow[] = [...counts.entries()].map(([assigneeId, count]) => ({
-        assigneeId,
-        count,
-      }));
-      // 件数の多い順に並び替え
-      rows.sort((a, b) => b.count - a.count);
-      // 結果を返す
-      return rows;
+      // ワークロード Map を配列に変換し件数降順で並べる
+      const workload: AssigneeWorkloadRow[] = [...workloadCounts.entries()]
+        .map(([assigneeId, count]) => ({ assigneeId, count }))
+        .sort((a, b) => b.count - a.count);
+      // DashboardStats 形式で返却
+      const result: DashboardStats = { byStatus, slaOverdue, workload };
+      return result;
     },
 
     // 新規チケットを作成 (初期状態は 'New')

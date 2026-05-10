@@ -1,8 +1,11 @@
 // Prisma の where 条件型を参照するためにインポート
 import type { Prisma } from '@/generated/prisma';
+// 全ステータスを反復するためドメイン型をインポート
+import type { TicketStatus } from '@/domain/types';
 // チケットリポジトリ契約と関連型をインポート
 import type {
   AssigneeWorkloadRow,
+  DashboardStats,
   TicketListFilter,
   TicketRepository,
 } from '@/data/ports/ticket-repository';
@@ -20,10 +23,8 @@ function buildWhere(f: TicketListFilter): Prisma.TicketWhereInput {
   if (f.status !== undefined) where.status = f.status;
   if (f.priority !== undefined) where.priority = f.priority;
   if (f.categoryId !== undefined) where.categoryId = f.categoryId;
-  // 担当者条件: 'unassigned' は null に読み替え
-  if (f.assigneeId !== undefined) {
-    where.assigneeId = f.assigneeId === 'unassigned' ? null : f.assigneeId;
-  }
+  // 担当者条件: null は未アサインのみ、文字列は完全一致
+  if (f.assigneeId !== undefined) where.assigneeId = f.assigneeId;
   // テキスト検索: title または body に contains を OR 条件で適用
   if (f.text) {
     // 大文字小文字を無視する場合は Prisma の 'insensitive' モードを指定
@@ -114,42 +115,58 @@ export function makeTicketRepo(db: PrismaLike): TicketRepository {
       return db.ticket.count({ where: buildWhere(filter) });
     },
 
-    // 状態別の件数 (起票者フィルタを任意適用)
-    async countByStatus({ creatorId, status }) {
-      return db.ticket.count({
-        where: {
-          status,
-          // creatorId が指定されていれば where に追加、なければ何も足さない
-          ...(creatorId !== undefined ? { creatorId } : {}),
-        },
-      });
-    },
-
-    // SLA 期限超過 (未解決) の件数
-    async countSlaOverdue(now) {
-      return db.ticket.count({
-        where: {
-          resolutionDueAt: { lt: now }, // 期限が現在より前
-          resolvedAt: null, // 未解決
-          status: { notIn: ['Resolved', 'Closed'] }, // 終息状態を除外
-        },
-      });
-    },
-
-    // 担当者別の保持件数 (指定状態は除外)
-    async workloadByAssignee({ excludeStatuses }) {
-      // Prisma の groupBy で assigneeId ごとに件数を集計
-      const grouped = await db.ticket.groupBy({
-        by: ['assigneeId'],
-        where: { status: { notIn: excludeStatuses } },
-        _count: { id: true },
-        orderBy: { _count: { id: 'desc' } }, // 件数の多い順
-      });
-      // AssigneeWorkloadRow 形式に整形して返す
-      return grouped.map<AssigneeWorkloadRow>((g) => ({
-        assigneeId: g.assigneeId,
-        count: g._count.id,
-      }));
+    // ダッシュボード一括取得 (status 別件数 / SLA 超過 / 担当者別ワークロード)
+    async dashboardStats({ creatorId, now, excludeStatusesForWorkload }) {
+      // 起票者フィルタ (省略時は空オブジェクト = 全件)
+      const baseWhere: Prisma.TicketWhereInput =
+        creatorId !== undefined ? { creatorId } : {};
+      // 3 種類のクエリを並列実行 (1 ラウンドトリップ分の待ち時間で完了)
+      const [grouped, slaOverdue, workload] = await Promise.all([
+        // status 別件数を 1 回の groupBy で取得
+        db.ticket.groupBy({
+          by: ['status'],
+          where: baseWhere,
+          _count: { id: true },
+        }),
+        // SLA 超過件数 (未解決かつ期限切れ)
+        db.ticket.count({
+          where: {
+            resolutionDueAt: { lt: now },
+            resolvedAt: null,
+            status: { notIn: ['Resolved', 'Closed'] },
+          },
+        }),
+        // 担当者別の保持件数 (指定状態は除外)
+        db.ticket.groupBy({
+          by: ['assigneeId'],
+          where: { status: { notIn: excludeStatusesForWorkload } },
+          _count: { id: true },
+          orderBy: { _count: { id: 'desc' } },
+        }),
+      ]);
+      // 全 7 状態を 0 で初期化してから groupBy 結果で上書き (該当なしも 0 として返す)
+      const byStatus: Record<TicketStatus, number> = {
+        New: 0,
+        Open: 0,
+        WaitingForUser: 0,
+        InProgress: 0,
+        Escalated: 0,
+        Resolved: 0,
+        Closed: 0,
+      };
+      for (const row of grouped) {
+        byStatus[row.status as TicketStatus] = row._count.id;
+      }
+      // DashboardStats 形式で返却
+      const result: DashboardStats = {
+        byStatus,
+        slaOverdue,
+        workload: workload.map<AssigneeWorkloadRow>((g) => ({
+          assigneeId: g.assigneeId,
+          count: g._count.id,
+        })),
+      };
+      return result;
     },
 
     // 新規チケットを作成 (関連情報付きで返す)

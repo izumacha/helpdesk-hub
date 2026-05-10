@@ -1,7 +1,7 @@
 // セッション (ログイン中ユーザー) を取得
 import { auth } from '@/lib/auth';
-// DB クライアント (Prisma)
-import { prisma } from '@/lib/prisma';
+// データ層の Composition Root (Prisma 直叩きを避ける)
+import { repos } from '@/data';
 // 「すべて既読にする」ボタン用のサーバーアクション
 import { markAllRead } from '@/features/notifications/actions/notification-actions';
 // 通知タイプの日本語ラベル定義
@@ -16,13 +16,8 @@ export default async function NotificationsPage() {
   // 未ログインなら何も描画しない (middleware が先に弾くはずの保険)
   if (!session?.user?.id) return null;
 
-  // 自分宛の通知を最新 50 件取得 (チケットタイトル付き)
-  const notifications = await prisma.notification.findMany({
-    where: { userId: session.user.id },
-    orderBy: { createdAt: 'desc' },
-    take: 50,
-    include: { ticket: { select: { id: true, title: true } } },
-  });
+  // 自分宛の通知を最新 50 件取得 (チケットタイトル付き、port 経由)
+  const notifications = await repos.notifications.list(session.user.id, { limit: 50 });
 
   // 未読が 1 件でもあるかどうか (ボタン表示判定に使用)
   const hasUnread = notifications.some((n) => !n.read);
