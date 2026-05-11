@@ -1,0 +1,490 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>プロジェクト全体解説 — HelpDesk Hub Docs</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/github-markdown-css@5/github-markdown-light.css" />
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/highlight.js@11/styles/github.min.css" />
+    <style>
+      :root { color-scheme: light; }
+      body { max-width: 980px; margin: 0 auto; padding: 2rem 1.25rem 4rem;
+             font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Hiragino Sans",
+                          "Noto Sans JP", "Yu Gothic", sans-serif; line-height: 1.75;
+             color: #1f2328; background: #ffffff; }
+      .topbar { display: flex; gap: .5rem; align-items: center; margin-bottom: 1.25rem;
+                padding-bottom: .65rem; border-bottom: 1px solid #d0d7de; font-size: .9rem; }
+      .topbar a { color: #0969da; text-decoration: none; }
+      .topbar a:hover { text-decoration: underline; }
+      nav.toc { background: #f6f8fa; border: 1px solid #d0d7de; border-radius: 8px;
+                padding: .75rem 1.25rem; margin: 1.25rem 0 2rem; font-size: .92rem; }
+      nav.toc > strong { display: block; margin-bottom: .35rem; color: #57606a; font-weight: 600; }
+      nav.toc ul { margin: .25rem 0; padding-left: 1.25rem; }
+      nav.toc ul ul { padding-left: 1.25rem; margin-top: .15rem; }
+      nav.toc a { color: #0969da; text-decoration: none; }
+      nav.toc a:hover { text-decoration: underline; }
+      .markdown-body { box-sizing: border-box; }
+      .markdown-body h1, .markdown-body h2 { border-bottom: 1px solid #d8dee4; padding-bottom: .25rem; }
+      .markdown-body table { display: table; width: auto; }
+      .markdown-body img { max-width: 100%; }
+      .mermaid { background: #fff; padding: 1rem 0; margin: 1rem 0; text-align: center;
+                 overflow-x: auto; }
+      .doc-index { padding: 0; }
+      .doc-index ul { list-style: none; padding-left: 0; }
+      .doc-index li { padding: .4rem 0; border-bottom: 1px dashed #eaeef2; }
+      .doc-index a { font-weight: 600; color: #0969da; text-decoration: none; }
+      .doc-index a:hover { text-decoration: underline; }
+      .doc-index .desc { color: #57606a; font-size: .9rem; margin-left: .5rem; }
+      .doc-index h2 { margin-top: 1.75rem; }
+    </style>
+  </head>
+  <body class="markdown-body">
+    <div class="topbar"><a href="./index.html">← ドキュメント目次</a><span style="color:#656d76">/ プロジェクト全体解説</span></div>
+    <h1>プロジェクト全体解説</h1>
+<nav class="toc"><strong>目次</strong><ul><li><a href="#1-このプロダクトについて">1. このプロダクトについて</a><ul><li><a href="#解決する課題">解決する課題</a></li><li><a href="#利用シーン">利用シーン</a></li></ul></li><li><a href="#2-登場人物ロール">2. 登場人物（ロール）</a></li><li><a href="#3-主要機能マップ">3. 主要機能マップ</a><ul><li><a href="#mvp実装済み">✅ MVP（実装済み）</a></li><li><a href="#実務拡張実装済み">✅ 実務拡張（実装済み）</a></li><li><a href="#アピール拡張一部のみ実装">🚧 アピール拡張（一部のみ実装）</a></li></ul></li><li><a href="#4-典型的な利用フロー">4. 典型的な利用フロー</a><ul><li><a href="#シナリオ-a-依頼者が問い合わせを起票して解決まで">シナリオ A: 依頼者が問い合わせを起票して解決まで</a></li><li><a href="#シナリオ-b-担当者の一日">シナリオ B: 担当者の一日</a></li><li><a href="#シナリオ-c-sla-超過のリカバリ">シナリオ C: SLA 超過のリカバリ</a></li><li><a href="#シナリオ-d-ナレッジ蓄積faq-候補化">シナリオ D: ナレッジ蓄積（FAQ 候補化）</a></li></ul></li><li><a href="#5-画面と導線">5. 画面と導線</a><ul><li><a href="#画面遷移図">画面遷移図</a></li><li><a href="#画面一覧">画面一覧</a></li></ul></li><li><a href="#6-チケットのライフサイクル">6. チケットのライフサイクル</a><ul><li><a href="#許可されているステータス遷移">許可されているステータス遷移</a></li></ul></li><li><a href="#7-sla-とエスカレーション">7. SLA とエスカレーション</a><ul><li><a href="#slaサービスレベル目標">SLA（サービスレベル目標）</a></li><li><a href="#エスカレーション">エスカレーション</a></li></ul></li><li><a href="#8-通知の仕組み">8. 通知の仕組み</a></li><li><a href="#9-データの輪郭">9. データの輪郭</a></li><li><a href="#10-開発状況・既知の制約">10. 開発状況・既知の制約</a><ul><li><a href="#単一インスタンス前提重要">単一インスタンス前提（重要）</a></li><li><a href="#未実装の主な機能">未実装の主な機能</a></li></ul></li><li><a href="#11-次に読むべきドキュメント">11. 次に読むべきドキュメント</a><ul><li><a href="#pm・ステークホルダー向け">PM・ステークホルダー向け</a></li><li><a href="#エンジニア向け">エンジニア向け</a></li><li><a href="#履歴・調整資料">履歴・調整資料</a></li></ul></li></ul></nav>
+<p>このドキュメントは <strong>PM・QA・ステークホルダーなど非エンジニアの方が最初に読む</strong> ことを想定した、HelpDesk Hub の全体像を業務目線でまとめた入口資料です。技術的な詳細は各専門ドキュメントへリンクしています。</p>
+<hr>
+<h2 id="1-このプロダクトについて">1. このプロダクトについて</h2>
+<p><strong>HelpDesk Hub</strong> は、社内ヘルプデスク・情シス窓口・アプリケーションサポートを対象とした <strong>チケット（問い合わせ）管理 Web アプリケーション</strong> です。</p>
+<h3 id="解決する課題">解決する課題</h3>
+<table>
+<thead>
+<tr>
+<th>課題</th>
+<th>このシステムでの対策</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>対応漏れ</td>
+<td>全問い合わせをチケット化し、ステータスと担当者を可視化</td>
+</tr>
+<tr>
+<td>属人化</td>
+<td>変更履歴・コメント・FAQ 候補化でナレッジを組織に残す</td>
+</tr>
+<tr>
+<td>SLA 遅延</td>
+<td>初回応答期限・解決期限を自動計算し、期限間近／超過をバッジ表示</td>
+</tr>
+<tr>
+<td>二次対応の遅れ</td>
+<td>エスカレーション機能（理由・日時を記録）で引き継ぎを明示化</td>
+</tr>
+</tbody></table>
+<h3 id="利用シーン">利用シーン</h3>
+<ul>
+<li>社内ヘルプデスク（PC トラブル、アカウント発行、ソフトウェア利用相談）</li>
+<li>情報システム部門の問い合わせ窓口</li>
+<li>アプリケーション運用チームのユーザーサポート</li>
+</ul>
+<hr>
+<h2 id="2-登場人物ロール">2. 登場人物（ロール）</h2>
+<p>ユーザーは 3 種類のロールで管理されます。<code>agent</code> と <code>admin</code> は実装上ほぼ同等の権限を持ち、画面上もほぼ同じ操作が可能です（<code>admin</code> 専用機能は将来拡張予定）。</p>
+<table>
+<thead>
+<tr>
+<th>ロール</th>
+<th>立場</th>
+<th>主な操作</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><strong>requester</strong></td>
+<td>依頼者（社内のエンドユーザー）</td>
+<td>問い合わせ起票、自分のチケットの閲覧、自分のチケットへのコメント追加</td>
+</tr>
+<tr>
+<td><strong>agent</strong></td>
+<td>ヘルプデスク担当者</td>
+<td>全チケットの閲覧・更新、ステータス／優先度／担当者の変更、エスカレーション、FAQ 候補管理</td>
+</tr>
+<tr>
+<td><strong>admin</strong></td>
+<td>管理者</td>
+<td>agent の全操作（将来的にユーザー管理・カテゴリ管理・SLA 設定が追加予定）</td>
+</tr>
+</tbody></table>
+<blockquote>
+<p>requester は <strong>自分が起票したチケットしか見えません</strong>。agent と admin は組織内の全チケットを横断して扱えます。</p>
+</blockquote>
+<hr>
+<h2 id="3-主要機能マップ">3. 主要機能マップ</h2>
+<p>要件定義（<a href="./requirements.html"><code>requirements.html</code></a>）の 3 段階分類に、現在の実装状況を併記しています。</p>
+<h3 id="mvp実装済み">✅ MVP（実装済み）</h3>
+<ul>
+<li>ログイン／ログアウト、ロール別アクセス制御</li>
+<li>問い合わせの登録・一覧・詳細</li>
+<li>ステータス更新、優先度・カテゴリ設定、担当者アサイン</li>
+<li>コメント投稿、変更履歴の記録</li>
+<li>キーワード検索、ステータス／カテゴリ／優先度／担当者でのフィルタ、ページネーション</li>
+</ul>
+<h3 id="実務拡張実装済み">✅ 実務拡張（実装済み）</h3>
+<ul>
+<li>SLA（初回応答期限・解決期限の自動計算、期限間近／超過バッジ）</li>
+<li>エスカレーション（理由と日時の記録、履歴に永続化）</li>
+<li>FAQ 候補化（解決済みチケットを FAQ 候補に変換し、公開／却下で管理）</li>
+<li>通知（アサイン・エスカレーション・コメント・ステータス変更時、未読バッジをリアルタイム表示）</li>
+</ul>
+<h3 id="アピール拡張一部のみ実装">🚧 アピール拡張（一部のみ実装）</h3>
+<table>
+<thead>
+<tr>
+<th>機能</th>
+<th>状態</th>
+<th>備考</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>ダッシュボード</td>
+<td>✅ 実装済</td>
+<td>ステータス別件数、SLA 超過件数、担当者別ワークロード</td>
+</tr>
+<tr>
+<td>添付ファイル</td>
+<td>⏳ 未実装</td>
+<td>スクリーンショット・ログのアップロード</td>
+</tr>
+<tr>
+<td>CSV 出力</td>
+<td>⏳ 未実装</td>
+<td>チケット一覧のエクスポート</td>
+</tr>
+<tr>
+<td>分析レポート</td>
+<td>⏳ 未実装</td>
+<td>平均初回応答時間、平均解決時間、再オープン率、エスカレーション率</td>
+</tr>
+<tr>
+<td>監査ログ画面</td>
+<td>⏳ 未実装</td>
+<td>変更履歴は DB に蓄積済み（<code>TicketHistory</code>）。閲覧 UI が未着手</td>
+</tr>
+<tr>
+<td>管理画面</td>
+<td>⏳ 未実装</td>
+<td>ユーザー管理、カテゴリ管理、SLA 設定</td>
+</tr>
+</tbody></table>
+<p>最新の進捗・優先度は <a href="./issue-backlog.html"><code>docs/issue-backlog.html</code></a> を参照してください。</p>
+<hr>
+<h2 id="4-典型的な利用フロー">4. 典型的な利用フロー</h2>
+<h3 id="シナリオ-a-依頼者が問い合わせを起票して解決まで">シナリオ A: 依頼者が問い合わせを起票して解決まで</h3>
+<ol>
+<li>requester がブラウザで <code>/login</code> にアクセスし、社内アカウントでログイン</li>
+<li><code>/tickets/new</code> で件名・本文・カテゴリ・優先度を入力して登録</li>
+<li>ステータスは自動で <code>New</code> になり、担当者にアサイン通知が届く</li>
+<li>担当者がコメントで質問。requester が <code>/tickets/:id</code> で返信コメントを投稿</li>
+<li>担当者が解決方法を提示し、ステータスを <code>Resolved</code> に変更</li>
+<li>requester が内容を確認して問題なければそのまま、追加質問があれば再オープン</li>
+</ol>
+<h3 id="シナリオ-b-担当者の一日">シナリオ B: 担当者の一日</h3>
+<ol>
+<li>agent が朝にログインし、<code>/dashboard</code> で全体状況（ステータス別件数・SLA 超過件数・自分のワークロード）を確認</li>
+<li><code>/notifications</code> でアサイン通知や新規コメントを確認</li>
+<li>自分担当のチケットを順に開き、<code>In Progress</code> に変更して対応開始</li>
+<li>期限が迫ったチケットは SLA バッジで一目で分かる</li>
+<li>自力で解決できないチケットは理由を記録してエスカレーション</li>
+</ol>
+<h3 id="シナリオ-c-sla-超過のリカバリ">シナリオ C: SLA 超過のリカバリ</h3>
+<ol>
+<li>初回応答期限・解決期限は登録時の優先度から自動計算される</li>
+<li>期限が近づくとチケット詳細にバッジが表示される</li>
+<li>担当者は理由を入力してエスカレーション → ステータスが <code>Escalated</code> になり、上位担当者に引き継がれる</li>
+<li>引き継いだ側は <code>Escalated</code> → <code>In Progress</code> に戻して対応再開</li>
+</ol>
+<h3 id="シナリオ-d-ナレッジ蓄積faq-候補化">シナリオ D: ナレッジ蓄積（FAQ 候補化）</h3>
+<ol>
+<li>解決済み（<code>Resolved</code>）のチケットで agent / admin が「FAQ 候補登録」を実行</li>
+<li>質問・回答テキストが <code>FaqCandidate</code> として <code>/faq</code> の候補一覧に追加される</li>
+<li>レビュー担当が公開／却下を判断し、公開されたものが社内 FAQ として参照可能になる</li>
+</ol>
+<hr>
+<h2 id="5-画面と導線">5. 画面と導線</h2>
+<h3 id="画面遷移図">画面遷移図</h3>
+<div class="mermaid">flowchart TD
+    Start([ブラウザアクセス]) --&gt; MW{middleware&lt;br/&gt;認証チェック}
+    MW -- 未認証 --&gt; Login[/login&lt;br/&gt;ログイン画面]
+    MW -- 認証済み --&gt; Dashboard[/dashboard&lt;br/&gt;ダッシュボード]
+    Login -- ログイン成功 --&gt; Dashboard
+
+    Dashboard -- 件数カード クリック --&gt; TicketList
+    Dashboard -- サイドバー --&gt; TicketList[/tickets&lt;br/&gt;問い合わせ一覧]
+    Dashboard -- サイドバー --&gt; FAQ[/faq&lt;br/&gt;FAQ候補一覧]
+    Dashboard -- サイドバー --&gt; Notifications[/notifications&lt;br/&gt;通知一覧]
+
+    TicketList -- 新規登録 --&gt; TicketNew[/tickets/new&lt;br/&gt;チケット登録]
+    TicketList -- 件名クリック --&gt; TicketDetail[/tickets/:id&lt;br/&gt;チケット詳細]
+    TicketList -- フィルタ/検索 --&gt; TicketList
+    TicketList -- ページネーション --&gt; TicketList
+
+    TicketNew -- 登録成功 --&gt; TicketDetail
+
+    TicketDetail -- ステータス変更 agent/admin --&gt; TicketDetail
+    TicketDetail -- 優先度変更 agent/admin --&gt; TicketDetail
+    TicketDetail -- 担当者変更 agent/admin --&gt; TicketDetail
+    TicketDetail -- コメント投稿 --&gt; TicketDetail
+    TicketDetail -- エスカレーション agent/admin --&gt; TicketDetail
+    TicketDetail -- FAQ候補登録 agent/admin,Resolved --&gt; TicketDetail
+
+    FAQ -- 公開/却下 --&gt; FAQ
+    Notifications -- 既読にする --&gt; Notifications
+    Notifications -- チケットを見る --&gt; TicketDetail</div>
+<h3 id="画面一覧">画面一覧</h3>
+<table>
+<thead>
+<tr>
+<th>パス</th>
+<th>業務目的</th>
+<th>アクセス権限</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>/login</code></td>
+<td>社内アカウントでサインイン</td>
+<td>全員（未認証）</td>
+</tr>
+<tr>
+<td><code>/dashboard</code></td>
+<td>チーム全体の状況把握、SLA 超過の早期発見</td>
+<td>全員（認証済み）</td>
+</tr>
+<tr>
+<td><code>/tickets</code></td>
+<td>問い合わせを検索・フィルタして対応すべきものを探す</td>
+<td>全員（requester は自分の起票分のみ）</td>
+</tr>
+<tr>
+<td><code>/tickets/new</code></td>
+<td>新規問い合わせの起票</td>
+<td>全員（認証済み）</td>
+</tr>
+<tr>
+<td><code>/tickets/:id</code></td>
+<td>個別案件の詳細閲覧・対応・コメントのやり取り</td>
+<td>全員（requester は自分の起票分のみ）</td>
+</tr>
+<tr>
+<td><code>/faq</code></td>
+<td>解決済み案件をナレッジ化、公開／却下を管理</td>
+<td>agent / admin のみ</td>
+</tr>
+<tr>
+<td><code>/notifications</code></td>
+<td>自分宛の通知の確認・既読化</td>
+<td>全員（認証済み）</td>
+</tr>
+</tbody></table>
+<p>詳細は <a href="./screen-flow.html"><code>screen-flow.html</code></a> を参照。</p>
+<hr>
+<h2 id="6-チケットのライフサイクル">6. チケットのライフサイクル</h2>
+<p>問い合わせは 7 つのステータスを行き来します。</p>
+<table>
+<thead>
+<tr>
+<th>ステータス</th>
+<th>業務的な意味</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>New</code></td>
+<td>起票直後。まだ担当者が初動を取っていない</td>
+</tr>
+<tr>
+<td><code>Open</code></td>
+<td>受付済み。対応待ち、または初回応答済みで次のアクション待ち</td>
+</tr>
+<tr>
+<td><code>In Progress</code></td>
+<td>担当者が能動的に対応中</td>
+</tr>
+<tr>
+<td><code>Waiting for User</code></td>
+<td>依頼者からの追加情報・確認を待っている状態（タイマーは止まる業務運用）</td>
+</tr>
+<tr>
+<td><code>Escalated</code></td>
+<td>二次対応・上位担当者への引き継ぎ中。理由と日時が記録される</td>
+</tr>
+<tr>
+<td><code>Resolved</code></td>
+<td>解決策を提示済み。依頼者の最終確認待ち。<strong>ここから再オープン可能</strong></td>
+</tr>
+<tr>
+<td><code>Closed</code></td>
+<td>完全クローズ。<strong>ここからも再オープン可能</strong>（運用上の救済措置）</td>
+</tr>
+</tbody></table>
+<h3 id="許可されているステータス遷移">許可されているステータス遷移</h3>
+<div class="mermaid">stateDiagram-v2
+    [*] --&gt; New : チケット登録
+    New --&gt; Open
+    New --&gt; WaitingForUser
+    New --&gt; InProgress
+    New --&gt; Resolved
+    New --&gt; Closed
+    Open --&gt; InProgress
+    Open --&gt; WaitingForUser
+    Open --&gt; Escalated
+    Open --&gt; Resolved
+    Open --&gt; Closed
+    WaitingForUser --&gt; Open
+    WaitingForUser --&gt; InProgress
+    WaitingForUser --&gt; Resolved
+    WaitingForUser --&gt; Closed
+    InProgress --&gt; WaitingForUser
+    InProgress --&gt; Escalated
+    InProgress --&gt; Resolved
+    InProgress --&gt; Closed
+    Escalated --&gt; InProgress
+    Escalated --&gt; Resolved
+    Escalated --&gt; Closed
+    Resolved --&gt; Open : 再オープン
+    Resolved --&gt; Closed
+    Closed --&gt; Open : 再オープン
+    Closed --&gt; [*]</div>
+<blockquote>
+<p>上記以外の遷移は <strong>サーバー側で拒否</strong> されます（例: <code>New</code> → <code>Escalated</code> は不可）。許可表は <code>src/domain/ticket-status.ts</code> が単一の真実とされ、テストで担保されています。</p>
+</blockquote>
+<hr>
+<h2 id="7-sla-とエスカレーション">7. SLA とエスカレーション</h2>
+<h3 id="slaサービスレベル目標">SLA（サービスレベル目標）</h3>
+<ul>
+<li>チケット登録時に <strong>初回応答期限</strong> と <strong>解決期限</strong> が自動計算されます（優先度に応じて時間が変わる）</li>
+<li>チケット詳細・一覧で「期限間近」「期限超過」のバッジが表示される</li>
+<li>期限超過件数はダッシュボードでも集計表示</li>
+</ul>
+<h3 id="エスカレーション">エスカレーション</h3>
+<ul>
+<li>agent / admin が「エスカレーション」ボタンから <strong>理由を入力</strong> して実行</li>
+<li>ステータスが <code>Escalated</code> に遷移し、<code>escalatedAt</code>（日時）と <code>escalationReason</code>（理由）が永続化</li>
+<li>変更履歴（<code>TicketHistory</code>）にも記録され、後から経緯を追跡可能</li>
+<li>上位担当者は <code>Escalated</code> → <code>In Progress</code> に戻して対応再開</li>
+</ul>
+<hr>
+<h2 id="8-通知の仕組み">8. 通知の仕組み</h2>
+<p>ユーザーには以下のイベントで通知が届きます。</p>
+<table>
+<thead>
+<tr>
+<th>イベント</th>
+<th>通知タイミング</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>assigned</code></td>
+<td>チケットの担当者に自分がアサインされた</td>
+</tr>
+<tr>
+<td><code>escalated</code></td>
+<td>自分が関わるチケットがエスカレーションされた</td>
+</tr>
+<tr>
+<td><code>commented</code></td>
+<td>自分が関わるチケットにコメントが付いた</td>
+</tr>
+<tr>
+<td><code>statusChanged</code></td>
+<td>自分が関わるチケットのステータスが変わった</td>
+</tr>
+</tbody></table>
+<ul>
+<li>サイドバーの通知バッジは <strong>画面遷移なしでリアルタイムに更新</strong> されます（Server-Sent Events を使用）</li>
+<li><code>/notifications</code> で通知一覧を表示し、個別または一括で既読化可能</li>
+</ul>
+<blockquote>
+<p>技術的詳細（SSE 実装、水平スケール時の制約）は <a href="./architecture.html#%E3%83%AA%E3%82%A2%E3%83%AB%E3%82%BF%E3%82%A4%E3%83%A0%E9%80%9A%E7%9F%A5sse%E3%81%A8%E6%B0%B4%E5%B9%B3%E3%82%B9%E3%82%B1%E3%83%BC%E3%83%AB%E5%88%B6%E7%B4%84"><code>architecture.html</code></a> を参照。</p>
+</blockquote>
+<hr>
+<h2 id="9-データの輪郭">9. データの輪郭</h2>
+<p>ビジネスエンティティは大きく分けて 7 種類です（カラム詳細は <a href="./er-diagram.html"><code>er-diagram.html</code></a> を参照）。</p>
+<table>
+<thead>
+<tr>
+<th>エンティティ</th>
+<th>役割</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><strong>User</strong></td>
+<td>利用者。ロール（requester / agent / admin）を持つ</td>
+</tr>
+<tr>
+<td><strong>Category</strong></td>
+<td>チケットの分類（例: PC、ネットワーク、アカウント）</td>
+</tr>
+<tr>
+<td><strong>Ticket</strong></td>
+<td>問い合わせ本体。ステータス、優先度、担当、SLA 期限などを保持</td>
+</tr>
+<tr>
+<td><strong>TicketComment</strong></td>
+<td>チケット上の会話履歴</td>
+</tr>
+<tr>
+<td><strong>TicketHistory</strong></td>
+<td>ステータス・担当者・優先度・エスカレーションの <strong>監査ログ</strong></td>
+</tr>
+<tr>
+<td><strong>FaqCandidate</strong></td>
+<td>解決済みチケットから派生したナレッジ候補</td>
+</tr>
+<tr>
+<td><strong>Notification</strong></td>
+<td>各ユーザー宛の未読／既読通知</td>
+</tr>
+</tbody></table>
+<blockquote>
+<p><code>TicketHistory</code> は <strong>誰が・いつ・何を・どう変えたか</strong> を全て永続化しており、監査要件に対応可能です。</p>
+</blockquote>
+<hr>
+<h2 id="10-開発状況・既知の制約">10. 開発状況・既知の制約</h2>
+<h3 id="単一インスタンス前提重要">単一インスタンス前提（重要）</h3>
+<p>通知のリアルタイム配信（SSE）は <strong>同一プロセス内のメモリ Map</strong> で購読者を管理しています。</p>
+<ul>
+<li>スタンドアロンの Docker / Node プロセス 1 台で運用する限り問題ありません</li>
+<li>ロードバランサ背後で <strong>複数インスタンスを並べた瞬間</strong>、別インスタンスで発生した通知が一部のユーザーに届かなくなります</li>
+<li>水平スケールが必要になった場合は Redis pub/sub などへのアダプタ差し替えで対応可能（<a href="./architecture.html#%E6%B0%B4%E5%B9%B3%E3%82%B9%E3%82%B1%E3%83%BC%E3%83%AB%E6%99%82%E3%81%AE%E5%AF%BE%E5%BF%9C%E6%96%B9%E9%87%9D"><code>architecture.html</code></a> に方針あり）</li>
+</ul>
+<h3 id="未実装の主な機能">未実装の主な機能</h3>
+<ul>
+<li>添付ファイル（スクリーンショット・ログ）</li>
+<li>CSV 出力</li>
+<li>分析レポート画面（履歴データは蓄積済み）</li>
+<li>管理画面（ユーザー管理・カテゴリ管理・SLA 設定）</li>
+</ul>
+<p>優先度は <a href="./issue-backlog.html"><code>docs/issue-backlog.html</code></a> で管理されています。</p>
+<hr>
+<h2 id="11-次に読むべきドキュメント">11. 次に読むべきドキュメント</h2>
+<h3 id="pm・ステークホルダー向け">PM・ステークホルダー向け</h3>
+<ul>
+<li><a href="./requirements.html"><code>requirements.html</code></a> — 要件定義（スコープ、画面一覧、データモデル、ステータス遷移）</li>
+<li><a href="./screen-flow.html"><code>screen-flow.html</code></a> — 画面遷移図とアクセス権限</li>
+<li><a href="./issue-backlog.html"><code>issue-backlog.html</code></a> — 開発バックログと優先度</li>
+</ul>
+<h3 id="エンジニア向け">エンジニア向け</h3>
+<ul>
+<li><a href="../README.md"><code>../README.md</code></a> — セットアップ手順、コマンド一覧</li>
+<li><a href="../CLAUDE.md"><code>../CLAUDE.md</code></a> — 開発規約、ディレクトリ構成の詳細</li>
+<li><a href="./architecture.html"><code>architecture.html</code></a> — 技術アーキテクチャ、認証フロー、SSE 設計</li>
+<li><a href="./er-diagram.html"><code>er-diagram.html</code></a> — ER 図、ステータス遷移図</li>
+<li><a href="./security.html"><code>security.html</code></a> — セキュリティ／堅牢性メモ</li>
+</ul>
+<h3 id="履歴・調整資料">履歴・調整資料</h3>
+<ul>
+<li><a href="./version-integration.html"><code>version-integration.html</code></a> — 要件差分の調停ルール</li>
+<li><a href="./pr-review-report.html"><code>pr-review-report.html</code></a> — 過去の PR レビュー履歴</li>
+</ul>
+
+    <script type="module">
+      import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';
+      mermaid.initialize({ startOnLoad: true, theme: 'default', securityLevel: 'loose' });
+    </script>
+    <script src="https://cdn.jsdelivr.net/npm/highlight.js@11/lib/index.min.js"></script>
+    <script>
+      document.querySelectorAll('pre code').forEach((el) => {
+        if (el.parentElement && el.parentElement.classList.contains('mermaid')) return;
+        try { window.hljs && window.hljs.highlightElement(el); } catch (e) {}
+      });
+    </script>
+  </body>
+</html>

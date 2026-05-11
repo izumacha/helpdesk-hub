@@ -103,7 +103,7 @@ Zod schemas live in `src/lib/validations/` (currently `ticket.ts`). Use `safePar
 - Prettier: 100 col, single quotes, 2-space indent, trailing commas "all"; `prettier-plugin-tailwindcss` reorders class names.
 - Import Prisma enums/types via `@/generated/prisma`, never `@prisma/client`.
 - Server Actions throw `Error(...)` with Japanese messages for user-facing failures; callers surface them to the user.
-- `docs/` holds design artifacts (`requirements.md`, `architecture.md`, `er-diagram.md`, `screen-flow.md`) — consult before changing status flow, permissions, or the ER model.
+- `docs/` holds design artifacts (`requirements.html`, `architecture.html`, `er-diagram.html`, `screen-flow.html`; entry point: `docs/index.html`) — consult before changing status flow, permissions, or the ER model.
 - **1行ごとに初心者でも意味がわかるコメントアウトを書く**: コード 1 行ごとに、プログラミング初心者でも処理内容が理解できる日本語コメントを付ける。変数宣言・条件分岐・関数呼び出し・ループ・return など、すべての実行行に対して「何をしているか」を説明するコメントを必ず添える（型定義の単純な再エクスポートなど明らかに自明な行は除く）。コメントは行の直前または行末に記述し、専門用語を使うときは平易な言い換えを併記する。
 
 ## Data Layer (Ports & Adapters)

@@ -1,7 +1,7 @@
 // チケット状態 (TicketStatus) の型を Prisma (DB 操作ライブラリ) が生成した定義から読み込む
 import type { TicketStatus } from '@/generated/prisma';
 
-// Source of truth for ticket status transitions. Mirrors `docs/requirements.md` §5
+// Source of truth for ticket status transitions. Mirrors `docs/requirements.html` §5
 // including `Closed → Open`（再オープン）which is an explicit product requirement,
 // not an oversight. Changing this table requires updating the requirements doc
 // and `tests/ticket-status.test.ts` together.

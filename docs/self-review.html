@@ -1,0 +1,159 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Self Review (2026-04-10) — HelpDesk Hub Docs</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/github-markdown-css@5/github-markdown-light.css" />
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/highlight.js@11/styles/github.min.css" />
+    <style>
+      :root { color-scheme: light; }
+      body { max-width: 980px; margin: 0 auto; padding: 2rem 1.25rem 4rem;
+             font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Hiragino Sans",
+                          "Noto Sans JP", "Yu Gothic", sans-serif; line-height: 1.75;
+             color: #1f2328; background: #ffffff; }
+      .topbar { display: flex; gap: .5rem; align-items: center; margin-bottom: 1.25rem;
+                padding-bottom: .65rem; border-bottom: 1px solid #d0d7de; font-size: .9rem; }
+      .topbar a { color: #0969da; text-decoration: none; }
+      .topbar a:hover { text-decoration: underline; }
+      nav.toc { background: #f6f8fa; border: 1px solid #d0d7de; border-radius: 8px;
+                padding: .75rem 1.25rem; margin: 1.25rem 0 2rem; font-size: .92rem; }
+      nav.toc > strong { display: block; margin-bottom: .35rem; color: #57606a; font-weight: 600; }
+      nav.toc ul { margin: .25rem 0; padding-left: 1.25rem; }
+      nav.toc ul ul { padding-left: 1.25rem; margin-top: .15rem; }
+      nav.toc a { color: #0969da; text-decoration: none; }
+      nav.toc a:hover { text-decoration: underline; }
+      .markdown-body { box-sizing: border-box; }
+      .markdown-body h1, .markdown-body h2 { border-bottom: 1px solid #d8dee4; padding-bottom: .25rem; }
+      .markdown-body table { display: table; width: auto; }
+      .markdown-body img { max-width: 100%; }
+      .mermaid { background: #fff; padding: 1rem 0; margin: 1rem 0; text-align: center;
+                 overflow-x: auto; }
+      .doc-index { padding: 0; }
+      .doc-index ul { list-style: none; padding-left: 0; }
+      .doc-index li { padding: .4rem 0; border-bottom: 1px dashed #eaeef2; }
+      .doc-index a { font-weight: 600; color: #0969da; text-decoration: none; }
+      .doc-index a:hover { text-decoration: underline; }
+      .doc-index .desc { color: #57606a; font-size: .9rem; margin-left: .5rem; }
+      .doc-index h2 { margin-top: 1.75rem; }
+    </style>
+  </head>
+  <body class="markdown-body">
+    <div class="topbar"><a href="./index.html">← ドキュメント目次</a><span style="color:#656d76">/ Self Review (2026-04-10)</span></div>
+    <h1>Self Review (2026-04-10)</h1>
+<nav class="toc"><strong>目次</strong><ul><li><a href="#観点と結果">観点と結果</a></li><li><a href="#フォローアップ">フォローアップ</a></li><li><a href="#観点と結果-1">観点と結果</a></li><li><a href="#フォローアップ-1">フォローアップ</a></li><li><a href="#観点と結果-2">観点と結果</a></li></ul></nav>
+<p>対象変更:</p>
+<ul>
+<li><code>src/domain/ticket-status.ts</code></li>
+<li><code>tests/ticket-status.test.ts</code></li>
+<li><code>docs/implementation-notes.html</code></li>
+</ul>
+<h2 id="観点と結果">観点と結果</h2>
+<ol>
+<li>要件整合性</li>
+</ol>
+<ul>
+<li><code>docs/requirements.html</code> のステータス遷移定義（New/Open/In Progress/Waiting for User/Escalated/Resolved/Closed）に一致することを確認。</li>
+<li><code>Resolved -&gt; Open</code> の再オープン遷移を実装済み。</li>
+</ul>
+<ol start="2">
+<li>型安全性</li>
+</ol>
+<ul>
+<li><code>as const</code> + <code>TicketStatus</code> union により、遷移ルールのキー/値が型で拘束されることを確認。</li>
+</ul>
+<ol start="3">
+<li>サーバ側バリデーション想定</li>
+</ol>
+<ul>
+<li><code>assertValidTransition</code> で不正遷移時に明示的エラーを投げられるため、API層から利用可能。</li>
+</ul>
+<ol start="4">
+<li>テスト妥当性</li>
+</ol>
+<ul>
+<li>許可遷移、再オープン、不正遷移をカバー。</li>
+<li>ただし、環境制約で依存取得できず実行未確認。</li>
+</ul>
+<h2 id="フォローアップ">フォローアップ</h2>
+<ul>
+<li>ネットワーク制約のない環境で <code>npm install &amp;&amp; npm test &amp;&amp; npm run typecheck</code> を実行し、結果をPRに追記する。</li>
+</ul>
+<hr>
+<h1>Self Review (2026-04-10, GitHub Issue登録準備)</h1>
+<p>対象変更:</p>
+<ul>
+<li><code>docs/github-issues.html</code></li>
+<li><code>README.md</code></li>
+</ul>
+<h2 id="観点と結果-1">観点と結果</h2>
+<ol>
+<li>要件反映</li>
+</ol>
+<ul>
+<li>依頼内容の 36 件をそのまま Issue 化しやすい形式で整理。</li>
+<li>各 Issue に概要・目的・タスク・完了条件・依存Issue を含めた。</li>
+</ul>
+<ol start="2">
+<li>実行可能性</li>
+</ol>
+<ul>
+<li>この環境では <code>remote.origin.url</code> 未設定かつ <code>gh</code> CLI 未導入のため、直接の Issue 登録は不可。</li>
+<li>代替として GitHub 転記用ドキュメントを追加し、README から参照導線を追加。</li>
+</ul>
+<ol start="3">
+<li>ドキュメント整合</li>
+</ol>
+<ul>
+<li>既存の <code>docs/issue-backlog.html</code>（優先度ベース）と併存できるよう、用途を「GitHub Issue 登録用」に限定。</li>
+</ul>
+<h2 id="フォローアップ-1">フォローアップ</h2>
+<ul>
+<li>GitHub 側で対象リポジトリに移動後、<code>docs/github-issues.html</code> を元に順次 Issue 登録する。</li>
+</ul>
+<hr>
+<h1>Self Review (2026-04-15, Sidebarアクティブ状態修正)</h1>
+<p>対象変更:</p>
+<ul>
+<li><code>src/components/layout/Sidebar.tsx</code></li>
+</ul>
+<h2 id="観点と結果-2">観点と結果</h2>
+<ol>
+<li>再現性</li>
+</ol>
+<ul>
+<li>既存実装は <code>pathname === item.href</code> の完全一致判定のみで、<code>/tickets/xxx</code> や <code>/faq/xxx</code> など配下ページ閲覧時にサイドバーの親メニューがアクティブ表示されないことを確認。</li>
+</ul>
+<ol start="2">
+<li>影響範囲</li>
+</ol>
+<ul>
+<li>ナビゲーション表示ロジックのみ変更し、リンク遷移先・表示権限制御（<code>agentOnly</code>）には影響しないことを確認。</li>
+</ul>
+<ol start="3">
+<li>実装妥当性</li>
+</ol>
+<ul>
+<li><code>pathname === href || pathname.startsWith(\</code>${href}/`)` により、同一パスと配下パスの両方をアクティブとして扱うよう修正。</li>
+<li><code>/</code> については誤判定を防ぐためのガードを追加。</li>
+</ul>
+<ol start="4">
+<li>品質確認</li>
+</ol>
+<ul>
+<li><code>npm run typecheck</code> / <code>npm run test</code> で既存テストが全件通過することを確認。</li>
+</ul>
+
+    <script type="module">
+      import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';
+      mermaid.initialize({ startOnLoad: true, theme: 'default', securityLevel: 'loose' });
+    </script>
+    <script src="https://cdn.jsdelivr.net/npm/highlight.js@11/lib/index.min.js"></script>
+    <script>
+      document.querySelectorAll('pre code').forEach((el) => {
+        if (el.parentElement && el.parentElement.classList.contains('mermaid')) return;
+        try { window.hljs && window.hljs.highlightElement(el); } catch (e) {}
+      });
+    </script>
+  </body>
+</html>

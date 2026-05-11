@@ -114,9 +114,10 @@ e2e/                        # E2E テスト
 
 ## 設計資料
 
-- [プロジェクト全体解説（PM・非エンジニア向け）](docs/overview.md)
-- [要件定義](docs/requirements.md)
-- [アーキテクチャ](docs/architecture.md)
-- [ER 図](docs/er-diagram.md)
-- [画面遷移図](docs/screen-flow.md)
-- [セキュリティ / 堅牢性メモ](docs/security.md)
+- [ドキュメント目次](docs/index.html)
+- [プロジェクト全体解説（PM・非エンジニア向け）](docs/overview.html)
+- [要件定義](docs/requirements.html)
+- [アーキテクチャ](docs/architecture.html)
+- [ER 図](docs/er-diagram.html)
+- [画面遷移図](docs/screen-flow.html)
+- [セキュリティ / 堅牢性メモ](docs/security.html)
