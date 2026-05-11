@@ -1,0 +1,326 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Issue Backlog (Prioritized) — HelpDesk Hub Docs</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/github-markdown-css@5/github-markdown-light.css" />
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/highlight.js@11/styles/github.min.css" />
+    <style>
+      :root { color-scheme: light; }
+      body { max-width: 980px; margin: 0 auto; padding: 2rem 1.25rem 4rem;
+             font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Hiragino Sans",
+                          "Noto Sans JP", "Yu Gothic", sans-serif; line-height: 1.75;
+             color: #1f2328; background: #ffffff; }
+      .topbar { display: flex; gap: .5rem; align-items: center; margin-bottom: 1.25rem;
+                padding-bottom: .65rem; border-bottom: 1px solid #d0d7de; font-size: .9rem; }
+      .topbar a { color: #0969da; text-decoration: none; }
+      .topbar a:hover { text-decoration: underline; }
+      nav.toc { background: #f6f8fa; border: 1px solid #d0d7de; border-radius: 8px;
+                padding: .75rem 1.25rem; margin: 1.25rem 0 2rem; font-size: .92rem; }
+      nav.toc > strong { display: block; margin-bottom: .35rem; color: #57606a; font-weight: 600; }
+      nav.toc ul { margin: .25rem 0; padding-left: 1.25rem; }
+      nav.toc ul ul { padding-left: 1.25rem; margin-top: .15rem; }
+      nav.toc a { color: #0969da; text-decoration: none; }
+      nav.toc a:hover { text-decoration: underline; }
+      .markdown-body { box-sizing: border-box; }
+      .markdown-body h1, .markdown-body h2 { border-bottom: 1px solid #d8dee4; padding-bottom: .25rem; }
+      .markdown-body table { display: table; width: auto; }
+      .markdown-body img { max-width: 100%; }
+      .mermaid { background: #fff; padding: 1rem 0; margin: 1rem 0; text-align: center;
+                 overflow-x: auto; }
+      .doc-index { padding: 0; }
+      .doc-index ul { list-style: none; padding-left: 0; }
+      .doc-index li { padding: .4rem 0; border-bottom: 1px dashed #eaeef2; }
+      .doc-index a { font-weight: 600; color: #0969da; text-decoration: none; }
+      .doc-index a:hover { text-decoration: underline; }
+      .doc-index .desc { color: #57606a; font-size: .9rem; margin-left: .5rem; }
+      .doc-index h2 { margin-top: 1.75rem; }
+    </style>
+  </head>
+  <body class="markdown-body">
+    <div class="topbar"><a href="./index.html">← ドキュメント目次</a><span style="color:#656d76">/ Issue Backlog (Prioritized)</span></div>
+    <h1>Issue Backlog (Prioritized)</h1>
+<nav class="toc"><strong>目次</strong><ul><li><a href="#p0-フェーズ1mvp">P0: フェーズ1（MVP）</a><ul><li><a href="#1-p0-プロジェクト初期化と技術基盤">1. [P0] プロジェクト初期化と技術基盤</a></li><li><a href="#2-p0-認証基盤authjs--nextauth">2. [P0] 認証基盤（Auth.js / NextAuth）</a></li><li><a href="#3-p0-ロール定義と表示制御の骨組み">3. [P0] ロール定義と表示制御の骨組み</a></li><li><a href="#4-p0-prisma-スキーマ初版作成">4. [P0] Prisma スキーマ初版作成</a></li><li><a href="#5-p0-問い合わせ登録-api-とフォーム">5. [P0] 問い合わせ登録 API とフォーム</a></li><li><a href="#6-p0-問い合わせ一覧-api--画面">6. [P0] 問い合わせ一覧 API + 画面</a></li><li><a href="#7-p0-問い合わせ詳細-api--画面">7. [P0] 問い合わせ詳細 API + 画面</a></li><li><a href="#8-p0-ステータス更新-api">8. [P0] ステータス更新 API</a></li><li><a href="#9-p0-ステータス遷移ルールの型安全化">9. [P0] ステータス遷移ルールの型安全化</a></li><li><a href="#10-p0-担当者アサイン機能">10. [P0] 担当者アサイン機能</a></li><li><a href="#11-p0-コメント機能">11. [P0] コメント機能</a></li><li><a href="#12-p0-変更履歴表示ステータス担当">12. [P0] 変更履歴表示（ステータス/担当）</a></li><li><a href="#13-p0-一覧検索・絞り込み">13. [P0] 一覧検索・絞り込み</a></li><li><a href="#14-p0-共通エラーハンドリングトースト通知">14. [P0] 共通エラーハンドリング/トースト通知</a></li></ul></li><li><a href="#p1-フェーズ2実務拡張">P1: フェーズ2（実務拡張）</a><ul><li><a href="#15-p1-sla-フィールド追加期限の保持">15. [P1] SLA フィールド追加（期限の保持）</a></li><li><a href="#16-p1-sla-期限計算ロジック">16. [P1] SLA 期限計算ロジック</a></li><li><a href="#17-p1-sla-超過間近の可視化">17. [P1] SLA 超過/間近の可視化</a></li><li><a href="#18-p1-エスカレーション機能">18. [P1] エスカレーション機能</a></li><li><a href="#19-p1-添付ファイル機能mvp版">19. [P1] 添付ファイル機能（MVP版）</a></li><li><a href="#20-p1-通知機能アサイン期限更新">20. [P1] 通知機能（アサイン/期限/更新）</a></li><li><a href="#21-p1-faq-候補化フラグ">21. [P1] FAQ 候補化フラグ</a></li><li><a href="#22-p1-権限制御の本実装">22. [P1] 権限制御の本実装</a></li></ul></li><li><a href="#p2-フェーズ3アピール拡張">P2: フェーズ3（アピール拡張）</a><ul><li><a href="#23-p2-ダッシュボード指標-api">23. [P2] ダッシュボード指標 API</a></li><li><a href="#24-p2-ダッシュボード-ui">24. [P2] ダッシュボード UI</a></li><li><a href="#25-p2-品質メトリクス算出">25. [P2] 品質メトリクス算出</a></li><li><a href="#26-p2-監査ログ詳細">26. [P2] 監査ログ詳細</a></li><li><a href="#27-p2-csv-エクスポート">27. [P2] CSV エクスポート</a></li><li><a href="#28-p2-docs-整備architecture--er-diagram--screen-flow--api-design">28. [P2] docs 整備（architecture / er-diagram / screen-flow / api-design）</a></li><li><a href="#29-p2-テスト拡充vitest--playwright">29. [P2] テスト拡充（Vitest + Playwright）</a></li><li><a href="#30-p2-docker--seed--デモユーザー整備">30. [P2] Docker / seed / デモユーザー整備</a></li></ul></li></ul></nav>
+<p>転職用ポートフォリオとして、実装順・依存関係・成果物が明確になるように 30 件に分解しています。</p>
+<h2 id="p0-フェーズ1mvp">P0: フェーズ1（MVP）</h2>
+<h3 id="1-p0-プロジェクト初期化と技術基盤">1. [P0] プロジェクト初期化と技術基盤</h3>
+<ul>
+<li><strong>目的</strong>: Next.js + TypeScript + Tailwind + Prisma + PostgreSQL 構成を作る</li>
+<li><strong>完了条件</strong>:<ul>
+<li>ローカルでアプリ起動できる</li>
+<li>DB 接続確認できる</li>
+<li>CI 用 lint/test スクリプトが定義されている</li>
+</ul>
+</li>
+</ul>
+<h3 id="2-p0-認証基盤authjs--nextauth">2. [P0] 認証基盤（Auth.js / NextAuth）</h3>
+<ul>
+<li><strong>目的</strong>: ログイン/ログアウトとセッション管理</li>
+<li><strong>完了条件</strong>:<ul>
+<li>ログイン・ログアウトできる</li>
+<li>未認証時に保護ページへアクセス不可</li>
+</ul>
+</li>
+</ul>
+<h3 id="3-p0-ロール定義と表示制御の骨組み">3. [P0] ロール定義と表示制御の骨組み</h3>
+<ul>
+<li><strong>目的</strong>: requester / agent / admin ロールを導入</li>
+<li><strong>完了条件</strong>:<ul>
+<li>画面単位のアクセス制御が機能</li>
+<li>UI 表示分岐がロールで切り替わる</li>
+</ul>
+</li>
+</ul>
+<h3 id="4-p0-prisma-スキーマ初版作成">4. [P0] Prisma スキーマ初版作成</h3>
+<ul>
+<li><strong>目的</strong>: users / tickets / categories / comments / histories を定義</li>
+<li><strong>完了条件</strong>:<ul>
+<li>migration 実行できる</li>
+<li>seed で最小データ投入できる</li>
+</ul>
+</li>
+</ul>
+<h3 id="5-p0-問い合わせ登録-api-とフォーム">5. [P0] 問い合わせ登録 API とフォーム</h3>
+<ul>
+<li><strong>目的</strong>: ticket 作成を実装</li>
+<li><strong>完了条件</strong>:<ul>
+<li>title/description/category/priority を登録可能</li>
+<li>Zod バリデーションエラーを表示</li>
+</ul>
+</li>
+</ul>
+<h3 id="6-p0-問い合わせ一覧-api--画面">6. [P0] 問い合わせ一覧 API + 画面</h3>
+<ul>
+<li><strong>目的</strong>: 基本一覧表示を実装</li>
+<li><strong>完了条件</strong>:<ul>
+<li>テーブルで tickets 一覧を表示</li>
+<li>ページング（または件数制限）あり</li>
+</ul>
+</li>
+</ul>
+<h3 id="7-p0-問い合わせ詳細-api--画面">7. [P0] 問い合わせ詳細 API + 画面</h3>
+<ul>
+<li><strong>目的</strong>: 1 件の詳細情報表示</li>
+<li><strong>完了条件</strong>:<ul>
+<li>基本情報・担当・期限・履歴概要が見える</li>
+</ul>
+</li>
+</ul>
+<h3 id="8-p0-ステータス更新-api">8. [P0] ステータス更新 API</h3>
+<ul>
+<li><strong>目的</strong>: ステータス変更を可能にする</li>
+<li><strong>完了条件</strong>:<ul>
+<li>許可遷移のみ更新可能</li>
+<li>不正遷移で API がエラーを返す</li>
+</ul>
+</li>
+</ul>
+<h3 id="9-p0-ステータス遷移ルールの型安全化">9. [P0] ステータス遷移ルールの型安全化</h3>
+<ul>
+<li><strong>目的</strong>: union/enum + ルールマップでドメイン制約を明文化</li>
+<li><strong>完了条件</strong>:<ul>
+<li>フロント/サーバで同一の遷移定義を利用</li>
+<li>遷移テストが追加されている</li>
+</ul>
+</li>
+</ul>
+<h3 id="10-p0-担当者アサイン機能">10. [P0] 担当者アサイン機能</h3>
+<ul>
+<li><strong>目的</strong>: assignee を設定/変更可能にする</li>
+<li><strong>完了条件</strong>:<ul>
+<li>一覧/詳細から担当変更できる</li>
+<li>変更履歴が記録される</li>
+</ul>
+</li>
+</ul>
+<h3 id="11-p0-コメント機能">11. [P0] コメント機能</h3>
+<ul>
+<li><strong>目的</strong>: 対応コメント追加</li>
+<li><strong>完了条件</strong>:<ul>
+<li>時系列でコメント表示</li>
+<li>投稿者・投稿日時を記録</li>
+</ul>
+</li>
+</ul>
+<h3 id="12-p0-変更履歴表示ステータス担当">12. [P0] 変更履歴表示（ステータス/担当）</h3>
+<ul>
+<li><strong>目的</strong>: 変更トレーサビリティを担保</li>
+<li><strong>完了条件</strong>:<ul>
+<li>チケット詳細で履歴一覧を確認できる</li>
+</ul>
+</li>
+</ul>
+<h3 id="13-p0-一覧検索・絞り込み">13. [P0] 一覧検索・絞り込み</h3>
+<ul>
+<li><strong>目的</strong>: 実運用で必要な絞り込み</li>
+<li><strong>完了条件</strong>:<ul>
+<li>キーワード/ステータス/カテゴリ/優先度/担当者に対応</li>
+</ul>
+</li>
+</ul>
+<h3 id="14-p0-共通エラーハンドリングトースト通知">14. [P0] 共通エラーハンドリング/トースト通知</h3>
+<ul>
+<li><strong>目的</strong>: UX と運用性向上</li>
+<li><strong>完了条件</strong>:<ul>
+<li>API エラー時に利用者へ明確なメッセージ表示</li>
+</ul>
+</li>
+</ul>
+<h2 id="p1-フェーズ2実務拡張">P1: フェーズ2（実務拡張）</h2>
+<h3 id="15-p1-sla-フィールド追加期限の保持">15. [P1] SLA フィールド追加（期限の保持）</h3>
+<ul>
+<li><strong>目的</strong>: first_response_due_at / resolution_due_at 管理</li>
+<li><strong>完了条件</strong>:<ul>
+<li>ticket 作成/更新時に期限を保持できる</li>
+</ul>
+</li>
+</ul>
+<h3 id="16-p1-sla-期限計算ロジック">16. [P1] SLA 期限計算ロジック</h3>
+<ul>
+<li><strong>目的</strong>: 優先度・カテゴリ起点で期限を算出</li>
+<li><strong>完了条件</strong>:<ul>
+<li>ルールに基づいた期限自動設定</li>
+<li>テストで算出結果を検証</li>
+</ul>
+</li>
+</ul>
+<h3 id="17-p1-sla-超過間近の可視化">17. [P1] SLA 超過/間近の可視化</h3>
+<ul>
+<li><strong>目的</strong>: 対応漏れ防止</li>
+<li><strong>完了条件</strong>:<ul>
+<li>一覧で色分け/バッジ表示される</li>
+</ul>
+</li>
+</ul>
+<h3 id="18-p1-エスカレーション機能">18. [P1] エスカレーション機能</h3>
+<ul>
+<li><strong>目的</strong>: 一次→二次対応の明示的切替</li>
+<li><strong>完了条件</strong>:<ul>
+<li>理由・日時を保存</li>
+<li>ステータスが Escalated に遷移可能</li>
+</ul>
+</li>
+</ul>
+<h3 id="19-p1-添付ファイル機能mvp版">19. [P1] 添付ファイル機能（MVP版）</h3>
+<ul>
+<li><strong>目的</strong>: スクリーンショット/ログ添付</li>
+<li><strong>完了条件</strong>:<ul>
+<li>ファイル upload と一覧表示</li>
+<li>許可拡張子/サイズ検証あり</li>
+</ul>
+</li>
+</ul>
+<h3 id="20-p1-通知機能アサイン期限更新">20. [P1] 通知機能（アサイン/期限/更新）</h3>
+<ul>
+<li><strong>目的</strong>: 重要イベントを見逃さない</li>
+<li><strong>完了条件</strong>:<ul>
+<li>通知テーブル記録</li>
+<li>画面上で未読/既読管理可能</li>
+</ul>
+</li>
+</ul>
+<h3 id="21-p1-faq-候補化フラグ">21. [P1] FAQ 候補化フラグ</h3>
+<ul>
+<li><strong>目的</strong>: 解決済みチケットからナレッジ化導線を作る</li>
+<li><strong>完了条件</strong>:<ul>
+<li>Resolved/Closed チケットを FAQ 候補登録可能</li>
+</ul>
+</li>
+</ul>
+<h3 id="22-p1-権限制御の本実装">22. [P1] 権限制御の本実装</h3>
+<ul>
+<li><strong>目的</strong>: requester は自分のチケットのみ閲覧</li>
+<li><strong>完了条件</strong>:<ul>
+<li>API レベルでアクセス制御</li>
+<li>E2E で権限境界を検証</li>
+</ul>
+</li>
+</ul>
+<h2 id="p2-フェーズ3アピール拡張">P2: フェーズ3（アピール拡張）</h2>
+<h3 id="23-p2-ダッシュボード指標-api">23. [P2] ダッシュボード指標 API</h3>
+<ul>
+<li><strong>目的</strong>: 未対応/対応中/SLA超過/カテゴリ別/担当者別を集計</li>
+<li><strong>完了条件</strong>:<ul>
+<li>指標 API が実装される</li>
+<li>日別件数も返却できる</li>
+</ul>
+</li>
+</ul>
+<h3 id="24-p2-ダッシュボード-ui">24. [P2] ダッシュボード UI</h3>
+<ul>
+<li><strong>目的</strong>: 指標可視化</li>
+<li><strong>完了条件</strong>:<ul>
+<li>カード + グラフ表示</li>
+<li>期間指定で再集計可能</li>
+</ul>
+</li>
+</ul>
+<h3 id="25-p2-品質メトリクス算出">25. [P2] 品質メトリクス算出</h3>
+<ul>
+<li><strong>目的</strong>: 平均初回応答時間、平均解決時間、再オープン率</li>
+<li><strong>完了条件</strong>:<ul>
+<li>レポート画面で主要 KPI を表示</li>
+</ul>
+</li>
+</ul>
+<h3 id="26-p2-監査ログ詳細">26. [P2] 監査ログ詳細</h3>
+<ul>
+<li><strong>目的</strong>: 変更前後の値を保持</li>
+<li><strong>完了条件</strong>:<ul>
+<li>actor / field / before / after / timestamp を記録</li>
+</ul>
+</li>
+</ul>
+<h3 id="27-p2-csv-エクスポート">27. [P2] CSV エクスポート</h3>
+<ul>
+<li><strong>目的</strong>: 月次分析向けデータ出力</li>
+<li><strong>完了条件</strong>:<ul>
+<li>一覧条件を引き継いだ CSV ダウンロード可能</li>
+</ul>
+</li>
+</ul>
+<h3 id="28-p2-docs-整備architecture--er-diagram--screen-flow--api-design">28. [P2] docs 整備（architecture / er-diagram / screen-flow / api-design）</h3>
+<ul>
+<li><strong>目的</strong>: 設計説明力を高める</li>
+<li><strong>完了条件</strong>:<ul>
+<li>docs 配下に設計資料を追加</li>
+</ul>
+</li>
+</ul>
+<h3 id="29-p2-テスト拡充vitest--playwright">29. [P2] テスト拡充（Vitest + Playwright）</h3>
+<ul>
+<li><strong>目的</strong>: 品質担保と再現性</li>
+<li><strong>完了条件</strong>:<ul>
+<li>主要ユースケース E2E を自動化</li>
+<li>CI で unit/e2e が実行可能</li>
+</ul>
+</li>
+</ul>
+<h3 id="30-p2-docker--seed--デモユーザー整備">30. [P2] Docker / seed / デモユーザー整備</h3>
+<ul>
+<li><strong>目的</strong>: 第三者がすぐ検証できる状態にする</li>
+<li><strong>完了条件</strong>:<ul>
+<li><code>docker compose up</code> で起動</li>
+<li>seed でデモデータ投入</li>
+<li>README にデモログイン情報を記載</li>
+</ul>
+</li>
+</ul>
+<blockquote>
+<p>本バックログの優先順位と要件整合の判断基準は <code>docs/version-integration.html</code> を参照。</p>
+</blockquote>
+
+    <script type="module">
+      import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';
+      mermaid.initialize({ startOnLoad: true, theme: 'default', securityLevel: 'loose' });
+    </script>
+    <script src="https://cdn.jsdelivr.net/npm/highlight.js@11/lib/index.min.js"></script>
+    <script>
+      document.querySelectorAll('pre code').forEach((el) => {
+        if (el.parentElement && el.parentElement.classList.contains('mermaid')) return;
+        try { window.hljs && window.hljs.highlightElement(el); } catch (e) {}
+      });
+    </script>
+  </body>
+</html>

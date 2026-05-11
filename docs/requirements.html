@@ -1,0 +1,182 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Requirements — HelpDesk Hub Docs</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/github-markdown-css@5/github-markdown-light.css" />
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/highlight.js@11/styles/github.min.css" />
+    <style>
+      :root { color-scheme: light; }
+      body { max-width: 980px; margin: 0 auto; padding: 2rem 1.25rem 4rem;
+             font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Hiragino Sans",
+                          "Noto Sans JP", "Yu Gothic", sans-serif; line-height: 1.75;
+             color: #1f2328; background: #ffffff; }
+      .topbar { display: flex; gap: .5rem; align-items: center; margin-bottom: 1.25rem;
+                padding-bottom: .65rem; border-bottom: 1px solid #d0d7de; font-size: .9rem; }
+      .topbar a { color: #0969da; text-decoration: none; }
+      .topbar a:hover { text-decoration: underline; }
+      nav.toc { background: #f6f8fa; border: 1px solid #d0d7de; border-radius: 8px;
+                padding: .75rem 1.25rem; margin: 1.25rem 0 2rem; font-size: .92rem; }
+      nav.toc > strong { display: block; margin-bottom: .35rem; color: #57606a; font-weight: 600; }
+      nav.toc ul { margin: .25rem 0; padding-left: 1.25rem; }
+      nav.toc ul ul { padding-left: 1.25rem; margin-top: .15rem; }
+      nav.toc a { color: #0969da; text-decoration: none; }
+      nav.toc a:hover { text-decoration: underline; }
+      .markdown-body { box-sizing: border-box; }
+      .markdown-body h1, .markdown-body h2 { border-bottom: 1px solid #d8dee4; padding-bottom: .25rem; }
+      .markdown-body table { display: table; width: auto; }
+      .markdown-body img { max-width: 100%; }
+      .mermaid { background: #fff; padding: 1rem 0; margin: 1rem 0; text-align: center;
+                 overflow-x: auto; }
+      .doc-index { padding: 0; }
+      .doc-index ul { list-style: none; padding-left: 0; }
+      .doc-index li { padding: .4rem 0; border-bottom: 1px dashed #eaeef2; }
+      .doc-index a { font-weight: 600; color: #0969da; text-decoration: none; }
+      .doc-index a:hover { text-decoration: underline; }
+      .doc-index .desc { color: #57606a; font-size: .9rem; margin-left: .5rem; }
+      .doc-index h2 { margin-top: 1.75rem; }
+    </style>
+  </head>
+  <body class="markdown-body">
+    <div class="topbar"><a href="./index.html">← ドキュメント目次</a><span style="color:#656d76">/ Requirements</span></div>
+    <h1>Requirements</h1>
+<nav class="toc"><strong>目次</strong><ul><li><a href="#1-概要">1. 概要</a></li><li><a href="#2-スコープ">2. スコープ</a><ul><li><a href="#mvp">MVP</a></li><li><a href="#実務拡張">実務拡張</a></li><li><a href="#アピール拡張">アピール拡張</a></li></ul></li><li><a href="#3-画面一覧">3. 画面一覧</a></li><li><a href="#4-データモデル主要">4. データモデル（主要）</a><ul><li><a href="#tickets-の主要項目">tickets の主要項目</a></li></ul></li><li><a href="#5-ステータス遷移">5. ステータス遷移</a></li><li><a href="#6-非機能要件">6. 非機能要件</a></li></ul></nav>
+<h2 id="1-概要">1. 概要</h2>
+<ul>
+<li>システム名: <code>helpdesk-hub</code></li>
+<li>目的: ヘルプデスク業務における対応漏れ・属人化・SLA遅延を防ぐ</li>
+<li>対象: 社内ヘルプデスク、情シス窓口、アプリケーションサポート</li>
+</ul>
+<h2 id="2-スコープ">2. スコープ</h2>
+<h3 id="mvp">MVP</h3>
+<ul>
+<li>認証（ログイン/ログアウト/ロール別表示）</li>
+<li>問い合わせ登録、一覧、詳細</li>
+<li>ステータス更新</li>
+<li>優先度/カテゴリ設定</li>
+<li>担当者アサイン</li>
+<li>コメント追加</li>
+<li>変更履歴（ステータス/担当）</li>
+<li>検索・絞り込み（キーワード、ステータス、カテゴリ、優先度、担当者）</li>
+</ul>
+<h3 id="実務拡張">実務拡張</h3>
+<ul>
+<li>SLA（初回応答期限、解決期限、期限超過/期限間近）</li>
+<li>エスカレーション（理由・日時記録）</li>
+<li>FAQ候補化（解決済み問い合わせから抽出）</li>
+<li>添付ファイル（スクリーンショット/ログ）</li>
+<li>通知（アサイン、期限間近、ステータス更新）</li>
+</ul>
+<h3 id="アピール拡張">アピール拡張</h3>
+<ul>
+<li>ダッシュボード（件数、SLA超過、カテゴリ別、担当者別、日別）</li>
+<li>品質指標（平均初回応答時間、平均解決時間、再オープン、エスカレーション率）</li>
+<li>監査ログ（変更者、変更日時、変更前後）</li>
+<li>権限管理（依頼者/担当者/管理者）</li>
+<li>CSV出力</li>
+</ul>
+<h2 id="3-画面一覧">3. 画面一覧</h2>
+<ul>
+<li>ログイン</li>
+<li>ダッシュボード</li>
+<li>問い合わせ一覧</li>
+<li>問い合わせ詳細</li>
+<li>問い合わせ登録</li>
+<li>FAQ候補一覧</li>
+<li>分析レポート</li>
+<li>管理画面<ul>
+<li>ユーザー管理</li>
+<li>カテゴリ管理</li>
+<li>SLA設定</li>
+</ul>
+</li>
+</ul>
+<h2 id="4-データモデル主要">4. データモデル（主要）</h2>
+<ul>
+<li>users</li>
+<li>tickets</li>
+<li>ticket_comments</li>
+<li>ticket_histories</li>
+<li>categories</li>
+<li>priorities</li>
+<li>statuses</li>
+<li>escalations</li>
+<li>attachments</li>
+<li>faq_candidates</li>
+<li>notifications</li>
+</ul>
+<h3 id="tickets-の主要項目">tickets の主要項目</h3>
+<ul>
+<li>id</li>
+<li>title</li>
+<li>description</li>
+<li>category_id</li>
+<li>priority</li>
+<li>status</li>
+<li>requester_id</li>
+<li>assignee_id</li>
+<li>first_response_due_at</li>
+<li>resolution_due_at</li>
+<li>escalated_at</li>
+<li>closed_at</li>
+<li>created_at</li>
+<li>updated_at</li>
+</ul>
+<h2 id="5-ステータス遷移">5. ステータス遷移</h2>
+<p>ステータスは 7 種類（<code>New</code> / <code>Open</code> / <code>Waiting for User</code> / <code>In Progress</code> / <code>Escalated</code> / <code>Resolved</code> / <code>Closed</code>）。許可される遷移を以下に示す。これ以外の遷移はサーバ側で拒否する。</p>
+<div class="mermaid">stateDiagram-v2
+    [*] --&gt; New : チケット登録
+    New --&gt; Open
+    New --&gt; WaitingForUser
+    New --&gt; InProgress
+    New --&gt; Resolved
+    New --&gt; Closed
+    Open --&gt; InProgress
+    Open --&gt; WaitingForUser
+    Open --&gt; Escalated
+    Open --&gt; Resolved
+    Open --&gt; Closed
+    WaitingForUser --&gt; Open
+    WaitingForUser --&gt; InProgress
+    WaitingForUser --&gt; Resolved
+    WaitingForUser --&gt; Closed
+    InProgress --&gt; WaitingForUser
+    InProgress --&gt; Escalated
+    InProgress --&gt; Resolved
+    InProgress --&gt; Closed
+    Escalated --&gt; InProgress
+    Escalated --&gt; Resolved
+    Escalated --&gt; Closed
+    Resolved --&gt; Open : 再オープン
+    Resolved --&gt; Closed
+    Closed --&gt; Open : 再オープン
+    Closed --&gt; [*]</div>
+<blockquote>
+<p>実装上の単一の真実は <code>src/domain/ticket-status.ts</code> の <code>ALLOWED_TRANSITIONS</code>。<code>docs/er-diagram.html</code> および <code>docs/overview.html</code> の遷移図も同じ表に基づく。</p>
+</blockquote>
+<h2 id="6-非機能要件">6. 非機能要件</h2>
+<ul>
+<li>TypeScript による型安全性（API、フォーム、状態遷移）</li>
+<li>業務ルールのサーバ側バリデーション</li>
+<li>監査可能な変更履歴</li>
+<li>ローカル構築容易性（Docker）</li>
+<li>テスト（単体 + E2E）</li>
+</ul>
+<blockquote>
+<p>本要件の差分調停ルールは <code>docs/version-integration.html</code> を参照。</p>
+</blockquote>
+
+    <script type="module">
+      import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';
+      mermaid.initialize({ startOnLoad: true, theme: 'default', securityLevel: 'loose' });
+    </script>
+    <script src="https://cdn.jsdelivr.net/npm/highlight.js@11/lib/index.min.js"></script>
+    <script>
+      document.querySelectorAll('pre code').forEach((el) => {
+        if (el.parentElement && el.parentElement.classList.contains('mermaid')) return;
+        try { window.hljs && window.hljs.highlightElement(el); } catch (e) {}
+      });
+    </script>
+  </body>
+</html>

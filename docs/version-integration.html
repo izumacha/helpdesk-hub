@@ -1,0 +1,177 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>4バージョン統合レビュー — HelpDesk Hub Docs</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/github-markdown-css@5/github-markdown-light.css" />
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/highlight.js@11/styles/github.min.css" />
+    <style>
+      :root { color-scheme: light; }
+      body { max-width: 980px; margin: 0 auto; padding: 2rem 1.25rem 4rem;
+             font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Hiragino Sans",
+                          "Noto Sans JP", "Yu Gothic", sans-serif; line-height: 1.75;
+             color: #1f2328; background: #ffffff; }
+      .topbar { display: flex; gap: .5rem; align-items: center; margin-bottom: 1.25rem;
+                padding-bottom: .65rem; border-bottom: 1px solid #d0d7de; font-size: .9rem; }
+      .topbar a { color: #0969da; text-decoration: none; }
+      .topbar a:hover { text-decoration: underline; }
+      nav.toc { background: #f6f8fa; border: 1px solid #d0d7de; border-radius: 8px;
+                padding: .75rem 1.25rem; margin: 1.25rem 0 2rem; font-size: .92rem; }
+      nav.toc > strong { display: block; margin-bottom: .35rem; color: #57606a; font-weight: 600; }
+      nav.toc ul { margin: .25rem 0; padding-left: 1.25rem; }
+      nav.toc ul ul { padding-left: 1.25rem; margin-top: .15rem; }
+      nav.toc a { color: #0969da; text-decoration: none; }
+      nav.toc a:hover { text-decoration: underline; }
+      .markdown-body { box-sizing: border-box; }
+      .markdown-body h1, .markdown-body h2 { border-bottom: 1px solid #d8dee4; padding-bottom: .25rem; }
+      .markdown-body table { display: table; width: auto; }
+      .markdown-body img { max-width: 100%; }
+      .mermaid { background: #fff; padding: 1rem 0; margin: 1rem 0; text-align: center;
+                 overflow-x: auto; }
+      .doc-index { padding: 0; }
+      .doc-index ul { list-style: none; padding-left: 0; }
+      .doc-index li { padding: .4rem 0; border-bottom: 1px dashed #eaeef2; }
+      .doc-index a { font-weight: 600; color: #0969da; text-decoration: none; }
+      .doc-index a:hover { text-decoration: underline; }
+      .doc-index .desc { color: #57606a; font-size: .9rem; margin-left: .5rem; }
+      .doc-index h2 { margin-top: 1.75rem; }
+    </style>
+  </head>
+  <body class="markdown-body">
+    <div class="topbar"><a href="./index.html">← ドキュメント目次</a><span style="color:#656d76">/ 4バージョン統合レビュー</span></div>
+    <h1>4バージョン統合レビュー</h1>
+<nav class="toc"><strong>目次</strong><ul><li><a href="#対象バージョン">対象バージョン</a></li><li><a href="#一貫性チェック結果">一貫性チェック結果</a><ul><li><a href="#1-機能スコープの整合">1) 機能スコープの整合</a></li><li><a href="#2-ステータス遷移ルールの整合">2) ステータス遷移ルールの整合</a></li><li><a href="#3-データモデルの整合">3) データモデルの整合</a></li><li><a href="#4-受け入れ基準definition-of-doneの整合">4) 受け入れ基準（Definition of Done）の整合</a></li></ul></li><li><a href="#4バージョン統合後の正本ルール">4バージョン統合後の正本ルール</a></li><li><a href="#差分が出たときの優先順位">差分が出たときの優先順位</a></li><li><a href="#今後の運用">今後の運用</a></li></ul></nav>
+<p>この文書は、既存資料を4つの観点（=バージョン）として検証し、矛盾のない単一仕様に統合するための基準を定義します。</p>
+<h2 id="対象バージョン">対象バージョン</h2>
+<div class="mermaid">flowchart TD
+    V1[&quot;Version 1: プロダクト定義&lt;br/&gt;README&quot;]
+    V2[&quot;Version 2: 要件定義&lt;br/&gt;requirements.md&quot;]
+    V3[&quot;Version 3: 実装タスク&lt;br/&gt;issue-backlog.md&quot;]
+    V4[&quot;Version 4: 統合基準&lt;br/&gt;version-integration.md (本書)&quot;]
+
+    V1 -. &quot;目的・対象ユーザー・&lt;br/&gt;利用シーン・3 フェーズ戦略&quot; .-&gt; V2
+    V2 -. &quot;スコープ・画面・&lt;br/&gt;エンティティ・状態遷移・&lt;br/&gt;非機能要件&quot; .-&gt; V3
+    V4 -- &quot;命名規約・正本指定・&lt;br/&gt;差分解消ルール&quot; --&gt; V1
+    V4 --&gt; V2
+    V4 --&gt; V3</div>
+<ul>
+<li><strong>Version 1: プロダクト定義</strong>（README）<ul>
+<li>目的、対象ユーザー、利用シーン、3フェーズ戦略</li>
+</ul>
+</li>
+<li><strong>Version 2: 要件定義</strong>（requirements）<ul>
+<li>スコープ、画面、エンティティ、状態遷移、非機能要件</li>
+</ul>
+</li>
+<li><strong>Version 3: 実装タスク</strong>（issue-backlog）<ul>
+<li>優先度付きIssue、完了条件、依存関係</li>
+</ul>
+</li>
+<li><strong>Version 4: 統合基準</strong>（本ドキュメント）<ul>
+<li>命名規約、正本（source of truth）、差分解消ルール</li>
+</ul>
+</li>
+</ul>
+<h2 id="一貫性チェック結果">一貫性チェック結果</h2>
+<h3 id="1-機能スコープの整合">1) 機能スコープの整合</h3>
+<ul>
+<li>README の3フェーズ構造（MVP/実務拡張/アピール拡張）と requirements のスコープは一致。</li>
+<li>issue-backlog の P0/P1/P2 は上記フェーズに1対1で対応。</li>
+</ul>
+<p><strong>統合方針</strong></p>
+<ul>
+<li>フェーズ名称は以下を正本とする。<ul>
+<li>P0 = MVP</li>
+<li>P1 = 実務拡張</li>
+<li>P2 = アピール拡張</li>
+</ul>
+</li>
+</ul>
+<h3 id="2-ステータス遷移ルールの整合">2) ステータス遷移ルールの整合</h3>
+<ul>
+<li>requirements に定義した遷移（New→Open→In Progress→...）と issue-backlog #8/#9 は一致。</li>
+<li>再オープンの扱い（Resolved→Open）も一致。</li>
+</ul>
+<p><strong>統合方針</strong></p>
+<ul>
+<li>状態遷移の正本は requirements。</li>
+<li>実装時は <code>enum/union</code> + サーバ側検証を必須。</li>
+</ul>
+<h3 id="3-データモデルの整合">3) データモデルの整合</h3>
+<ul>
+<li>requirements の主要テーブルと backlog の実装順は矛盾なし。</li>
+<li>ただし migration 実装時に「優先度」「ステータス」の表現を <code>enum</code> か <code>master table</code> かで統一が必要。</li>
+</ul>
+<p><strong>統合方針</strong></p>
+<ul>
+<li>初期実装は <code>enum</code> 優先。</li>
+<li>将来的に管理画面で可変化したくなった時点で master table 化を検討。</li>
+</ul>
+<h3 id="4-受け入れ基準definition-of-doneの整合">4) 受け入れ基準（Definition of Done）の整合</h3>
+<ul>
+<li>backlog 全Issueに完了条件があるため、レビュー可能性は担保。</li>
+<li>非機能（型安全、監査、テスト、Docker）は requirements に明記済み。</li>
+</ul>
+<p><strong>統合方針</strong></p>
+<ul>
+<li>すべてのIssueで「実装 + テスト + ドキュメント更新」を完了条件に含める。</li>
+</ul>
+<h2 id="4バージョン統合後の正本ルール">4バージョン統合後の正本ルール</h2>
+<div class="mermaid">flowchart LR
+    Req[&quot;機能要件&lt;br/&gt;docs/requirements.md&quot;]
+    Backlog[&quot;実装順序&lt;br/&gt;docs/issue-backlog.md&quot;]
+    Readme[&quot;外部説明&lt;br/&gt;README.md&quot;]
+    Self[&quot;差分調停&lt;br/&gt;docs/version-integration.md&quot;]
+
+    Req --- Backlog
+    Req --- Readme
+    Self -- &quot;矛盾時の裁定&quot; --&gt; Req
+    Self -- &quot;矛盾時の裁定&quot; --&gt; Backlog
+    Self -- &quot;矛盾時の裁定&quot; --&gt; Readme</div>
+<ol>
+<li><strong>機能要件の正本</strong>: <code>docs/requirements.html</code></li>
+<li><strong>実装順序の正本</strong>: <code>docs/issue-backlog.html</code></li>
+<li><strong>外部説明の正本</strong>: <code>README.html</code></li>
+<li><strong>差分調停の正本</strong>: <code>docs/version-integration.html</code></li>
+</ol>
+<h2 id="差分が出たときの優先順位">差分が出たときの優先順位</h2>
+<div class="mermaid">flowchart TD
+    P1[&quot;1. セキュリティ / 権限境界&quot;]
+    P2[&quot;2. 状態遷移の業務ルール&quot;]
+    P3[&quot;3. データ整合性 (監査ログ含む)&quot;]
+    P4[&quot;4. UI / UX&quot;]
+    P5[&quot;5. 文言・命名&quot;]
+
+    P1 -- &quot;上位を優先&quot; --&gt; P2 --&gt; P3 --&gt; P4 --&gt; P5</div>
+<ol>
+<li>セキュリティ/権限境界（最優先）</li>
+<li>状態遷移の業務ルール</li>
+<li>データ整合性（監査ログ含む）</li>
+<li>UI/UX</li>
+<li>文言・命名</li>
+</ol>
+<h2 id="今後の運用">今後の運用</h2>
+<ul>
+<li>仕様変更PRでは、以下3点を同時更新する。<ol>
+<li><code>docs/requirements.html</code></li>
+<li><code>docs/issue-backlog.html</code></li>
+<li><code>README.html</code>（外部説明に影響する場合）</li>
+</ol>
+</li>
+<li>変更が大きい場合は本書に「整合チェック結果」を追記する。</li>
+</ul>
+
+    <script type="module">
+      import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';
+      mermaid.initialize({ startOnLoad: true, theme: 'default', securityLevel: 'loose' });
+    </script>
+    <script src="https://cdn.jsdelivr.net/npm/highlight.js@11/lib/index.min.js"></script>
+    <script>
+      document.querySelectorAll('pre code').forEach((el) => {
+        if (el.parentElement && el.parentElement.classList.contains('mermaid')) return;
+        try { window.hljs && window.hljs.highlightElement(el); } catch (e) {}
+      });
+    </script>
+  </body>
+</html>
