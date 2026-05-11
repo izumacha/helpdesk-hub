@@ -1,0 +1,89 @@
+[← ドキュメント目次](./index.md) / Self Review (2026-04-10)
+
+# Self Review (2026-04-10)
+
+対象変更:
+
+- `src/domain/ticket-status.ts`
+- `tests/ticket-status.test.ts`
+- `docs/implementation-notes.html`
+
+## 観点と結果
+
+1. 要件整合性
+
+- `docs/requirements.html` のステータス遷移定義（New/Open/In Progress/Waiting for User/Escalated/Resolved/Closed）に一致することを確認。
+- `Resolved -> Open` の再オープン遷移を実装済み。
+
+2. 型安全性
+
+- `as const` + `TicketStatus` union により、遷移ルールのキー/値が型で拘束されることを確認。
+
+3. サーバ側バリデーション想定
+
+- `assertValidTransition` で不正遷移時に明示的エラーを投げられるため、API層から利用可能。
+
+4. テスト妥当性
+
+- 許可遷移、再オープン、不正遷移をカバー。
+- ただし、環境制約で依存取得できず実行未確認。
+
+## フォローアップ
+
+- ネットワーク制約のない環境で `npm install && npm test && npm run typecheck` を実行し、結果をPRに追記する。
+
+---
+
+# Self Review (2026-04-10, GitHub Issue登録準備)
+
+対象変更:
+
+- `docs/github-issues.html`
+- `README.md`
+
+## 観点と結果
+
+1. 要件反映
+
+- 依頼内容の 36 件をそのまま Issue 化しやすい形式で整理。
+- 各 Issue に概要・目的・タスク・完了条件・依存Issue を含めた。
+
+2. 実行可能性
+
+- この環境では `remote.origin.url` 未設定かつ `gh` CLI 未導入のため、直接の Issue 登録は不可。
+- 代替として GitHub 転記用ドキュメントを追加し、README から参照導線を追加。
+
+3. ドキュメント整合
+
+- 既存の `docs/issue-backlog.html`（優先度ベース）と併存できるよう、用途を「GitHub Issue 登録用」に限定。
+
+## フォローアップ
+
+- GitHub 側で対象リポジトリに移動後、`docs/github-issues.html` を元に順次 Issue 登録する。
+
+---
+
+# Self Review (2026-04-15, Sidebarアクティブ状態修正)
+
+対象変更:
+
+- `src/components/layout/Sidebar.tsx`
+
+## 観点と結果
+
+1. 再現性
+
+- 既存実装は `pathname === item.href` の完全一致判定のみで、`/tickets/xxx` や `/faq/xxx` など配下ページ閲覧時にサイドバーの親メニューがアクティブ表示されないことを確認。
+
+2. 影響範囲
+
+- ナビゲーション表示ロジックのみ変更し、リンク遷移先・表示権限制御（`agentOnly`）には影響しないことを確認。
+
+3. 実装妥当性
+
+- ``pathname === href || pathname.startsWith(`${href}/`)`` により、同一パスと配下パスの両方をアクティブとして扱うよう修正。
+- `/` については誤判定を防ぐためのガードを追加。
+
+4. 品質確認
+
+- `npm run typecheck` / `npm run test` で既存テストが全件通過することを確認。

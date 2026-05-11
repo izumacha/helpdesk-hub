@@ -39,7 +39,7 @@
     </style>
   </head>
   <body class="markdown-body">
-    <div class="topbar"><a href="./index.html">← ドキュメント目次</a><span style="color:#656d76">/ プロジェクト全体解説</span></div>
+    <div class="topbar"><a href="./index.md">← ドキュメント目次</a><span style="color:#656d76">/ プロジェクト全体解説</span></div>
     <h1>プロジェクト全体解説</h1>
 <nav class="toc"><strong>目次</strong><ul><li><a href="#1-このプロダクトについて">1. このプロダクトについて</a><ul><li><a href="#解決する課題">解決する課題</a></li><li><a href="#利用シーン">利用シーン</a></li></ul></li><li><a href="#2-登場人物ロール">2. 登場人物（ロール）</a></li><li><a href="#3-主要機能マップ">3. 主要機能マップ</a><ul><li><a href="#mvp実装済み">✅ MVP（実装済み）</a></li><li><a href="#実務拡張実装済み">✅ 実務拡張（実装済み）</a></li><li><a href="#アピール拡張一部のみ実装">🚧 アピール拡張（一部のみ実装）</a></li></ul></li><li><a href="#4-典型的な利用フロー">4. 典型的な利用フロー</a><ul><li><a href="#シナリオ-a-依頼者が問い合わせを起票して解決まで">シナリオ A: 依頼者が問い合わせを起票して解決まで</a></li><li><a href="#シナリオ-b-担当者の一日">シナリオ B: 担当者の一日</a></li><li><a href="#シナリオ-c-sla-超過のリカバリ">シナリオ C: SLA 超過のリカバリ</a></li><li><a href="#シナリオ-d-ナレッジ蓄積faq-候補化">シナリオ D: ナレッジ蓄積（FAQ 候補化）</a></li></ul></li><li><a href="#5-画面と導線">5. 画面と導線</a><ul><li><a href="#画面遷移図">画面遷移図</a></li><li><a href="#画面一覧">画面一覧</a></li></ul></li><li><a href="#6-チケットのライフサイクル">6. チケットのライフサイクル</a><ul><li><a href="#許可されているステータス遷移">許可されているステータス遷移</a></li></ul></li><li><a href="#7-sla-とエスカレーション">7. SLA とエスカレーション</a><ul><li><a href="#slaサービスレベル目標">SLA（サービスレベル目標）</a></li><li><a href="#エスカレーション">エスカレーション</a></li></ul></li><li><a href="#8-通知の仕組み">8. 通知の仕組み</a></li><li><a href="#9-データの輪郭">9. データの輪郭</a></li><li><a href="#10-開発状況・既知の制約">10. 開発状況・既知の制約</a><ul><li><a href="#単一インスタンス前提重要">単一インスタンス前提（重要）</a></li><li><a href="#未実装の主な機能">未実装の主な機能</a></li></ul></li><li><a href="#11-次に読むべきドキュメント">11. 次に読むべきドキュメント</a><ul><li><a href="#pm・ステークホルダー向け">PM・ステークホルダー向け</a></li><li><a href="#エンジニア向け">エンジニア向け</a></li><li><a href="#履歴・調整資料">履歴・調整資料</a></li></ul></li></ul></nav>
 <p>このドキュメントは <strong>PM・QA・ステークホルダーなど非エンジニアの方が最初に読む</strong> ことを想定した、HelpDesk Hub の全体像を業務目線でまとめた入口資料です。技術的な詳細は各専門ドキュメントへリンクしています。</p>
@@ -165,7 +165,7 @@
 <td>ユーザー管理、カテゴリ管理、SLA 設定</td>
 </tr>
 </tbody></table>
-<p>最新の進捗・優先度は <a href="./issue-backlog.html"><code>docs/issue-backlog.html</code></a> を参照してください。</p>
+<p>最新の進捗・優先度は <a href="./issue-backlog.md"><code>docs/issue-backlog.md</code></a> を参照してください。</p>
 <hr>
 <h2 id="4-典型的な利用フロー">4. 典型的な利用フロー</h2>
 <h3 id="シナリオ-a-依頼者が問い合わせを起票して解決まで">シナリオ A: 依頼者が問い合わせを起票して解決まで</h3>
@@ -452,14 +452,14 @@
 <li>分析レポート画面（履歴データは蓄積済み）</li>
 <li>管理画面（ユーザー管理・カテゴリ管理・SLA 設定）</li>
 </ul>
-<p>優先度は <a href="./issue-backlog.html"><code>docs/issue-backlog.html</code></a> で管理されています。</p>
+<p>優先度は <a href="./issue-backlog.md"><code>docs/issue-backlog.md</code></a> で管理されています。</p>
 <hr>
 <h2 id="11-次に読むべきドキュメント">11. 次に読むべきドキュメント</h2>
 <h3 id="pm・ステークホルダー向け">PM・ステークホルダー向け</h3>
 <ul>
 <li><a href="./requirements.html"><code>requirements.html</code></a> — 要件定義（スコープ、画面一覧、データモデル、ステータス遷移）</li>
 <li><a href="./screen-flow.html"><code>screen-flow.html</code></a> — 画面遷移図とアクセス権限</li>
-<li><a href="./issue-backlog.html"><code>issue-backlog.html</code></a> — 開発バックログと優先度</li>
+<li><a href="./issue-backlog.md"><code>issue-backlog.md</code></a> — 開発バックログと優先度</li>
 </ul>
 <h3 id="エンジニア向け">エンジニア向け</h3>
 <ul>
@@ -472,7 +472,7 @@
 <h3 id="履歴・調整資料">履歴・調整資料</h3>
 <ul>
 <li><a href="./version-integration.html"><code>version-integration.html</code></a> — 要件差分の調停ルール</li>
-<li><a href="./pr-review-report.html"><code>pr-review-report.html</code></a> — 過去の PR レビュー履歴</li>
+<li><a href="./pr-review-report.md"><code>pr-review-report.md</code></a> — 過去の PR レビュー履歴</li>
 </ul>
 
     <script type="module">
