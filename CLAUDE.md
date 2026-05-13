@@ -29,7 +29,7 @@ HelpDesk Hub — 社内ヘルプデスク向けチケット管理システム。
 - 計画には以下を含める:
   1. **Context**: 何を、なぜ変更するのか。`docs/smb-dx-pivot-plan.md` のどの Phase / 項目に対応するか。
   2. **変更対象ファイル**: 修正・追加するファイルの絶対パス（既存ファイルは行番号や関数名まで具体化）。
-  3. **再利用する既存実装**: `isValidTransition`（`src/domain/ticket-status.ts`）、`recordHistory`、`createNotification`、`isAgent`、`src/data/ports/` の Port 群など、既にあるものを優先して再利用する。新規作成する場合はその理由を明記。
+  3. **再利用する既存実装**: `isValidTransition`（`src/domain/ticket-status.ts`）、`recordHistory`、`isAgent`、`src/data/ports/` の Port 群（`TenantRepository` 含む）など、既にあるものを優先して再利用する。新規作成する場合はその理由を明記。
   4. **検証方法**: `npm run lint && npm run typecheck && npm run test`、必要に応じて `npm run test:e2e`、画面確認手順。
 - **例外**: タイポ修正・コメントのみの変更・1 行以下の自明な修正は計画作成を省略してよい。それ以外は必ず `ExitPlanMode` でユーザー承認を得る。
 - 計画と異なる実装が必要になった場合は、いったん手を止めてプランを更新（または `AskUserQuestion` で確認）してから続行する。
@@ -84,9 +84,19 @@ Path alias: `@/*` → `src/*` (tsconfig + vitest.config).
 Two roles effectively: **requester** (sees only own tickets, can comment on own) vs **agent/admin** (full access). Use `isAgent(role)` from `src/lib/role.ts` — it returns true for both `agent` and `admin`, so never compare `role === 'admin'` directly unless admin-only is intended.
 
 - `src/middleware.ts` runs on every request (matcher excludes `_next/static`, `_next/image`, `favicon.ico`). It returns 401 JSON for unauthenticated `/api/*`, redirects unauthenticated HTML requests to `/login`, and redirects logged-in users off `/login` (agents → `/dashboard`, requesters → `/tickets`).
-- `src/lib/auth.ts` extends the JWT and session with `id` and `role`. The module augmentation lives in `src/types/next-auth.d.ts`. `session.user.id` and `session.user.role` are available everywhere.
+- `src/lib/auth.ts` extends the JWT and session with `id`, `role`, and `tenantId`. The module augmentation lives in `src/types/next-auth.d.ts`. `session.user.id`, `session.user.role`, and `session.user.tenantId` are available everywhere.
 - Server Actions enforce RBAC themselves — middleware only gates routing. The pattern in `src/features/tickets/actions/update-ticket.ts` is: `const session = await auth(); assertAgentRole(session); ...`. Reuse that assertion pattern; do not rely on the UI hiding controls.
 - Page-level RBAC for list/detail queries is done by adding `where.creatorId = session.user.id` when `!isAgent(role)` (see `src/app/(app)/tickets/page.tsx`).
+
+### Multi-tenancy (in progress)
+
+Phase 0 ピボット (`docs/smb-dx-pivot-plan.md` §5.1) としてマルチテナント基盤を導入済み。
+
+- 全テーブル (`User` / `Category` / `Ticket` / `FaqCandidate` / `Notification`) に `tenantId String NOT NULL` を保持。`TicketComment` / `TicketHistory` は親 `Ticket.tenantId` を経由して辿る。
+- `Tenant` モデルは `mode: lite | pro` と `industry?` を持ち、Lite/Pro 切替の境界として利用予定。
+- 開発・初期投入時は `id='default-tenant'` の単一テナントが seed/マイグレーションで作られる。
+- `session.user.tenantId` は JWT 経由で常に取得可能。旧 JWT (tenantId 未保有) は `jwt` callback 内で DB を引いて補完する。
+- **未完了 (後続 PR)**: 全 Server Action / Query での `where.tenantId = session.user.tenantId` の強制、`middleware.ts` でのスコープ必須化、テナント作成画面。本 PR では schema + session 拡張までで止めている。`tenantId` フィルタを足し忘れるとクロステナント漏洩につながるので、**新規 Server Action を書く際は冒頭で `session.user.tenantId` を取り出して `where` に必ず差し込むこと**。
 
 ### Mutation pattern (Server Actions)
 
@@ -107,7 +117,7 @@ All ticket/FAQ/notification mutations are `'use server'` functions colocated in 
 Unread count is surfaced in real time via Server-Sent Events and a cached Prisma count:
 
 - `src/lib/notifications.ts::getUnreadNotificationCount` wraps the query in `unstable_cache` tagged `notification-count-<userId>` (60 s revalidate).
-- `createNotification` writes the row, calls `revalidateTag('notification-count-<userId>')`, then queries a **fresh** count directly and calls `broadcast(userId, count)` from `src/lib/sse-subscribers.ts`. The direct query is intentional — the cache was just invalidated.
+- Server Actions write notifications via `repos.notifications.create(...)` (must include `tenantId`), then call `revalidateTag('notification-count-<userId>')` + `broadcastUnreadCount(userId)` from `src/features/notifications/notify.ts`. The direct count query inside `broadcastUnreadCount` is intentional — the cache was just invalidated.
 - `markAllRead` (in `src/features/notifications/actions/notification-actions.ts`) broadcasts `0` for immediate UI update.
 - `GET /api/notifications/stream` (`src/app/api/notifications/stream/route.ts`) opens an EventSource, registers the controller in the in-memory `subscribers` Map, sends initial count, and pings every 30 s to keep the connection alive.
 

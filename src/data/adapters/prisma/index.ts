@@ -5,6 +5,7 @@ import type { Repos, UnitOfWork } from '@/data/ports/unit-of-work';
 import { makeCategoryRepo } from './category-repository.prisma';
 import { makeFaqRepo } from './faq-repository.prisma';
 import { makeNotificationRepo } from './notification-repository.prisma';
+import { makeTenantRepo } from './tenant-repository.prisma';
 import { makeTicketCommentRepo } from './ticket-comment-repository.prisma';
 import { makeTicketHistoryRepo } from './ticket-history-repository.prisma';
 import { makeTicketRepo } from './ticket-repository.prisma';
@@ -26,6 +27,7 @@ export function buildPrismaRepos(db: PrismaLike): Repos {
     history: makeTicketHistoryRepo(db),
     comments: makeTicketCommentRepo(db),
     categories: makeCategoryRepo(db),
+    tenants: makeTenantRepo(db),
   };
 }
 

@@ -2,17 +2,19 @@
 import type {
   FaqCandidate,
   Notification,
+  Tenant,
   Ticket,
   TicketComment,
   TicketHistory,
   User,
 } from '@/domain/types';
 
-// メモリ内で保持するカテゴリ行 (id/name/作成日時)
+// メモリ内で保持するカテゴリ行 (id/name/作成日時 + テナント所属)
 export interface CategoryRow {
   id: string; // カテゴリ ID
   name: string; // カテゴリ名
   createdAt: Date; // 作成日時
+  tenantId: string; // 所属テナント ID (マルチテナント化のキー)
 }
 
 /**
@@ -23,6 +25,7 @@ export interface CategoryRow {
  */
 // テスト用メモリストアの型。エンティティごとに Map を持つ
 export interface Store {
+  tenants: Map<string, Tenant>; // テナント (マルチテナント化)
   users: Map<string, User>; // ユーザー
   categories: Map<string, CategoryRow>; // カテゴリ
   tickets: Map<string, Ticket>; // チケット
@@ -37,6 +40,7 @@ export interface Store {
 export function createEmptyStore(): Store {
   // 全エンティティを空の Map とし、連番を 0 から開始
   return {
+    tenants: new Map(),
     users: new Map(),
     categories: new Map(),
     tickets: new Map(),
@@ -52,6 +56,7 @@ export function createEmptyStore(): Store {
 export function cloneStore(src: Store): Store {
   // 各 Map を複製し、連番カウンタの値もコピー
   return {
+    tenants: new Map(src.tenants),
     users: new Map(src.users),
     categories: new Map(src.categories),
     tickets: new Map(src.tickets),
@@ -66,6 +71,7 @@ export function cloneStore(src: Store): Store {
 // dst の中身を src で上書きする関数 (ロールバック用)
 export function overwriteStore(dst: Store, src: Store): void {
   // 各エンティティを src のコピーで置き換える
+  dst.tenants = new Map(src.tenants);
   dst.users = new Map(src.users);
   dst.categories = new Map(src.categories);
   dst.tickets = new Map(src.tickets);

@@ -21,48 +21,60 @@ async function main() {
   // 全ユーザー共通のパスワード "password123" をハッシュ化
   const password = await hash('password123', 12);
 
+  // ── Tenant ───────────────────────────────────────────
+  // マルチテナント化に伴い、まずデフォルト Tenant を作る。既存マイグレーションでも
+  // 同 id を投入しているので、ここでは upsert で再投入を安全に行う
+  const tenant = await prisma.tenant.upsert({
+    where: { id: 'default-tenant' },
+    update: {},
+    create: { id: 'default-tenant', name: 'デフォルト組織', mode: 'lite' },
+  });
+  // 以降のシード行ですべてこの tenantId を引き継ぐ
+  const tenantId = tenant.id;
+  console.log('✅ Default tenant seeded');
+
   // ── Users ────────────────────────────────────────────
   // 依頼者ユーザー1: メールが一致すれば何もせず、無ければ新規作成 (upsert)
   const requester1 = await prisma.user.upsert({
     where: { email: 'requester1@example.com' },
     update: {},
-    create: { email: 'requester1@example.com', name: '田中 花子', passwordHash: password, role: Role.requester },
+    create: { email: 'requester1@example.com', name: '田中 花子', passwordHash: password, role: Role.requester, tenantId },
   });
   // 依頼者ユーザー2
   const requester2 = await prisma.user.upsert({
     where: { email: 'requester2@example.com' },
     update: {},
-    create: { email: 'requester2@example.com', name: '鈴木 一郎', passwordHash: password, role: Role.requester },
+    create: { email: 'requester2@example.com', name: '鈴木 一郎', passwordHash: password, role: Role.requester, tenantId },
   });
   // 依頼者ユーザー3
   const requester3 = await prisma.user.upsert({
     where: { email: 'requester3@example.com' },
     update: {},
-    create: { email: 'requester3@example.com', name: '伊藤 直子', passwordHash: password, role: Role.requester },
+    create: { email: 'requester3@example.com', name: '伊藤 直子', passwordHash: password, role: Role.requester, tenantId },
   });
   // エージェント1 (ヘルプデスク担当者)
   const agent1 = await prisma.user.upsert({
     where: { email: 'agent1@example.com' },
     update: {},
-    create: { email: 'agent1@example.com', name: '佐藤 健太', passwordHash: password, role: Role.agent },
+    create: { email: 'agent1@example.com', name: '佐藤 健太', passwordHash: password, role: Role.agent, tenantId },
   });
   // エージェント2
   const agent2 = await prisma.user.upsert({
     where: { email: 'agent2@example.com' },
     update: {},
-    create: { email: 'agent2@example.com', name: '山田 美咲', passwordHash: password, role: Role.agent },
+    create: { email: 'agent2@example.com', name: '山田 美咲', passwordHash: password, role: Role.agent, tenantId },
   });
   // エージェント3
   const agent3 = await prisma.user.upsert({
     where: { email: 'agent3@example.com' },
     update: {},
-    create: { email: 'agent3@example.com', name: '中村 大輔', passwordHash: password, role: Role.agent },
+    create: { email: 'agent3@example.com', name: '中村 大輔', passwordHash: password, role: Role.agent, tenantId },
   });
   // 管理者ユーザー (admin ロール)
   const admin = await prisma.user.upsert({
     where: { email: 'admin@example.com' },
     update: {},
-    create: { email: 'admin@example.com', name: '管理者', passwordHash: password, role: Role.admin },
+    create: { email: 'admin@example.com', name: '管理者', passwordHash: password, role: Role.admin, tenantId },
   });
 
   // 進捗ログ
@@ -71,9 +83,13 @@ async function main() {
   // ── Categories ───────────────────────────────────────
   // カテゴリを名前 → レコードで引けるよう Map 風オブジェクトを用意
   const cats: Record<string, { id: string }> = {};
-  // 定義済みカテゴリ名を順番に upsert (重複作成を防ぐ)
+  // 定義済みカテゴリ名を順番に upsert (テナント内で名前一意の複合キーを使う)
   for (const name of CATEGORIES) {
-    cats[name] = await prisma.category.upsert({ where: { name }, update: {}, create: { name } });
+    cats[name] = await prisma.category.upsert({
+      where: { tenantId_name: { tenantId, name } },
+      update: {},
+      create: { name, tenantId },
+    });
   }
   console.log('✅ Categories seeded');
 
@@ -205,7 +221,8 @@ async function main() {
     await prisma.ticket.upsert({
       where: { id: def.id },
       update: {},
-      create: def,
+      // tenantId を付与してマルチテナントスキーマに合わせる
+      create: { ...def, tenantId },
     });
   }
 
@@ -262,6 +279,8 @@ async function main() {
         question: '共有プリンターで「プリンターが見つかりません」と表示される',
         answer: 'プリンタードライバを削除し、最新のドライバを再インストールすることで解決します。[コントロールパネル] → [デバイスとプリンター] → 対象プリンターを右クリックして削除後、再度追加してください。',
         status: 'Published',
+        // 元チケットと同じテナントスコープで保存
+        tenantId,
       },
     });
   }
@@ -276,6 +295,8 @@ async function main() {
         question: 'ノートPCのバッテリーの持ちが急に悪くなった',
         answer: 'バッテリーのキャリブレーションを実施してください。完全放電後に満充電することで正確な残量表示が回復します。改善しない場合はバッテリー交換が必要です。',
         status: 'Candidate',
+        // 元チケットと同じテナントスコープで保存
+        tenantId,
       },
     });
   }

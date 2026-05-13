@@ -31,6 +31,18 @@ export type FaqStatus = 'Candidate' | 'Published' | 'Rejected';
 // ユーザー向け通知の種類 (担当割当/エスカレーション/コメント/状態変更)
 export type NotificationType = 'assigned' | 'escalated' | 'commented' | 'statusChanged';
 
+// テナントの動作モード (Lite=SMB 既定 / Pro=現行フル機能)
+export type TenantMode = 'lite' | 'pro';
+
+// テナント (組織) 本体。マルチテナントの境界を表す
+export interface Tenant {
+  id: string; // テナント ID (主キー)
+  name: string; // 組織名 (画面表示用)
+  mode: TenantMode; // Lite/Pro モード
+  industry: string | null; // 業種テンプレ識別子 (未設定なら null)
+  createdAt: Date; // 作成日時
+}
+
 // 一覧表示などで最低限必要なユーザー情報だけを持つ軽量型
 export interface UserSummary {
   id: string; // ユーザー ID
@@ -44,6 +56,7 @@ export interface User {
   name: string; // 氏名
   passwordHash: string; // bcrypt でハッシュ化済みパスワード (平文は保存しない)
   role: Role; // 権限区分
+  tenantId: string; // 所属テナント ID (マルチテナント化のキー)
   createdAt: Date; // 登録日時
   updatedAt: Date; // 最終更新日時
 }
@@ -66,6 +79,7 @@ export interface Ticket {
   creatorId: string; // 起票者ユーザー ID
   assigneeId: string | null; // 担当者ユーザー ID (未アサインなら null)
   categoryId: string | null; // カテゴリ ID (未分類なら null)
+  tenantId: string; // 所属テナント ID (マルチテナント化のキー)
 }
 
 // チケット本体に関連ユーザー/カテゴリを埋め込んだ拡張版 (画面表示用)
@@ -105,6 +119,7 @@ export interface FaqCandidate {
   status: FaqStatus; // 候補/公開/却下のいずれか
   createdAt: Date; // 候補化した日時
   updatedAt: Date; // 最終更新日時
+  tenantId: string; // 所属テナント ID (マルチテナント化のキー)
 }
 
 // ユーザー向け通知 1 件分
@@ -116,4 +131,5 @@ export interface Notification {
   message: string; // 表示する文言
   read: boolean; // 既読かどうか (true=既読, false=未読)
   createdAt: Date; // 通知の生成日時
+  tenantId: string; // 所属テナント ID (マルチテナント化のキー)
 }

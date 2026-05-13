@@ -176,6 +176,8 @@ export async function updateTicketAssignee(ticketId: string, newAssigneeId: stri
         type: 'assigned',
         message: `チケット「${ticket.title}」の担当者に割り当てられました`,
         ticketId,
+        // 通知も同じテナントスコープで保存 (チケットと同テナント)
+        tenantId: ticket.tenantId,
       });
     }
   });
@@ -243,6 +245,8 @@ export async function escalateTicket(ticketId: string, reason: string) {
           type: 'escalated',
           message: `チケット「${title}」がエスカレーションされました`,
           ticketId,
+          // チケットと同じテナントスコープで通知を保存
+          tenantId: ticket.tenantId,
         }),
       ),
     );
@@ -308,6 +312,8 @@ export async function addComment(ticketId: string, body: string) {
           type: 'commented',
           message,
           ticketId,
+          // チケットと同じテナントスコープで通知を保存
+          tenantId: ticket.tenantId,
         }),
       ),
     );

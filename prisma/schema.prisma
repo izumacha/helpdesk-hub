@@ -67,6 +67,32 @@ enum NotificationType {
   statusChanged // ステータス変更通知
 }
 
+// テナント (組織) の動作モード。SMB 向けピボットの Lite/Pro 二層に対応
+enum TenantMode {
+  lite // SMB 既定 (3 ステータス・用語簡素化・SLA/エスカレーション非表示)
+  pro // 現行フル機能 (7 ステータス・SLA・エスカレーション・FAQ 候補)
+}
+
+// ─────────────────────────────────────────────
+// Tenant (組織/テナント。SaaS 化のためのデータ境界)
+// ─────────────────────────────────────────────
+
+// 利用組織 1 件を表すモデル。マルチテナント化の境界として全エンティティから参照される
+model Tenant {
+  id        String     @id @default(cuid()) // 主キー (cuid)
+  name      String // 組織名 (画面表示用)
+  mode      TenantMode @default(lite) // Lite/Pro モード (既定は SMB 向けの lite)
+  industry  String? // 業種テンプレ識別子 (Phase 3 でカテゴリ初期投入に利用)
+  createdAt DateTime   @default(now()) // 作成日時
+
+  // 配下のリソース (テナント削除で連鎖削除)
+  users         User[]
+  categories    Category[]
+  tickets       Ticket[]
+  faqCandidates FaqCandidate[]
+  notifications Notification[]
+}
+
 // ─────────────────────────────────────────────
 // User (ユーザー)
 // ─────────────────────────────────────────────
@@ -80,6 +106,10 @@ model User {
   createdAt    DateTime @default(now()) // 作成日時 (自動で現在時刻)
   updatedAt    DateTime @updatedAt // 更新日時 (Prisma が自動更新)
 
+  // 所属テナント (マルチテナント化の必須キー)
+  tenantId String
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
   // Relations
   createdTickets  Ticket[]        @relation("TicketCreator") // このユーザーが作ったチケット
   assignedTickets Ticket[]        @relation("TicketAssignee") // このユーザーが担当のチケット
@@ -87,6 +117,8 @@ model User {
   histories       TicketHistory[] // このユーザーが起こした履歴イベント
   faqCandidates   FaqCandidate[] // このユーザーが作成した FAQ 候補
   notifications   Notification[] // このユーザー宛の通知
+
+  @@index([tenantId]) // テナントスコープ検索用
 }
 
 // ─────────────────────────────────────────────
@@ -95,10 +127,17 @@ model User {
 
 model Category {
   id        String   @id @default(cuid()) // 主キー
-  name      String   @unique // カテゴリ名 (一意)
+  name      String // カテゴリ名 (テナント内で一意)
   createdAt DateTime @default(now()) // 作成日時
 
+  // 所属テナント
+  tenantId String
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
   tickets Ticket[] // このカテゴリに紐づくチケット
+
+  @@unique([tenantId, name]) // テナントごとに同名カテゴリ 1 つに制限
+  @@index([tenantId]) // テナントスコープ検索用
 }
 
 // ─────────────────────────────────────────────
@@ -129,6 +168,10 @@ model Ticket {
   assigneeId String? // 担当者のユーザー ID (未割当のとき null)
   categoryId String? // カテゴリ ID (未分類のとき null)
 
+  // 所属テナント
+  tenantId String
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
   // Relations (リレーション)
   creator       User            @relation("TicketCreator", fields: [creatorId], references: [id]) // 作成者ユーザー
   assignee      User?           @relation("TicketAssignee", fields: [assigneeId], references: [id]) // 担当者ユーザー
@@ -144,6 +187,9 @@ model Ticket {
   @@index([status]) // ステータス集計用
   @@index([categoryId]) // カテゴリで絞り込む一覧用
   @@index([createdAt(sort: Desc)]) // 新着順ソート用
+  @@index([tenantId]) // テナントスコープ検索用
+  @@index([tenantId, status]) // テナント別ステータス絞り込み用
+  @@index([tenantId, createdAt(sort: Desc)]) // テナント別新着順
 }
 
 // ─────────────────────────────────────────────
@@ -161,8 +207,14 @@ model FaqCandidate {
   ticketId    String @unique // 元になったチケット (1 チケット 1 候補)
   createdById String // 作成者 (エージェント)
 
+  // 所属テナント
+  tenantId String
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
   ticket    Ticket @relation(fields: [ticketId], references: [id], onDelete: Cascade) // チケット削除時に一緒に消す
   createdBy User   @relation(fields: [createdById], references: [id]) // 作成者リレーション
+
+  @@index([tenantId]) // テナントスコープ検索用
 }
 
 // ─────────────────────────────────────────────
@@ -179,11 +231,16 @@ model Notification {
   userId   String // 通知を受け取るユーザー
   ticketId String? // 関連チケット (任意)
 
+  // 所属テナント
+  tenantId String
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
   user   User    @relation(fields: [userId], references: [id], onDelete: Cascade) // ユーザー削除時に通知も消す
   ticket Ticket? @relation(fields: [ticketId], references: [id], onDelete: SetNull) // チケット削除時は紐づけだけ外す
 
   @@index([userId, read]) // 未読件数を高速に数えるため
   @@index([userId, createdAt(sort: Desc)]) // ユーザー別の新着順表示用
+  @@index([tenantId]) // テナントスコープ検索用
 }
 
 // ─────────────────────────────────────────────

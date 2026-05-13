@@ -5,6 +5,7 @@ import { makeCategoryRepo } from './category-repository.memory';
 import { makeFaqRepo } from './faq-repository.memory';
 import { makeNotificationRepo } from './notification-repository.memory';
 import { cloneStore, createEmptyStore, overwriteStore, type Store } from './store';
+import { makeTenantRepo } from './tenant-repository.memory';
 import { makeTicketCommentRepo } from './ticket-comment-repository.memory';
 import { makeTicketHistoryRepo } from './ticket-history-repository.memory';
 import { makeTicketRepo } from './ticket-repository.memory';
@@ -25,6 +26,7 @@ export function buildMemoryRepos(store: Store): Repos {
     history: makeTicketHistoryRepo(store),
     comments: makeTicketCommentRepo(store),
     categories: makeCategoryRepo(store),
+    tenants: makeTenantRepo(store),
   };
 }
 

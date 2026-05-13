@@ -46,6 +46,7 @@ export function makeFaqRepo(store: Store): FaqRepository {
         status: 'Candidate',
         createdAt: now,
         updatedAt: now,
+        tenantId: input.tenantId, // 所属テナントを必ず保存
       };
       // ストアに登録
       store.faq.set(row.id, row);

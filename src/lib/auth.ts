@@ -64,6 +64,7 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
           email: user.email, // メール
           name: user.name, // 氏名
           role: user.role, // 権限
+          tenantId: user.tenantId, // 所属テナント ID (マルチテナント化のキー)
         };
       },
     }),
@@ -72,20 +73,31 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
   callbacks: {
     // JWT 発行時に呼ばれる。初回ログイン時だけ user が渡ってくる
     async jwt({ token, user }) {
-      // user があれば ID と role を JWT ペイロードに記録
+      // user があれば ID / role / tenantId を JWT ペイロードに記録
       if (user) {
         token.id = user.id;
         token.role = (user as { role: Role }).role;
+        token.tenantId = (user as { tenantId: string }).tenantId;
+      }
+      // 旧 JWT (Tenant 化前に発行されたもの) は tenantId を持たないので、
+      // DB から引いて補完する。これがないとデプロイ直後のログイン中ユーザーが
+      // session.user.tenantId = undefined になり Server Action が落ちる
+      if (!token.tenantId && token.id) {
+        // ユーザーを ID で検索 (port 経由)
+        const fresh = await repos.users.findById(token.id as string);
+        // ヒットすれば tenantId を補完
+        if (fresh) token.tenantId = fresh.tenantId;
       }
       // 更新したトークンを返す
       return token;
     },
     // セッション取得時に呼ばれる。JWT の値をセッションに転記する
     async session({ session, token }) {
-      // JWT があれば session.user に id と role を載せる
+      // JWT があれば session.user に id / role / tenantId を載せる
       if (token) {
         session.user.id = token.id as string;
         session.user.role = token.role as Role;
+        session.user.tenantId = token.tenantId as string;
       }
       // 完成したセッションを返す
       return session;

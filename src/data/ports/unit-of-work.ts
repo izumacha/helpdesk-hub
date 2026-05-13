@@ -2,6 +2,7 @@
 import type { CategoryRepository } from './category-repository';
 import type { FaqRepository } from './faq-repository';
 import type { NotificationRepository } from './notification-repository';
+import type { TenantRepository } from './tenant-repository';
 import type { TicketCommentRepository } from './ticket-comment-repository';
 import type { TicketHistoryRepository } from './ticket-history-repository';
 import type { TicketRepository } from './ticket-repository';
@@ -16,6 +17,7 @@ export interface Repos {
   history: TicketHistoryRepository; // 履歴操作
   comments: TicketCommentRepository; // コメント操作
   categories: CategoryRepository; // カテゴリ操作
+  tenants: TenantRepository; // テナント操作 (マルチテナント化)
 }
 
 // トランザクション境界を表す契約 (Unit of Work パターン)

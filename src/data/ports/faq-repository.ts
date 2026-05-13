@@ -7,6 +7,7 @@ export interface CreateFaqInput {
   createdById: string; // 候補化したユーザー ID
   question: string; // 質問文
   answer: string; // 回答文
+  tenantId: string; // 所属テナント ID (マルチテナント化のキー)
 }
 
 // 一覧表示用の FAQ アイテム (関連チケットと作成者名を同梱)

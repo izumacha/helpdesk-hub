@@ -73,6 +73,8 @@ export async function POST(req: Request) {
     categoryId: categoryId ?? null,
     // 作成者は現在のログインユーザー
     creatorId: session.user.id,
+    // 起票元のテナント (マルチテナント化のキー)
+    tenantId: session.user.tenantId,
     // 優先度に応じた解決期限を計算
     resolutionDueAt: calculateResolutionDueAt(priority, now),
   });

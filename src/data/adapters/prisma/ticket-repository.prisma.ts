@@ -178,6 +178,7 @@ export function makeTicketRepo(db: PrismaLike): TicketRepository {
           priority: input.priority,
           categoryId: input.categoryId,
           creatorId: input.creatorId,
+          tenantId: input.tenantId, // テナント所属を必ず保存
           firstResponseDueAt: input.firstResponseDueAt ?? null,
           resolutionDueAt: input.resolutionDueAt ?? null,
         },

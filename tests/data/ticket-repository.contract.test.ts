@@ -7,14 +7,25 @@ import type { User } from '@/domain/types';
 // 共通契約テストとそのコンテキスト型
 import { runTicketRepositoryContract, type ContractContext } from './ticket-repository.contract';
 
+// 全テストで共有するテナント ID (マルチテナント化後はあらゆる行で必須)
+const TENANT_ID = 'default-tenant';
+
 // メモリ実装向けに ContractContext を組み立てる
 function makeMemoryContext(): ContractContext {
   // 純粋メモリ実装の store / repos / uow を生成
   const { store, repos, uow } = createMemoryContext();
 
-  // 各テストで呼ばれる「最小限のシード」: 1 依頼者 + 2 エージェント + 1 カテゴリ
+  // 各テストで呼ばれる「最小限のシード」: 1 テナント + 1 依頼者 + 2 エージェント + 1 カテゴリ
   const seedBasicFixture: ContractContext['seedBasicFixture'] = async () => {
     const now = new Date();
+    // まずデフォルトテナントを投入 (User/Category/Ticket の FK 先として必要)
+    store.tenants.set(TENANT_ID, {
+      id: TENANT_ID,
+      name: 'デフォルト組織',
+      mode: 'lite',
+      industry: null,
+      createdAt: now,
+    });
     // 投入するユーザーのテーブル (id, role, name)
     const users: Array<[string, User['role'], string]> = [
       ['u-req-1', 'requester', '山田 太郎'],
@@ -29,12 +40,18 @@ function makeMemoryContext(): ContractContext {
         name,
         passwordHash: 'x',
         role,
+        tenantId: TENANT_ID, // テナントスコープを必ず付与
         createdAt: now,
         updatedAt: now,
       });
     }
-    // 1 つだけカテゴリを投入
-    store.categories.set('cat-1', { id: 'cat-1', name: 'アカウント', createdAt: now });
+    // 1 つだけカテゴリを投入 (テナント所属)
+    store.categories.set('cat-1', {
+      id: 'cat-1',
+      name: 'アカウント',
+      createdAt: now,
+      tenantId: TENANT_ID,
+    });
     // テスト本体が使う ID とユーザー実体を返す
     return {
       requester: store.users.get('u-req-1')!,

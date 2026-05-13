@@ -50,6 +50,7 @@ export function runTicketRepositoryContract(
         priority: 'High',
         creatorId: requester.id,
         categoryId,
+        tenantId: 'default-tenant',
       });
       // 初期ステータスは New、作成者も正しく結びつく
       expect(created.status).toBe('New');
@@ -71,6 +72,7 @@ export function runTicketRepositoryContract(
         priority: 'Low',
         creatorId: requester.id,
         categoryId,
+        tenantId: 'default-tenant',
       });
       // メモリ実装で createdAt が同一にならないよう少し待つ
       await new Promise((r) => setTimeout(r, 2));
@@ -81,6 +83,7 @@ export function runTicketRepositoryContract(
         priority: 'Medium',
         creatorId: agentA.id,
         categoryId,
+        tenantId: 'default-tenant',
       });
 
       // 依頼者で絞ると古い方だけが返る
@@ -108,6 +111,7 @@ export function runTicketRepositoryContract(
         priority: 'Medium',
         creatorId: requester.id,
         categoryId,
+        tenantId: 'default-tenant',
       });
       // 本文に小文字の "vpn" を含む
       await ctx.repos.tickets.create({
@@ -116,6 +120,7 @@ export function runTicketRepositoryContract(
         priority: 'Low',
         creatorId: requester.id,
         categoryId,
+        tenantId: 'default-tenant',
       });
       // どちらにも含まないノイズ
       await ctx.repos.tickets.create({
@@ -124,6 +129,7 @@ export function runTicketRepositoryContract(
         priority: 'Low',
         creatorId: requester.id,
         categoryId,
+        tenantId: 'default-tenant',
       });
 
       // "VPN" 大文字小文字無視で 2 件ヒット
@@ -150,6 +156,7 @@ export function runTicketRepositoryContract(
         priority: 'Low',
         creatorId: requester.id,
         categoryId,
+        tenantId: 'default-tenant',
       });
       await ctx.repos.tickets.updateAssignee(assigned.id, agentA.id);
       // 担当者なしのチケット
@@ -159,6 +166,7 @@ export function runTicketRepositoryContract(
         priority: 'Low',
         creatorId: requester.id,
         categoryId,
+        tenantId: 'default-tenant',
       });
 
       const result = await ctx.repos.tickets.list({
@@ -179,6 +187,7 @@ export function runTicketRepositoryContract(
         priority: 'Medium',
         creatorId: requester.id,
         categoryId,
+        tenantId: 'default-tenant',
       });
 
       // ステータス更新 + 履歴記録 + 例外、を 1 つの uow で実行
@@ -212,6 +221,7 @@ export function runTicketRepositoryContract(
         priority: 'Low',
         creatorId: requester.id,
         categoryId,
+        tenantId: 'default-tenant',
       });
 
       // 取得して書き換えても、内部状態に影響しないことを期待
@@ -242,6 +252,7 @@ export function runTicketRepositoryContract(
         priority: 'High',
         creatorId: requester.id,
         categoryId,
+        tenantId: 'default-tenant',
         resolutionDueAt: yesterday,
       });
       // requester: Open 1 件 (期限内、agentA に割当)
@@ -251,6 +262,7 @@ export function runTicketRepositoryContract(
         priority: 'Medium',
         creatorId: requester.id,
         categoryId,
+        tenantId: 'default-tenant',
         resolutionDueAt: tomorrow,
       });
       await ctx.repos.tickets.updateStatus(t2.id, 'Open', null);
@@ -262,6 +274,7 @@ export function runTicketRepositoryContract(
         priority: 'Low',
         creatorId: agentA.id,
         categoryId,
+        tenantId: 'default-tenant',
       });
       await ctx.repos.tickets.updateAssignee(t3.id, agentB.id);
       await ctx.repos.tickets.updateStatus(t3.id, 'Resolved', new Date());

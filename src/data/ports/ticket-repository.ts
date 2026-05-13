@@ -52,6 +52,7 @@ export interface CreateTicketInput {
   priority: Priority; // 優先度
   categoryId: string | null; // カテゴリ (無指定は null)
   creatorId: string; // 起票者 ID
+  tenantId: string; // 所属テナント ID (マルチテナント化のキー)
   firstResponseDueAt?: Date | null; // 初回応答期限 (SLA)
   resolutionDueAt?: Date | null; // 解決期限 (SLA)
 }

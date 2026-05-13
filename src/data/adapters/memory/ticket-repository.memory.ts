@@ -221,6 +221,7 @@ export function makeTicketRepo(store: Store): TicketRepository {
         creatorId: input.creatorId,
         assigneeId: null, // 初期は未アサイン
         categoryId: input.categoryId,
+        tenantId: input.tenantId, // 所属テナントを必ず保存
       };
       // ストアに登録
       store.tickets.set(ticket.id, ticket);
