@@ -6,6 +6,21 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 HelpDesk Hub — 社内ヘルプデスク向けチケット管理システム。UI text, error messages, and test selectors are in Japanese; preserve that when editing user-facing strings or writing Playwright selectors.
 
+## プロダクト方針（必読・必遵守）
+
+本プロダクトは **DX 未進展の中小企業向け** にピボット中。`docs/smb-dx-pivot-plan.md` が
+プロダクト方針・ロードマップの **正本** であり、以下を **必ず実行**すること。
+
+- 機能追加・改修・リファクタの着手前に `docs/smb-dx-pivot-plan.md` を参照し、
+  対象作業が **どの Phase / どの項目に対応するか** をコミットメッセージまたは PR 本文に明記する。
+- 計画書に記載された方針（Lite/Pro 二層、マルチテナント化、用語簡素化、メール／LINE 取り込み、
+  マジックリンク認証、業種テンプレ 等）に **反する変更を行わない**。逸脱が必要な場合は、
+  先に計画書側を PR で更新してから着手する。
+- 「情シス向けフル機能」前提の従来要件（`docs/requirements.html` 等）と計画書が衝突する場合は、
+  **計画書を優先**する。差分は `docs/version-integration.html` の調停ルールに従って解消。
+- 計画書の Phase 順序（Phase 0 → 1 → 2 → 3 → 4）を尊重し、後フェーズの機能を前フェーズに
+  混ぜない（例: Phase 0 のマルチテナント化を完了する前に Phase 2 のメール取り込みを実装しない）。
+
 ## Commands
 
 ```bash
