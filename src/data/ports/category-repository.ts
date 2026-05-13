@@ -7,5 +7,7 @@ export interface CategorySummary {
 // カテゴリ取得用リポジトリの契約 (port)
 export interface CategoryRepository {
   list(): Promise<CategorySummary[]>; // 全カテゴリを取得する
-  findById(id: string): Promise<CategorySummary | null>; // ID 指定で 1 件取得 (無ければ null)
+  // ID 指定で 1 件取得。tenantId 必須でテナント越境参照を防止する
+  // (Phase 0: 全 Port を tenant スコープ化するまでの第一歩)
+  findById(id: string, tenantId: string): Promise<CategorySummary | null>;
 }

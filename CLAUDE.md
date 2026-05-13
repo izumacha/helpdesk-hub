@@ -61,6 +61,15 @@ Playwright does **not** auto-start the dev server — run `npm run dev` (or `doc
 
 Docker flow: `cp .env.example .env && docker compose up -d && docker compose exec app npx prisma migrate deploy && docker compose exec app npx prisma db seed`.
 
+### Migrations — first-time baseline (重要)
+
+Phase 0 でマルチテナント基盤を入れた際、それまで `prisma db push` 運用だったため `prisma/migrations/` を新規作成した。以下のケースで `prisma migrate dev` が「ドリフト検出 → DB reset」を提案するので、状況に応じて手順を選ぶこと:
+
+- **クリーン環境 (DB が空 or 新規)**: そのまま `npm run db:migrate` → `npm run db:seed` で OK。`20260513000000_init` と `20260513000100_add_tenant` が連続適用される。
+- **既存 dev DB に `db push` で作ったスキーマだけが残っている (データは捨ててよい)**: `docker compose exec db psql -U postgres -c "DROP DATABASE helpdesk_hub;"` → `CREATE DATABASE` → `npm run db:migrate` → `npm run db:seed`。
+- **既存 dev DB に残したいデータがあり、スキーマが `20260513000000_init` 適用後の状態と同等**: `npx prisma migrate resolve --applied 20260513000000_init` でベースラインを「適用済み」扱いにしてから `npm run db:migrate` で `20260513000100_add_tenant` だけを流す。バックフィルは Phase 0 マイグレーションが行うので追加作業は不要。
+- **本番想定**: `prisma migrate deploy` が連続適用してくれるので、ベースライン DB が空であれば手動 resolve は不要。
+
 ## Architecture
 
 **Stack:** Next.js 15 App Router, React 19, Auth.js v5 (next-auth@beta, Credentials provider with bcryptjs), Prisma 5 + PostgreSQL, Zod, Tailwind v4, Vitest, Playwright.

@@ -85,8 +85,14 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
       if (!token.tenantId && token.id) {
         // ユーザーを ID で検索 (port 経由)
         const fresh = await repos.users.findById(token.id as string);
-        // ヒットすれば tenantId を補完
-        if (fresh) token.tenantId = fresh.tenantId;
+        if (fresh) {
+          // 見つかれば tenantId を補完
+          token.tenantId = fresh.tenantId;
+        } else {
+          // User が DB から削除済みなら、JWT を無効化して再ログインを促す
+          // (next-auth v5 は jwt callback での throw を session 失効として扱う)
+          throw new Error('User no longer exists. Please sign in again.');
+        }
       }
       // 更新したトークンを返す
       return token;
@@ -97,6 +103,7 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
       if (token) {
         session.user.id = token.id as string;
         session.user.role = token.role as Role;
+        // jwt callback で必ず string になっている (未設定なら throw 済み)
         session.user.tenantId = token.tenantId as string;
       }
       // 完成したセッションを返す
