@@ -6,6 +6,10 @@
 
 - [overview](./overview.html) — PM・非エンジニア向けのプロジェクト全体解説
 
+## 戦略・プロダクト企画
+
+- [smb-dx-pivot-plan](./smb-dx-pivot-plan.md) — DX 未進展の中小企業向けに作り替えるピボット計画
+
 ## 設計
 
 - [requirements](./requirements.html) — 機能要件・スコープ・ステータス遷移の正本
