@@ -64,35 +64,52 @@ export interface MarkEscalatedInput {
 }
 
 // チケットリポジトリの契約 (port)
+// 全メソッドの ID 系引数は tenantId 必須化済。テナント越境参照/更新を Adapter 層で遮断する
 export interface TicketRepository {
-  findById(id: string): Promise<Ticket | null>; // ID で 1 件取得 (最小フィールド)
-  findByIdWithRefs(id: string): Promise<TicketWithRefs | null>; // 関連ユーザー/カテゴリ付きで 1 件取得
-  findByIdWithDetail(id: string): Promise<TicketDetail | null>; // 詳細ページ用に 1 件取得
+  // ID + tenantId で 1 件取得 (最小フィールド)。他テナントの ID なら null を返す
+  findById(id: string, tenantId: string): Promise<Ticket | null>;
+  // ID + tenantId で関連ユーザー/カテゴリ付きで 1 件取得
+  findByIdWithRefs(id: string, tenantId: string): Promise<TicketWithRefs | null>;
+  // ID + tenantId で詳細ページ用に 1 件取得 (コメント/履歴/FAQ 候補を同梱)
+  findByIdWithDetail(id: string, tenantId: string): Promise<TicketDetail | null>;
 
-  // 一覧取得 (絞り込み + ページング + ソート)
+  // 一覧取得 (絞り込み + ページング + ソート、tenantId スコープ)
   list(args: {
     filter: TicketListFilter;
     page: Page;
     sort?: Sort<'createdAt'>;
+    tenantId: string; // テナントスコープ (必須)
   }): Promise<TicketWithRefs[]>;
 
-  count(filter: TicketListFilter): Promise<number>; // 件数取得 (ページング用)
+  // 件数取得 (ページング用、tenantId スコープ)
+  count(filter: TicketListFilter, tenantId: string): Promise<number>;
 
   /**
    * ダッシュボード用の一括統計取得。
    * - `creatorId` は **`byStatus` にのみ作用** する (依頼者ロール向けスコープ)
    * - `slaOverdue` / `workload` は常に全件対象 (担当者向け指標)。
    *   呼び出し側が role で表示制御する前提
+   * - `tenantId` で当該テナント内のチケットだけを集計対象に絞る
    */
   dashboardStats(args: {
     creatorId?: string; // byStatus を起票者で絞る (省略時は全件)
     now: Date; // SLA 超過判定の基準時刻
     excludeStatusesForWorkload: TicketStatus[]; // ワークロード集計で除外する状態
+    tenantId: string; // テナントスコープ (必須)
   }): Promise<DashboardStats>; // 上記 3 指標をまとめて返す
 
-  create(input: CreateTicketInput): Promise<TicketWithRefs>; // 新規作成
-  updateStatus(id: string, status: TicketStatus, resolvedAt: Date | null): Promise<void>; // 状態更新
-  updatePriority(id: string, priority: Priority): Promise<void>; // 優先度更新
-  updateAssignee(id: string, assigneeId: string | null): Promise<void>; // 担当者更新
-  markEscalated(id: string, args: MarkEscalatedInput): Promise<void>; // エスカレーション状態にする
+  create(input: CreateTicketInput): Promise<TicketWithRefs>; // 新規作成 (input.tenantId 必須)
+  // 状態更新 (tenantId スコープ。他テナントの ID なら 0 件更新で no-op)
+  updateStatus(
+    id: string,
+    status: TicketStatus,
+    resolvedAt: Date | null,
+    tenantId: string,
+  ): Promise<void>;
+  // 優先度更新 (tenantId スコープ)
+  updatePriority(id: string, priority: Priority, tenantId: string): Promise<void>;
+  // 担当者更新 (tenantId スコープ。null で未アサイン)
+  updateAssignee(id: string, assigneeId: string | null, tenantId: string): Promise<void>;
+  // エスカレーション状態にする (tenantId スコープ)
+  markEscalated(id: string, args: MarkEscalatedInput, tenantId: string): Promise<void>;
 }

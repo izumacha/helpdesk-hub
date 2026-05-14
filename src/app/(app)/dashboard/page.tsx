@@ -18,16 +18,19 @@ export default async function DashboardPage() {
 
   // ロール判定
   const isAgent = checkIsAgent(session.user.role);
+  // セッションから tenantId を取り出して以降の port 呼び出しに伝搬する
+  const tenantId = session.user.tenantId;
   // SLA 判定基準時刻 (現在時刻)
   const now = new Date();
 
-  // ダッシュボード用 3 指標を 1 メソッドで取得 (内部は groupBy で 3 クエリに集約)
+  // ダッシュボード用 3 指標を 1 メソッドで取得 (内部は groupBy で 3 クエリに集約、tenantId スコープ)
   // - byStatus: 7 状態それぞれの件数 (依頼者なら自身のチケットに限定)
-  // - slaOverdue / workload: 全件対象 (表示は呼び出し側で role 制御)
+  // - slaOverdue / workload: 当該テナント内全件対象 (表示は呼び出し側で role 制御)
   const stats = await repos.tickets.dashboardStats({
     creatorId: isAgent ? undefined : session.user.id,
     now,
     excludeStatusesForWorkload: ['Resolved', 'Closed'],
+    tenantId,
   });
 
   // SLA 超過件数 (依頼者には表示しないので 0 にしておく)
@@ -40,9 +43,9 @@ export default async function DashboardPage() {
     .filter((w) => w.assigneeId !== null)
     .map((w) => w.assigneeId as string);
 
-  // 担当者名を解決するため、ユーザー情報をまとめて取得 (port 経由)
+  // 担当者名を解決するため、当該テナント内のユーザー情報をまとめて取得 (port 経由)
   const assigneeNames =
-    assigneeIds.length > 0 ? await repos.users.findSummariesByIds(assigneeIds) : [];
+    assigneeIds.length > 0 ? await repos.users.findSummariesByIds(assigneeIds, tenantId) : [];
 
   // ID → 名前の辞書を作成
   const nameMap = Object.fromEntries(assigneeNames.map((u) => [u.id, u.name]));

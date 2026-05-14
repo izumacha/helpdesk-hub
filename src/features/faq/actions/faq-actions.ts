@@ -19,12 +19,14 @@ import { faqCandidateSchema } from '@/lib/validations/faq';
 export async function createFaqCandidate(ticketId: string, question: string, answer: string) {
   // ログインセッションを取得
   const session = await auth();
-  // 未ログインなら即エラー (認可前チェック)
-  if (!session?.user?.id) throw new Error('Unauthorized');
+  // 未ログイン or tenantId 不在なら即エラー (認可前チェック)
+  if (!session?.user?.id || !session.user.tenantId) throw new Error('Unauthorized');
   // エージェント/管理者でなければ操作禁止
   if (!isAgent(session.user.role)) {
     throw new Error('エージェントまたは管理者のみ実行できます');
   }
+  // セッションから tenantId を取り出して以降の where 句注入に使う
+  const tenantId = session.user.tenantId;
   // ユーザー単位で 60 秒あたり最大 10 件までに制限 (連打防止)
   enforceRateLimit(`faq-create:${session.user.id}`, { limit: 10, windowMs: 60_000 });
 
@@ -35,8 +37,8 @@ export async function createFaqCandidate(ticketId: string, question: string, ans
     throw new Error(parsed.error.issues[0]?.message ?? 'FAQ候補の入力値が不正です');
   }
 
-  // 対象チケットを取得 (port 経由)
-  const ticket = await repos.tickets.findById(ticketId);
+  // 対象チケットを tenantId スコープで取得 (port 経由)
+  const ticket = await repos.tickets.findById(ticketId, tenantId);
   // 無ければエラー
   if (!ticket) throw new Error('チケットが見つかりません');
   // 解決済み以外は FAQ 化不可
@@ -64,26 +66,28 @@ export async function createFaqCandidate(ticketId: string, question: string, ans
 export async function updateFaqStatus(faqId: string, status: 'Published' | 'Rejected') {
   // セッション取得
   const session = await auth();
-  // 未ログインなら拒否
-  if (!session?.user?.id) throw new Error('Unauthorized');
+  // 未ログイン or tenantId 不在なら拒否
+  if (!session?.user?.id || !session.user.tenantId) throw new Error('Unauthorized');
   // エージェント/管理者以外は拒否
   if (!isAgent(session.user.role)) {
     throw new Error('エージェントまたは管理者のみ実行できます');
   }
+  // セッションから tenantId を取り出して以降の where 句注入に使う
+  const tenantId = session.user.tenantId;
   // 60 秒あたり 20 回までに制限
   enforceRateLimit(`faq-update:${session.user.id}`, { limit: 20, windowMs: 60_000 });
 
-  // 対象 FAQ 候補を取得 (port 経由)
-  const faq = await repos.faq.findById(faqId);
-  // 見つからなければエラー
+  // 対象 FAQ 候補を tenantId スコープで取得 (port 経由)
+  const faq = await repos.faq.findById(faqId, tenantId);
+  // 見つからない or 他テナントの ID ならエラー
   if (!faq) throw new Error('FAQ候補が見つかりません');
   // 既に公開/却下済みのものは対象外
   if (faq.status !== 'Candidate') {
     throw new Error('候補ステータスのFAQのみ公開・却下できます');
   }
 
-  // 状態を更新 (port 経由)
-  await repos.faq.updateStatus(faqId, status);
+  // 状態を更新 (tenantId スコープで where に注入、port 経由)
+  await repos.faq.updateStatus(faqId, status, tenantId);
   // FAQ 一覧のキャッシュを無効化
   revalidatePath('/faq');
 }

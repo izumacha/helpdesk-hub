@@ -50,9 +50,9 @@ export async function Header() {
       <div className="flex items-center gap-4">
         {session?.user && (
           <>
-            {/* 通知ベル (未読件数取得中はフォールバックを表示) */}
+            {/* 通知ベル (未読件数取得中はフォールバックを表示、tenantId スコープ) */}
             <Suspense fallback={<span className="text-sm text-slate-500">通知</span>}>
-              <NotificationBell userId={session.user.id!} />
+              <NotificationBell userId={session.user.id!} tenantId={session.user.tenantId} />
             </Suspense>
             {/* ユーザー情報: アバター丸 + 氏名 + ロール pill */}
             <div className="flex items-center gap-2.5">

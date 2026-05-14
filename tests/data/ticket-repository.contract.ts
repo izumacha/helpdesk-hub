@@ -14,6 +14,9 @@ import type { Repos, UnitOfWork } from '@/data/ports/unit-of-work';
 // シード返り値で使うユーザー型
 import type { User } from '@/domain/types';
 
+// 既定で使うテナント ID (旧テストは単一テナントを前提に書かれているのでここで共通化)
+const TENANT_ID = 'default-tenant';
+
 // 契約テストが利用する文脈 (アダプタ別に差し替え可能)
 export interface ContractContext {
   repos: Repos;
@@ -25,6 +28,11 @@ export interface ContractContext {
     agentB: User;
     categoryId: string;
   }>;
+  /**
+   * Seeds an additional, isolated tenant ('tenant-b') with one requester user.
+   * Used by cross-tenant regression tests to verify Adapter-side scoping.
+   */
+  seedSecondTenant: () => Promise<{ tenantId: string; requester: User; categoryId: string }>;
 }
 
 // アダプタごとに渡される ContractContext で同一テストを実行する関数
@@ -50,14 +58,14 @@ export function runTicketRepositoryContract(
         priority: 'High',
         creatorId: requester.id,
         categoryId,
-        tenantId: 'default-tenant',
+        tenantId: TENANT_ID,
       });
       // 初期ステータスは New、作成者も正しく結びつく
       expect(created.status).toBe('New');
       expect(created.creator.id).toBe(requester.id);
 
-      // ID で取り直して内容が一致すること
-      const found = await ctx.repos.tickets.findById(created.id);
+      // ID + tenantId で取り直して内容が一致すること
+      const found = await ctx.repos.tickets.findById(created.id, TENANT_ID);
       expect(found?.title).toBe('ログインできません');
       expect(found?.priority).toBe('High');
     });
@@ -72,7 +80,7 @@ export function runTicketRepositoryContract(
         priority: 'Low',
         creatorId: requester.id,
         categoryId,
-        tenantId: 'default-tenant',
+        tenantId: TENANT_ID,
       });
       // メモリ実装で createdAt が同一にならないよう少し待つ
       await new Promise((r) => setTimeout(r, 2));
@@ -83,13 +91,14 @@ export function runTicketRepositoryContract(
         priority: 'Medium',
         creatorId: agentA.id,
         categoryId,
-        tenantId: 'default-tenant',
+        tenantId: TENANT_ID,
       });
 
-      // 依頼者で絞ると古い方だけが返る
+      // 依頼者で絞ると古い方だけが返る (tenantId 必須)
       const requesterOnly = await ctx.repos.tickets.list({
         filter: { creatorId: requester.id },
         page: { skip: 0, take: 50 },
+        tenantId: TENANT_ID,
       });
       expect(requesterOnly.map((t) => t.id)).toEqual([t1.id]);
 
@@ -97,6 +106,7 @@ export function runTicketRepositoryContract(
       const all = await ctx.repos.tickets.list({
         filter: {},
         page: { skip: 0, take: 50 },
+        tenantId: TENANT_ID,
       });
       expect(all.map((t) => t.id)).toEqual([t2.id, t1.id]);
     });
@@ -111,7 +121,7 @@ export function runTicketRepositoryContract(
         priority: 'Medium',
         creatorId: requester.id,
         categoryId,
-        tenantId: 'default-tenant',
+        tenantId: TENANT_ID,
       });
       // 本文に小文字の "vpn" を含む
       await ctx.repos.tickets.create({
@@ -120,7 +130,7 @@ export function runTicketRepositoryContract(
         priority: 'Low',
         creatorId: requester.id,
         categoryId,
-        tenantId: 'default-tenant',
+        tenantId: TENANT_ID,
       });
       // どちらにも含まないノイズ
       await ctx.repos.tickets.create({
@@ -129,20 +139,24 @@ export function runTicketRepositoryContract(
         priority: 'Low',
         creatorId: requester.id,
         categoryId,
-        tenantId: 'default-tenant',
+        tenantId: TENANT_ID,
       });
 
       // "VPN" 大文字小文字無視で 2 件ヒット
       const result = await ctx.repos.tickets.list({
         filter: { text: { contains: 'VPN', caseInsensitive: true } },
         page: { skip: 0, take: 50 },
+        tenantId: TENANT_ID,
       });
       expect(result).toHaveLength(2);
 
       // count でも 2 件
-      const countResult = await ctx.repos.tickets.count({
-        text: { contains: 'VPN', caseInsensitive: true },
-      });
+      const countResult = await ctx.repos.tickets.count(
+        {
+          text: { contains: 'VPN', caseInsensitive: true },
+        },
+        TENANT_ID,
+      );
       expect(countResult).toBe(2);
     });
 
@@ -156,9 +170,9 @@ export function runTicketRepositoryContract(
         priority: 'Low',
         creatorId: requester.id,
         categoryId,
-        tenantId: 'default-tenant',
+        tenantId: TENANT_ID,
       });
-      await ctx.repos.tickets.updateAssignee(assigned.id, agentA.id);
+      await ctx.repos.tickets.updateAssignee(assigned.id, agentA.id, TENANT_ID);
       // 担当者なしのチケット
       const unassigned = await ctx.repos.tickets.create({
         title: 'B',
@@ -166,12 +180,13 @@ export function runTicketRepositoryContract(
         priority: 'Low',
         creatorId: requester.id,
         categoryId,
-        tenantId: 'default-tenant',
+        tenantId: TENANT_ID,
       });
 
       const result = await ctx.repos.tickets.list({
         filter: { assigneeId: null },
         page: { skip: 0, take: 50 },
+        tenantId: TENANT_ID,
       });
       // 未割当の 1 件だけが返る
       expect(result.map((t) => t.id)).toEqual([unassigned.id]);
@@ -187,13 +202,13 @@ export function runTicketRepositoryContract(
         priority: 'Medium',
         creatorId: requester.id,
         categoryId,
-        tenantId: 'default-tenant',
+        tenantId: TENANT_ID,
       });
 
       // ステータス更新 + 履歴記録 + 例外、を 1 つの uow で実行
       await expect(
         ctx.uow.run(async (r) => {
-          await r.tickets.updateStatus(ticket.id, 'Open', null);
+          await r.tickets.updateStatus(ticket.id, 'Open', null, TENANT_ID);
           await r.history.record({
             ticketId: ticket.id,
             changedById: requester.id,
@@ -207,7 +222,7 @@ export function runTicketRepositoryContract(
       ).rejects.toThrow('boom');
 
       // ステータスは変わらず New のまま
-      const after = await ctx.repos.tickets.findById(ticket.id);
+      const after = await ctx.repos.tickets.findById(ticket.id, TENANT_ID);
       expect(after?.status).toBe('New');
     });
 
@@ -221,18 +236,18 @@ export function runTicketRepositoryContract(
         priority: 'Low',
         creatorId: requester.id,
         categoryId,
-        tenantId: 'default-tenant',
+        tenantId: TENANT_ID,
       });
 
       // 取得して書き換えても、内部状態に影響しないことを期待
-      const leaked = await ctx.repos.tickets.findById(created.id);
+      const leaked = await ctx.repos.tickets.findById(created.id, TENANT_ID);
       if (leaked) {
         (leaked as { title: string }).title = 'MUTATED';
         (leaked as { status: 'New' | 'Open' }).status = 'Open';
       }
 
       // 再取得すると元の値が保たれている
-      const reread = await ctx.repos.tickets.findById(created.id);
+      const reread = await ctx.repos.tickets.findById(created.id, TENANT_ID);
       expect(reread?.title).toBe('original');
       expect(reread?.status).toBe('New');
     });
@@ -252,7 +267,7 @@ export function runTicketRepositoryContract(
         priority: 'High',
         creatorId: requester.id,
         categoryId,
-        tenantId: 'default-tenant',
+        tenantId: TENANT_ID,
         resolutionDueAt: yesterday,
       });
       // requester: Open 1 件 (期限内、agentA に割当)
@@ -262,11 +277,11 @@ export function runTicketRepositoryContract(
         priority: 'Medium',
         creatorId: requester.id,
         categoryId,
-        tenantId: 'default-tenant',
+        tenantId: TENANT_ID,
         resolutionDueAt: tomorrow,
       });
-      await ctx.repos.tickets.updateStatus(t2.id, 'Open', null);
-      await ctx.repos.tickets.updateAssignee(t2.id, agentA.id);
+      await ctx.repos.tickets.updateStatus(t2.id, 'Open', null, TENANT_ID);
+      await ctx.repos.tickets.updateAssignee(t2.id, agentA.id, TENANT_ID);
       // agentA 起票の Resolved 1 件 (ワークロード集計から除外される)
       const t3 = await ctx.repos.tickets.create({
         title: 't3',
@@ -274,15 +289,16 @@ export function runTicketRepositoryContract(
         priority: 'Low',
         creatorId: agentA.id,
         categoryId,
-        tenantId: 'default-tenant',
+        tenantId: TENANT_ID,
       });
-      await ctx.repos.tickets.updateAssignee(t3.id, agentB.id);
-      await ctx.repos.tickets.updateStatus(t3.id, 'Resolved', new Date());
+      await ctx.repos.tickets.updateAssignee(t3.id, agentB.id, TENANT_ID);
+      await ctx.repos.tickets.updateStatus(t3.id, 'Resolved', new Date(), TENANT_ID);
 
-      // creatorId 未指定 = 全件対象 (担当者ビュー)
+      // creatorId 未指定 = テナント内全件対象 (担当者ビュー)
       const all = await ctx.repos.tickets.dashboardStats({
         now,
         excludeStatusesForWorkload: ['Resolved', 'Closed'],
+        tenantId: TENANT_ID,
       });
       // byStatus: New 1 件 / Open 1 件 / Resolved 1 件、その他は 0
       expect(all.byStatus.New).toBe(1);
@@ -303,6 +319,7 @@ export function runTicketRepositoryContract(
         creatorId: requester.id,
         now,
         excludeStatusesForWorkload: ['Resolved', 'Closed'],
+        tenantId: TENANT_ID,
       });
       // byStatus は requester のチケット 2 件のみ
       expect(mine.byStatus.New).toBe(1);
@@ -310,6 +327,163 @@ export function runTicketRepositoryContract(
       expect(mine.byStatus.Resolved).toBe(0);
       // SLA 超過 / ワークロードは全件対象 (呼び出し側で表示制御する前提)
       expect(mine.slaOverdue).toBe(1);
+    });
+
+    // --- ここからクロステナント回帰テスト (Phase 0 仕上げ PR で追加) ---
+
+    // テナント A のチケットがテナント B からは findById で取れないこと
+    it('findById does not leak tickets across tenants', async () => {
+      const { requester: rA, categoryId: catA } = await ctx.seedBasicFixture();
+      // テナント A 側に 1 件作成
+      const ticketA = await ctx.repos.tickets.create({
+        title: 'A の社内',
+        body: 'b',
+        priority: 'Low',
+        creatorId: rA.id,
+        categoryId: catA,
+        tenantId: TENANT_ID,
+      });
+      // テナント B を別途用意
+      const { tenantId: tenantB } = await ctx.seedSecondTenant();
+
+      // A の ID をテナント B のスコープで引いても null が返る (クロステナント遮断)
+      const leak = await ctx.repos.tickets.findById(ticketA.id, tenantB);
+      expect(leak).toBeNull();
+
+      // 正しいテナントなら当然取れる
+      const sane = await ctx.repos.tickets.findById(ticketA.id, TENANT_ID);
+      expect(sane?.id).toBe(ticketA.id);
+    });
+
+    // テナント A のチケットがテナント B からは list / count に出てこないこと
+    it('list and count do not leak tickets across tenants', async () => {
+      const { requester: rA, categoryId: catA } = await ctx.seedBasicFixture();
+      // テナント A 側に 2 件作成
+      await ctx.repos.tickets.create({
+        title: 'A-1',
+        body: 'b',
+        priority: 'Low',
+        creatorId: rA.id,
+        categoryId: catA,
+        tenantId: TENANT_ID,
+      });
+      await ctx.repos.tickets.create({
+        title: 'A-2',
+        body: 'b',
+        priority: 'Low',
+        creatorId: rA.id,
+        categoryId: catA,
+        tenantId: TENANT_ID,
+      });
+      // テナント B 側に 1 件作成
+      const { tenantId: tenantB, requester: rB, categoryId: catB } = await ctx.seedSecondTenant();
+      await ctx.repos.tickets.create({
+        title: 'B-1',
+        body: 'b',
+        priority: 'Low',
+        creatorId: rB.id,
+        categoryId: catB,
+        tenantId: tenantB,
+      });
+
+      // テナント A 視点では A のチケット 2 件だけが見える
+      const listedA = await ctx.repos.tickets.list({
+        filter: {},
+        page: { skip: 0, take: 50 },
+        tenantId: TENANT_ID,
+      });
+      expect(listedA.map((t) => t.title).sort()).toEqual(['A-1', 'A-2']);
+      // count も同じ件数
+      expect(await ctx.repos.tickets.count({}, TENANT_ID)).toBe(2);
+
+      // テナント B 視点では B のチケット 1 件だけが見える
+      const listedB = await ctx.repos.tickets.list({
+        filter: {},
+        page: { skip: 0, take: 50 },
+        tenantId: tenantB,
+      });
+      expect(listedB.map((t) => t.title)).toEqual(['B-1']);
+      expect(await ctx.repos.tickets.count({}, tenantB)).toBe(1);
+    });
+
+    // 他テナントの ID を指定した update 系メソッドが no-op (=データ未改変) であること
+    it('write methods refuse to mutate rows owned by another tenant', async () => {
+      const { requester: rA, agentA, categoryId: catA } = await ctx.seedBasicFixture();
+      // テナント A に 1 件作成 (初期 New / 担当者なし / 優先度 Low)
+      const ticketA = await ctx.repos.tickets.create({
+        title: 'A の社内',
+        body: 'b',
+        priority: 'Low',
+        creatorId: rA.id,
+        categoryId: catA,
+        tenantId: TENANT_ID,
+      });
+      // テナント B を用意 (チケット A への影響を確認するために使う)
+      const { tenantId: tenantB } = await ctx.seedSecondTenant();
+
+      // テナント B のスコープから A のチケットを更新しようとしても適用されないことを確認
+      await ctx.repos.tickets.updateStatus(ticketA.id, 'Open', null, tenantB);
+      await ctx.repos.tickets.updatePriority(ticketA.id, 'High', tenantB);
+      await ctx.repos.tickets.updateAssignee(ticketA.id, agentA.id, tenantB);
+      await ctx.repos.tickets.markEscalated(
+        ticketA.id,
+        { reason: 'cross-tenant attempt', at: new Date() },
+        tenantB,
+      );
+
+      // A 側の状態は一切変わっていないこと (status=New, priority=Low, assignee=null)
+      const fresh = await ctx.repos.tickets.findById(ticketA.id, TENANT_ID);
+      expect(fresh?.status).toBe('New');
+      expect(fresh?.priority).toBe('Low');
+      expect(fresh?.assigneeId).toBeNull();
+      expect(fresh?.escalatedAt).toBeNull();
+    });
+
+    // dashboardStats が他テナントのチケットを集計に含めないこと
+    it('dashboardStats scopes aggregates to the given tenant', async () => {
+      const { requester: rA, categoryId: catA } = await ctx.seedBasicFixture();
+      // テナント A: New 1 件
+      await ctx.repos.tickets.create({
+        title: 'A',
+        body: 'b',
+        priority: 'Low',
+        creatorId: rA.id,
+        categoryId: catA,
+        tenantId: TENANT_ID,
+      });
+      // テナント B: New 2 件
+      const { tenantId: tenantB, requester: rB, categoryId: catB } = await ctx.seedSecondTenant();
+      await ctx.repos.tickets.create({
+        title: 'B-1',
+        body: 'b',
+        priority: 'Low',
+        creatorId: rB.id,
+        categoryId: catB,
+        tenantId: tenantB,
+      });
+      await ctx.repos.tickets.create({
+        title: 'B-2',
+        body: 'b',
+        priority: 'Low',
+        creatorId: rB.id,
+        categoryId: catB,
+        tenantId: tenantB,
+      });
+
+      // テナント A のダッシュボードには New 1 件しか出ない
+      const statsA = await ctx.repos.tickets.dashboardStats({
+        now: new Date(),
+        excludeStatusesForWorkload: ['Resolved', 'Closed'],
+        tenantId: TENANT_ID,
+      });
+      expect(statsA.byStatus.New).toBe(1);
+      // テナント B のダッシュボードには New 2 件しか出ない
+      const statsB = await ctx.repos.tickets.dashboardStats({
+        now: new Date(),
+        excludeStatusesForWorkload: ['Resolved', 'Closed'],
+        tenantId: tenantB,
+      });
+      expect(statsB.byStatus.New).toBe(2);
     });
   });
 }

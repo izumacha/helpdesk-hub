@@ -5,10 +5,11 @@ import type { PrismaLike } from './types';
 // Prisma クライアントを使ったカテゴリリポジトリを生成する関数
 export function makeCategoryRepo(db: PrismaLike): CategoryRepository {
   return {
-    // 全カテゴリを名前昇順で取得
-    async list() {
-      // Prisma の findMany で全件取得 (select で列を限定)
+    // 当該テナントのカテゴリを名前昇順で取得
+    async list(tenantId) {
+      // Prisma の findMany で tenantId スコープのみ全件取得
       const rows = await db.category.findMany({
+        where: { tenantId }, // テナントスコープ (必須)
         orderBy: { name: 'asc' }, // 名前昇順
         select: { id: true, name: true }, // id と name だけ取得
       });

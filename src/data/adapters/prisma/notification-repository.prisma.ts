@@ -24,15 +24,15 @@ export function makeNotificationRepo(db: PrismaLike): NotificationRepository {
       return toNotification(row);
     },
 
-    // 未読件数を取得 (DB 側で count)
-    async countUnread(userId) {
-      return db.notification.count({ where: { userId, read: false } });
+    // 未読件数を取得 (DB 側で count、tenantId スコープ)
+    async countUnread(userId, tenantId) {
+      return db.notification.count({ where: { tenantId, userId, read: false } });
     },
 
-    // 指定ユーザーの通知を新しい順に limit 件取得 (関連チケット付き)
-    async list(userId, { limit }) {
+    // 指定ユーザーの通知を新しい順に limit 件取得 (関連チケット付き、tenantId スコープ)
+    async list(userId, { limit }, tenantId) {
       const rows = await db.notification.findMany({
-        where: { userId },
+        where: { tenantId, userId }, // テナント + ユーザーで絞る
         orderBy: { createdAt: 'desc' }, // 新しい順
         take: limit, // 件数上限
         include: { ticket: { select: { id: true, title: true } } }, // 関連チケットを JOIN
@@ -44,7 +44,7 @@ export function makeNotificationRepo(db: PrismaLike): NotificationRepository {
       }));
     },
 
-    // 指定ユーザーの未読を一括で既読に更新
+    // 指定ユーザーの未読を一括で既読に更新 (ユーザーは単一テナント帰属なので tenantId 不要)
     async markAllRead(userId) {
       await db.notification.updateMany({ where: { userId, read: false }, data: { read: true } });
     },

@@ -4,9 +4,16 @@ import { getUnreadNotificationCount } from '@/lib/notifications';
 import { NotificationBellClient } from './NotificationBellClient';
 
 // サーバー側で初期未読件数を取得し、Client Component に渡すラッパー
-export async function NotificationBell({ userId }: { userId: string }) {
-  // 初回表示用の未読件数を DB から取得
-  const initialCount = await getUnreadNotificationCount(userId);
+// テナント越境の未読件数表示を防ぐため、userId と一緒に tenantId も親から渡してもらう
+export async function NotificationBell({
+  userId,
+  tenantId,
+}: {
+  userId: string;
+  tenantId: string;
+}) {
+  // 初回表示用の未読件数を当該テナントから取得 (Adapter 側で where に tenantId 注入)
+  const initialCount = await getUnreadNotificationCount(userId, tenantId);
   // 取得した値を Client Component に渡して描画 (以後は SSE で更新)
   return <NotificationBellClient initialCount={initialCount} userId={userId} />;
 }

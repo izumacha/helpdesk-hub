@@ -32,12 +32,14 @@ function sseEvent(eventName: string, data: unknown): Uint8Array {
 export async function GET(): Promise<Response> {
   // セッション取得
   const session = await auth();
-  // 未ログインなら 401 を返す (クライアントには JSON エラー)
-  if (!session?.user?.id) {
+  // 未ログイン or tenantId 不在なら 401 を返す (クライアントには JSON エラー)
+  if (!session?.user?.id || !session.user.tenantId) {
     return NextResponse.json({ error: '認証が必要です' }, { status: 401 });
   }
   // 購読者 ID として使うログイン中ユーザーの ID
   const userId = session.user.id;
+  // 未読件数を引くテナントスコープ
+  const tenantId = session.user.tenantId;
 
   // ストリーム制御用のコントローラを外側スコープで保持
   let controller!: ReadableStreamDefaultController<Uint8Array>;
@@ -54,8 +56,8 @@ export async function GET(): Promise<Response> {
       addSubscriber(userId, controller);
 
       try {
-        // 最初に現在の未読件数を取得し
-        const initialCount = await getUnreadNotificationCount(userId);
+        // 最初に現在の未読件数を取得し (tenantId スコープ)
+        const initialCount = await getUnreadNotificationCount(userId, tenantId);
         // count イベントとして即時送信 (UI の初期表示用)
         controller.enqueue(sseEvent('count', { count: initialCount }));
       } catch {

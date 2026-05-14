@@ -6,13 +6,13 @@ import type { Store } from './store';
 // メモリストアを使ったユーザーリポジトリを生成する関数
 export function makeUserRepo(store: Store): UserRepository {
   return {
-    // ID で 1 件取得 (見つからなければ null)
+    // ID で 1 件取得 (認証フロー用。tenantId スコープなし)
     async findById(id) {
       const u = store.users.get(id); // Map から取得
       return u ? { ...u } : null; // 破壊防止のためスプレッドで複製して返す
     },
 
-    // メールアドレスで 1 件取得 (線形検索)
+    // メールアドレスで 1 件取得 (ログイン用。テナント横断検索)
     async findByEmail(email) {
       // 全ユーザーを走査
       for (const u of store.users.values()) {
@@ -23,12 +23,13 @@ export function makeUserRepo(store: Store): UserRepository {
       return null;
     },
 
-    // agent または admin を名前順で一覧取得
-    async listAgents() {
+    // 当該テナント内の agent または admin を名前順で一覧取得
+    async listAgents(tenantId) {
       // 結果を入れる配列を準備
       const agents: UserSummary[] = [];
-      // 全ユーザーを走査し、エージェント系だけ抽出
+      // 全ユーザーを走査し、テナント一致かつエージェント系だけ抽出
       for (const u of store.users.values()) {
+        if (u.tenantId !== tenantId) continue; // 他テナントは除外
         if (u.role === 'agent' || u.role === 'admin') {
           agents.push({ id: u.id, name: u.name });
         }
@@ -39,26 +40,28 @@ export function makeUserRepo(store: Store): UserRepository {
       return agents;
     },
 
-    // agent または admin の ID だけを一覧取得 (通知一斉送信などに使用)
-    async listAgentIds() {
+    // 当該テナント内の agent または admin の ID だけを一覧取得
+    async listAgentIds(tenantId) {
       // 結果 ID 配列
       const ids: string[] = [];
-      // 全ユーザーを走査し、対象の ID を追加
+      // 全ユーザーを走査し、テナント一致かつ対象ロールの ID を追加
       for (const u of store.users.values()) {
+        if (u.tenantId !== tenantId) continue; // 他テナントは除外
         if (u.role === 'agent' || u.role === 'admin') ids.push(u.id);
       }
       // 結果を返す
       return ids;
     },
 
-    // 指定 ID 群に含まれるユーザーの概要をまとめて返す
-    async findSummariesByIds(ids) {
+    // 指定 ID 群に含まれる当該テナント内ユーザーの概要をまとめて返す
+    async findSummariesByIds(ids, tenantId) {
       // 検索効率化のため ID を Set にする
       const set = new Set(ids);
       // 結果配列
       const out: UserSummary[] = [];
-      // 全ユーザーを走査し、Set に含まれる ID だけ抽出
+      // 全ユーザーを走査し、テナント一致かつ ID 一致だけ抽出
       for (const u of store.users.values()) {
+        if (u.tenantId !== tenantId) continue; // 他テナントは除外
         if (set.has(u.id)) out.push({ id: u.id, name: u.name });
       }
       // 結果を返す

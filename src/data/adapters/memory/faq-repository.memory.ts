@@ -6,16 +6,19 @@ import { nextId, type Store } from './store';
 // メモリストアを使った FAQ リポジトリを生成する関数
 export function makeFaqRepo(store: Store): FaqRepository {
   return {
-    // ID で 1 件取得 (見つからなければ null)
-    async findById(id) {
+    // ID + tenantId で 1 件取得 (他テナントの ID なら null)
+    async findById(id, tenantId) {
       const row = store.faq.get(id); // Map から取得
-      return row ? { ...row } : null; // 破壊防止のため複製して返す
+      if (!row || row.tenantId !== tenantId) return null; // テナント不一致は null
+      return { ...row }; // 破壊防止のため複製して返す
     },
 
-    // 全 FAQ 候補を新しい順で一覧化 (関連チケット/作成者名を結合)
-    async list() {
-      // Map を配列化し、作成日時の降順で並べる
-      const rows = [...store.faq.values()].sort((a, b) => +b.createdAt - +a.createdAt);
+    // 当該テナントの FAQ 候補を新しい順で一覧化 (関連チケット/作成者名を結合)
+    async list(tenantId) {
+      // Map を配列化し、テナントで絞ったうえで作成日時の降順で並べる
+      const rows = [...store.faq.values()]
+        .filter((f) => f.tenantId === tenantId)
+        .sort((a, b) => +b.createdAt - +a.createdAt);
       // 関連チケットと作成者を引き当てて結合
       return rows.map<FaqListItem>((f) => {
         const ticket = store.tickets.get(f.ticketId); // 元チケット
@@ -54,10 +57,10 @@ export function makeFaqRepo(store: Store): FaqRepository {
       return row;
     },
 
-    // FAQ 候補の状態を更新 (候補/公開/却下)
-    async updateStatus(id, status) {
+    // FAQ 候補の状態を更新 (tenantId スコープ。テナント不一致なら no-op)
+    async updateStatus(id, status, tenantId) {
       const row = store.faq.get(id); // 更新対象を取得
-      if (!row) throw new Error(`faq candidate not found: ${id}`); // 無ければエラー
+      if (!row || row.tenantId !== tenantId) return; // 不在 or 他テナントなら何もしない
       // 状態と更新日時を書き換えて保存
       store.faq.set(id, { ...row, status, updatedAt: new Date() });
     },
