@@ -39,6 +39,7 @@ export function makeFaqRepo(db: PrismaLike): FaqRepository {
           createdById: input.createdById,
           question: input.question,
           answer: input.answer,
+          tenantId: input.tenantId, // 所属テナントを必ず保存
         },
       });
       // 作成結果をドメイン型に変換して返す

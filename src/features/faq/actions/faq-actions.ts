@@ -50,6 +50,8 @@ export async function createFaqCandidate(ticketId: string, question: string, ans
     createdById: session.user.id, // 作成者
     question: parsed.data.question, // 検証済みの質問文
     answer: parsed.data.answer, // 検証済みの回答文
+    // 元チケットと同じテナントスコープで FAQ 候補を保存
+    tenantId: ticket.tenantId,
   });
 
   // チケット詳細ページのキャッシュを無効化して再描画させる

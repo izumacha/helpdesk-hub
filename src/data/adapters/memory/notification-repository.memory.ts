@@ -20,6 +20,7 @@ export function makeNotificationRepo(store: Store): NotificationRepository {
         message: input.message,
         read: false,
         createdAt: new Date(),
+        tenantId: input.tenantId, // 所属テナントを必ず保存
       };
       // ストアに登録
       store.notifications.set(notification.id, notification);

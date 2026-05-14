@@ -64,6 +64,7 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
           email: user.email, // メール
           name: user.name, // 氏名
           role: user.role, // 権限
+          tenantId: user.tenantId, // 所属テナント ID (マルチテナント化のキー)
         };
       },
     }),
@@ -72,20 +73,38 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
   callbacks: {
     // JWT 発行時に呼ばれる。初回ログイン時だけ user が渡ってくる
     async jwt({ token, user }) {
-      // user があれば ID と role を JWT ペイロードに記録
+      // user があれば ID / role / tenantId を JWT ペイロードに記録
       if (user) {
         token.id = user.id;
         token.role = (user as { role: Role }).role;
+        token.tenantId = (user as { tenantId: string }).tenantId;
+      }
+      // 旧 JWT (Tenant 化前に発行されたもの) は tenantId を持たないので、
+      // DB から引いて補完する。これがないとデプロイ直後のログイン中ユーザーが
+      // session.user.tenantId = undefined になり Server Action が落ちる
+      if (!token.tenantId && token.id) {
+        // ユーザーを ID で検索 (port 経由)
+        const fresh = await repos.users.findById(token.id as string);
+        if (fresh) {
+          // 見つかれば tenantId を補完
+          token.tenantId = fresh.tenantId;
+        } else {
+          // User が DB から削除済みなら、JWT を無効化して再ログインを促す
+          // (next-auth v5 は jwt callback での throw を session 失効として扱う)
+          throw new Error('User no longer exists. Please sign in again.');
+        }
       }
       // 更新したトークンを返す
       return token;
     },
     // セッション取得時に呼ばれる。JWT の値をセッションに転記する
     async session({ session, token }) {
-      // JWT があれば session.user に id と role を載せる
+      // JWT があれば session.user に id / role / tenantId を載せる
       if (token) {
         session.user.id = token.id as string;
         session.user.role = token.role as Role;
+        // jwt callback で必ず string になっている (未設定なら throw 済み)
+        session.user.tenantId = token.tenantId as string;
       }
       // 完成したセッションを返す
       return session;

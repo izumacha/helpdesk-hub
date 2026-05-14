@@ -7,6 +7,7 @@ export interface CreateNotificationInput {
   type: NotificationType; // 通知の種類
   message: string; // 表示文言
   ticketId?: string | null; // 関連チケット ID (任意)
+  tenantId: string; // 所属テナント ID (マルチテナント化のキー)
 }
 
 // 一覧表示用の通知アイテム (関連チケットの一部情報を同梱)

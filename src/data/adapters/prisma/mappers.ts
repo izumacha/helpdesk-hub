@@ -42,6 +42,7 @@ export function toUser(row: UserRow): User {
     name: row.name,
     passwordHash: row.passwordHash,
     role: row.role,
+    tenantId: row.tenantId, // 所属テナント (マルチテナント化のキー)
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
   };
@@ -73,6 +74,7 @@ export function toTicket(row: TicketRow): Ticket {
     creatorId: row.creatorId,
     assigneeId: row.assigneeId,
     categoryId: row.categoryId,
+    tenantId: row.tenantId, // 所属テナント (マルチテナント化のキー)
   };
 }
 
@@ -97,6 +99,7 @@ export function toNotification(row: NotificationRow): Notification {
     message: row.message,
     read: row.read,
     createdAt: row.createdAt,
+    tenantId: row.tenantId, // 所属テナント (マルチテナント化のキー)
   };
 }
 
@@ -135,5 +138,6 @@ export function toFaq(row: FaqRow): FaqCandidate {
     status: row.status,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
+    tenantId: row.tenantId, // 所属テナント (マルチテナント化のキー)
   };
 }

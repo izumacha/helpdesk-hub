@@ -15,11 +15,12 @@ export function makeCategoryRepo(db: PrismaLike): CategoryRepository {
       // 結果をそのまま返す (port 契約と同じ形)
       return rows;
     },
-    // ID 指定で 1 件取得 (見つからなければ null)
-    async findById(id) {
-      // findUnique で主キー検索
-      return db.category.findUnique({
-        where: { id },
+    // ID 指定 + tenantId スコープで 1 件取得 (見つからなければ null)
+    // 他テナントのカテゴリ ID を渡されても null を返すことでクロステナント参照を遮断する
+    async findById(id, tenantId) {
+      // findFirst で id と tenantId の AND 一致を検索 (findUnique は複合条件不可)
+      return db.category.findFirst({
+        where: { id, tenantId },
         select: { id: true, name: true },
       });
     },

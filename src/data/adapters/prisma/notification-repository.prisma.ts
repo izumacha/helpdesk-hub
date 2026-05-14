@@ -17,6 +17,7 @@ export function makeNotificationRepo(db: PrismaLike): NotificationRepository {
           type: input.type, // 種別
           message: input.message, // 表示文言
           ticketId: input.ticketId ?? null, // 関連チケット (未指定なら null)
+          tenantId: input.tenantId, // 所属テナントを必ず保存
         },
       });
       // Prisma 行 → ドメイン型 Notification に変換

@@ -11,10 +11,12 @@ export function makeCategoryRepo(store: Store): CategoryRepository {
         .map((c) => ({ id: c.id, name: c.name })) // 返却用に id/name だけ抽出
         .sort((a, b) => a.name.localeCompare(b.name)); // 名前でロケール順に並び替え
     },
-    // ID 指定で 1 件取得 (存在しなければ null)
-    async findById(id) {
+    // ID 指定 + tenantId スコープで 1 件取得 (存在しないか他テナントなら null)
+    async findById(id, tenantId) {
       const c = store.categories.get(id); // Map から取得
-      return c ? { id: c.id, name: c.name } : null; // 見つかれば要約を返す
+      // 存在 & テナント一致のときだけ要約を返す
+      if (!c || c.tenantId !== tenantId) return null;
+      return { id: c.id, name: c.name };
     },
   };
 }

@@ -25,9 +25,11 @@ vi.mock('@/data', () => ({
   },
 }));
 
-// 認証は固定セッションを返すモックに置換
+// 認証は固定セッションを返すモックに置換 (tenantId も乗せる)
 vi.mock('@/lib/auth', () => ({
-  auth: async () => ({ user: { id: sessionUserId, role: sessionRole } }),
+  auth: async () => ({
+    user: { id: sessionUserId, role: sessionRole, tenantId: 'default-tenant' },
+  }),
 }));
 
 // next/cache の副作用は不要なので spy で潰す
@@ -41,16 +43,24 @@ vi.mock('@/lib/sse-subscribers', () => ({
   broadcast: vi.fn(),
 }));
 
-// 共通シード: 1 依頼者 + 2 エージェント + 1 カテゴリ + 1 チケット
+// 共通シード: 1 テナント + 1 依頼者 + 2 エージェント + 1 カテゴリ + 1 チケット
 async function seed() {
   const now = new Date();
+  // まずデフォルトテナントを投入 (User/Category/Ticket の FK 先として必要)
+  store.tenants.set('default-tenant', {
+    id: 'default-tenant',
+    name: 'デフォルト組織',
+    mode: 'lite',
+    industry: null,
+    createdAt: now,
+  });
   // ユーザー雛形
   const users = [
     { id: 'u-req-1', role: 'requester' as const, name: '山田' },
     { id: 'u-agt-1', role: 'agent' as const, name: '佐藤' },
     { id: 'u-agt-2', role: 'agent' as const, name: '鈴木' },
   ];
-  // store に直接ユーザーを投入
+  // store に直接ユーザーを投入 (テナント所属を付与)
   for (const u of users) {
     store.users.set(u.id, {
       id: u.id,
@@ -58,12 +68,18 @@ async function seed() {
       name: u.name,
       passwordHash: 'x',
       role: u.role,
+      tenantId: 'default-tenant',
       createdAt: now,
       updatedAt: now,
     });
   }
-  // カテゴリも 1 件
-  store.categories.set('cat-1', { id: 'cat-1', name: 'アカウント', createdAt: now });
+  // カテゴリも 1 件 (テナント所属)
+  store.categories.set('cat-1', {
+    id: 'cat-1',
+    name: 'アカウント',
+    createdAt: now,
+    tenantId: 'default-tenant',
+  });
   // 検証対象のチケットを依頼者で作成
   const ticket = await repos.tickets.create({
     title: 'VPN がつながらない',
@@ -71,6 +87,7 @@ async function seed() {
     priority: 'Medium',
     creatorId: 'u-req-1',
     categoryId: 'cat-1',
+    tenantId: 'default-tenant',
   });
   return { ticketId: ticket.id };
 }
@@ -328,7 +345,7 @@ describe('addComment (provider-agnostic)', () => {
     const { ticketId } = await seed();
     sessionUserId = 'u-req-2';
     sessionRole = 'requester';
-    // 別人の依頼者をシード追加
+    // 別人の依頼者をシード追加 (テナント所属を付与)
     const now = new Date();
     store.users.set('u-req-2', {
       id: 'u-req-2',
@@ -336,6 +353,7 @@ describe('addComment (provider-agnostic)', () => {
       name: '田中',
       passwordHash: 'x',
       role: 'requester',
+      tenantId: 'default-tenant',
       createdAt: now,
       updatedAt: now,
     });

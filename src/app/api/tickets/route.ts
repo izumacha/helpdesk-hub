@@ -41,11 +41,11 @@ export async function POST(req: Request) {
   // 検証済みの値を分解 (body は変数名衝突を避けてリネーム)
   const { title, body: ticketBody, priority, categoryId } = parsed.data;
 
-  // カテゴリ指定がある場合は存在確認
+  // カテゴリ指定がある場合は存在確認 (現在のテナント内のカテゴリのみ許可)
   if (categoryId) {
-    // カテゴリを取得
-    const category = await repos.categories.findById(categoryId);
-    // 存在しなければ 422 (Zod 風の issues を返す)
+    // テナントスコープでカテゴリを取得 (他テナントの ID は null になる)
+    const category = await repos.categories.findById(categoryId, session.user.tenantId);
+    // 存在しない、または他テナントなら 422 (Zod 風の issues を返す)
     if (!category) {
       return NextResponse.json(
         {
@@ -73,6 +73,8 @@ export async function POST(req: Request) {
     categoryId: categoryId ?? null,
     // 作成者は現在のログインユーザー
     creatorId: session.user.id,
+    // 起票元のテナント (マルチテナント化のキー)
+    tenantId: session.user.tenantId,
     // 優先度に応じた解決期限を計算
     resolutionDueAt: calculateResolutionDueAt(priority, now),
   });

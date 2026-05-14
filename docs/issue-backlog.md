@@ -4,6 +4,19 @@
 
 転職用ポートフォリオとして、実装順・依存関係・成果物が明確になるように 30 件に分解しています。
 
+## SMB ピボット Phase 0（マルチテナント基盤）
+
+`docs/smb-dx-pivot-plan.md` に基づく SMB 向けピボットの土台。
+
+- [x] `Tenant` モデル追加 + 全関連テーブルへの `tenantId` 付与 + バックフィルマイグレーション
+- [x] `auth.ts` の session/JWT に `tenantId` を載せる
+- [x] `TenantRepository` Port / Adapter (Prisma + メモリ) を追加し Composition Root に組み込む
+- [x] `prisma/seed.ts` をデフォルトテナント前提に修正
+- [ ] 全 Server Action / Query の `where` に `session.user.tenantId` を必須化（次 PR）
+- [ ] `middleware.ts` でテナントスコープ強制（次 PR）
+- [ ] テナント作成 / 招待リンク発行画面（admin 用）
+- [ ] 既存 E2E をテナント前提に検証
+
 ## P0: フェーズ1（MVP）
 
 ### 1. [P0] プロジェクト初期化と技術基盤
