@@ -27,3 +27,40 @@ export function getAllowedTransitions(from: TicketStatus): TicketStatus[] {
   // 許可表からそのまま返す (配列を共有するので呼び出し側で変更しないこと)
   return ALLOWED_TRANSITIONS[from];
 }
+
+// --- Lite モード (SMB 向け簡易モード) 用の縮約ステータスと遷移表 ---
+// docs/smb-dx-pivot-plan.md §3.1 / §5.2 に対応。DB の TicketStatus enum は据え置き、
+// Lite テナントの UI/業務上は 3 値だけ使う方針。
+// 既存 Pro モード遷移表 (上記 ALLOWED_TRANSITIONS) には一切触れず追加のみ行う。
+
+// Lite で扱う 3 ステータス。as const で readonly tuple 化し、型派生に使う
+export const LITE_STATUSES = ['Open', 'InProgress', 'Closed'] as const;
+
+// 上の tuple から union 型を導出 ('Open' | 'InProgress' | 'Closed')
+export type LiteStatus = (typeof LITE_STATUSES)[number];
+
+// Lite モードの遷移表 (Pivot plan §5.2)。自己遷移は不可、Closed → Open のみ再オープン許可
+const ALLOWED_TRANSITIONS_LITE: Record<LiteStatus, LiteStatus[]> = {
+  Open: ['InProgress', 'Closed'], // 未対応から対応中か完了へ
+  InProgress: ['Open', 'Closed'], // 対応中から未対応に戻す or 完了へ
+  Closed: ['Open'], // 完了から再オープンのみ (Pro モードと整合)
+};
+
+// 任意の TicketStatus が Lite で扱える 3 値のいずれかかを判定する型ガード関数
+// (テナント mode 切替直後に旧データが Lite で表示されるケースなどで使用)
+export function isLiteStatus(status: TicketStatus): status is LiteStatus {
+  // 配列が readonly tuple なので includes は string キャストで判定
+  return (LITE_STATUSES as readonly string[]).includes(status);
+}
+
+// Lite モード版: 現在状態 from から次状態 to に遷移してよいかを true/false で返す
+export function isValidLiteTransition(from: LiteStatus, to: LiteStatus): boolean {
+  // 許可表を参照し、to が含まれていれば遷移可能
+  return ALLOWED_TRANSITIONS_LITE[from].includes(to);
+}
+
+// Lite モード版: 現在状態 from から遷移できる次状態の一覧を配列で返す (UI プルダウン用)
+export function getAllowedLiteTransitions(from: LiteStatus): LiteStatus[] {
+  // 許可表からそのまま返す (配列を共有するので呼び出し側で変更しないこと)
+  return ALLOWED_TRANSITIONS_LITE[from];
+}
