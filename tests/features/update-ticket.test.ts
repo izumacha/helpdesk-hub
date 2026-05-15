@@ -255,6 +255,43 @@ describe('updateTicketAssignee (provider-agnostic)', () => {
     expect([...store.histories.values()]).toHaveLength(0);
     expect([...store.notifications.values()]).toHaveLength(0);
   });
+
+  // 別テナント所属のエージェントを担当者にしようとしても同じメッセージで拒否 (cross-tenant 遮断)
+  it('refuses to assign an agent who belongs to a different tenant', async () => {
+    const { ticketId } = await seed();
+    // テナント B 側にエージェントを 1 名作る (ロールは agent、テナントだけ違う)
+    const now = new Date();
+    store.tenants.set('tenant-b', {
+      id: 'tenant-b',
+      name: '別組織',
+      mode: 'lite',
+      industry: null,
+      createdAt: now,
+    });
+    // 別テナントのエージェントを store に直接投入
+    store.users.set('u-b-agt-1', {
+      id: 'u-b-agt-1',
+      email: 'u-b-agt-1@example.com',
+      name: '別組織の担当',
+      passwordHash: 'x',
+      role: 'agent',
+      tenantId: 'tenant-b', // 既定テナントとは別
+      createdAt: now,
+      updatedAt: now,
+    });
+    const { updateTicketAssignee } = await import('@/features/tickets/actions/update-ticket');
+
+    // 別テナントのエージェント ID を渡すと一般的な拒否メッセージが返る (内部理由は漏らさない)
+    await expect(updateTicketAssignee(ticketId, 'u-b-agt-1')).rejects.toThrow(
+      /指定された担当者を設定できません/,
+    );
+    // 履歴や通知が一切作られていないこと (拒否時は副作用なし)
+    expect([...store.histories.values()]).toHaveLength(0);
+    expect([...store.notifications.values()]).toHaveLength(0);
+    // 当該チケットの担当者欄も書き換わっていない
+    const t = await repos.tickets.findById(ticketId, TENANT);
+    expect(t?.assigneeId).toBeNull();
+  });
 });
 
 // コメント追加アクションの通知ルート (誰に通知が飛ぶか) の仕様
