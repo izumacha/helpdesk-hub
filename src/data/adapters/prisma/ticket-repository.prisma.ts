@@ -14,10 +14,11 @@ import { toTicket, toTicketWithRefs, toUserSummary, toComment, toHistory } from 
 // Prisma クライアント共通型
 import type { PrismaLike } from './types';
 
-// ドメインのフィルター条件を Prisma の WhereInput に変換するヘルパー
-function buildWhere(f: TicketListFilter): Prisma.TicketWhereInput {
-  // 初期値は空 (条件なし)
-  const where: Prisma.TicketWhereInput = {};
+// ドメインのフィルター条件 + tenantId を Prisma の WhereInput に変換するヘルパー
+// tenantId は **必ず AND 条件として注入** し、テナント越境参照を遮断する
+function buildWhere(f: TicketListFilter, tenantId: string): Prisma.TicketWhereInput {
+  // テナントスコープを最初に確定 (他フィルタはこの上に積み上げる)
+  const where: Prisma.TicketWhereInput = { tenantId };
   // 各フィルタが指定されていれば条件を積み上げる
   if (f.creatorId !== undefined) where.creatorId = f.creatorId;
   if (f.status !== undefined) where.status = f.status;
@@ -48,22 +49,26 @@ const REFS_INCLUDE = {
 // Prisma クライアントを使ったチケットリポジトリを生成する関数
 export function makeTicketRepo(db: PrismaLike): TicketRepository {
   return {
-    // 最小フィールドのチケットを 1 件取得 (ドメイン型変換)
-    async findById(id) {
-      const row = await db.ticket.findUnique({ where: { id } });
+    // 最小フィールドのチケットを 1 件取得 (tenantId スコープ、他テナントの ID なら null)
+    async findById(id, tenantId) {
+      // findFirst で複合条件 (id + tenantId) の AND 一致を検索
+      const row = await db.ticket.findFirst({ where: { id, tenantId } });
       return row ? toTicket(row) : null;
     },
 
-    // 関連情報付きで 1 件取得 (一覧/詳細以外のユースケース)
-    async findByIdWithRefs(id) {
-      const row = await db.ticket.findUnique({ where: { id }, include: REFS_INCLUDE });
+    // 関連情報付きで 1 件取得 (tenantId スコープ)
+    async findByIdWithRefs(id, tenantId) {
+      const row = await db.ticket.findFirst({
+        where: { id, tenantId },
+        include: REFS_INCLUDE,
+      });
       return row ? toTicketWithRefs(row) : null;
     },
 
-    // 詳細ページ用: 関連 + コメント + 履歴 + FAQ 候補を一括取得
-    async findByIdWithDetail(id) {
-      const row = await db.ticket.findUnique({
-        where: { id },
+    // 詳細ページ用: 関連 + コメント + 履歴 + FAQ 候補を一括取得 (tenantId スコープ)
+    async findByIdWithDetail(id, tenantId) {
+      const row = await db.ticket.findFirst({
+        where: { id, tenantId },
         include: {
           ...REFS_INCLUDE, // 起票者/担当者/カテゴリ
           // コメントは古い順に、投稿者名を JOIN
@@ -97,10 +102,10 @@ export function makeTicketRepo(db: PrismaLike): TicketRepository {
       };
     },
 
-    // 一覧取得 (フィルタ/ソート/ページング)
-    async list({ filter, page, sort }) {
+    // 一覧取得 (フィルタ/ソート/ページング、tenantId スコープ)
+    async list({ filter, page, sort, tenantId }) {
       const rows = await db.ticket.findMany({
-        where: buildWhere(filter), // ドメイン条件を Prisma 条件に変換
+        where: buildWhere(filter, tenantId), // tenantId を必ず注入
         orderBy: { createdAt: sort?.direction ?? 'desc' }, // 既定は降順
         skip: page.skip, // オフセット
         take: page.take, // ページサイズ
@@ -110,36 +115,39 @@ export function makeTicketRepo(db: PrismaLike): TicketRepository {
       return rows.map(toTicketWithRefs);
     },
 
-    // 件数取得 (ページング用)
-    async count(filter) {
-      return db.ticket.count({ where: buildWhere(filter) });
+    // 件数取得 (tenantId スコープ)
+    async count(filter, tenantId) {
+      return db.ticket.count({ where: buildWhere(filter, tenantId) });
     },
 
-    // ダッシュボード一括取得 (status 別件数 / SLA 超過 / 担当者別ワークロード)
-    async dashboardStats({ creatorId, now, excludeStatusesForWorkload }) {
-      // 起票者フィルタ (省略時は空オブジェクト = 全件)
-      const baseWhere: Prisma.TicketWhereInput =
-        creatorId !== undefined ? { creatorId } : {};
+    // ダッシュボード一括取得 (status 別件数 / SLA 超過 / 担当者別ワークロード、tenantId スコープ)
+    async dashboardStats({ creatorId, now, excludeStatusesForWorkload, tenantId }) {
+      // ベース where: テナントを必ず固定し、起票者フィルタは byStatus 用にだけ適用
+      const baseWhere: Prisma.TicketWhereInput = { tenantId };
+      // 起票者フィルタを追加した where (byStatus 専用)
+      const byStatusWhere: Prisma.TicketWhereInput =
+        creatorId !== undefined ? { ...baseWhere, creatorId } : baseWhere;
       // 3 種類のクエリを並列実行 (1 ラウンドトリップ分の待ち時間で完了)
       const [grouped, slaOverdue, workload] = await Promise.all([
-        // status 別件数を 1 回の groupBy で取得
+        // status 別件数を 1 回の groupBy で取得 (byStatusWhere = テナント + 起票者)
         db.ticket.groupBy({
           by: ['status'],
-          where: baseWhere,
+          where: byStatusWhere,
           _count: { id: true },
         }),
-        // SLA 超過件数 (未解決かつ期限切れ)
+        // SLA 超過件数 (テナント内かつ未解決かつ期限切れ)
         db.ticket.count({
           where: {
+            ...baseWhere,
             resolutionDueAt: { lt: now },
             resolvedAt: null,
             status: { notIn: ['Resolved', 'Closed'] },
           },
         }),
-        // 担当者別の保持件数 (指定状態は除外)
+        // 担当者別の保持件数 (テナント内、指定状態は除外)
         db.ticket.groupBy({
           by: ['assigneeId'],
-          where: { status: { notIn: excludeStatusesForWorkload } },
+          where: { ...baseWhere, status: { notIn: excludeStatusesForWorkload } },
           _count: { id: true },
           orderBy: { _count: { id: 'desc' } },
         }),
@@ -188,25 +196,25 @@ export function makeTicketRepo(db: PrismaLike): TicketRepository {
       return toTicketWithRefs(row);
     },
 
-    // 状態と解決日時を更新
-    async updateStatus(id, status, resolvedAt) {
-      await db.ticket.update({ where: { id }, data: { status, resolvedAt } });
+    // 状態と解決日時を更新 (tenantId スコープ。updateMany で id+tenantId AND 一致のみ更新)
+    async updateStatus(id, status, resolvedAt, tenantId) {
+      await db.ticket.updateMany({ where: { id, tenantId }, data: { status, resolvedAt } });
     },
 
-    // 優先度を更新
-    async updatePriority(id, priority) {
-      await db.ticket.update({ where: { id }, data: { priority } });
+    // 優先度を更新 (tenantId スコープ)
+    async updatePriority(id, priority, tenantId) {
+      await db.ticket.updateMany({ where: { id, tenantId }, data: { priority } });
     },
 
-    // 担当者を更新 (null で未アサインに戻す)
-    async updateAssignee(id, assigneeId) {
-      await db.ticket.update({ where: { id }, data: { assigneeId } });
+    // 担当者を更新 (tenantId スコープ、null で未アサインに戻す)
+    async updateAssignee(id, assigneeId, tenantId) {
+      await db.ticket.updateMany({ where: { id, tenantId }, data: { assigneeId } });
     },
 
-    // エスカレーション扱いに更新 (状態 + 理由 + 実行時刻)
-    async markEscalated(id, args) {
-      await db.ticket.update({
-        where: { id },
+    // エスカレーション扱いに更新 (tenantId スコープ)
+    async markEscalated(id, args, tenantId) {
+      await db.ticket.updateMany({
+        where: { id, tenantId },
         data: {
           status: 'Escalated',
           escalatedAt: args.at,

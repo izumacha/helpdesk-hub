@@ -17,9 +17,14 @@ export interface FaqListItem extends FaqCandidate {
 }
 
 // FAQ リポジトリの契約 (port)
+// 全メソッドが tenantId 必須化済み。テナント越境参照/更新を Adapter 層で遮断する
 export interface FaqRepository {
-  findById(id: string): Promise<FaqCandidate | null>; // ID で 1 件取得
-  list(): Promise<FaqListItem[]>; // 一覧取得
-  create(input: CreateFaqInput): Promise<FaqCandidate>; // 候補を作成
-  updateStatus(id: string, status: FaqStatus): Promise<void>; // 公開/却下などの状態更新
+  // ID + tenantId で 1 件取得 (他テナントの ID なら null)
+  findById(id: string, tenantId: string): Promise<FaqCandidate | null>;
+  // 当該テナントの FAQ 候補一覧を取得
+  list(tenantId: string): Promise<FaqListItem[]>;
+  // 候補を作成 (input.tenantId 必須)
+  create(input: CreateFaqInput): Promise<FaqCandidate>;
+  // 公開/却下などの状態更新 (tenantId スコープ。他テナントの ID なら 0 件更新で no-op)
+  updateStatus(id: string, status: FaqStatus, tenantId: string): Promise<void>;
 }

@@ -14,6 +14,8 @@ let uow: UnitOfWork;
 // セッションのユーザー ID と権限 (テスト中に書き換えてシナリオを変える)
 let sessionUserId = 'u-agt-1';
 let sessionRole: 'requester' | 'agent' | 'admin' = 'agent';
+// テナントスコープ (テストは単一テナント前提で固定)
+const TENANT = 'default-tenant';
 
 // @/data モジュールを差し替え。getter で参照することで、テスト中の上書きを反映
 vi.mock('@/data', () => ({
@@ -117,7 +119,7 @@ describe('updateTicketStatus (provider-agnostic)', () => {
 
     await updateTicketStatus(ticketId, 'Open');
 
-    const t = await repos.tickets.findById(ticketId);
+    const t = await repos.tickets.findById(ticketId, TENANT);
     // 反映されている
     expect(t?.status).toBe('Open');
     // 履歴 1 件 (status / New → Open)
@@ -132,7 +134,7 @@ describe('updateTicketStatus (provider-agnostic)', () => {
   it('rejects an invalid transition and rolls back history', async () => {
     const { ticketId } = await seed();
     // 事前に Closed にしておく
-    await repos.tickets.updateStatus(ticketId, 'Closed', null);
+    await repos.tickets.updateStatus(ticketId, 'Closed', null, TENANT);
     const { updateTicketStatus } = await import('@/features/tickets/actions/update-ticket');
 
     // Closed → InProgress は遷移表で禁止されている
@@ -140,7 +142,7 @@ describe('updateTicketStatus (provider-agnostic)', () => {
       /変更することはできません/,
     );
 
-    const t = await repos.tickets.findById(ticketId);
+    const t = await repos.tickets.findById(ticketId, TENANT);
     // ステータスは変わらない
     expect(t?.status).toBe('Closed');
     // 履歴も残っていない
@@ -162,7 +164,7 @@ describe('updateTicketStatus (provider-agnostic)', () => {
   it('sets resolvedAt when transitioning to Resolved', async () => {
     const { ticketId } = await seed();
     // 事前に Open に
-    await repos.tickets.updateStatus(ticketId, 'Open', null);
+    await repos.tickets.updateStatus(ticketId, 'Open', null, TENANT);
     const { updateTicketStatus } = await import('@/features/tickets/actions/update-ticket');
 
     // 期待時刻範囲を取るため呼び出し前後の時刻を測る
@@ -170,7 +172,7 @@ describe('updateTicketStatus (provider-agnostic)', () => {
     await updateTicketStatus(ticketId, 'Resolved');
     const after = Date.now();
 
-    const t = await repos.tickets.findById(ticketId);
+    const t = await repos.tickets.findById(ticketId, TENANT);
     expect(t?.status).toBe('Resolved');
     expect(t?.resolvedAt).toBeInstanceOf(Date);
     const ts = t!.resolvedAt!.getTime();
@@ -181,12 +183,12 @@ describe('updateTicketStatus (provider-agnostic)', () => {
   // Resolved → Open に戻すと resolvedAt がクリアされる
   it('clears resolvedAt when reopening from Resolved', async () => {
     const { ticketId } = await seed();
-    await repos.tickets.updateStatus(ticketId, 'Resolved', new Date());
+    await repos.tickets.updateStatus(ticketId, 'Resolved', new Date(), TENANT);
     const { updateTicketStatus } = await import('@/features/tickets/actions/update-ticket');
 
     await updateTicketStatus(ticketId, 'Open');
 
-    const t = await repos.tickets.findById(ticketId);
+    const t = await repos.tickets.findById(ticketId, TENANT);
     expect(t?.status).toBe('Open');
     expect(t?.resolvedAt).toBeNull();
   });
@@ -194,12 +196,12 @@ describe('updateTicketStatus (provider-agnostic)', () => {
   // Resolved に関係しない遷移では resolvedAt は変化しない
   it('leaves resolvedAt untouched for transitions not involving Resolved', async () => {
     const { ticketId } = await seed();
-    await repos.tickets.updateStatus(ticketId, 'Open', null);
+    await repos.tickets.updateStatus(ticketId, 'Open', null, TENANT);
     const { updateTicketStatus } = await import('@/features/tickets/actions/update-ticket');
 
     await updateTicketStatus(ticketId, 'InProgress');
 
-    const t = await repos.tickets.findById(ticketId);
+    const t = await repos.tickets.findById(ticketId, TENANT);
     expect(t?.status).toBe('InProgress');
     expect(t?.resolvedAt).toBeNull();
   });
@@ -214,7 +216,7 @@ describe('updateTicketAssignee (provider-agnostic)', () => {
 
     await updateTicketAssignee(ticketId, 'u-agt-2');
 
-    const t = await repos.tickets.findById(ticketId);
+    const t = await repos.tickets.findById(ticketId, TENANT);
     expect(t?.assigneeId).toBe('u-agt-2');
 
     // 履歴 1 件 (assignee / null → 鈴木)
@@ -253,6 +255,43 @@ describe('updateTicketAssignee (provider-agnostic)', () => {
     expect([...store.histories.values()]).toHaveLength(0);
     expect([...store.notifications.values()]).toHaveLength(0);
   });
+
+  // 別テナント所属のエージェントを担当者にしようとしても同じメッセージで拒否 (cross-tenant 遮断)
+  it('refuses to assign an agent who belongs to a different tenant', async () => {
+    const { ticketId } = await seed();
+    // テナント B 側にエージェントを 1 名作る (ロールは agent、テナントだけ違う)
+    const now = new Date();
+    store.tenants.set('tenant-b', {
+      id: 'tenant-b',
+      name: '別組織',
+      mode: 'lite',
+      industry: null,
+      createdAt: now,
+    });
+    // 別テナントのエージェントを store に直接投入
+    store.users.set('u-b-agt-1', {
+      id: 'u-b-agt-1',
+      email: 'u-b-agt-1@example.com',
+      name: '別組織の担当',
+      passwordHash: 'x',
+      role: 'agent',
+      tenantId: 'tenant-b', // 既定テナントとは別
+      createdAt: now,
+      updatedAt: now,
+    });
+    const { updateTicketAssignee } = await import('@/features/tickets/actions/update-ticket');
+
+    // 別テナントのエージェント ID を渡すと一般的な拒否メッセージが返る (内部理由は漏らさない)
+    await expect(updateTicketAssignee(ticketId, 'u-b-agt-1')).rejects.toThrow(
+      /指定された担当者を設定できません/,
+    );
+    // 履歴や通知が一切作られていないこと (拒否時は副作用なし)
+    expect([...store.histories.values()]).toHaveLength(0);
+    expect([...store.notifications.values()]).toHaveLength(0);
+    // 当該チケットの担当者欄も書き換わっていない
+    const t = await repos.tickets.findById(ticketId, TENANT);
+    expect(t?.assigneeId).toBeNull();
+  });
 });
 
 // コメント追加アクションの通知ルート (誰に通知が飛ぶか) の仕様
@@ -260,7 +299,7 @@ describe('addComment (provider-agnostic)', () => {
   // 依頼者がコメント、担当者ありなら担当者だけに通知
   it('notifies the assignee when a requester comments on an assigned ticket', async () => {
     const { ticketId } = await seed();
-    await repos.tickets.updateAssignee(ticketId, 'u-agt-2');
+    await repos.tickets.updateAssignee(ticketId, 'u-agt-2', TENANT);
     sessionUserId = 'u-req-1';
     sessionRole = 'requester';
     const { addComment } = await import('@/features/tickets/actions/update-ticket');
@@ -314,7 +353,7 @@ describe('addComment (provider-agnostic)', () => {
   // エージェントがコメント、担当者ありなら依頼者と担当者の両方に通知
   it('notifies both creator and assignee when a different agent comments', async () => {
     const { ticketId } = await seed();
-    await repos.tickets.updateAssignee(ticketId, 'u-agt-2');
+    await repos.tickets.updateAssignee(ticketId, 'u-agt-2', TENANT);
     const { addComment } = await import('@/features/tickets/actions/update-ticket');
 
     await addComment(ticketId, '対応を引き継ぎます');
@@ -329,7 +368,7 @@ describe('addComment (provider-agnostic)', () => {
   // 投稿者自身には通知しない (重複通知の防止)
   it('does not notify the commenter themselves', async () => {
     const { ticketId } = await seed();
-    await repos.tickets.updateAssignee(ticketId, 'u-agt-1');
+    await repos.tickets.updateAssignee(ticketId, 'u-agt-1', TENANT);
     // 担当者と投稿者が同一 (u-agt-1)
     const { addComment } = await import('@/features/tickets/actions/update-ticket');
 
@@ -371,13 +410,13 @@ describe('escalateTicket (provider-agnostic)', () => {
   it('marks escalated, records history, and notifies every agent', async () => {
     const { ticketId } = await seed();
     // Open 状態からエスカレーション (遷移表で許可されている)
-    await repos.tickets.updateStatus(ticketId, 'Open', null);
+    await repos.tickets.updateStatus(ticketId, 'Open', null, TENANT);
     const { escalateTicket } = await import('@/features/tickets/actions/update-ticket');
 
     // 前後空白を含めて渡し、保存時にトリムされていることも確認
     await escalateTicket(ticketId, '  対応困難  ');
 
-    const t = await repos.tickets.findById(ticketId);
+    const t = await repos.tickets.findById(ticketId, TENANT);
     expect(t?.status).toBe('Escalated');
     expect(t?.escalationReason).toBe('対応困難');
     expect(t?.escalatedAt).toBeInstanceOf(Date);

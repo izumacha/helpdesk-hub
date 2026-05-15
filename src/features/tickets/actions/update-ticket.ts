@@ -25,6 +25,8 @@ import type { Session } from 'next-auth';
 function assertAuthenticatedUser(session: Session | null): asserts session is Session {
   // ユーザー ID が無ければ未ログインとみなしてエラー
   if (!session?.user?.id) throw new Error('Unauthorized');
+  // tenantId 不在は middleware で弾く想定だが、Server Action でも防御的にチェック
+  if (!session.user.tenantId) throw new Error('Unauthorized');
 }
 
 // セッションがエージェント/管理者権限を持つことを保証するアサーション関数
@@ -43,14 +45,16 @@ export async function updateTicketStatus(ticketId: string, newStatus: TicketStat
   const session = await auth();
   // エージェント以上の権限を要求
   assertAgentRole(session);
+  // セッションから tenantId を取り出して以降の where 句注入に使う
+  const tenantId = session.user.tenantId;
   // 10 秒あたり 10 回までに制限 (チケット単位)
   enforceRateLimit(`ticket-status:${session.user.id}:${ticketId}`, { limit: 10, windowMs: 10_000 });
 
   // 1 トランザクションでチケット更新と履歴記録を実行
   await uow.run(async (r) => {
-    // 対象チケットを取得
-    const ticket = await r.tickets.findById(ticketId);
-    // 見つからなければエラー
+    // 対象チケットを tenantId スコープで取得
+    const ticket = await r.tickets.findById(ticketId, tenantId);
+    // 見つからない or 他テナントの ID ならエラー
     if (!ticket) throw new Error('チケットが見つかりません');
     // 変更前後が同じなら何もしない (冪等)
     if (ticket.status === newStatus) return;
@@ -69,8 +73,8 @@ export async function updateTicketStatus(ticketId: string, newStatus: TicketStat
           ? null
           : ticket.resolvedAt;
 
-    // ステータスと解決日時を更新
-    await r.tickets.updateStatus(ticketId, newStatus, resolvedAt);
+    // ステータスと解決日時を更新 (tenantId スコープで where に注入)
+    await r.tickets.updateStatus(ticketId, newStatus, resolvedAt, tenantId);
     // 変更履歴を残す (誰が/どの項目を/旧値→新値)
     await r.history.record({
       ticketId,
@@ -91,6 +95,8 @@ export async function updateTicketPriority(ticketId: string, newPriority: Priori
   const session = await auth();
   // エージェント以上のみ実行可
   assertAgentRole(session);
+  // テナントスコープ用に tenantId を取り出す
+  const tenantId = session.user.tenantId;
   // 10 秒あたり 10 回までに制限
   enforceRateLimit(`ticket-priority:${session.user.id}:${ticketId}`, {
     limit: 10,
@@ -99,15 +105,15 @@ export async function updateTicketPriority(ticketId: string, newPriority: Priori
 
   // 1 トランザクションで更新と履歴記録
   await uow.run(async (r) => {
-    // チケットを取得
-    const ticket = await r.tickets.findById(ticketId);
+    // チケットを tenantId スコープで取得
+    const ticket = await r.tickets.findById(ticketId, tenantId);
     // 無ければエラー
     if (!ticket) throw new Error('チケットが見つかりません');
     // 変更無しならスキップ
     if (ticket.priority === newPriority) return;
 
-    // 優先度を更新
-    await r.tickets.updatePriority(ticketId, newPriority);
+    // 優先度を更新 (tenantId スコープで where に注入)
+    await r.tickets.updatePriority(ticketId, newPriority, tenantId);
     // 履歴を記録
     await r.history.record({
       ticketId,
@@ -128,6 +134,8 @@ export async function updateTicketAssignee(ticketId: string, newAssigneeId: stri
   const session = await auth();
   // エージェント以上のみ実行可
   assertAgentRole(session);
+  // テナントスコープ用に tenantId を取り出す
+  const tenantId = session.user.tenantId;
   // 10 秒あたり 10 回までに制限
   enforceRateLimit(`ticket-assignee:${session.user.id}:${ticketId}`, {
     limit: 10,
@@ -135,17 +143,24 @@ export async function updateTicketAssignee(ticketId: string, newAssigneeId: stri
   });
 
   // チケット (既存担当者含む) と新担当者候補を並列で取得
+  // チケットは tenantId スコープで引き、ユーザーはテナント横断 (後段でテナント一致を検証)
   const [ticket, newUser] = await Promise.all([
-    repos.tickets.findByIdWithRefs(ticketId),
+    repos.tickets.findByIdWithRefs(ticketId, tenantId),
     newAssigneeId ? repos.users.findById(newAssigneeId) : Promise.resolve(null),
   ]);
 
   // チケットが無ければエラー
   if (!ticket) throw new Error('チケットが見つかりません');
-  // 担当者を付ける場合は相手の存在とロールを確認
+  // 担当者を付ける場合は相手の存在 / ロール / テナント一致を確認
   if (newAssigneeId) {
-    // ユーザー未存在 or エージェント/管理者でない場合は拒否理由を特定
-    const reason = !newUser ? 'not-found' : !isAgent(newUser.role) ? 'not-agent' : null;
+    // 拒否理由を特定 (内部診断用、レスポンス本文には漏らさない)
+    const reason = !newUser
+      ? 'not-found'
+      : !isAgent(newUser.role)
+        ? 'not-agent'
+        : newUser.tenantId !== tenantId
+          ? 'cross-tenant' // 別テナントのユーザーを割り当てようとした
+          : null;
     if (reason) {
       // 診断用ログ (不正割当の調査向け)
       console.warn('[updateTicketAssignee] rejected', { ticketId, newAssigneeId, reason });
@@ -159,8 +174,8 @@ export async function updateTicketAssignee(ticketId: string, newAssigneeId: stri
 
   // 担当者更新・履歴記録・通知作成を 1 トランザクションで実行
   await uow.run(async (r) => {
-    // 担当者を差し替え (解除は null)
-    await r.tickets.updateAssignee(ticketId, newAssigneeId);
+    // 担当者を差し替え (解除は null。tenantId スコープで where に注入)
+    await r.tickets.updateAssignee(ticketId, newAssigneeId, tenantId);
     // 変更履歴を残す
     await r.history.record({
       ticketId,
@@ -182,8 +197,8 @@ export async function updateTicketAssignee(ticketId: string, newAssigneeId: stri
     }
   });
 
-  // 新担当者に未読件数を SSE で即時配信
-  if (newAssigneeId) await broadcastUnreadCount(newAssigneeId);
+  // 新担当者に未読件数を SSE で即時配信 (テナントを伝搬)
+  if (newAssigneeId) await broadcastUnreadCount(newAssigneeId, tenantId);
   // 詳細ページのキャッシュを無効化
   revalidatePath(`/tickets/${ticketId}`);
 }
@@ -194,6 +209,8 @@ export async function escalateTicket(ticketId: string, reason: string) {
   const session = await auth();
   // エージェント以上のみ実行可
   assertAgentRole(session);
+  // テナントスコープ用に tenantId を取り出す
+  const tenantId = session.user.tenantId;
   // エスカレーションは全エージェントに通知が飛ぶため、通常操作より厳しく制限
   // (60 秒あたり 5 回まで)
   enforceRateLimit(`ticket-escalate:${session.user.id}`, { limit: 5, windowMs: 60_000 });
@@ -207,10 +224,10 @@ export async function escalateTicket(ticketId: string, reason: string) {
   // 検証済み (trim 等済み) の理由を取り出す
   const trimmedReason = parsedReason.data;
 
-  // チケット本体と通知対象の全エージェント ID 一覧を並列取得
+  // チケット本体と通知対象の全エージェント ID 一覧をテナントスコープで並列取得
   const [ticket, agentIds] = await Promise.all([
-    repos.tickets.findById(ticketId),
-    repos.users.listAgentIds(),
+    repos.tickets.findById(ticketId, tenantId),
+    repos.users.listAgentIds(tenantId),
   ]);
 
   // チケットが無ければエラー
@@ -227,8 +244,8 @@ export async function escalateTicket(ticketId: string, reason: string) {
 
   // マーク・履歴・エージェント一斉通知を 1 トランザクションで実行
   await uow.run(async (r) => {
-    // チケットに Escalated フラグと理由/日時を書き込む
-    await r.tickets.markEscalated(ticketId, { reason: trimmedReason, at: now });
+    // チケットに Escalated フラグと理由/日時を書き込む (tenantId スコープ)
+    await r.tickets.markEscalated(ticketId, { reason: trimmedReason, at: now }, tenantId);
     // 変更履歴を残す
     await r.history.record({
       ticketId,
@@ -252,8 +269,8 @@ export async function escalateTicket(ticketId: string, reason: string) {
     );
   });
 
-  // 全エージェントへ未読件数を一斉配信
-  await broadcastUnreadCountToMany(agentIds);
+  // 全エージェントへ未読件数を一斉配信 (テナントを伝搬)
+  await broadcastUnreadCountToMany(agentIds, tenantId);
   // 詳細ページを再描画
   revalidatePath(`/tickets/${ticketId}`);
 }
@@ -264,6 +281,8 @@ export async function addComment(ticketId: string, body: string) {
   const session = await auth();
   // コメントはログイン済みなら (依頼者でも) 可
   assertAuthenticatedUser(session);
+  // テナントスコープ用に tenantId を取り出す
+  const tenantId = session.user.tenantId;
   // 60 秒あたり 20 件までに制限
   enforceRateLimit(`ticket-comment:${session.user.id}`, { limit: 20, windowMs: 60_000 });
 
@@ -276,8 +295,8 @@ export async function addComment(ticketId: string, body: string) {
   // 検証済み本文を取り出す
   const trimmedBody = parsedBody.data;
 
-  // 対象チケットを取得
-  const ticket = await repos.tickets.findById(ticketId);
+  // 対象チケットを tenantId スコープで取得
+  const ticket = await repos.tickets.findById(ticketId, tenantId);
   // 無ければエラー
   if (!ticket) throw new Error('チケットが見つかりません');
 
@@ -291,8 +310,8 @@ export async function addComment(ticketId: string, body: string) {
     throw new Error('このチケットへのコメント権限がありません');
   }
 
-  // 通知対象 (依頼者/担当者/全エージェント など) を算出
-  const recipientIds = await resolveCommentRecipients(ticket, authorId, authorIsAgent);
+  // 通知対象 (依頼者/担当者/全エージェント など) を算出 (tenantId 伝搬)
+  const recipientIds = await resolveCommentRecipients(ticket, authorId, authorIsAgent, tenantId);
   // 通知メッセージ (タイトル入り)
   const message = `チケット「${ticket.title}」に新しいコメントが追加されました`;
 
@@ -319,8 +338,8 @@ export async function addComment(ticketId: string, body: string) {
     );
   });
 
-  // 通知対象が 1 名以上いれば未読件数を一斉配信
-  if (recipientIds.length > 0) await broadcastUnreadCountToMany(recipientIds);
+  // 通知対象が 1 名以上いれば未読件数を一斉配信 (テナントを伝搬)
+  if (recipientIds.length > 0) await broadcastUnreadCountToMany(recipientIds, tenantId);
   // 詳細ページのキャッシュを無効化
   revalidatePath(`/tickets/${ticketId}`);
 }
@@ -330,6 +349,7 @@ async function resolveCommentRecipients(
   ticket: { creatorId: string; assigneeId: string | null },
   authorId: string,
   authorIsAgent: boolean,
+  tenantId: string,
 ): Promise<string[]> {
   // 宛先候補を集める配列
   const candidates: string[] = [];
@@ -341,8 +361,8 @@ async function resolveCommentRecipients(
     // 依頼者がコメントし担当者が決まっている場合は担当者のみ
     candidates.push(ticket.assigneeId);
   } else {
-    // 依頼者がコメントし担当者未定なら全エージェントに通知 (取りこぼし防止)
-    candidates.push(...(await repos.users.listAgentIds()));
+    // 依頼者がコメントし担当者未定なら全エージェントに通知 (取りこぼし防止、テナント内のみ)
+    candidates.push(...(await repos.users.listAgentIds(tenantId)));
   }
   // 重複排除し、コメント投稿者自身は除外して返す
   return Array.from(new Set(candidates)).filter((id) => id !== authorId);

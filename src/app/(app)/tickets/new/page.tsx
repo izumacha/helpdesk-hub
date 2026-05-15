@@ -1,3 +1,5 @@
+// セッション (ログイン中ユーザー) 取得
+import { auth } from '@/lib/auth';
 // データ層の Composition Root 経由でカテゴリ一覧を取得する (Prisma 直叩きを避ける)
 import { repos } from '@/data';
 // 新規チケット入力フォーム (Client Component)
@@ -5,8 +7,13 @@ import { TicketForm } from '@/features/tickets/components/TicketForm';
 
 // /tickets/new : 新規チケット作成ページ (Server Component)
 export default async function NewTicketPage() {
-  // フォームのカテゴリ選択肢として、全カテゴリを名前順で取得 (port 経由)
-  const categories = await repos.categories.list();
+  // セッション取得 (middleware で認証済みのはずだが防御的に確認)
+  const session = await auth();
+  // 未ログイン or tenantId 不在は描画しない (middleware が先に弾く想定)
+  if (!session?.user?.id || !session.user.tenantId) return null;
+
+  // フォームのカテゴリ選択肢として、当該テナント内のカテゴリを名前順で取得 (port 経由)
+  const categories = await repos.categories.list(session.user.tenantId);
 
   return (
     // 中央寄せの幅 max-w-2xl コンテナ

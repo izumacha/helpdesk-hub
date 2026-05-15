@@ -6,15 +6,16 @@ import type { PrismaLike } from './types';
 // Prisma クライアントを使った FAQ リポジトリを生成する関数
 export function makeFaqRepo(db: PrismaLike): FaqRepository {
   return {
-    // ID で 1 件取得してドメイン型に変換
-    async findById(id) {
-      const row = await db.faqCandidate.findUnique({ where: { id } });
+    // ID + tenantId で 1 件取得 (他テナントの ID なら null)
+    async findById(id, tenantId) {
+      const row = await db.faqCandidate.findFirst({ where: { id, tenantId } });
       return row ? toFaq(row) : null;
     },
 
-    // 一覧取得 (新しい順、関連チケットと作成者を同梱)
-    async list() {
+    // 当該テナントの FAQ 候補一覧を取得 (新しい順、関連チケットと作成者を同梱)
+    async list(tenantId) {
       const rows = await db.faqCandidate.findMany({
+        where: { tenantId }, // テナントスコープ (必須)
         orderBy: { createdAt: 'desc' }, // 新しい順
         include: {
           // 関連チケットの最小情報を JOIN
@@ -46,9 +47,9 @@ export function makeFaqRepo(db: PrismaLike): FaqRepository {
       return toFaq(row);
     },
 
-    // 状態 (Candidate/Published/Rejected) を更新
-    async updateStatus(id, status) {
-      await db.faqCandidate.update({ where: { id }, data: { status } });
+    // 状態 (Candidate/Published/Rejected) を更新 (tenantId スコープ)
+    async updateStatus(id, status, tenantId) {
+      await db.faqCandidate.updateMany({ where: { id, tenantId }, data: { status } });
     },
   };
 }

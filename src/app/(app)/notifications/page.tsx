@@ -13,11 +13,15 @@ import { formatDateTimeJP } from '@/lib/format-date';
 export default async function NotificationsPage() {
   // セッション取得
   const session = await auth();
-  // 未ログインなら何も描画しない (middleware が先に弾くはずの保険)
-  if (!session?.user?.id) return null;
+  // 未ログイン or tenantId 不在なら何も描画しない (middleware が先に弾くはずの保険)
+  if (!session?.user?.id || !session.user.tenantId) return null;
 
-  // 自分宛の通知を最新 50 件取得 (チケットタイトル付き、port 経由)
-  const notifications = await repos.notifications.list(session.user.id, { limit: 50 });
+  // 自分宛の通知を最新 50 件取得 (チケットタイトル付き、tenantId スコープで port 経由)
+  const notifications = await repos.notifications.list(
+    session.user.id,
+    { limit: 50 },
+    session.user.tenantId,
+  );
 
   // 未読が 1 件でもあるかどうか (ボタン表示判定に使用)
   const hasUnread = notifications.some((n) => !n.read);

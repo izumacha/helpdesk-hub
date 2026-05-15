@@ -79,17 +79,20 @@ export default async function TicketsPage({ searchParams }: Props) {
     assigneeId: normalizeAssigneeId(sp.assigneeId),
   };
 
-  // 表示用データを並列取得 (一覧/総件数/カテゴリ/担当者候補、port 経由)
+  // セッションから tenantId を取り出して以降の port 呼び出しに伝搬する
+  const tenantId = session.user.tenantId;
+  // 表示用データを並列取得 (一覧/総件数/カテゴリ/担当者候補、全て port + tenantId スコープ)
   const [tickets, total, categories, agents] = await Promise.all([
     repos.tickets.list({
       filter,
       page: { skip, take: PAGE_SIZE },
       sort: { field: 'createdAt', direction: 'desc' },
+      tenantId,
     }),
-    repos.tickets.count(filter),
-    repos.categories.list(),
+    repos.tickets.count(filter, tenantId),
+    repos.categories.list(tenantId),
     // 担当者プルダウン用ユーザーは agent/admin のみ (依頼者には不要)
-    isAgent ? repos.users.listAgents() : Promise.resolve([]),
+    isAgent ? repos.users.listAgents(tenantId) : Promise.resolve([]),
   ]);
 
   // 総ページ数を計算

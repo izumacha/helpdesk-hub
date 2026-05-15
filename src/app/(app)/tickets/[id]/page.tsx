@@ -51,12 +51,14 @@ export default async function TicketDetailPage({ params }: Props) {
   // ロール判定
   const isAgent = checkIsAgent(session.user.role);
 
-  // チケット本体 (関連データ込み) と担当者プルダウン用ユーザーを並列取得 (port 経由)
+  // セッションから tenantId を取り出して以降の port 呼び出しに伝搬する
+  const tenantId = session.user.tenantId;
+  // チケット本体 (関連データ込み) と担当者プルダウン用ユーザーを並列取得 (全て tenantId スコープ)
   const [ticket, agents] = await Promise.all([
     // 詳細用: 起票者/担当者/カテゴリ/コメント/履歴/FAQ 候補をまとめて取得
-    repos.tickets.findByIdWithDetail(id),
-    // エージェント時のみ担当者候補一覧を取得
-    isAgent ? repos.users.listAgents() : Promise.resolve([]),
+    repos.tickets.findByIdWithDetail(id, tenantId),
+    // エージェント時のみ担当者候補一覧を取得 (テナント内のみ)
+    isAgent ? repos.users.listAgents(tenantId) : Promise.resolve([]),
   ]);
 
   // チケットが存在しなければ 404

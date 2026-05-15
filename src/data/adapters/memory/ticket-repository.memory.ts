@@ -43,8 +43,10 @@ function attachRefs(ticket: Ticket, store: Store): TicketWithRefs {
   };
 }
 
-// 指定フィルタ条件に一致するかを判定するヘルパー
-function matchesFilter(t: Ticket, filter: TicketListFilter): boolean {
+// 指定フィルタ条件に一致するかを判定するヘルパー (tenantId は別途必須でチェック)
+function matchesFilter(t: Ticket, filter: TicketListFilter, tenantId: string): boolean {
+  // テナントスコープを最優先で確認 (他テナントの行は問答無用で除外)
+  if (t.tenantId !== tenantId) return false;
   // 起票者フィルター: 指定があり一致しなければ除外
   if (filter.creatorId !== undefined && t.creatorId !== filter.creatorId) return false;
   // 状態フィルター
@@ -76,22 +78,25 @@ function matchesFilter(t: Ticket, filter: TicketListFilter): boolean {
 // メモリストアを使ったチケットリポジトリを生成する関数
 export function makeTicketRepo(store: Store): TicketRepository {
   return {
-    // ID で最小フィールドのチケットを 1 件取得 (複製して返す)
-    async findById(id) {
+    // ID + tenantId で最小フィールドのチケットを 1 件取得 (複製して返す)
+    async findById(id, tenantId) {
       const t = store.tickets.get(id);
-      return t ? { ...t } : null;
+      // テナント不一致なら null (クロステナント参照を遮断)
+      if (!t || t.tenantId !== tenantId) return null;
+      return { ...t };
     },
 
-    // ID で起票者/担当者/カテゴリを結合したチケットを取得
-    async findByIdWithRefs(id) {
+    // ID + tenantId で起票者/担当者/カテゴリを結合したチケットを取得
+    async findByIdWithRefs(id, tenantId) {
       const t = store.tickets.get(id);
-      return t ? attachRefs(t, store) : null;
+      if (!t || t.tenantId !== tenantId) return null;
+      return attachRefs(t, store);
     },
 
-    // 詳細ページ用に、コメント/履歴/FAQ 候補を含むチケットを取得
-    async findByIdWithDetail(id) {
+    // 詳細ページ用に、コメント/履歴/FAQ 候補を含むチケットを取得 (tenantId スコープ)
+    async findByIdWithDetail(id, tenantId) {
       const t = store.tickets.get(id); // 本体取得
-      if (!t) return null; // 無ければ null
+      if (!t || t.tenantId !== tenantId) return null; // テナント不一致は null
       const withRefs = attachRefs(t, store); // 関連情報を結合
 
       // 対象チケットのコメントを古い順に整形
@@ -127,10 +132,10 @@ export function makeTicketRepo(store: Store): TicketRepository {
       return detail;
     },
 
-    // 一覧取得 (フィルタ/ソート/ページング)
-    async list({ filter, page, sort }) {
-      // フィルター適用
-      let rows = [...store.tickets.values()].filter((t) => matchesFilter(t, filter));
+    // 一覧取得 (フィルタ/ソート/ページング、tenantId スコープ)
+    async list({ filter, page, sort, tenantId }) {
+      // フィルター適用 (matchesFilter 内で tenantId も判定)
+      let rows = [...store.tickets.values()].filter((t) => matchesFilter(t, filter, tenantId));
       // ソート方向を決定 (既定は降順)
       const direction = sort?.direction ?? 'desc';
       // createdAt で並び替え
@@ -143,19 +148,19 @@ export function makeTicketRepo(store: Store): TicketRepository {
       return rows.map((t) => attachRefs(t, store));
     },
 
-    // 条件に一致する件数をカウント
-    async count(filter) {
+    // 条件に一致する件数をカウント (tenantId スコープ)
+    async count(filter, tenantId) {
       let n = 0; // カウンタ
       // 全チケットを走査し、条件一致を加算
       for (const t of store.tickets.values()) {
-        if (matchesFilter(t, filter)) n += 1;
+        if (matchesFilter(t, filter, tenantId)) n += 1;
       }
       // 件数を返す
       return n;
     },
 
-    // ダッシュボード一括取得 (status 別件数 / SLA 超過 / 担当者別ワークロード)
-    async dashboardStats({ creatorId, now, excludeStatusesForWorkload }) {
+    // ダッシュボード一括取得 (status 別件数 / SLA 超過 / 担当者別ワークロード、tenantId スコープ)
+    async dashboardStats({ creatorId, now, excludeStatusesForWorkload, tenantId }) {
       // 状態別件数を 0 で初期化 (該当なしも 0 として返す)
       const byStatus: Record<TicketStatus, number> = {
         New: 0,
@@ -172,6 +177,8 @@ export function makeTicketRepo(store: Store): TicketRepository {
       const workloadCounts = new Map<string | null, number>();
       // 全チケットを 1 度だけ走査して 3 指標を同時に集計
       for (const t of store.tickets.values()) {
+        // 当該テナント以外は集計対象外
+        if (t.tenantId !== tenantId) continue;
         // byStatus: 起票者フィルタ (creatorId 指定時のみ) を満たす場合に集計
         if (creatorId === undefined || t.creatorId === creatorId) {
           byStatus[t.status] += 1;
@@ -229,32 +236,33 @@ export function makeTicketRepo(store: Store): TicketRepository {
       return attachRefs(ticket, store);
     },
 
-    // 状態を更新 (併せて解決日時もセットする)
-    async updateStatus(id, status, resolvedAt) {
+    // 状態を更新 (tenantId スコープ。テナント不一致なら no-op = 0 件更新)
+    async updateStatus(id, status, resolvedAt, tenantId) {
       const t = store.tickets.get(id); // 対象取得
-      if (!t) throw new Error(`ticket not found: ${id}`); // 無ければエラー
+      // 不在 or テナント不一致は何もしない (Prisma の updateMany と同じ挙動)
+      if (!t || t.tenantId !== tenantId) return;
       // 新しい状態/解決日時/更新時刻で置き換え
       store.tickets.set(id, { ...t, status, resolvedAt, updatedAt: new Date() });
     },
 
-    // 優先度を更新
-    async updatePriority(id, priority) {
+    // 優先度を更新 (tenantId スコープ)
+    async updatePriority(id, priority, tenantId) {
       const t = store.tickets.get(id);
-      if (!t) throw new Error(`ticket not found: ${id}`);
+      if (!t || t.tenantId !== tenantId) return;
       store.tickets.set(id, { ...t, priority, updatedAt: new Date() });
     },
 
-    // 担当者を更新 (null で未アサインに戻す)
-    async updateAssignee(id, assigneeId) {
+    // 担当者を更新 (tenantId スコープ。null で未アサインに戻す)
+    async updateAssignee(id, assigneeId, tenantId) {
       const t = store.tickets.get(id);
-      if (!t) throw new Error(`ticket not found: ${id}`);
+      if (!t || t.tenantId !== tenantId) return;
       store.tickets.set(id, { ...t, assigneeId, updatedAt: new Date() });
     },
 
-    // エスカレーション扱いに更新 (状態 + 理由 + 実行時刻)
-    async markEscalated(id, args) {
+    // エスカレーション扱いに更新 (tenantId スコープ)
+    async markEscalated(id, args, tenantId) {
       const t = store.tickets.get(id);
-      if (!t) throw new Error(`ticket not found: ${id}`);
+      if (!t || t.tenantId !== tenantId) return;
       store.tickets.set(id, {
         ...t,
         status: 'Escalated',

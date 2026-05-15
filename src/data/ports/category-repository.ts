@@ -5,9 +5,10 @@ export interface CategorySummary {
 }
 
 // カテゴリ取得用リポジトリの契約 (port)
+// 全メソッドが tenantId 必須化済み。テナント越境参照を Adapter 層で遮断する
 export interface CategoryRepository {
-  list(): Promise<CategorySummary[]>; // 全カテゴリを取得する
-  // ID 指定で 1 件取得。tenantId 必須でテナント越境参照を防止する
-  // (Phase 0: 全 Port を tenant スコープ化するまでの第一歩)
+  // 当該テナントのカテゴリ一覧を取得
+  list(tenantId: string): Promise<CategorySummary[]>;
+  // ID 指定で 1 件取得 (他テナントの ID なら null を返す)
   findById(id: string, tenantId: string): Promise<CategorySummary | null>;
 }

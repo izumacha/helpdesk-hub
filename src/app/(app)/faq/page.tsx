@@ -15,13 +15,13 @@ import { updateFaqStatus } from '@/features/faq/actions/faq-actions';
 export default async function FaqPage() {
   // セッション取得
   const session = await auth();
-  // 未ログインなら何も描画しない
-  if (!session?.user?.id) return null;
+  // 未ログイン or tenantId 不在なら何も描画しない
+  if (!session?.user?.id || !session.user.tenantId) return null;
   // 一般ユーザー (依頼者) は 404 で隠す
   if (!isAgent(session.user.role)) notFound();
 
-  // FAQ 候補を新しい順で全件取得 (元チケットと作成者名を含む、port 経由)
-  const faqs = await repos.faq.list();
+  // 当該テナントの FAQ 候補を新しい順で全件取得 (元チケットと作成者名を含む、port 経由)
+  const faqs = await repos.faq.list(session.user.tenantId);
 
   return (
     <div className="space-y-6">

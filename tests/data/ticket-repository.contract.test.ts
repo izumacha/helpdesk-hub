@@ -7,8 +7,10 @@ import type { User } from '@/domain/types';
 // 共通契約テストとそのコンテキスト型
 import { runTicketRepositoryContract, type ContractContext } from './ticket-repository.contract';
 
-// 全テストで共有するテナント ID (マルチテナント化後はあらゆる行で必須)
+// 主に使うテナント ID (マルチテナント化後はあらゆる行で必須)
 const TENANT_ID = 'default-tenant';
+// クロステナント回帰テスト用のもう 1 つのテナント ID
+const SECOND_TENANT_ID = 'tenant-b';
 
 // メモリ実装向けに ContractContext を組み立てる
 function makeMemoryContext(): ContractContext {
@@ -61,7 +63,46 @@ function makeMemoryContext(): ContractContext {
     };
   };
 
-  return { repos, uow, seedBasicFixture };
+  // クロステナント回帰テスト用に、もう 1 つのテナントを丸ごと用意する
+  const seedSecondTenant: ContractContext['seedSecondTenant'] = async () => {
+    const now = new Date();
+    // テナント B を投入 (mode は lite で十分)
+    store.tenants.set(SECOND_TENANT_ID, {
+      id: SECOND_TENANT_ID,
+      name: '別組織',
+      mode: 'lite',
+      industry: null,
+      createdAt: now,
+    });
+    // テナント B 専属の依頼者ユーザーを 1 名作る
+    const requesterId = 'u-b-req-1';
+    store.users.set(requesterId, {
+      id: requesterId,
+      email: `${requesterId}@example.com`,
+      name: '田中 一郎',
+      passwordHash: 'x',
+      role: 'requester',
+      tenantId: SECOND_TENANT_ID, // 必ずテナント B のスコープに紐づけ
+      createdAt: now,
+      updatedAt: now,
+    });
+    // テナント B 専属のカテゴリも 1 件作る
+    const categoryId = 'cat-b-1';
+    store.categories.set(categoryId, {
+      id: categoryId,
+      name: '別組織カテゴリ',
+      createdAt: now,
+      tenantId: SECOND_TENANT_ID,
+    });
+    // クロステナント検証用の最小セット (テナント ID / 依頼者 / カテゴリ ID) を返す
+    return {
+      tenantId: SECOND_TENANT_ID,
+      requester: store.users.get(requesterId)!,
+      categoryId,
+    };
+  };
+
+  return { repos, uow, seedBasicFixture, seedSecondTenant };
 }
 
 // メモリアダプタが TicketRepository 契約を満たしているかを実行

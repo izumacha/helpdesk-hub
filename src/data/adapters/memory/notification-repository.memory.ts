@@ -28,21 +28,22 @@ export function makeNotificationRepo(store: Store): NotificationRepository {
       return notification;
     },
 
-    // 指定ユーザーの未読件数をカウント
-    async countUnread(userId) {
+    // 指定ユーザーの未読件数をカウント (tenantId スコープ)
+    async countUnread(userId, tenantId) {
       let n = 0; // カウンタ
-      // 全通知を走査し、対象ユーザー & 未読のものを数える
+      // 全通知を走査し、テナント + 対象ユーザー + 未読のものを数える
       for (const n0 of store.notifications.values()) {
+        if (n0.tenantId !== tenantId) continue; // 他テナントは除外
         if (n0.userId === userId && !n0.read) n += 1;
       }
       // 件数を返す
       return n;
     },
 
-    // 指定ユーザーの通知を新しい順に limit 件取得 (関連チケット付き)
-    async list(userId, { limit }) {
+    // 指定ユーザーの通知を新しい順に limit 件取得 (関連チケット付き、tenantId スコープ)
+    async list(userId, { limit }, tenantId) {
       const rows = [...store.notifications.values()] // 全通知を配列化
-        .filter((n) => n.userId === userId) // 対象ユーザーのみ
+        .filter((n) => n.tenantId === tenantId && n.userId === userId) // テナント + ユーザー
         .sort((a, b) => +b.createdAt - +a.createdAt) // 新しい順にソート
         .slice(0, limit); // 先頭 limit 件に切る
       // 各通知に関連チケットの要約を結合して返す
@@ -55,7 +56,7 @@ export function makeNotificationRepo(store: Store): NotificationRepository {
       });
     },
 
-    // 指定ユーザーの未読通知を全て既読に更新
+    // 指定ユーザーの未読通知を全て既読に更新 (ユーザーは単一テナント帰属なので tenantId 不要)
     async markAllRead(userId) {
       // Map の全エントリを走査
       for (const [id, n] of store.notifications) {
