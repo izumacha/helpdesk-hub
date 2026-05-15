@@ -36,6 +36,12 @@ export default auth((req) => {
   }
 
   if (isLoggedIn && isAuthPage) {
+    // tenantId 不在の旧 JWT 補完失敗セッションが /login に到達した場合は
+    // dashboard/tickets に戻さない (アプリ画面側で再度 /login に弾かれてループするため)。
+    // ログイン画面をそのまま表示してパスワード再入力 → 新 JWT 発行を促す
+    if (!req.auth?.user?.tenantId) {
+      return NextResponse.next();
+    }
     const role = req.auth?.user?.role;
     return NextResponse.redirect(new URL(isAgent(role) ? '/dashboard' : '/tickets', req.url));
   }
