@@ -70,11 +70,17 @@ export async function updateTicketStatus(ticketId: string, newStatus: TicketStat
       );
     }
 
-    // Resolved に遷移したら解決日時を現在時刻に、Resolved から離れる場合はクリア、それ以外は据え置き
+    // 「完了」とみなすステータスを mode に応じて決定する
+    // - Pro: 'Resolved' (従来どおり「解決済み」が完了扱い)
+    // - Lite: 'Closed' (Lite UI の「完了」は Closed に対応するため、ここで resolvedAt をセット)
+    // これがズレると Lite の完了済みチケットでも resolvedAt=null のままになり、SLA が常に
+    // 期限切れ扱いになる (getSlaState は resolvedAt がある場合のみ 'ok' を返すため)
+    const completionStatus: TicketStatus = mode === 'lite' ? 'Closed' : 'Resolved';
+    // 完了ステータスに遷移したら解決日時を現在時刻に、完了から離れる場合はクリア、それ以外は据え置き
     const resolvedAt =
-      newStatus === 'Resolved'
+      newStatus === completionStatus
         ? new Date()
-        : ticket.status === 'Resolved'
+        : ticket.status === completionStatus
           ? null
           : ticket.resolvedAt;
 

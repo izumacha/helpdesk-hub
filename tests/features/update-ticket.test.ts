@@ -256,6 +256,48 @@ describe('updateTicketStatus (Lite mode)', () => {
     const t = await repos.tickets.findById(ticketId, TENANT);
     expect(t?.status).toBe('Open');
   });
+
+  // Lite: 対応中 → 完了 (InProgress → Closed) で resolvedAt が現在時刻にセットされること
+  // (Lite UI の「完了」は Closed なので SLA が 'ok' 扱いになるための前提)
+  it('sets resolvedAt when transitioning to Closed in Lite mode', async () => {
+    const { ticketId } = await seed();
+    setTenantToLite();
+    // 事前準備として InProgress 状態にする (resolvedAt は null のまま)
+    await repos.tickets.updateStatus(ticketId, 'InProgress', null, TENANT);
+    const { updateTicketStatus } = await import('@/features/tickets/actions/update-ticket');
+
+    // 呼び出し前後の時刻を測って resolvedAt の妥当性を検証
+    const before = Date.now();
+    await updateTicketStatus(ticketId, 'Closed');
+    const after = Date.now();
+
+    // 反映確認
+    const t = await repos.tickets.findById(ticketId, TENANT);
+    expect(t?.status).toBe('Closed');
+    // resolvedAt が Date でセットされている
+    expect(t?.resolvedAt).toBeInstanceOf(Date);
+    // 計測した範囲内に収まる
+    const ts = t!.resolvedAt!.getTime();
+    expect(ts).toBeGreaterThanOrEqual(before);
+    expect(ts).toBeLessThanOrEqual(after);
+  });
+
+  // Lite: 完了 → 未対応 (Closed → Open) で resolvedAt がクリアされること (再オープン時の戻し)
+  it('clears resolvedAt when reopening from Closed in Lite mode', async () => {
+    const { ticketId } = await seed();
+    setTenantToLite();
+    // 事前準備として Closed + resolvedAt セット済みの状態にする
+    await repos.tickets.updateStatus(ticketId, 'Closed', new Date(), TENANT);
+    const { updateTicketStatus } = await import('@/features/tickets/actions/update-ticket');
+
+    // Closed → Open は Lite 遷移表で許可されているので成功する
+    await updateTicketStatus(ticketId, 'Open');
+
+    // 反映と resolvedAt クリアを確認
+    const t = await repos.tickets.findById(ticketId, TENANT);
+    expect(t?.status).toBe('Open');
+    expect(t?.resolvedAt).toBeNull();
+  });
 });
 
 // 担当者更新アクションの仕様
