@@ -84,12 +84,19 @@ export function Sidebar({ role }: Props) {
         // モバイルナビゲーションを意味するランドマーク
         aria-label="メインナビゲーション"
       >
-        {/* ヘッダー領域 (ブランドマーク + 折りたたみボタン) */}
+        {/* ヘッダー領域 (ブランドマーク + 折りたたみボタン)
+            ブランドマーク: モバイル (md 未満) では collapsed を無視して常にワードマーク表示し、
+            md 以上でのみ collapsed に応じてシンボル化する。
+            "hidden md:block" / "md:hidden" の併用で md ブレークポイントを境に切り替える */}
         <div className="flex h-16 items-center justify-between border-b border-slate-200 px-3">
-          {/* 折りたたみ時はワードマークを隠し、シンボルだけ表示
-              (モバイル時は collapsed の値に関わらずワードマーク表示にしたいので md 未満は常に true 相当扱い)
-              ここでは showWordmark に !collapsed を渡し、デスクトップ折りたたみ時のみ非表示にする */}
-          <Logo showWordmark={!collapsed} size={collapsed ? 28 : 30} />
+          {/* モバイル: 常にワードマーク + 通常サイズ (collapsed の影響を受けない) */}
+          <div className="md:hidden">
+            <Logo showWordmark size={30} />
+          </div>
+          {/* デスクトップ: collapsed に応じてワードマーク表示・サイズを切り替える */}
+          <div className="hidden md:block">
+            <Logo showWordmark={!collapsed} size={collapsed ? 28 : 30} />
+          </div>
           {/* 折りたたみ切り替えボタン (md 以上でのみ表示。モバイルでは Header のハンバーガーが担当) */}
           <button
             onClick={() => setCollapsed(!collapsed)}
@@ -99,39 +106,44 @@ export function Sidebar({ role }: Props) {
             {collapsed ? '›' : '‹'}
           </button>
         </div>
-        {/* 折りたたみ時はメニュー本体を非表示 (デスクトップのみ。モバイルではドロワー幅 w-64 で常に展開表示) */}
-        {!collapsed && (
-          <nav className="flex-1 space-y-1 px-3 py-5">
-            {visibleItems.map((item) => {
-              // この項目が現在のページかどうか
-              const isActive = isItemActive(item.href);
-              return (
-                <Link
-                  key={item.href}
-                  href={item.href}
-                  // メニュータップで遷移と同時にモバイルドロワーを閉じる
-                  // (Provider 側の useEffect で pathname を監視するとリンタが set-state-in-effect 警告を出すため、
-                  //  ユーザー操作起点で明示的に閉じる方が安全)
-                  onClick={closeNav}
-                  // アクティブ項目はティールで強調 (左にバー風アクセント)
-                  className={`relative block rounded-lg px-3 py-2.5 text-sm font-medium transition-colors ${
-                    isActive
-                      ? 'bg-teal-50 text-teal-800 ring-1 ring-teal-100 before:absolute before:top-1/2 before:left-0 before:h-5 before:w-1 before:-translate-y-1/2 before:rounded-r before:bg-teal-600'
-                      : 'text-slate-600 hover:bg-teal-50/60 hover:text-teal-800'
-                  }`}
-                >
-                  {item.label}
-                </Link>
-              );
-            })}
-          </nav>
-        )}
-        {/* フッター: 折りたたみ時以外は小さなバージョン情報風テキスト */}
-        {!collapsed && (
-          <div className="border-t border-slate-200 px-4 py-3 text-[11px] text-slate-400">
-            © HelpDesk Hub
-          </div>
-        )}
+        {/* メニュー本体は常に DOM に描画する。
+            collapsed の効果は md 以上だけに限定 (md:hidden) し、モバイルでは必ず表示する。
+            これにより「デスクトップで折りたたみ → 画面幅を縮める → ハンバーガーで開く」のフローで
+            メニューが空になる不具合を防ぐ */}
+        <nav
+          className={`flex-1 space-y-1 px-3 py-5 ${collapsed ? 'md:hidden' : ''}`}
+        >
+          {visibleItems.map((item) => {
+            // この項目が現在のページかどうか
+            const isActive = isItemActive(item.href);
+            return (
+              <Link
+                key={item.href}
+                href={item.href}
+                // メニュータップで遷移と同時にモバイルドロワーを閉じる
+                // (Provider 側の useEffect で pathname を監視するとリンタが set-state-in-effect 警告を出すため、
+                //  ユーザー操作起点で明示的に閉じる方が安全)
+                onClick={closeNav}
+                // アクティブ項目はティールで強調 (左にバー風アクセント)
+                className={`relative block rounded-lg px-3 py-2.5 text-sm font-medium transition-colors ${
+                  isActive
+                    ? 'bg-teal-50 text-teal-800 ring-1 ring-teal-100 before:absolute before:top-1/2 before:left-0 before:h-5 before:w-1 before:-translate-y-1/2 before:rounded-r before:bg-teal-600'
+                    : 'text-slate-600 hover:bg-teal-50/60 hover:text-teal-800'
+                }`}
+              >
+                {item.label}
+              </Link>
+            );
+          })}
+        </nav>
+        {/* フッター: 同様にモバイルでは常時表示、md 以上でのみ collapsed の影響を受ける */}
+        <div
+          className={`border-t border-slate-200 px-4 py-3 text-[11px] text-slate-400 ${
+            collapsed ? 'md:hidden' : ''
+          }`}
+        >
+          © HelpDesk Hub
+        </div>
       </aside>
     </>
   );

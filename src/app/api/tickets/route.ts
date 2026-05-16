@@ -10,6 +10,8 @@ import { calculateResolutionDueAt } from '@/lib/sla';
 import { createTicketSchema } from '@/lib/validations/ticket';
 // テナントの動作モード (lite | pro) を取得するヘルパー
 import { getCurrentTenantMode } from '@/lib/tenant';
+// 'YYYY-MM-DD' を JST 終端 Date に変換するヘルパー (サーバ TZ 非依存)
+import { endOfDayJST } from '@/lib/format-date';
 
 // POST /api/tickets : 新規チケットを作成する HTTP エンドポイント
 export async function POST(req: Request) {
@@ -77,11 +79,12 @@ export async function POST(req: Request) {
   // 作成時刻 (SLA 期限の計算基準)
   const now = new Date();
   // 解決期限の決定:
-  // - dueDate が指定されていれば、その日付の終端 (23:59:59.999) を resolutionDueAt とする
-  //   (Lite モードでユーザーが「今日まで」と入れたら当日中いっぱい OK の意図に合わせる)
+  // - dueDate が指定されていれば、その日付の JST 終端 (23:59:59.999 +09:00) を resolutionDueAt とする
+  //   サーバ/CI/本番の TZ に依存しないよう endOfDayJST を経由する (UTC 環境でも JST 解釈になる)
   // - 指定が無ければ従来どおり priority ベースで自動計算
+  // - endOfDayJST が null (= 形式不正) なら Zod が手前で弾いているはずだが、防御的に自動計算へフォールバック
   const resolutionDueAt = dueDate
-    ? new Date(`${dueDate}T23:59:59.999`)
+    ? (endOfDayJST(dueDate) ?? calculateResolutionDueAt(effectivePriority, now))
     : calculateResolutionDueAt(effectivePriority, now);
 
   // リポジトリ経由でチケットを作成
