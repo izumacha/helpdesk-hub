@@ -11,7 +11,13 @@ import { broadcastUnreadCount, broadcastUnreadCountToMany } from '@/features/not
 // エージェント権限判定 (agent または admin のとき true)
 import { isAgent } from '@/lib/role';
 // ステータス遷移が許可されているか判定するドメイン関数 (mode 引数で Lite/Pro 切替)
-import { isValidTransition } from '@/domain/ticket-status';
+// および Lite モード専用の遷移表ガード / Lite ステータス型ガード
+import {
+  getAllowedLiteTransitions,
+  isLiteStatus,
+  isValidTransition,
+  type LiteStatus,
+} from '@/domain/ticket-status';
 // セッションの tenantId からテナント mode (lite | pro) を取得するヘルパー
 import { getCurrentTenantMode } from '@/lib/tenant';
 // 型のみインポート (優先度/ステータス)
@@ -63,8 +69,22 @@ export async function updateTicketStatus(ticketId: string, newStatus: TicketStat
     if (!ticket) throw new Error('チケットが見つかりません');
     // 変更前後が同じなら何もしない (冪等)
     if (ticket.status === newStatus) return;
-    // 遷移表 (mode に応じて Lite/Pro) で許可されていない変更は拒否
-    if (!isValidTransition(ticket.status, newStatus, mode)) {
+    // Lite テナントでは newStatus を Lite 3 値 (Open / InProgress / Closed) に強制する
+    // 旧データ (Resolved / Escalated / WaitingForUser / New) からの off-ramp は許すが、
+    // Lite テナント上で「新規にそれら非 Lite ステータスへ落とす」操作は仕様違反 (Pivot plan §3.1 / §5.2)
+    if (mode === 'lite' && !isLiteStatus(newStatus)) {
+      throw new Error(`Lite モードでは「${newStatus}」へは変更できません`);
+    }
+    // 遷移許可判定:
+    // - Lite モードかつ from も Lite 3 値: 専用遷移表 (getAllowedLiteTransitions) を直接ガードに使う
+    //   (直前の isLiteStatus(newStatus) 判定で newStatus は LiteStatus が確定するが、
+    //    TS の制御フローを跨いだ narrow が効かないので as LiteStatus でローカルキャスト)
+    // - それ以外 (Pro モード / Lite × 非 Lite 始点の off-ramp): 従来どおり mode-aware な isValidTransition
+    const guardPassed =
+      mode === 'lite' && isLiteStatus(ticket.status)
+        ? getAllowedLiteTransitions(ticket.status).includes(newStatus as LiteStatus)
+        : isValidTransition(ticket.status, newStatus, mode);
+    if (!guardPassed) {
       throw new Error(
         `ステータスを「${ticket.status}」から「${newStatus}」に変更することはできません`,
       );
