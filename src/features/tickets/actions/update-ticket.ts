@@ -270,7 +270,14 @@ export async function escalateTicket(ticketId: string, reason: string) {
 
   // チケットが無ければエラー
   if (!ticket) throw new Error('チケットが見つかりません');
-  // Escalated への遷移が許可されているか確認 (Lite では遷移表に Escalated が無いので必ず弾かれる)
+  // Lite モードではエスカレーション機能そのものを提供しない (Pivot plan §3.1 / §5.2)
+  // - UI 側 (src/app/(app)/tickets/[id]/page.tsx) でも mode==='pro' でしかボタンを出さない
+  // - 二重防御として Server Action にも明示ガードを置き、将来の遷移表変更で偶発的に
+  //   Lite テナントでエスカレーションが通る回帰を防ぐ
+  if (mode === 'lite') {
+    throw new Error('Lite モードではエスカレーションは利用できません');
+  }
+  // Escalated への遷移が許可されているか確認 (Pro 経路の現在ステータス判定として残す)
   if (!isValidTransition(ticket.status, 'Escalated', mode)) {
     throw new Error(`現在のステータス「${ticket.status}」からエスカレーションできません`);
   }

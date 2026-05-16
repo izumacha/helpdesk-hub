@@ -590,4 +590,30 @@ describe('escalateTicket (provider-agnostic)', () => {
       expect(n.ticketId).toBe(ticketId);
     }
   });
+
+  // Lite モードではエスカレーション機能そのものが提供されないこと (Pivot plan §3.1 / §5.2)
+  it('rejects escalation in Lite mode', async () => {
+    const { ticketId } = await seed();
+    // テナントを Lite に切り替え (UI ではボタンが出ないが、Server Action 直叩きの防御を検証)
+    // setTenantToLite は別 describe スコープにあるためインラインで mode を書き換える
+    const tenant = store.tenants.get('default-tenant');
+    if (!tenant) throw new Error('seed missing default-tenant');
+    store.tenants.set('default-tenant', { ...tenant, mode: 'lite' });
+    // 既存ステータスを Open にしておく (Pro なら Open → Escalated が通る遷移)
+    await repos.tickets.updateStatus(ticketId, 'Open', null, TENANT);
+    const { escalateTicket } = await import('@/features/tickets/actions/update-ticket');
+
+    // Lite ガードによる拒否 (エラー文言で確認)
+    await expect(escalateTicket(ticketId, '緊急対応必要')).rejects.toThrow(
+      /Lite モードでは/,
+    );
+
+    // 副作用がないこと: ステータス維持・理由・日時はすべて未書き込み
+    const t = await repos.tickets.findById(ticketId, TENANT);
+    expect(t?.status).toBe('Open');
+    expect(t?.escalationReason).toBeNull();
+    expect(t?.escalatedAt).toBeNull();
+    // 通知も作られていない
+    expect([...store.notifications.values()]).toHaveLength(0);
+  });
 });
