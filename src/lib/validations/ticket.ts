@@ -1,6 +1,22 @@
 // Zod (スキーマ検証ライブラリ) をインポート
 import { z } from 'zod';
 
+// YYYY-MM-DD 文字列が実在する日付か (例: 2026-02-31 は false) を判定するヘルパー
+// JavaScript の Date コンストラクタは存在しない日付を自動的にロールオーバーするため、
+// 入力された年月日と Date オブジェクトから再構築した年月日が一致するかを確認する
+function isRealCalendarDate(yyyyMmDd: string): boolean {
+  // 入力を年・月・日の数値に分解 (フォーマットは事前 regex で保証済み)
+  const [yearStr, monthStr, dayStr] = yyyyMmDd.split('-');
+  // 数値に変換 (月は 0 始まりに揃える)
+  const year = Number(yearStr);
+  const month = Number(monthStr) - 1;
+  const day = Number(dayStr);
+  // ローカルタイム基準で Date オブジェクトを構築
+  const d = new Date(year, month, day);
+  // 入力値と構築後の値が一致すれば実在する日付
+  return d.getFullYear() === year && d.getMonth() === month && d.getDate() === day;
+}
+
 // チケット新規作成フォームの入力検証スキーマ
 export const createTicketSchema = z.object({
   // タイトル: 1〜200 文字の文字列
@@ -17,6 +33,19 @@ export const createTicketSchema = z.object({
     .transform((v) => v || undefined),
   // 優先度は Low/Medium/High のいずれか
   priority: z.enum(['Low', 'Medium', 'High']),
+  // 期限日 (Lite モードの簡易フォーム用、任意): YYYY-MM-DD 形式の文字列
+  // - <input type="date"> から空文字で送られて来ることがあるので空は undefined に正規化
+  // - 形式と実在日付の両方を検証する (例: 2026-02-31 のような不正値を弾く)
+  dueDate: z
+    .string()
+    .optional()
+    .refine((v) => v === undefined || v === '' || /^\d{4}-\d{2}-\d{2}$/.test(v), {
+      message: '期限日の形式が正しくありません',
+    })
+    .refine((v) => v === undefined || v === '' || isRealCalendarDate(v), {
+      message: '期限日が正しい日付ではありません',
+    })
+    .transform((v) => (v ? v : undefined)),
 });
 
 // スキーマから TypeScript 型を生成 (変換後の型)
