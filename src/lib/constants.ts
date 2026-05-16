@@ -1,10 +1,14 @@
 // チケット状態型をインポート
 import type { TicketStatus } from '@/generated/prisma';
+// Lite モードの 3 値型と型ガード関数を取り込み、mode-aware ラベル関数で使う
+import { isLiteStatus, type LiteStatus } from '@/domain/ticket-status';
+// テナントモード型 (lite | pro) を取り込み、mode-aware ラベル関数で使う
+import type { TenantMode } from '@/domain/types';
 
 // FAQ 候補化を許可するチケット状態一覧 (解決済みのみ候補化可能)
 export const FAQ_ELIGIBLE_STATUSES: readonly TicketStatus[] = ['Resolved'];
 
-// チケット状態の英語キーに対応する日本語表示ラベル
+// チケット状態の英語キーに対応する日本語表示ラベル (Pro モード、現行 7 値)
 export const STATUS_LABELS: Record<string, string> = {
   New: '新規',
   Open: 'オープン',
@@ -14,6 +18,29 @@ export const STATUS_LABELS: Record<string, string> = {
   Resolved: '解決済み',
   Closed: 'クローズ',
 };
+
+// Lite モード用の状態ラベル (Pivot plan §3.1 の用語表に基づきカタカナ・英語を排除)
+// Lite テナントは UI 上で「未対応 / 対応中 / 完了」だけを使う
+export const LITE_STATUS_LABELS: Record<LiteStatus, string> = {
+  Open: '未対応', // 受付済みだがまだ着手していない (Lite では「未対応」と呼ぶ)
+  InProgress: '対応中', // 担当者が作業中
+  Closed: '完了', // 対応が終わった状態
+};
+
+// テナントモードに応じて状態ラベルを返す mode-aware 関数
+// - mode === 'lite': まず LITE_STATUS_LABELS を引く。Lite 用 3 値以外 (例: 旧データの
+//   Escalated / Resolved 等) が来た場合は Pro ラベルにフォールバックして安全に表示する
+//   (テナントを Pro → Lite に切り替えた直後のエッジケース防御)
+// - mode === 'pro': 既存どおり STATUS_LABELS をそのまま返す
+export function getStatusLabel(status: TicketStatus, mode: TenantMode): string {
+  // Lite モードかつ Lite 対応の 3 値なら Lite ラベルを返す (型ガードで LiteStatus に narrow)
+  if (mode === 'lite' && isLiteStatus(status)) {
+    return LITE_STATUS_LABELS[status];
+  }
+  // それ以外 (Pro モード or Lite で非対応ステータス) は Pro ラベルにフォールバック
+  // 未知のキーは status 文字列をそのまま返して画面が空にならないようにする
+  return STATUS_LABELS[status] ?? status;
+}
 
 // 優先度キーに対応する日本語表示ラベル
 export const PRIORITY_LABELS: Record<string, string> = {
