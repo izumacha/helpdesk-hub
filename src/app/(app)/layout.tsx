@@ -4,6 +4,8 @@ import { auth } from '@/lib/auth';
 import { Header } from '@/components/layout/Header';
 // 左サイドバー
 import { Sidebar } from '@/components/layout/Sidebar';
+// モバイル時のサイドバードロワー開閉状態を Header / Sidebar 間で共有する Provider
+import { MobileNavProvider } from '@/components/layout/MobileNavProvider';
 
 // (app) Route Group の共通レイアウト (認証後の画面骨格)
 export default async function AppLayout({ children }: { children: React.ReactNode }) {
@@ -13,16 +15,21 @@ export default async function AppLayout({ children }: { children: React.ReactNod
   const role = session?.user?.role ?? ('requester' as const);
 
   return (
-    // 画面全体: 左右レイアウト + 縦スクロール抑止 (背景は新トークン surface)
-    <div className="bg-surface flex h-screen overflow-hidden">
-      {/* サイドバー (権限に応じてメニューを出し分け) */}
-      <Sidebar role={role} />
-      {/* 右側: ヘッダー + メインコンテンツ */}
-      <div className="flex flex-1 flex-col overflow-hidden">
-        <Header />
-        {/* 各ページの内容 (縦スクロール可) ─ 余白を広めに取り病院ロビー風の落ち着き */}
-        <main className="flex-1 overflow-y-auto p-6 sm:p-8">{children}</main>
+    // モバイルでのサイドバー開閉状態を Header (トグルボタン) と Sidebar (ドロワー本体) で共有する
+    // Provider は client コンポーネントだが、async な Header/Sidebar の親に置けるため
+    // children のレンダリング順序や Server Action 利用を妨げない
+    <MobileNavProvider>
+      {/* 画面全体: 左右レイアウト + 縦スクロール抑止 (背景は新トークン surface) */}
+      <div className="bg-surface flex h-screen overflow-hidden">
+        {/* サイドバー (権限に応じてメニューを出し分け。md 未満は Provider 状態でドロワー化) */}
+        <Sidebar role={role} />
+        {/* 右側: ヘッダー + メインコンテンツ */}
+        <div className="flex flex-1 flex-col overflow-hidden">
+          <Header />
+          {/* 各ページの内容 (縦スクロール可) ─ モバイルは余白を控えめにする */}
+          <main className="flex-1 overflow-y-auto p-4 sm:p-6 md:p-8">{children}</main>
+        </div>
       </div>
-    </div>
+    </MobileNavProvider>
   );
 }

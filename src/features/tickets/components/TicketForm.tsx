@@ -23,7 +23,7 @@ interface Props {
 
 // 入力欄に共通で当てるベースクラス (フォーカス時のティールリングを統一)
 const fieldBaseClass =
-  'block w-full rounded-lg border border-slate-200 bg-white px-4 py-2.5 text-sm text-slate-900 placeholder:text-slate-400 transition focus:border-teal-500 focus:outline-none focus:ring-2 focus:ring-teal-500/30';
+  'block w-full rounded-lg border border-slate-200 bg-white px-4 py-2.5 text-base text-slate-900 placeholder:text-slate-400 transition focus:border-teal-500 focus:outline-none focus:ring-2 focus:ring-teal-500/30 sm:text-sm';
 // 入力エラー時に追加で当てる枠色
 const fieldErrorClass = 'border-rose-400 focus:border-rose-500 focus:ring-rose-500/30';
 
