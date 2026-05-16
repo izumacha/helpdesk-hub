@@ -8,8 +8,10 @@ import { auth } from '@/lib/auth';
 import { repos } from '@/data';
 // エージェント判定 (別名で衝突回避)
 import { isAgent as checkIsAgent } from '@/lib/role';
-// ステータス/優先度の日本語ラベルとカラークラス
-import { STATUS_LABELS, STATUS_COLORS, PRIORITY_LABELS, PRIORITY_COLORS } from '@/lib/constants';
+// ステータスの日本語ラベルを mode (lite | pro) に応じて返す mode-aware ヘルパーと、色/優先度ラベル
+import { getStatusLabel, STATUS_COLORS, PRIORITY_LABELS, PRIORITY_COLORS } from '@/lib/constants';
+// 現在ログイン中のテナントの動作モード (lite | pro) を取得するヘルパー
+import { getCurrentTenantMode } from '@/lib/tenant';
 // 日本時間 (Asia/Tokyo) で日付を文字列化するユーティリティ
 import { formatDateJP } from '@/lib/format-date';
 // 検索フィルタフォーム (Client Component)
@@ -81,8 +83,8 @@ export default async function TicketsPage({ searchParams }: Props) {
 
   // セッションから tenantId を取り出して以降の port 呼び出しに伝搬する
   const tenantId = session.user.tenantId;
-  // 表示用データを並列取得 (一覧/総件数/カテゴリ/担当者候補、全て port + tenantId スコープ)
-  const [tickets, total, categories, agents] = await Promise.all([
+  // 表示用データを並列取得 (一覧/総件数/カテゴリ/担当者候補/テナント mode、全て port + tenantId スコープ)
+  const [tickets, total, categories, agents, mode] = await Promise.all([
     repos.tickets.list({
       filter,
       page: { skip, take: PAGE_SIZE },
@@ -93,6 +95,8 @@ export default async function TicketsPage({ searchParams }: Props) {
     repos.categories.list(tenantId),
     // 担当者プルダウン用ユーザーは agent/admin のみ (依頼者には不要)
     isAgent ? repos.users.listAgents(tenantId) : Promise.resolve([]),
+    // テナントの動作モード (lite | pro) を取得し、ステータス表記を Lite/Pro で切り替える
+    getCurrentTenantMode(tenantId),
   ]);
 
   // 総ページ数を計算
@@ -118,9 +122,9 @@ export default async function TicketsPage({ searchParams }: Props) {
         </Link>
       </div>
 
-      {/* 検索フィルタ (Client Component を Suspense で安全にラップ) */}
+      {/* 検索フィルタ (Client Component を Suspense で安全にラップ、テナント mode をそのまま伝搬) */}
       <Suspense>
-        <TicketFilters categories={categories} agents={agents} isAgent={isAgent} />
+        <TicketFilters categories={categories} agents={agents} isAgent={isAgent} mode={mode} />
       </Suspense>
 
       {/* 件数表示 (落ち着いたグレー) */}
@@ -169,12 +173,12 @@ export default async function TicketsPage({ searchParams }: Props) {
                       {ticket.title}
                     </Link>
                   </td>
-                  {/* ステータスバッジ */}
+                  {/* ステータスバッジ (テナント mode に応じて Lite/Pro ラベルを切替) */}
                   <td className="px-5 py-3.5">
                     <span
                       className={`inline-flex rounded-full px-2.5 py-0.5 text-xs font-medium ${STATUS_COLORS[ticket.status] ?? ''}`}
                     >
-                      {STATUS_LABELS[ticket.status] ?? ticket.status}
+                      {getStatusLabel(ticket.status, mode)}
                     </span>
                   </td>
                   {/* 優先度 (色付きテキスト) */}
