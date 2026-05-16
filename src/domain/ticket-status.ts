@@ -1,5 +1,7 @@
 // チケット状態 (TicketStatus) の型を Prisma (DB 操作ライブラリ) が生成した定義から読み込む
 import type { TicketStatus } from '@/generated/prisma';
+// テナントモード型 (lite | pro) を取り込み、mode-aware な遷移取得関数で使う
+import type { TenantMode } from '@/domain/types';
 
 // Source of truth for ticket status transitions. Mirrors `docs/requirements.html` §5
 // including `Closed → Open`（再オープン）which is an explicit product requirement,
@@ -23,8 +25,16 @@ export function isValidTransition(from: TicketStatus, to: TicketStatus): boolean
 }
 
 // 現在状態 from から遷移できる次状態の一覧を配列で返す関数 (UI のプルダウン生成用)
-export function getAllowedTransitions(from: TicketStatus): TicketStatus[] {
-  // 許可表からそのまま返す (配列を共有するので呼び出し側で変更しないこと)
+// - mode 省略 / 'pro' の場合は従来どおり Pro 用 7 値遷移表 (ALLOWED_TRANSITIONS) を引く
+// - mode === 'lite' かつ from が Lite 3 値のいずれかなら Lite 用遷移表を引く
+// - mode === 'lite' でも from が非 Lite (例: 旧データの Escalated/Resolved 等) なら Pro 表に
+//   フォールバックして「Lite に戻すための経路」を確保する (Pivot Plan §5.2)
+export function getAllowedTransitions(from: TicketStatus, mode: TenantMode = 'pro'): TicketStatus[] {
+  // Lite モードかつ from が Lite 対応 3 値なら Lite 遷移表を返す (型ガードで narrow)
+  if (mode === 'lite' && isLiteStatus(from)) {
+    return ALLOWED_TRANSITIONS_LITE[from];
+  }
+  // それ以外は Pro 遷移表をそのまま返す (配列を共有するので呼び出し側で変更しないこと)
   return ALLOWED_TRANSITIONS[from];
 }
 

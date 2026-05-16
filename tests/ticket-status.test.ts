@@ -101,3 +101,38 @@ describe('Lite ticket status transition rules', () => {
     expect(isLiteStatus('Resolved')).toBe(false);
   });
 });
+
+// getAllowedTransitions(from, mode) の mode 引数 (Lite/Pro) 分岐テスト
+describe('getAllowedTransitions with tenant mode', () => {
+  // mode 省略時は従来どおり Pro 遷移表を返すこと (後方互換)
+  it('defaults to Pro transitions when mode is omitted', () => {
+    // mode 引数なしで呼ぶと従来の Pro 7 値遷移表が返る
+    expect(getAllowedTransitions('Open')).toContain('Escalated');
+    expect(getAllowedTransitions('Open')).toContain('WaitingForUser');
+  });
+
+  // mode='pro' を明示しても Pro 遷移表を返すこと
+  it("returns Pro transitions when mode is 'pro'", () => {
+    // Pro 指定時は Escalated/WaitingForUser など 7 値の遷移先が含まれる
+    expect(getAllowedTransitions('Open', 'pro')).toContain('Escalated');
+    expect(getAllowedTransitions('InProgress', 'pro')).toContain('WaitingForUser');
+  });
+
+  // mode='lite' かつ Lite 対応ステータスなら Lite 3 値遷移表を返すこと
+  it("returns Lite transitions when mode is 'lite' and status is Lite-compatible", () => {
+    // Open (未対応) からは InProgress / Closed のみ (Escalated は含まれない)
+    expect(getAllowedTransitions('Open', 'lite')).toEqual(['InProgress', 'Closed']);
+    // InProgress (対応中) からは Open / Closed のみ (Resolved/Escalated は含まれない)
+    expect(getAllowedTransitions('InProgress', 'lite')).toEqual(['Open', 'Closed']);
+    // Closed (完了) からは Open (再オープン) のみ
+    expect(getAllowedTransitions('Closed', 'lite')).toEqual(['Open']);
+  });
+
+  // mode='lite' でも from が Lite 非対応 (旧データ) なら Pro 遷移表にフォールバックすること
+  it("falls back to Pro transitions when mode is 'lite' but status is not in Lite set", () => {
+    // 旧データの Escalated/Resolved/WaitingForUser/New 等は Pro 表を引いて経路を確保する
+    expect(getAllowedTransitions('Escalated', 'lite')).toEqual(getAllowedTransitions('Escalated'));
+    expect(getAllowedTransitions('Resolved', 'lite')).toEqual(getAllowedTransitions('Resolved'));
+    expect(getAllowedTransitions('New', 'lite')).toEqual(getAllowedTransitions('New'));
+  });
+});
