@@ -298,6 +298,53 @@ describe('updateTicketStatus (Lite mode)', () => {
     expect(t?.status).toBe('Open');
     expect(t?.resolvedAt).toBeNull();
   });
+
+  // Lite: 旧 Pro データの Resolved → Open (Pro 表フォールバックで許可) でも resolvedAt がクリアされること
+  // (Lite では Resolved/Closed 両方を completionStatuses として扱う設計の検証)
+  it('clears resolvedAt when reopening from legacy Resolved in Lite mode', async () => {
+    const { ticketId } = await seed();
+    setTenantToLite();
+    // 事前準備として Resolved + resolvedAt セット済みの状態にする (旧 Pro データを想定)
+    await repos.tickets.updateStatus(ticketId, 'Resolved', new Date(), TENANT);
+    const { updateTicketStatus } = await import('@/features/tickets/actions/update-ticket');
+
+    // Lite モードでも Resolved は LiteStatus に含まれないため Pro 遷移表へフォールバック、
+    // Pro['Resolved'] には 'Open' が含まれるので遷移は許可される
+    await updateTicketStatus(ticketId, 'Open');
+
+    // 反映と resolvedAt クリアを確認 (SLA 表示が「解決済み残存」にならないことの担保)
+    const t = await repos.tickets.findById(ticketId, TENANT);
+    expect(t?.status).toBe('Open');
+    expect(t?.resolvedAt).toBeNull();
+  });
+
+  // Lite: 旧 Pro データの Resolved → Closed (Pro 表フォールバックで許可) では resolvedAt が新しい時刻で更新されること
+  // (両方とも completionStatuses に含まれるため、終端状態間の移動として今の時刻で再記録する)
+  it('updates resolvedAt when moving from legacy Resolved to Closed in Lite mode', async () => {
+    const { ticketId } = await seed();
+    setTenantToLite();
+    // 古い resolvedAt (10 分前) を持つ Resolved の状態を作る
+    const oldResolvedAt = new Date(Date.now() - 10 * 60 * 1000);
+    await repos.tickets.updateStatus(ticketId, 'Resolved', oldResolvedAt, TENANT);
+    const { updateTicketStatus } = await import('@/features/tickets/actions/update-ticket');
+
+    // 呼び出し前後の時刻を測って resolvedAt の妥当性を検証
+    const before = Date.now();
+    // Pro 表フォールバックで Resolved → Closed が許可される
+    await updateTicketStatus(ticketId, 'Closed');
+    const after = Date.now();
+
+    // 反映確認
+    const t = await repos.tickets.findById(ticketId, TENANT);
+    expect(t?.status).toBe('Closed');
+    // resolvedAt が新しい時刻で上書きされている (古い 10 分前の値ではない)
+    expect(t?.resolvedAt).toBeInstanceOf(Date);
+    const ts = t!.resolvedAt!.getTime();
+    expect(ts).toBeGreaterThanOrEqual(before);
+    expect(ts).toBeLessThanOrEqual(after);
+    // 古いタイムスタンプとは異なることも明示的に確認
+    expect(ts).toBeGreaterThan(oldResolvedAt.getTime());
+  });
 });
 
 // 担当者更新アクションの仕様

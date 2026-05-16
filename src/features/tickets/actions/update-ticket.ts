@@ -70,19 +70,24 @@ export async function updateTicketStatus(ticketId: string, newStatus: TicketStat
       );
     }
 
-    // 「完了」とみなすステータスを mode に応じて決定する
-    // - Pro: 'Resolved' (従来どおり「解決済み」が完了扱い)
-    // - Lite: 'Closed' (Lite UI の「完了」は Closed に対応するため、ここで resolvedAt をセット)
-    // これがズレると Lite の完了済みチケットでも resolvedAt=null のままになり、SLA が常に
-    // 期限切れ扱いになる (getSlaState は resolvedAt がある場合のみ 'ok' を返すため)
-    const completionStatus: TicketStatus = mode === 'lite' ? 'Closed' : 'Resolved';
-    // 完了ステータスに遷移したら解決日時を現在時刻に、完了から離れる場合はクリア、それ以外は据え置き
-    const resolvedAt =
-      newStatus === completionStatus
-        ? new Date()
-        : ticket.status === completionStatus
-          ? null
-          : ticket.resolvedAt;
+    // 「完了」とみなすステータス集合を mode に応じて決定する
+    // - Pro: ['Resolved'] (従来どおり「解決済み」が完了扱い)
+    // - Lite: ['Closed', 'Resolved'] — Lite UI の「完了」は Closed に対応するが、Lite 遷移表が
+    //   Lite 非対応ステータス (例: 旧 Pro データの Resolved) から Pro 表へフォールバックするため、
+    //   Lite テナントでも Resolved が残っている可能性がある。両方を完了扱いにしておくことで、
+    //   ・新規完了 (Closed) で resolvedAt をセット
+    //   ・旧 Resolved データの再オープン (Resolved → Open) で resolvedAt をクリア
+    //   の両方を一貫して扱える。
+    // これがズレると Lite 完了済みチケットでも resolvedAt=null のまま (SLA 期限切れ表示)、
+    // または再オープン後も resolvedAt が残る (SLA 解決済み表示) などの不整合が起きる。
+    const completionStatuses: TicketStatus[] =
+      mode === 'lite' ? ['Closed', 'Resolved'] : ['Resolved'];
+    // 完了集合に入る遷移なら現在時刻に、完了集合から離れる場合はクリア、それ以外は据え置き
+    const resolvedAt = completionStatuses.includes(newStatus)
+      ? new Date()
+      : completionStatuses.includes(ticket.status)
+        ? null
+        : ticket.resolvedAt;
 
     // ステータスと解決日時を更新 (tenantId スコープで where に注入)
     await r.tickets.updateStatus(ticketId, newStatus, resolvedAt, tenantId);
