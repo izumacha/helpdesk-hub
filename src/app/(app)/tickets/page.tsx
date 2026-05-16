@@ -16,6 +16,8 @@ import { getCurrentTenantMode } from '@/lib/tenant';
 import { formatDateJP } from '@/lib/format-date';
 // 検索フィルタフォーム (Client Component)
 import { TicketFilters } from '@/features/tickets/components/TicketFilters';
+// 「自分の未対応 / 期限切れ / すべて」タブナビ (Client Component)
+import { TicketTabs, type TicketTabId } from '@/features/tickets/components/TicketTabs';
 // Prisma が生成した列挙型 (URL クエリの型ガード用)
 import type { TicketStatus, Priority } from '@/generated/prisma';
 // データ層が公開しているチケット一覧フィルタ型 (port 経由クエリの引数)
@@ -46,8 +48,17 @@ interface Props {
     priority?: string;
     categoryId?: string;
     assigneeId?: string;
+    // 一覧の絞り込みタブ ('mine' = 自分の未対応 / 'overdue' = 期限切れ / 未指定/'all' = 全件)
+    tab?: string;
     page?: string;
   }>;
+}
+
+// クエリの tab 文字列を TicketTabId に正規化する (不正値は 'all')
+function parseTabParam(raw: string | undefined): TicketTabId {
+  // 'mine' か 'overdue' に完全一致する場合のみ採用、それ以外は既定の 'all'
+  if (raw === 'mine' || raw === 'overdue') return raw;
+  return 'all';
 }
 
 // /tickets : チケット一覧ページ (検索/フィルタ + ページング)
@@ -64,6 +75,8 @@ export default async function TicketsPage({ searchParams }: Props) {
   // 要求ページ番号と DB の skip 件数を計算
   const requestedPage = parsePageParam(sp.page);
   const skip = (requestedPage - 1) * PAGE_SIZE;
+  // タブ ID を正規化 ('all' / 'mine' / 'overdue' のいずれか)
+  const tab = parseTabParam(sp.tab);
 
   // データ層に渡す TicketListFilter を組み立てる
   const filter: TicketListFilter = {
@@ -80,6 +93,21 @@ export default async function TicketsPage({ searchParams }: Props) {
     // 担当者絞り込み (URL クエリの 'unassigned' をここで null に正規化)
     assigneeId: normalizeAssigneeId(sp.assigneeId),
   };
+
+  // タブ別の追加フィルタを上書き適用する
+  // - mine: 「自分の未対応」= ステータスが Open または InProgress
+  //   - エージェントは「担当が自分」のもの
+  //   - 依頼者は creatorId 既定 (自分のチケット) で自動的に絞り込まれているため status だけ追加
+  // - overdue: 期限切れ + 未解決 (status=Resolved/Closed は除外)
+  if (tab === 'mine') {
+    filter.statusIn = ['Open', 'InProgress'];
+    if (isAgent) {
+      filter.assigneeId = session.user.id;
+    }
+  } else if (tab === 'overdue') {
+    // 現在時刻基準で期限超過判定を行う
+    filter.overdue = { now: new Date() };
+  }
 
   // セッションから tenantId を取り出して以降の port 呼び出しに伝搬する
   const tenantId = session.user.tenantId;
@@ -121,6 +149,11 @@ export default async function TicketsPage({ searchParams }: Props) {
           ＋ 新規登録
         </Link>
       </div>
+
+      {/* タブナビ (自分の未対応 / 期限切れ / すべて)。Lite/Pro どちらでも常に表示する */}
+      <Suspense>
+        <TicketTabs />
+      </Suspense>
 
       {/* 検索フィルタ (Client Component を Suspense で安全にラップ、テナント mode をそのまま伝搬) */}
       <Suspense>

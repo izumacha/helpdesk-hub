@@ -45,6 +45,9 @@ const fieldBaseClass =
 export function TicketFilters({ categories, agents, isAgent, mode }: Props) {
   // テナントが Lite なら 3 値、Pro なら従来 7 値をフィルタ候補として使う
   const statusOptions: TicketStatus[] = mode === 'lite' ? [...LITE_STATUSES] : ALL_STATUSES_PRO;
+  // Lite モードかどうか (true ならフィルタをキーワード検索のみに縮約する)
+  // Pivot plan §3.1「Lite はフリーワード検索のみ」要件に対応
+  const isLite = mode === 'lite';
   // ルーター/現在パス/検索クエリ
   const router = useRouter();
   const pathname = usePathname();
@@ -73,7 +76,7 @@ export function TicketFilters({ categories, agents, isAgent, mode }: Props) {
     [pathname, router, searchParams],
   );
 
-  // 「リセット」: パスのみへ遷移して全クエリを消す
+  // 「リセット」: パスのみへ遷移して全クエリを消す (tab クエリも消えるが既定タブに戻す挙動でよい)
   const handleReset = () => {
     startTransition(() => router.push(pathname));
   };
@@ -106,61 +109,66 @@ export function TicketFilters({ categories, agents, isAgent, mode }: Props) {
         >
           検索
         </button>
-        {/* ステータス絞り込み */}
-        <select
-          value={searchParams.get('status') ?? ''}
-          onChange={(e) => update('status', e.target.value)}
-          className={fieldBaseClass}
-        >
-          <option value="">すべてのステータス</option>
-          {statusOptions.map((s) => (
-            <option key={s} value={s}>
-              {getStatusLabel(s, mode)}
-            </option>
-          ))}
-        </select>
-        {/* 優先度絞り込み */}
-        <select
-          value={searchParams.get('priority') ?? ''}
-          onChange={(e) => update('priority', e.target.value)}
-          className={fieldBaseClass}
-        >
-          <option value="">すべての優先度</option>
-          {ALL_PRIORITIES.map((p) => (
-            <option key={p} value={p}>
-              {PRIORITY_LABELS[p] ?? p}
-            </option>
-          ))}
-        </select>
-        {/* カテゴリ絞り込み */}
-        <select
-          value={searchParams.get('categoryId') ?? ''}
-          onChange={(e) => update('categoryId', e.target.value)}
-          className={fieldBaseClass}
-        >
-          <option value="">すべてのカテゴリ</option>
-          {categories.map((c) => (
-            <option key={c.id} value={c.id}>
-              {c.name}
-            </option>
-          ))}
-        </select>
-        {/* 担当者絞り込み (エージェントのみ表示) */}
-        {isAgent && (
-          <select
-            value={searchParams.get('assigneeId') ?? ''}
-            onChange={(e) => update('assigneeId', e.target.value)}
-            className={fieldBaseClass}
-          >
-            <option value="">すべての担当者</option>
-            {/* 未割当のチケットのみ */}
-            <option value="unassigned">未割当</option>
-            {agents.map((a) => (
-              <option key={a.id} value={a.id}>
-                {a.name}
-              </option>
-            ))}
-          </select>
+        {/* Lite モードではキーワード検索のみに縮約し、以下のプルダウン群は非表示にする */}
+        {!isLite && (
+          <>
+            {/* ステータス絞り込み */}
+            <select
+              value={searchParams.get('status') ?? ''}
+              onChange={(e) => update('status', e.target.value)}
+              className={fieldBaseClass}
+            >
+              <option value="">すべてのステータス</option>
+              {statusOptions.map((s) => (
+                <option key={s} value={s}>
+                  {getStatusLabel(s, mode)}
+                </option>
+              ))}
+            </select>
+            {/* 優先度絞り込み */}
+            <select
+              value={searchParams.get('priority') ?? ''}
+              onChange={(e) => update('priority', e.target.value)}
+              className={fieldBaseClass}
+            >
+              <option value="">すべての優先度</option>
+              {ALL_PRIORITIES.map((p) => (
+                <option key={p} value={p}>
+                  {PRIORITY_LABELS[p] ?? p}
+                </option>
+              ))}
+            </select>
+            {/* カテゴリ絞り込み */}
+            <select
+              value={searchParams.get('categoryId') ?? ''}
+              onChange={(e) => update('categoryId', e.target.value)}
+              className={fieldBaseClass}
+            >
+              <option value="">すべてのカテゴリ</option>
+              {categories.map((c) => (
+                <option key={c.id} value={c.id}>
+                  {c.name}
+                </option>
+              ))}
+            </select>
+            {/* 担当者絞り込み (エージェントのみ表示) */}
+            {isAgent && (
+              <select
+                value={searchParams.get('assigneeId') ?? ''}
+                onChange={(e) => update('assigneeId', e.target.value)}
+                className={fieldBaseClass}
+              >
+                <option value="">すべての担当者</option>
+                {/* 未割当のチケットのみ */}
+                <option value="unassigned">未割当</option>
+                {agents.map((a) => (
+                  <option key={a.id} value={a.id}>
+                    {a.name}
+                  </option>
+                ))}
+              </select>
+            )}
+          </>
         )}
         {/* リセットボタン (ghost スタイル) */}
         <button

@@ -16,6 +16,7 @@ export interface TicketListFilter {
   /** Searches title OR body. */
   text?: TextFilter; // タイトルまたは本文の部分一致
   status?: TicketStatus; // 状態で絞る
+  statusIn?: TicketStatus[]; // 複数状態の OR 絞り込み (例: Open or InProgress)
   priority?: Priority; // 優先度で絞る
   categoryId?: string; // カテゴリで絞る
   /**
@@ -23,6 +24,13 @@ export interface TicketListFilter {
    * otherwise = exact match on assigneeId.
    */
   assigneeId?: string | null; // 担当者条件 (null は未アサインのみ)
+  /**
+   * 期限切れ未解決のみを取得するフィルタ (Lite モードの「期限切れ」タブで使用)。
+   * `now` 時点で `resolutionDueAt < now` かつ `resolvedAt IS NULL`、
+   * かつ業務上「終わった」扱いの status (Resolved/Closed) は除外する。
+   * 省略時はフィルタなし。
+   */
+  overdue?: { now: Date };
 }
 
 // チケット詳細画面用の型 (コメント/履歴/FAQ 候補を同梱)
