@@ -119,7 +119,12 @@ jobs:
 
       - name: Run Playwright tests
         id: pw
-        run: npx playwright test --reporter=list,html 2>&1 | tee playwright.log
+        # set -o pipefail を明示: GitHub Actions の Linux bash デフォルトでも有効だが、
+        # 将来 defaults.run.shell を書き換えた場合に tee が exit 0 で失敗を握り潰すのを防ぐ
+        shell: bash
+        run: |
+          set -o pipefail
+          npx playwright test --reporter=list,html 2>&1 | tee playwright.log
 
       - name: Dump logs on failure
         if: failure()

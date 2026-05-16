@@ -168,8 +168,16 @@ test.describe('マルチテナント漏洩防止', () => {
     await login(page, DEFAULT_AGENT_EMAIL);
 
     await page.goto('/tickets');
+    // 不在判定はテキスト全体でカウント (絶対 0 であればよい)
     await expect(page.getByText(TENANT_B_TICKET_TITLE)).toHaveCount(0);
-    await expect(page.getByText(DEFAULT_TENANT_TICKET_TITLE)).toBeVisible();
+    // 存在判定はデスクトップテーブル側のリンクに絞る。
+    // /tickets はモバイルカード (md:hidden) とデスクトップテーブル (hidden md:block) を
+    // 同時 DOM 描画するため、getByText() だけでは複数要素にマッチして
+    // toBeVisible() が strict mode 違反を起こすことがある。
+    // CI の Playwright は Desktop Chrome (1280x720) で動くのでテーブル側に固定する
+    await expect(
+      page.getByRole('table').getByRole('link', { name: DEFAULT_TENANT_TICKET_TITLE }),
+    ).toBeVisible();
 
     const detailResponse = await page.goto(`/tickets/${TENANT_B_TICKET_ID}`);
     expect(detailResponse?.status()).toBe(404);
@@ -185,7 +193,10 @@ test.describe('マルチテナント漏洩防止', () => {
     await login(page, TENANT_B_AGENT_EMAIL);
 
     await page.goto('/tickets');
-    await expect(page.getByText(TENANT_B_TICKET_TITLE)).toBeVisible();
+    // 同上: テーブル側のリンクで存在を確認 (デュアル描画で strict mode 違反を避ける)
+    await expect(
+      page.getByRole('table').getByRole('link', { name: TENANT_B_TICKET_TITLE }),
+    ).toBeVisible();
     await expect(page.getByText(DEFAULT_TENANT_TICKET_TITLE)).toHaveCount(0);
   });
 
