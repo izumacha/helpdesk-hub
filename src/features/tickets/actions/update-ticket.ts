@@ -10,8 +10,10 @@ import { repos, uow } from '@/data';
 import { broadcastUnreadCount, broadcastUnreadCountToMany } from '@/features/notifications/notify';
 // エージェント権限判定 (agent または admin のとき true)
 import { isAgent } from '@/lib/role';
-// ステータス遷移が許可されているか判定するドメイン関数
+// ステータス遷移が許可されているか判定するドメイン関数 (mode 引数で Lite/Pro 切替)
 import { isValidTransition } from '@/domain/ticket-status';
+// セッションの tenantId からテナント mode (lite | pro) を取得するヘルパー
+import { getCurrentTenantMode } from '@/lib/tenant';
 // 型のみインポート (優先度/ステータス)
 import type { Priority, TicketStatus } from '@/domain/types';
 // レート制限 (連打防止) の共通ヘルパー
@@ -47,6 +49,9 @@ export async function updateTicketStatus(ticketId: string, newStatus: TicketStat
   assertAgentRole(session);
   // セッションから tenantId を取り出して以降の where 句注入に使う
   const tenantId = session.user.tenantId;
+  // テナントの動作モード (lite | pro) を取得し、遷移表の切替に使う
+  // UI (StatusSelect) が表示する選択肢と整合させ、Lite で許される InProgress→Open 等を弾かないようにする
+  const mode = await getCurrentTenantMode(tenantId);
   // 10 秒あたり 10 回までに制限 (チケット単位)
   enforceRateLimit(`ticket-status:${session.user.id}:${ticketId}`, { limit: 10, windowMs: 10_000 });
 
@@ -58,8 +63,8 @@ export async function updateTicketStatus(ticketId: string, newStatus: TicketStat
     if (!ticket) throw new Error('チケットが見つかりません');
     // 変更前後が同じなら何もしない (冪等)
     if (ticket.status === newStatus) return;
-    // 遷移表で許可されていない変更は拒否
-    if (!isValidTransition(ticket.status, newStatus)) {
+    // 遷移表 (mode に応じて Lite/Pro) で許可されていない変更は拒否
+    if (!isValidTransition(ticket.status, newStatus, mode)) {
       throw new Error(
         `ステータスを「${ticket.status}」から「${newStatus}」に変更することはできません`,
       );
@@ -224,16 +229,18 @@ export async function escalateTicket(ticketId: string, reason: string) {
   // 検証済み (trim 等済み) の理由を取り出す
   const trimmedReason = parsedReason.data;
 
-  // チケット本体と通知対象の全エージェント ID 一覧をテナントスコープで並列取得
-  const [ticket, agentIds] = await Promise.all([
+  // チケット本体・通知対象の全エージェント ID 一覧・テナント mode をテナントスコープで並列取得
+  const [ticket, agentIds, mode] = await Promise.all([
     repos.tickets.findById(ticketId, tenantId),
     repos.users.listAgentIds(tenantId),
+    // Lite モードでは Escalated 自体が UI 上存在しないので、サーバー側でも mode-aware に弾く
+    getCurrentTenantMode(tenantId),
   ]);
 
   // チケットが無ければエラー
   if (!ticket) throw new Error('チケットが見つかりません');
-  // Escalated への遷移が許可されているか確認
-  if (!isValidTransition(ticket.status, 'Escalated')) {
+  // Escalated への遷移が許可されているか確認 (Lite では遷移表に Escalated が無いので必ず弾かれる)
+  if (!isValidTransition(ticket.status, 'Escalated', mode)) {
     throw new Error(`現在のステータス「${ticket.status}」からエスカレーションできません`);
   }
 

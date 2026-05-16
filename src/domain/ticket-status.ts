@@ -19,9 +19,14 @@ const ALLOWED_TRANSITIONS: Record<TicketStatus, TicketStatus[]> = {
 };
 
 // 現在状態 from から次状態 to に遷移してよいかを true/false で返す関数
-export function isValidTransition(from: TicketStatus, to: TicketStatus): boolean {
-  // 許可表を参照し、to が含まれていれば遷移可能
-  return ALLOWED_TRANSITIONS[from].includes(to);
+// mode 省略時は従来どおり Pro 表を引く (後方互換)。Lite テナントから呼ぶ場合は 'lite' を渡す。
+export function isValidTransition(
+  from: TicketStatus,
+  to: TicketStatus,
+  mode: TenantMode = 'pro',
+): boolean {
+  // mode-aware な遷移先一覧を引き、to が含まれていれば遷移可能
+  return getAllowedTransitions(from, mode).includes(to);
 }
 
 // 現在状態 from から遷移できる次状態の一覧を配列で返す関数 (UI のプルダウン生成用)

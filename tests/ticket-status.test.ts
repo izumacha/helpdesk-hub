@@ -136,3 +136,28 @@ describe('getAllowedTransitions with tenant mode', () => {
     expect(getAllowedTransitions('New', 'lite')).toEqual(getAllowedTransitions('New'));
   });
 });
+
+// isValidTransition(from, to, mode) の mode 引数 (Lite/Pro) 分岐テスト
+describe('isValidTransition with tenant mode', () => {
+  // Lite モード: InProgress → Open は Lite 表で許可されているので true
+  it("allows InProgress → Open when mode is 'lite'", () => {
+    expect(isValidTransition('InProgress', 'Open', 'lite')).toBe(true);
+  });
+
+  // Pro モード: InProgress → Open は Pro 表に Open が無いので false
+  it("rejects InProgress → Open when mode is 'pro' (default)", () => {
+    // mode='pro' を明示しても、省略しても結果は同じ (省略時は 'pro' がデフォルト)
+    expect(isValidTransition('InProgress', 'Open', 'pro')).toBe(false);
+    expect(isValidTransition('InProgress', 'Open')).toBe(false);
+  });
+
+  // Lite モード: Open → Escalated は Lite 表に Escalated が無いので false
+  it("rejects Open → Escalated when mode is 'lite'", () => {
+    expect(isValidTransition('Open', 'Escalated', 'lite')).toBe(false);
+  });
+
+  // Pro モード: Open → Escalated は Pro 表で許可されているので true
+  it("allows Open → Escalated when mode is 'pro'", () => {
+    expect(isValidTransition('Open', 'Escalated', 'pro')).toBe(true);
+  });
+});

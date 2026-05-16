@@ -49,10 +49,12 @@ vi.mock('@/lib/sse-subscribers', () => ({
 async function seed() {
   const now = new Date();
   // まずデフォルトテナントを投入 (User/Category/Ticket の FK 先として必要)
+  // 既存テストは Pro 専用ステータス (New / Resolved / Escalated 等) の遷移を検証するため
+  // テナント mode は 'pro' で固定 (Lite 専用の挙動は後段の describe ブロックで mode を上書きして検証)
   store.tenants.set('default-tenant', {
     id: 'default-tenant',
     name: 'デフォルト組織',
-    mode: 'lite',
+    mode: 'pro',
     industry: null,
     createdAt: now,
   });
@@ -204,6 +206,55 @@ describe('updateTicketStatus (provider-agnostic)', () => {
     const t = await repos.tickets.findById(ticketId, TENANT);
     expect(t?.status).toBe('InProgress');
     expect(t?.resolvedAt).toBeNull();
+  });
+});
+
+// Lite モード (mode: 'lite') のテナントから呼び出した場合の遷移検証
+// (UI の StatusSelect が見せる選択肢とサーバ側検証が一致することを確認)
+describe('updateTicketStatus (Lite mode)', () => {
+  // テナント mode を 'lite' に差し替えるヘルパー (seed 後に呼ぶ)
+  function setTenantToLite() {
+    // 既存の default-tenant エントリを取り出す (seed 済み前提)
+    const t = store.tenants.get('default-tenant');
+    // 念のため見つからなければ assert (テスト前提崩壊の早期検知)
+    if (!t) throw new Error('seed missing default-tenant');
+    // mode フィールドだけ 'lite' に書き換えて再格納
+    store.tenants.set('default-tenant', { ...t, mode: 'lite' });
+  }
+
+  // Lite: 対応中 → 未対応 (InProgress → Open) は Lite 遷移表で許可されているので成功すること
+  it('allows InProgress to Open in Lite mode (Pro table rejects this)', async () => {
+    const { ticketId } = await seed();
+    // テナントを Lite に切り替えてから事前ステータスを InProgress に
+    setTenantToLite();
+    // 事前準備として InProgress 状態にしておく (Pro 表でも New→InProgress は許可される)
+    await repos.tickets.updateStatus(ticketId, 'InProgress', null, TENANT);
+    const { updateTicketStatus } = await import('@/features/tickets/actions/update-ticket');
+
+    // Lite では InProgress → Open は許可されるので成功する
+    await updateTicketStatus(ticketId, 'Open');
+
+    // 反映確認
+    const t = await repos.tickets.findById(ticketId, TENANT);
+    expect(t?.status).toBe('Open');
+  });
+
+  // Lite: 未対応 → エスカレーション (Open → Escalated) は Lite 遷移表に Escalated が無いため失敗すること
+  it('rejects Open to Escalated in Lite mode (Pro table would allow this)', async () => {
+    const { ticketId } = await seed();
+    setTenantToLite();
+    // 事前準備として Open 状態にしておく
+    await repos.tickets.updateStatus(ticketId, 'Open', null, TENANT);
+    const { updateTicketStatus } = await import('@/features/tickets/actions/update-ticket');
+
+    // Lite では Escalated が遷移先に存在しないので拒否される
+    await expect(updateTicketStatus(ticketId, 'Escalated')).rejects.toThrow(
+      /変更することはできません/,
+    );
+
+    // ステータスは Open のまま (ロールバック)
+    const t = await repos.tickets.findById(ticketId, TENANT);
+    expect(t?.status).toBe('Open');
   });
 });
 
