@@ -247,9 +247,10 @@ describe('updateTicketStatus (Lite mode)', () => {
     await repos.tickets.updateStatus(ticketId, 'Open', null, TENANT);
     const { updateTicketStatus } = await import('@/features/tickets/actions/update-ticket');
 
-    // Lite では Escalated が遷移先に存在しないので拒否される
+    // Lite では Escalated は非 Lite ステータスなので、ターゲット制限ガードに弾かれる
+    // ("Lite モードでは「Escalated」へは変更できません" メッセージで reject)
     await expect(updateTicketStatus(ticketId, 'Escalated')).rejects.toThrow(
-      /変更することはできません/,
+      /Lite モードでは/,
     );
 
     // ステータスは Open のまま (ロールバック)
@@ -344,6 +345,25 @@ describe('updateTicketStatus (Lite mode)', () => {
     expect(ts).toBeLessThanOrEqual(after);
     // 古いタイムスタンプとは異なることも明示的に確認
     expect(ts).toBeGreaterThan(oldResolvedAt.getTime());
+  });
+
+  // Lite: 旧 Pro データの Resolved → WaitingForUser (Pro 表では許可) は新ターゲット制限で弾かれること
+  // (off-ramp は Lite 3 値 (Open / InProgress / Closed) へのみ許可するのが Pivot plan §3.1 / §5.2 の趣旨)
+  it('rejects legacy Resolved to WaitingForUser in Lite mode (target restriction)', async () => {
+    const { ticketId } = await seed();
+    setTenantToLite();
+    // 事前準備として Resolved + resolvedAt セット済みの状態にする (旧 Pro データを想定)
+    await repos.tickets.updateStatus(ticketId, 'Resolved', new Date(), TENANT);
+    const { updateTicketStatus } = await import('@/features/tickets/actions/update-ticket');
+
+    // WaitingForUser は Lite 3 値に含まれないので、ターゲット制限ガードで弾かれる
+    await expect(updateTicketStatus(ticketId, 'WaitingForUser')).rejects.toThrow(
+      /Lite モードでは/,
+    );
+
+    // ステータスは Resolved のまま (ロールバック)
+    const t = await repos.tickets.findById(ticketId, TENANT);
+    expect(t?.status).toBe('Resolved');
   });
 });
 

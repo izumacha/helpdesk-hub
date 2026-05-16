@@ -161,3 +161,30 @@ describe('isValidTransition with tenant mode', () => {
     expect(isValidTransition('Open', 'Escalated', 'pro')).toBe(true);
   });
 });
+
+// updateTicketStatus に組み込まれた Lite ターゲット制限ガードの根拠となるドメイン不変条件
+// (Server Action 側で「Lite モードでは newStatus を必ず Lite 3 値に限定」する判定の前提)
+describe('Lite mode target restriction invariants', () => {
+  // 非 Lite ステータス (Resolved / Escalated / WaitingForUser / New) は isLiteStatus で false となり、
+  // Lite テナント上で新規にこれらへ遷移する操作が Server Action のガードで弾かれることを保証する
+  it('isLiteStatus rejects every non-Lite status (Lite テナント上で新規セット不可)', () => {
+    // Pro 専用 4 値が全て false であることを 1 件ずつ確認 (どれか 1 つでも漏れると抜け穴になる)
+    expect(isLiteStatus('Resolved')).toBe(false);
+    expect(isLiteStatus('Escalated')).toBe(false);
+    expect(isLiteStatus('WaitingForUser')).toBe(false);
+    expect(isLiteStatus('New')).toBe(false);
+  });
+
+  // getAllowedLiteTransitions の戻り値は常に Lite 3 値の中に閉じていなければならない
+  // (Server Action がこの結果を直接ガードに使うため、戻り値に非 Lite が混ざると Lite 制限が破綻する)
+  it('getAllowedLiteTransitions returns only Lite statuses for every Lite from-state', () => {
+    // Lite 3 値の各 from について、許可される to が全て isLiteStatus を満たすことを確認
+    for (const from of ['Open', 'InProgress', 'Closed'] as const) {
+      const targets = getAllowedLiteTransitions(from);
+      for (const to of targets) {
+        // 1 つでも非 Lite が混ざれば false で fail させる
+        expect(isLiteStatus(to)).toBe(true);
+      }
+    }
+  });
+});
