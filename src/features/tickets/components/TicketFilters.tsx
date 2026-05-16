@@ -4,24 +4,29 @@
 import { useRouter, usePathname, useSearchParams } from 'next/navigation';
 // 非ブロッキング更新/メモ化/ref 用フック
 import { useTransition, useCallback, useRef } from 'react';
-// ステータス/優先度の日本語ラベル
-import { STATUS_LABELS, PRIORITY_LABELS } from '@/lib/constants';
+// ステータスの日本語ラベルを mode (lite | pro) に応じて返す mode-aware ヘルパーと優先度ラベル
+import { getStatusLabel, PRIORITY_LABELS } from '@/lib/constants';
+// Lite モードで使う 3 ステータス (未対応 / 対応中 / 完了) の定義
+import { LITE_STATUSES } from '@/domain/ticket-status';
 // 列挙型 (Prisma 生成)
 import type { TicketStatus, Priority } from '@/generated/prisma';
+// テナントモード型 (lite | pro)。フィルタ選択肢とラベルの切替に使う
+import type { TenantMode } from '@/domain/types';
 
 // プルダウン項目用の最小限の型
 type Category = { id: string; name: string };
 type Agent = { id: string; name: string };
 
-// 受け取る props (絞り込み候補と権限フラグ)
+// 受け取る props (絞り込み候補と権限フラグ、テナントの動作モード)
 interface Props {
   categories: Category[];
   agents: Agent[];
   isAgent: boolean;
+  mode: TenantMode;
 }
 
-// プルダウンに並べるステータス/優先度の順序
-const ALL_STATUSES: TicketStatus[] = [
+// プルダウンに並べる Pro モード用ステータス/優先度の順序 (7 値)
+const ALL_STATUSES_PRO: TicketStatus[] = [
   'New',
   'Open',
   'WaitingForUser',
@@ -37,7 +42,9 @@ const fieldBaseClass =
   'rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700 transition focus:border-teal-500 focus:outline-none focus:ring-2 focus:ring-teal-500/30';
 
 // チケット一覧ページの絞り込み (URL クエリと同期)
-export function TicketFilters({ categories, agents, isAgent }: Props) {
+export function TicketFilters({ categories, agents, isAgent, mode }: Props) {
+  // テナントが Lite なら 3 値、Pro なら従来 7 値をフィルタ候補として使う
+  const statusOptions: TicketStatus[] = mode === 'lite' ? [...LITE_STATUSES] : ALL_STATUSES_PRO;
   // ルーター/現在パス/検索クエリ
   const router = useRouter();
   const pathname = usePathname();
@@ -106,9 +113,9 @@ export function TicketFilters({ categories, agents, isAgent }: Props) {
           className={fieldBaseClass}
         >
           <option value="">すべてのステータス</option>
-          {ALL_STATUSES.map((s) => (
+          {statusOptions.map((s) => (
             <option key={s} value={s}>
-              {STATUS_LABELS[s] ?? s}
+              {getStatusLabel(s, mode)}
             </option>
           ))}
         </select>

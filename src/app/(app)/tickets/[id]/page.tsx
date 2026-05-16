@@ -7,14 +7,17 @@ import { repos } from '@/data';
 // エージェント判定 (別名で衝突回避)
 import { isAgent as checkIsAgent } from '@/lib/role';
 // 表示用ラベル/カラークラス (ステータス/優先度/履歴) と履歴値変換ヘルパー
+// getStatusLabel はテナント mode (lite | pro) に応じて Lite/Pro ラベルを切り替える
 import {
-  STATUS_LABELS,
+  getStatusLabel,
   STATUS_COLORS,
   PRIORITY_LABELS,
   PRIORITY_COLORS,
   HISTORY_FIELD_LABELS,
   formatHistoryValue,
 } from '@/lib/constants';
+// 現在ログイン中のテナントの動作モード (lite | pro) を取得するヘルパー
+import { getCurrentTenantMode } from '@/lib/tenant';
 // 日本時間 (Asia/Tokyo) で日付・日時を文字列化するユーティリティ
 import { formatDateJP, formatDateTimeJP } from '@/lib/format-date';
 // ステータス変更プルダウン
@@ -53,12 +56,14 @@ export default async function TicketDetailPage({ params }: Props) {
 
   // セッションから tenantId を取り出して以降の port 呼び出しに伝搬する
   const tenantId = session.user.tenantId;
-  // チケット本体 (関連データ込み) と担当者プルダウン用ユーザーを並列取得 (全て tenantId スコープ)
-  const [ticket, agents] = await Promise.all([
+  // チケット本体・担当者候補・テナント mode を並列取得 (全て tenantId スコープ)
+  const [ticket, agents, mode] = await Promise.all([
     // 詳細用: 起票者/担当者/カテゴリ/コメント/履歴/FAQ 候補をまとめて取得
     repos.tickets.findByIdWithDetail(id, tenantId),
     // エージェント時のみ担当者候補一覧を取得 (テナント内のみ)
     isAgent ? repos.users.listAgents(tenantId) : Promise.resolve([]),
+    // テナントの動作モード (lite | pro) を取得し、ステータス表記を Lite/Pro で切り替える
+    getCurrentTenantMode(tenantId),
   ]);
 
   // チケットが存在しなければ 404
@@ -70,7 +75,9 @@ export default async function TicketDetailPage({ params }: Props) {
   // SLA 状態 (none/ok/warning/overdue) を計算
   const slaState = getSlaState(ticket.resolutionDueAt, ticket.resolvedAt);
   // エスカレーション可能か (エージェント && 現状から Escalated への遷移許可あり)
-  const canEscalate = isAgent && getAllowedTransitions(ticket.status).includes('Escalated');
+  // Pro モードの遷移表を参照する (Lite モードでは Escalated 自体が UI 上は存在しない)
+  const canEscalate =
+    isAgent && mode === 'pro' && getAllowedTransitions(ticket.status, 'pro').includes('Escalated');
   // FAQ 候補化可能か (エージェント && 解決済み && 既存 FAQ 候補なし)
   const canAddFaq = isAgent && ticket.status === 'Resolved' && !ticket.faqCandidate;
 
@@ -132,9 +139,10 @@ export default async function TicketDetailPage({ params }: Props) {
               <ul className="space-y-2">
                 {ticket.histories.map((h) => {
                   // 旧値・新値を field 種別に応じて日本語ラベル化しておく (JSX 内の改行で余計な空白が入らないよう変数化)
-                  const oldLabel = formatHistoryValue(h.field, h.oldValue);
+                  // mode を渡すと status/escalation 行が Lite/Pro 表記に切り替わる
+                  const oldLabel = formatHistoryValue(h.field, h.oldValue, mode);
                   // 新値ラベル
-                  const newLabel = formatHistoryValue(h.field, h.newValue);
+                  const newLabel = formatHistoryValue(h.field, h.newValue, mode);
                   return (
                     <li key={h.id} className="flex items-start gap-2 text-sm text-gray-600">
                       <span className="mt-0.5 text-xs text-gray-400">
@@ -163,18 +171,18 @@ export default async function TicketDetailPage({ params }: Props) {
             <h2 className="mb-4 text-sm font-semibold text-gray-500">詳細</h2>
 
             <dl className="space-y-3 text-sm">
-              {/* ステータス (エージェントは変更プルダウン付き) */}
+              {/* ステータス (エージェントは変更プルダウン付き、ラベルはテナント mode で切替) */}
               <div>
                 <dt className="font-medium text-gray-500">ステータス</dt>
                 <dd className="mt-1">
                   <span
                     className={`inline-flex rounded-full px-2 py-0.5 text-xs font-medium ${STATUS_COLORS[ticket.status] ?? ''}`}
                   >
-                    {STATUS_LABELS[ticket.status] ?? ticket.status}
+                    {getStatusLabel(ticket.status, mode)}
                   </span>
                   {isAgent && (
                     <div className="mt-1">
-                      <StatusSelect ticketId={ticket.id} current={ticket.status} />
+                      <StatusSelect ticketId={ticket.id} current={ticket.status} mode={mode} />
                     </div>
                   )}
                 </dd>
