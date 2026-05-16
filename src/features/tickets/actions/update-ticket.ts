@@ -260,20 +260,29 @@ export async function escalateTicket(ticketId: string, reason: string) {
   // 検証済み (trim 等済み) の理由を取り出す
   const trimmedReason = parsedReason.data;
 
-  // チケット本体・通知対象の全エージェント ID 一覧・テナント mode をテナントスコープで並列取得
-  const [ticket, agentIds, mode] = await Promise.all([
+  // 先にチケット本体とテナント mode を並列取得 (Lite ガード判定に必要な最小集合)
+  // 通知用 agentIds は Pro 経路確定後に取得することで Lite 早期 throw 時の無駄な DB アクセスを回避する
+  const [ticket, mode] = await Promise.all([
     repos.tickets.findById(ticketId, tenantId),
-    repos.users.listAgentIds(tenantId),
-    // Lite モードでは Escalated 自体が UI 上存在しないので、サーバー側でも mode-aware に弾く
     getCurrentTenantMode(tenantId),
   ]);
 
   // チケットが無ければエラー
   if (!ticket) throw new Error('チケットが見つかりません');
-  // Escalated への遷移が許可されているか確認 (Lite では遷移表に Escalated が無いので必ず弾かれる)
+  // Lite モードではエスカレーション機能そのものを提供しない (Pivot plan §3.1 / §5.2)
+  // - UI 側 (src/app/(app)/tickets/[id]/page.tsx) でも mode==='pro' でしかボタンを出さない
+  // - 二重防御として Server Action にも明示ガードを置き、将来の遷移表変更で偶発的に
+  //   Lite テナントでエスカレーションが通る回帰を防ぐ
+  if (mode === 'lite') {
+    throw new Error('Lite モードではエスカレーションは利用できません');
+  }
+  // Escalated への遷移が許可されているか確認 (Pro 経路の現在ステータス判定として残す)
   if (!isValidTransition(ticket.status, 'Escalated', mode)) {
     throw new Error(`現在のステータス「${ticket.status}」からエスカレーションできません`);
   }
+
+  // ここから先は Pro 経路確定。通知対象の全エージェント ID をテナントスコープで取得
+  const agentIds = await repos.users.listAgentIds(tenantId);
 
   // エスカレーション発生時刻
   const now = new Date();
