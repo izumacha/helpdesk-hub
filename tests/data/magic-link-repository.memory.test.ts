@@ -1,0 +1,129 @@
+// Vitest のテスト DSL を取り込む
+import { describe, expect, it } from 'vitest';
+// メモリ実装の repos/uow を組み立てるヘルパ
+import { createMemoryContext } from '@/data/adapters/memory';
+
+// 「経過時間」を表現するための定数 (テスト内で読みやすくするため)
+const ONE_MINUTE = 60 * 1000;
+
+// MagicLinkRepository (メモリ実装) の振る舞いを検証するテストスイート
+describe('MagicLinkRepository (memory)', () => {
+  // create: 新規発行で全フィールドが正しく保存され consumedAt が null になること
+  it('create で発行したトークンは未消費 (consumedAt=null) で取得できる', async () => {
+    const { repos } = createMemoryContext(); // クリーンなコンテキストを作る
+    const expiresAt = new Date(Date.now() + 15 * ONE_MINUTE); // 15 分後の失効時刻
+    // トークンを 1 件発行
+    const created = await repos.magicLinks.create({
+      email: 'user@example.com',
+      tokenHash: 'hash-1',
+      expiresAt,
+      requestedIp: '203.0.113.42',
+    });
+    // 戻り値が想定どおりであることを確認
+    expect(created.email).toBe('user@example.com');
+    expect(created.tokenHash).toBe('hash-1');
+    expect(created.consumedAt).toBeNull(); // 作成直後は未消費
+    expect(created.requestedIp).toBe('203.0.113.42');
+
+    // findByTokenHash で取り出せること
+    const found = await repos.magicLinks.findByTokenHash('hash-1');
+    expect(found?.id).toBe(created.id);
+  });
+
+  // findByTokenHash: 不一致のハッシュなら null を返すこと
+  it('findByTokenHash で不一致ハッシュは null', async () => {
+    const { repos } = createMemoryContext();
+    // 一旦発行
+    await repos.magicLinks.create({
+      email: 'a@example.com',
+      tokenHash: 'real-hash',
+      expiresAt: new Date(Date.now() + ONE_MINUTE),
+    });
+    // 別のハッシュで引くと null
+    expect(await repos.magicLinks.findByTokenHash('wrong-hash')).toBeNull();
+  });
+
+  // markConsumed: consumedAt が立って単回使用が強制できること
+  it('markConsumed で consumedAt が設定される', async () => {
+    const { repos } = createMemoryContext();
+    // トークン発行
+    const created = await repos.magicLinks.create({
+      email: 'b@example.com',
+      tokenHash: 'h',
+      expiresAt: new Date(Date.now() + ONE_MINUTE),
+    });
+    // 消費前は null
+    expect(created.consumedAt).toBeNull();
+    // 消費を記録
+    await repos.magicLinks.markConsumed(created.id);
+    // 再取得して consumedAt が設定されていることを確認
+    const after = await repos.magicLinks.findByTokenHash('h');
+    expect(after?.consumedAt).toBeInstanceOf(Date);
+  });
+
+  // deleteExpired: 期限切れだけが削除され、有効分は残ること
+  it('deleteExpired は失効済みのみ削除する', async () => {
+    const { repos } = createMemoryContext();
+    const now = new Date();
+    // 失効済みを 2 件
+    await repos.magicLinks.create({
+      email: 'c1@example.com',
+      tokenHash: 'expired-1',
+      expiresAt: new Date(now.getTime() - 5 * ONE_MINUTE),
+    });
+    await repos.magicLinks.create({
+      email: 'c2@example.com',
+      tokenHash: 'expired-2',
+      expiresAt: new Date(now.getTime() - 1 * ONE_MINUTE),
+    });
+    // 有効を 1 件
+    await repos.magicLinks.create({
+      email: 'c3@example.com',
+      tokenHash: 'valid',
+      expiresAt: new Date(now.getTime() + 10 * ONE_MINUTE),
+    });
+    // 期限切れ削除を実行 (削除件数は 2 件のはず)
+    const removed = await repos.magicLinks.deleteExpired(now);
+    expect(removed).toBe(2);
+    // 有効分は残っているはず
+    expect(await repos.magicLinks.findByTokenHash('valid')).not.toBeNull();
+    expect(await repos.magicLinks.findByTokenHash('expired-1')).toBeNull();
+  });
+
+  // countRecentByEmail: 指定メール + since 以降の件数を正しく返すこと
+  it('countRecentByEmail は同一メール宛の since 以降の件数を返す', async () => {
+    const { repos, store } = createMemoryContext();
+    const now = new Date();
+    // 同じメール宛に古いトークンを 1 件 (createdAt を手動で過去にする)
+    const old = await repos.magicLinks.create({
+      email: 'rate@example.com',
+      tokenHash: 'old',
+      expiresAt: new Date(now.getTime() + ONE_MINUTE),
+    });
+    // メモリストアを直接書き換えて createdAt を 20 分前にする
+    store.magicLinks.set(old.id, { ...old, createdAt: new Date(now.getTime() - 20 * ONE_MINUTE) });
+    // 同じメール宛で新しいトークンを 2 件
+    await repos.magicLinks.create({
+      email: 'rate@example.com',
+      tokenHash: 'new-1',
+      expiresAt: new Date(now.getTime() + ONE_MINUTE),
+    });
+    await repos.magicLinks.create({
+      email: 'rate@example.com',
+      tokenHash: 'new-2',
+      expiresAt: new Date(now.getTime() + ONE_MINUTE),
+    });
+    // 別メール宛は対象外
+    await repos.magicLinks.create({
+      email: 'other@example.com',
+      tokenHash: 'unrelated',
+      expiresAt: new Date(now.getTime() + ONE_MINUTE),
+    });
+
+    // 過去 15 分以内の rate@example.com 宛は 2 件
+    const since = new Date(now.getTime() - 15 * ONE_MINUTE);
+    expect(await repos.magicLinks.countRecentByEmail('rate@example.com', since)).toBe(2);
+    // 別メールは 1 件
+    expect(await repos.magicLinks.countRecentByEmail('other@example.com', since)).toBe(1);
+  });
+});

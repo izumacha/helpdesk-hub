@@ -2,6 +2,7 @@
 import type { Prisma } from '@/generated/prisma';
 // ドメイン型 (アダプタが返すべき型) をインポート
 import type {
+  MagicLinkToken,
   Notification,
   FaqCandidate,
   Ticket,
@@ -32,6 +33,8 @@ type CommentRow = Prisma.TicketCommentGetPayload<Record<string, never>>;
 type HistoryRow = Prisma.TicketHistoryGetPayload<Record<string, never>>;
 // FaqCandidate テーブルの型エイリアス
 type FaqRow = Prisma.FaqCandidateGetPayload<Record<string, never>>;
+// MagicLinkToken テーブルの型エイリアス
+type MagicLinkRow = Prisma.MagicLinkTokenGetPayload<Record<string, never>>;
 
 // Prisma の User 行をドメイン型 User に変換する関数
 export function toUser(row: UserRow): User {
@@ -123,6 +126,20 @@ export function toHistory(row: HistoryRow): TicketHistory {
     field: row.field,
     oldValue: row.oldValue,
     newValue: row.newValue,
+    createdAt: row.createdAt,
+  };
+}
+
+// Prisma の MagicLinkToken 行をドメイン型 MagicLinkToken に変換する関数
+export function toMagicLinkToken(row: MagicLinkRow): MagicLinkToken {
+  // 必要なフィールドだけを詰め替えて返す (生トークンは元から保存していないので無い)
+  return {
+    id: row.id,
+    email: row.email,
+    tokenHash: row.tokenHash,
+    expiresAt: row.expiresAt,
+    consumedAt: row.consumedAt,
+    requestedIp: row.requestedIp,
     createdAt: row.createdAt,
   };
 }
