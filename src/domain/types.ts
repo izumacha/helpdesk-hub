@@ -122,6 +122,18 @@ export interface FaqCandidate {
   tenantId: string; // 所属テナント ID (マルチテナント化のキー)
 }
 
+// マジックリンク (パスワードレス認証) のワンタイムトークン 1 件分
+// 生トークンは URL のみで保持し、DB には SHA-256 ハッシュ (tokenHash) を保存する
+export interface MagicLinkToken {
+  id: string; // トークン ID (主キー)
+  email: string; // 送信先メール (小文字正規化済み)
+  tokenHash: string; // 生トークンの SHA-256 ハッシュ
+  expiresAt: Date; // 失効時刻 (発行 15 分後)
+  consumedAt: Date | null; // 消費済み時刻。null なら未使用 (単回使用を強制)
+  requestedIp: string | null; // 発行リクエスト元 IP (監査用)
+  createdAt: Date; // 作成日時
+}
+
 // ユーザー向け通知 1 件分
 export interface Notification {
   id: string; // 通知 ID

@@ -122,6 +122,26 @@ model User {
 }
 
 // ─────────────────────────────────────────────
+// MagicLinkToken (パスワードレス認証のワンタイムトークン)
+// ─────────────────────────────────────────────
+
+// メールに送るリンクの正体。生トークンは URL のみで保持し、DB には SHA-256 ハッシュを保存する。
+// テナント横断テーブル: 発行時点では認証前なのでテナント不明。消費時に email から
+// User を引き直して User.tenantId をセッションに乗せる。
+model MagicLinkToken {
+  id          String    @id @default(cuid()) // 主キー (cuid)
+  email       String // 送信先メール (小文字正規化済み)
+  tokenHash   String    @unique // 生トークンの SHA-256 ハッシュ (生は DB に保存しない)
+  expiresAt   DateTime // 失効時刻 (発行から 15 分後を想定)
+  consumedAt  DateTime? // 消費済み時刻。null なら未使用 (単回使用を強制)
+  requestedIp String? // 発行リクエスト元 IP (監査・将来のレート制限用)
+  createdAt   DateTime  @default(now()) // 作成日時
+
+  @@index([email]) // メール単位の掃除・将来のレート制限カウントに使う
+  @@index([expiresAt]) // 期限切れ一括削除を高速化する
+}
+
+// ─────────────────────────────────────────────
 // Category (チケットのカテゴリ)
 // ─────────────────────────────────────────────
 
