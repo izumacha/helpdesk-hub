@@ -7,7 +7,7 @@ import { NotificationBell } from './NotificationBell';
 // モバイル用ハンバーガーボタン (md 未満でサイドバードロワーを開閉する)
 import { MobileNavToggle } from './MobileNavToggle';
 // ログアウト用サーバーアクション
-import { logout } from '@/features/auth/actions';
+import { logout } from '@/features/auth/actions/logout';
 
 // ロール表示用の日本語ラベル (技術名を画面に出さないため)
 const ROLE_LABELS: Record<string, string> = {
