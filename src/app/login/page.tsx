@@ -1,58 +1,29 @@
-'use client';
-
-// クライアント側のサインイン関数とセッション再取得関数
-import { signIn, getSession } from 'next-auth/react';
-// ログイン後のページ遷移に使う
-import { useRouter } from 'next/navigation';
-// 入力状態 (エラー/ローディング) を持つための React フック
-import { useState } from 'react';
-// エージェント権限判定
-import { isAgent } from '@/lib/role';
+// クライアントコンポーネントのタブ切替コンテナを取り込む
+import { LoginTabs } from '@/features/auth/components/LoginTabs';
 // 共通ブランドマーク (シンボル + ワードマーク)
 import { Logo } from '@/components/brand/Logo';
 
-// /login : ログインフォームページ
-export default function LoginPage() {
-  // クライアント側のページ遷移用ルーター
-  const router = useRouter();
-  // エラー文言 (ログイン失敗時に表示)
-  const [error, setError] = useState('');
-  // 送信中フラグ (連打防止 + ボタン文言切替)
-  const [loading, setLoading] = useState(false);
-
-  // フォーム送信時のハンドラ (ログイン処理)
-  async function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
-    // ブラウザ既定のページ遷移を抑止
-    e.preventDefault();
-    // 直前のエラー表示を消す
-    setError('');
-    // ローディング表示開始
-    setLoading(true);
-
-    // フォーム要素から入力値を取得
-    const form = e.currentTarget;
-    const email = (form.elements.namedItem('email') as HTMLInputElement).value;
-    const password = (form.elements.namedItem('password') as HTMLInputElement).value;
-
-    // Credentials プロバイダで認証 (リダイレクトはしない)
-    const result = await signIn('credentials', {
-      email,
-      password,
-      redirect: false,
-    });
-
-    // ローディング解除
-    setLoading(false);
-
-    if (result?.error) {
-      // 認証失敗時: 共通の日本語エラー文言を表示
-      setError('メールアドレスまたはパスワードが正しくありません');
-    } else {
-      // 成功時: 最新セッションを取得し、権限に応じた既定ページへ遷移
-      const session = await getSession();
-      router.push(isAgent(session?.user?.role) ? '/dashboard' : '/tickets');
-    }
+// ?error=... を読み取って初期エラーメッセージを決めるためのマップ
+// 値はクライアントから操作不能 (URL クエリでしか入らない) なので enum 的に固定文言を返す
+function getInitialError(errorCode: string | undefined): string | undefined {
+  // 想定済みコードだけ日本語に変換し、それ以外は未表示
+  if (errorCode === 'magic-link-invalid') {
+    return 'ログインリンクが無効です。もう一度メール送信からやり直してください。';
   }
+  return undefined;
+}
+
+// /login ページ本体 (Server Component)。?error クエリを受け取って LoginTabs に渡す
+export default async function LoginPage({
+  searchParams,
+}: {
+  // Next.js 15 では searchParams が Promise として渡される
+  searchParams: Promise<{ error?: string }>;
+}) {
+  // クエリを await で取り出す
+  const { error } = await searchParams;
+  // 初期エラー文言 (マジックリンク失敗から戻った直後など)
+  const initialError = getInitialError(error);
 
   return (
     // 画面全体: 健診センター風の柔らかなティールグラデ + 中央寄せ
@@ -80,57 +51,8 @@ export default function LoginPage() {
           <p className="mt-3 text-sm text-slate-500">社内ヘルプデスクへようこそ</p>
         </div>
 
-        {/* ログインフォーム本体 */}
-        <form onSubmit={handleSubmit} className="space-y-5">
-          {/* メールアドレス入力 */}
-          <div>
-            <label htmlFor="email" className="mb-1.5 block text-sm font-medium text-slate-700">
-              メールアドレス
-            </label>
-            <input
-              id="email"
-              name="email"
-              type="email"
-              required
-              autoComplete="email"
-              className="block w-full rounded-lg border border-slate-200 bg-slate-50/60 px-4 py-2.5 text-sm text-slate-900 transition placeholder:text-slate-400 focus:border-teal-500 focus:bg-white focus:ring-2 focus:ring-teal-500/30 focus:outline-none"
-              placeholder="name@example.com"
-            />
-          </div>
-          {/* パスワード入力 */}
-          <div>
-            <label htmlFor="password" className="mb-1.5 block text-sm font-medium text-slate-700">
-              パスワード
-            </label>
-            <input
-              id="password"
-              name="password"
-              type="password"
-              required
-              autoComplete="current-password"
-              className="block w-full rounded-lg border border-slate-200 bg-slate-50/60 px-4 py-2.5 text-sm text-slate-900 transition placeholder:text-slate-400 focus:border-teal-500 focus:bg-white focus:ring-2 focus:ring-teal-500/30 focus:outline-none"
-              placeholder="••••••••"
-            />
-          </div>
-          {/* エラー文言 (ある場合のみ表示) ─ ロゼ枠で柔らかくアラート */}
-          {error && (
-            <p
-              role="alert"
-              className="rounded-lg bg-rose-50 px-3 py-2.5 text-sm text-rose-700 ring-1 ring-rose-200"
-            >
-              {error}
-            </p>
-          )}
-          {/* 送信ボタン (ローディング中は無効化) */}
-          <button
-            type="submit"
-            disabled={loading}
-            aria-busy={loading}
-            className="w-full rounded-lg bg-teal-700 px-4 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-teal-800 active:bg-teal-900 disabled:cursor-not-allowed disabled:opacity-60"
-          >
-            {loading ? 'ログイン中...' : 'ログイン'}
-          </button>
-        </form>
+        {/* タブ切替 + 各フォーム本体 */}
+        <LoginTabs initialError={initialError} />
 
         {/* フッター: サポート連絡先風の補足 (装飾) */}
         <p className="mt-6 text-center text-xs text-slate-400">
