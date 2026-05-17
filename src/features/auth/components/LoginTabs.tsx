@@ -59,17 +59,18 @@ export function LoginTabs({ initialError }: LoginTabsProps) {
       {/* アクティブな経路のフォームだけを DOM に出す (hidden 属性ではなく条件レンダリング)。
           - 同じラベル "メールアドレス" を持つ input が 2 つ並ぶと Playwright の getByLabel が
             strict mode 違反で落ちる (E2E 共有 login ヘルパー互換性のため必須)
-          - タブ切替時にフォーム入力状態が失われるが、本フローは入力 1〜2 項目で許容範囲 */}
+          - タブ切替時にフォーム入力状態が失われるが、本フローは入力 1〜2 項目で許容範囲
+          - aria-labelledby は意図的に付けない。タブテキスト ("パスワードでログイン" /
+            "メールでログイン") がアクセシブルネームとして tabpanel に継承されると、
+            getByLabel(/パスワード/i) や getByLabel(/メール/i) が tabpanel にもマッチして
+            strict mode 違反になる。タブボタン側に role=tab と aria-selected を残しているので
+            キーボードナビゲーション/SR 経由のタブ移動には支障しない */}
       {tab === 'password' ? (
-        <div
-          role="tabpanel"
-          id="login-panel-password"
-          aria-labelledby="login-tab-password"
-        >
+        <div role="tabpanel" id="login-panel-password">
           <PasswordLoginForm initialError={initialError} />
         </div>
       ) : (
-        <div role="tabpanel" id="login-panel-magic" aria-labelledby="login-tab-magic">
+        <div role="tabpanel" id="login-panel-magic">
           <MagicLinkRequestForm />
         </div>
       )}

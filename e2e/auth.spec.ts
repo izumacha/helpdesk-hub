@@ -1,33 +1,45 @@
 // Playwright のテスト DSL (test = it, expect = アサーション)
 import { test, expect } from '@playwright/test';
 // マジックリンクの outbox ファイルを読むため
-import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 
 // Console EmailSender が書き出すアウトボックスファイル (プロジェクトルート直下)
 const OUTBOX_PATH = path.join(process.cwd(), '.magic-link-outbox.jsonl');
 
-// outbox から指定メール宛の最後の URL を取得する。最大 retries 回までポーリングする
-async function readLastMagicLinkUrl(email: string, retries = 20): Promise<string> {
+// outbox から指定メール宛の URL を取得する。
+// - 並列テスト同士が同じファイルに append するので、テスト間でファイルをクリアしない
+// - 指定 sinceMs より新しい entry の中から、最後 (= 直近) のものを返す
+// - 最大 retries 回までポーリング (100ms 間隔)
+async function readLastMagicLinkUrl(
+  email: string,
+  sinceMs: number,
+  retries = 30,
+): Promise<string> {
   // 指定回数まで 100ms 間隔でファイルをチェック
   for (let i = 0; i < retries; i++) {
     if (existsSync(OUTBOX_PATH)) {
       // ファイル全体を読み、行単位で解析
       const lines = readFileSync(OUTBOX_PATH, 'utf8').trim().split('\n');
-      // 末尾から走査して該当メール宛の URL を探す
+      // 末尾から走査して該当メール宛 + sinceMs より新しい URL を探す
       for (let j = lines.length - 1; j >= 0; j--) {
         const line = lines[j];
         if (!line) continue;
         try {
           // JSON 行を解析
           const entry = JSON.parse(line);
-          // 対象メール宛なら text 本文から URL を抽出
-          if (entry.to === email && typeof entry.text === 'string') {
+          // 対象メール宛で sinceMs より新しいなら text 本文から URL を抽出
+          if (
+            entry.to === email &&
+            typeof entry.text === 'string' &&
+            typeof entry.sentAt === 'string' &&
+            new Date(entry.sentAt).getTime() >= sinceMs
+          ) {
             const match = entry.text.match(/https?:\/\/\S+token=[A-Za-z0-9_-]+/);
             if (match) return match[0];
           }
         } catch {
-          // 壊れた行はスキップ
+          // 壊れた行はスキップ (並列 append の中途半端な行など)
         }
       }
     }
@@ -104,8 +116,6 @@ test.describe('認証', () => {
 
   // マジックリンクを要求すると確認メッセージが表示されること
   test('マジックリンクを要求すると確認メッセージが表示される', async ({ page }) => {
-    // テスト前に outbox を空にする (前のテストの行と混ざらないように)
-    writeFileSync(OUTBOX_PATH, '');
     // ログインページへ遷移し、メールタブへ切り替え
     await page.goto('/login');
     await page.getByRole('tab', { name: 'メールでログイン' }).click();
@@ -121,8 +131,9 @@ test.describe('認証', () => {
 
   // マジックリンクで実際に認証が完了し、保護ページへ遷移すること
   test('マジックリンクで認証できる', async ({ page }) => {
-    // 直前の outbox をクリア (この後で再度書かれる)
-    writeFileSync(OUTBOX_PATH, '');
+    // テスト開始時刻を控えておき、この時刻以降に書かれた outbox エントリだけを採用する
+    // (並列テストが同じファイルに append するので、古い entry や別テストの entry を拾わないため)
+    const since = Date.now();
     // メールタブから要求
     await page.goto('/login');
     await page.getByRole('tab', { name: 'メールでログイン' }).click();
@@ -130,8 +141,8 @@ test.describe('認証', () => {
     await page.getByRole('button', { name: 'ログインリンクを送る' }).click();
     // 確認メッセージが出たことを待つ (= サーバー側の send 完了 = outbox 書き込み完了)
     await expect(page.getByText('メールを確認してください')).toBeVisible();
-    // outbox から URL を取り出す
-    const url = await readLastMagicLinkUrl('agent1@example.com');
+    // outbox から since 以降に書かれた agent1 宛 URL を取り出す
+    const url = await readLastMagicLinkUrl('agent1@example.com', since);
     // ブラウザでクリック (本来メーラーから踏む経路)
     await page.goto(url);
     // 役割ベースで dashboard か tickets に遷移していること
