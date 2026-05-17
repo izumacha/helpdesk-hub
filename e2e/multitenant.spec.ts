@@ -222,4 +222,42 @@ test.describe('マルチテナント漏洩防止', () => {
     expect(result.status).toBe(422);
     expect(result.payload?.error).toMatch(/入力値/);
   });
+
+  // Pivot plan §3.1 / PR 本文の Lite モード仕様: 「同一テナント内の categoryId が送られても
+  // Lite モードでは保存しない (categoryId は null になる)」を回帰テストとして固定する。
+  // クロステナント検査だけでなく「Lite では category 機能そのものを提供しない」の方針が
+  // 仕様文と実装で別居しないようにするための防波堤
+  test('Liteテナントの依頼者が自テナントcategoryIdを直送してもcategoryIdはnullになる', async ({
+    page,
+  }) => {
+    // DB から default-tenant (Lite モード) のカテゴリ ID を 1 件取得
+    const defaultTenantCategory = await prisma.category.findFirstOrThrow({
+      where: { tenantId: 'default-tenant' },
+      select: { id: true },
+    });
+
+    await login(page, DEFAULT_REQUESTER_EMAIL);
+
+    // 自テナントの正規 categoryId を API に直送する
+    const result = await page.evaluate(async (categoryId) => {
+      const res = await fetch('/api/tickets', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({
+          title: 'E2E Lite自テナントcategoryId直送',
+          body: '同一テナントのcategoryIdでもLiteモードではnullに落とされることを確認する。',
+          priority: 'Medium',
+          categoryId,
+        }),
+      });
+      const payload = await res.json().catch(() => null);
+      return { status: res.status, payload };
+    }, defaultTenantCategory.id);
+
+    // 作成自体は成功する (クロステナントではないので 201)
+    expect(result.status).toBe(201);
+    // ただし保存時に Lite モードのため categoryId は null に正規化される
+    expect(result.payload?.categoryId).toBeNull();
+  });
 });

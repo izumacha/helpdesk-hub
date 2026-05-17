@@ -79,6 +79,11 @@ export async function POST(req: Request) {
   // - Lite フォームは「件名 / 内容 / 期限日」のみで priority フィールドを描画しないため、
   //   API 単体で叩かれた場合の防御として既定値に強制する
   const effectivePriority = mode === 'lite' ? 'Medium' : priority;
+  // Lite モードではカテゴリ機能を提供しないため保存時に null へ落とす。
+  // ── 検査は mode に関わらず必ず手前で実行済みなので、ここで弾かれるのは
+  //   「自テナントの正規 categoryId だが Lite モードでは保存しない」ケースのみ。
+  //   他テナントの categoryId はこの行に到達する前に 422 で返している。
+  const effectiveCategoryId = mode === 'lite' ? null : (categoryId ?? null);
 
   // 作成時刻 (SLA 期限の計算基準)
   const now = new Date();
@@ -96,7 +101,8 @@ export async function POST(req: Request) {
     title,
     body: ticketBody,
     priority: effectivePriority,
-    categoryId: categoryId ?? null,
+    // Lite では null 強制、Pro では検査済みの categoryId をそのまま保存
+    categoryId: effectiveCategoryId,
     // 作成者は現在のログインユーザー
     creatorId: session.user.id,
     // 起票元のテナント (マルチテナント化のキー)
