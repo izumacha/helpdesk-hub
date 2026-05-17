@@ -45,19 +45,15 @@ export async function POST(req: Request) {
   // 検証済みの値を分解 (body は変数名衝突を避けてリネーム)
   const { title, body: ticketBody, priority, categoryId, dueDate } = parsed.data;
 
-  // テナントの動作モードを取得し、Lite モード時の入力強制ルールを適用する
-  const mode = await getCurrentTenantMode(session.user.tenantId);
-  // Lite モードでは優先度を UI から選ばせず Medium 固定とする (Pivot plan §3.1)
-  // - Lite フォームは「件名 / 内容 / 期限日」のみで priority フィールドを描画しないため、
-  //   API 単体で叩かれた場合の防御として既定値に強制する
-  const effectivePriority = mode === 'lite' ? 'Medium' : priority;
-  // Lite モードではカテゴリも非表示。UI から送られないが、外部から送られた値は無視する
-  const effectiveCategoryId = mode === 'lite' ? undefined : categoryId;
-
   // カテゴリ指定がある場合は存在確認 (現在のテナント内のカテゴリのみ許可)
-  if (effectiveCategoryId) {
+  // ── mode に関わらずクロステナント検査は必ず走らせる。
+  // Lite モードでも「UI から送られないので無視」と黙って drop してしまうと、
+  // 外部から他テナントの categoryId が送られたときにクロステナント漏洩防止テスト
+  // (e2e/multitenant.spec.ts) が破綻する。Lite UI 自体は categoryId フィールドを
+  // 持たないので、正規ルートではそもそも categoryId が undefined で届く
+  if (categoryId) {
     // テナントスコープでカテゴリを取得 (他テナントの ID は null になる)
-    const category = await repos.categories.findById(effectiveCategoryId, session.user.tenantId);
+    const category = await repos.categories.findById(categoryId, session.user.tenantId);
     // 存在しない、または他テナントなら 422 (Zod 風の issues を返す)
     if (!category) {
       return NextResponse.json(
@@ -76,6 +72,14 @@ export async function POST(req: Request) {
     }
   }
 
+  // テナントの動作モードを取得し、Lite モード時の入力強制ルールを適用する
+  // ── ここから先は「自テナント内で正規の値しか残っていない」前提でモード適用する
+  const mode = await getCurrentTenantMode(session.user.tenantId);
+  // Lite モードでは優先度を UI から選ばせず Medium 固定とする (Pivot plan §3.1)
+  // - Lite フォームは「件名 / 内容 / 期限日」のみで priority フィールドを描画しないため、
+  //   API 単体で叩かれた場合の防御として既定値に強制する
+  const effectivePriority = mode === 'lite' ? 'Medium' : priority;
+
   // 作成時刻 (SLA 期限の計算基準)
   const now = new Date();
   // 解決期限の決定:
@@ -92,7 +96,7 @@ export async function POST(req: Request) {
     title,
     body: ticketBody,
     priority: effectivePriority,
-    categoryId: effectiveCategoryId ?? null,
+    categoryId: categoryId ?? null,
     // 作成者は現在のログインユーザー
     creatorId: session.user.id,
     // 起票元のテナント (マルチテナント化のキー)
