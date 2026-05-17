@@ -78,9 +78,9 @@ async function deliverMagicLinkIfUserExists(email: string): Promise<void> {
   // 未登録のメールに対しては何も発行しない (列挙されない)
   if (!user) return;
 
-  // 256-bit のランダムトークンを生成し、SHA-256 ハッシュを DB に記録する
+  // 256-bit のランダムトークンを生成し、SHA-256 ハッシュを DB に記録する (Web Crypto は async)
   const rawToken = generateMagicLinkToken();
-  const tokenHash = hashMagicLinkToken(rawToken);
+  const tokenHash = await hashMagicLinkToken(rawToken);
   // 失効時刻 (現在時刻 + TTL)
   const expiresAt = new Date(Date.now() + MAGIC_LINK_TTL_MS);
   // DB に保存 (生トークンは保存しない)

@@ -30,35 +30,43 @@ describe('generateMagicLinkToken', () => {
 
 describe('hashMagicLinkToken', () => {
   // ハッシュは同じ入力に対して常に同じ値、長さは sha256 hex の 64 文字
-  it('決定的に SHA-256 hex 64 文字を返す', () => {
-    const h1 = hashMagicLinkToken('abc');
-    const h2 = hashMagicLinkToken('abc');
+  it('決定的に SHA-256 hex 64 文字を返す', async () => {
+    const h1 = await hashMagicLinkToken('abc');
+    const h2 = await hashMagicLinkToken('abc');
     expect(h1).toBe(h2);
     expect(h1).toHaveLength(64);
     expect(h1).toMatch(/^[0-9a-f]+$/);
   });
 
   // 異なる入力からは異なるハッシュが出ること
-  it('入力が異なれば異なるハッシュになる', () => {
-    expect(hashMagicLinkToken('abc')).not.toBe(hashMagicLinkToken('abd'));
+  it('入力が異なれば異なるハッシュになる', async () => {
+    const a = await hashMagicLinkToken('abc');
+    const b = await hashMagicLinkToken('abd');
+    expect(a).not.toBe(b);
+  });
+
+  // 'abc' の SHA-256 は固定値 (実装が Web Crypto に揃ったことを保証する回帰テスト)
+  it('SHA-256("abc") は仕様通りの hex 値になる', async () => {
+    const h = await hashMagicLinkToken('abc');
+    expect(h).toBe('ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad');
   });
 });
 
 describe('timingSafeHashEqual', () => {
   // 同一の hex 文字列なら true
-  it('同一ハッシュで true', () => {
-    const h = hashMagicLinkToken('x');
+  it('同一ハッシュで true', async () => {
+    const h = await hashMagicLinkToken('x');
     expect(timingSafeHashEqual(h, h)).toBe(true);
   });
 
   // 1 文字でも違えば false
-  it('異なるハッシュで false', () => {
-    const a = hashMagicLinkToken('x');
-    const b = hashMagicLinkToken('y');
+  it('異なるハッシュで false', async () => {
+    const a = await hashMagicLinkToken('x');
+    const b = await hashMagicLinkToken('y');
     expect(timingSafeHashEqual(a, b)).toBe(false);
   });
 
-  // 長さが違うときは投げずに false を返す (timingSafeEqual は通常 throw する)
+  // 長さが違うときは投げずに false を返す
   it('長さが違うと false (例外を投げない)', () => {
     expect(timingSafeHashEqual('aa', 'aaaa')).toBe(false);
   });

@@ -1,11 +1,12 @@
 /**
  * Magic-link token helpers (pure crypto / URL building).
  *
- * Kept free of NextAuth, Prisma, and `next/headers` imports so it can be
- * exercised by Vitest unit tests without any test doubles.
+ * Implemented with the Web Crypto API (`globalThis.crypto`) rather than
+ * Node's `node:crypto` module so this file can be statically imported from
+ * `src/lib/auth.ts` (which the Edge middleware bundles). Node 18+ exposes
+ * the same Web Crypto interface globally, so behaviour is identical on the
+ * server.
  */
-// Node 標準の暗号モジュール (乱数生成 + ハッシュ + 定数時間比較)
-import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 
 // マジックリンクの既定 TTL (15 分)。秒ではなくミリ秒で持つ
 export const MAGIC_LINK_TTL_MS = 15 * 60 * 1000;
@@ -13,24 +14,37 @@ export const MAGIC_LINK_TTL_MS = 15 * 60 * 1000;
 // 32 byte (256 bit) のランダム値を URL 安全な base64url 文字列にして返す
 // base64url なので URL に直接入れても percent-encode が要らない
 export function generateMagicLinkToken(): string {
-  // 32 バイトの乱数を生成
-  return randomBytes(32).toString('base64url');
+  // 32 バイトのバッファを用意し Web Crypto に乱数を埋めてもらう
+  const buf = new Uint8Array(32);
+  globalThis.crypto.getRandomValues(buf);
+  // バイト列を base64url 文字列に変換して返す
+  return bytesToBase64Url(buf);
 }
 
-// 与えられた生トークンを SHA-256 ハッシュにし、16 進文字列で返す
+// 与えられた生トークンを SHA-256 ハッシュにし、16 進文字列で返す (非同期)
 // DB には常にこのハッシュを保存し、生トークンはメール内の URL でのみ運ぶ
-export function hashMagicLinkToken(rawToken: string): string {
-  // ハッシュ計算オブジェクトを作って 1 度だけ更新
-  return createHash('sha256').update(rawToken).digest('hex');
+export async function hashMagicLinkToken(rawToken: string): Promise<string> {
+  // 入力文字列を UTF-8 バイト列に変換 (Web Crypto は ArrayBuffer/TypedArray を要求する)
+  const data = new TextEncoder().encode(rawToken);
+  // SHA-256 で要約
+  const digest = await globalThis.crypto.subtle.digest('SHA-256', data);
+  // ArrayBuffer → 16 進文字列
+  return bufferToHex(digest);
 }
 
 // 2 つの 16 進ハッシュ文字列を定数時間で比較する (タイミング攻撃対策)
-// 同じ長さ / 同じエンコードでない場合は false を返す
+// 同じ長さでない場合は false を返す
 export function timingSafeHashEqual(a: string, b: string): boolean {
-  // 長さが違うなら timingSafeEqual はエラーを投げるので、まず長さチェック
+  // 長さが違うなら早期 false (情報量は char 数のみ)
   if (a.length !== b.length) return false;
-  // Buffer に変換して定数時間比較
-  return timingSafeEqual(Buffer.from(a, 'hex'), Buffer.from(b, 'hex'));
+  // XOR の累積で 1 文字でも違いがあれば 0 以外になる
+  let result = 0;
+  for (let i = 0; i < a.length; i++) {
+    // 文字コードを XOR してビット OR で累積 (短絡しないので定数時間)
+    result |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  }
+  // 1 度も差が無ければ 0 = true
+  return result === 0;
 }
 
 // 指定した baseUrl と生トークンから、ユーザーが踏むコールバック URL を組み立てる
@@ -82,4 +96,23 @@ function escapeHtml(s: string): string {
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#39;');
+}
+
+// バイト列を base64url (RFC 4648 §5) 文字列に変換する内部ヘルパー
+function bytesToBase64Url(buf: Uint8Array): string {
+  // バイトを 1 文字ずつ "Latin-1" の文字列に積む (btoa は Latin-1 のみ受け付ける)
+  let bin = '';
+  for (let i = 0; i < buf.length; i++) {
+    bin += String.fromCharCode(buf[i]);
+  }
+  // 標準 base64 にしたあと、URL 安全文字に置換 + パディングを除去
+  return globalThis.btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+// ArrayBuffer を小文字 16 進文字列に変換する内部ヘルパー
+function bufferToHex(buf: ArrayBuffer): string {
+  // 1 バイトずつ 2 桁 16 進に整形して結合
+  return Array.from(new Uint8Array(buf))
+    .map((b) => b.toString(16).padStart(2, '0'))
+    .join('');
 }

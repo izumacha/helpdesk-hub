@@ -86,7 +86,7 @@ describe('requestMagicLink', () => {
     // DB にはハッシュが 1 件保存されている (生トークンは保存されていない)
     expect(store.magicLinks.size).toBe(1);
     const stored = [...store.magicLinks.values()][0];
-    expect(stored.tokenHash).toBe(hashMagicLinkToken(rawTokenFromEmail));
+    expect(stored.tokenHash).toBe(await hashMagicLinkToken(rawTokenFromEmail));
     expect(stored.tokenHash).not.toBe(rawTokenFromEmail);
     expect(stored.consumedAt).toBeNull();
     // 失効時刻は今より未来 (約 15 分後) であること

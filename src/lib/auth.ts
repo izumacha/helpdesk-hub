@@ -82,8 +82,8 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
       async authorize(credentials) {
         // トークンが渡されていなければ失敗
         if (!credentials?.token) return null;
-        // 受け取った生トークンを SHA-256 でハッシュして DB 検索キーに変換
-        const tokenHash = hashMagicLinkToken(credentials.token as string);
+        // 受け取った生トークンを SHA-256 でハッシュして DB 検索キーに変換 (Web Crypto は async)
+        const tokenHash = await hashMagicLinkToken(credentials.token as string);
         // ハッシュ一致のレコードを取得
         const record = await repos.magicLinks.findByTokenHash(tokenHash);
         // 見つからなければ失敗
