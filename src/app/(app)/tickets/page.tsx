@@ -16,6 +16,8 @@ import { getCurrentTenantMode } from '@/lib/tenant';
 import { formatDateJP } from '@/lib/format-date';
 // 検索フィルタフォーム (Client Component)
 import { TicketFilters } from '@/features/tickets/components/TicketFilters';
+// 「自分の未対応 / 期限切れ / すべて」タブナビ (Client Component)
+import { TicketTabs, type TicketTabId } from '@/features/tickets/components/TicketTabs';
 // Prisma が生成した列挙型 (URL クエリの型ガード用)
 import type { TicketStatus, Priority } from '@/generated/prisma';
 // データ層が公開しているチケット一覧フィルタ型 (port 経由クエリの引数)
@@ -46,8 +48,17 @@ interface Props {
     priority?: string;
     categoryId?: string;
     assigneeId?: string;
+    // 一覧の絞り込みタブ ('mine' = 自分の未対応 / 'overdue' = 期限切れ / 未指定/'all' = 全件)
+    tab?: string;
     page?: string;
   }>;
+}
+
+// クエリの tab 文字列を TicketTabId に正規化する (不正値は 'all')
+function parseTabParam(raw: string | undefined): TicketTabId {
+  // 'mine' か 'overdue' に完全一致する場合のみ採用、それ以外は既定の 'all'
+  if (raw === 'mine' || raw === 'overdue') return raw;
+  return 'all';
 }
 
 // /tickets : チケット一覧ページ (検索/フィルタ + ページング)
@@ -64,6 +75,8 @@ export default async function TicketsPage({ searchParams }: Props) {
   // 要求ページ番号と DB の skip 件数を計算
   const requestedPage = parsePageParam(sp.page);
   const skip = (requestedPage - 1) * PAGE_SIZE;
+  // タブ ID を正規化 ('all' / 'mine' / 'overdue' のいずれか)
+  const tab = parseTabParam(sp.tab);
 
   // データ層に渡す TicketListFilter を組み立てる
   const filter: TicketListFilter = {
@@ -80,6 +93,21 @@ export default async function TicketsPage({ searchParams }: Props) {
     // 担当者絞り込み (URL クエリの 'unassigned' をここで null に正規化)
     assigneeId: normalizeAssigneeId(sp.assigneeId),
   };
+
+  // タブ別の追加フィルタを上書き適用する
+  // - mine: 「自分の未対応」= ステータスが Open または InProgress
+  //   - エージェントは「担当が自分」のもの
+  //   - 依頼者は creatorId 既定 (自分のチケット) で自動的に絞り込まれているため status だけ追加
+  // - overdue: 期限切れ + 未解決 (status=Resolved/Closed は除外)
+  if (tab === 'mine') {
+    filter.statusIn = ['Open', 'InProgress'];
+    if (isAgent) {
+      filter.assigneeId = session.user.id;
+    }
+  } else if (tab === 'overdue') {
+    // 現在時刻基準で期限超過判定を行う
+    filter.overdue = { now: new Date() };
+  }
 
   // セッションから tenantId を取り出して以降の port 呼び出しに伝搬する
   const tenantId = session.user.tenantId;
@@ -122,6 +150,11 @@ export default async function TicketsPage({ searchParams }: Props) {
         </Link>
       </div>
 
+      {/* タブナビ (自分の未対応 / 期限切れ / すべて)。Lite/Pro どちらでも常に表示する */}
+      <Suspense>
+        <TicketTabs />
+      </Suspense>
+
       {/* 検索フィルタ (Client Component を Suspense で安全にラップ、テナント mode をそのまま伝搬) */}
       <Suspense>
         <TicketFilters categories={categories} agents={agents} isAgent={isAgent} mode={mode} />
@@ -130,77 +163,126 @@ export default async function TicketsPage({ searchParams }: Props) {
       {/* 件数表示 (落ち着いたグレー) */}
       <p className="text-sm text-slate-500">{total} 件</p>
 
-      {/* 一覧テーブル (0 件時は空状態メッセージ) */}
+      {/* 一覧 (0 件時は空状態 / それ以外は md 以上でテーブル、md 未満でカード列を出し分け) */}
       {tickets.length === 0 ? (
         // 0 件時の空状態 (柔らかなカード) ─ 病院待合室の余白感
         <div className="rounded-2xl bg-white py-20 text-center text-slate-400 ring-1 ring-slate-200">
           <p className="text-sm">条件に一致する問い合わせはありません</p>
         </div>
       ) : (
-        <div className="overflow-hidden rounded-2xl bg-white shadow-sm ring-1 ring-slate-100">
-          <table className="min-w-full divide-y divide-slate-100 text-sm">
-            <thead className="bg-slate-50/80">
-              <tr>
-                <th className="px-5 py-3 text-left text-[11px] font-semibold tracking-wider text-slate-500 uppercase">
-                  件名
-                </th>
-                <th className="px-5 py-3 text-left text-[11px] font-semibold tracking-wider text-slate-500 uppercase">
-                  ステータス
-                </th>
-                <th className="px-5 py-3 text-left text-[11px] font-semibold tracking-wider text-slate-500 uppercase">
-                  優先度
-                </th>
-                <th className="px-5 py-3 text-left text-[11px] font-semibold tracking-wider text-slate-500 uppercase">
-                  カテゴリ
-                </th>
-                <th className="px-5 py-3 text-left text-[11px] font-semibold tracking-wider text-slate-500 uppercase">
-                  担当者
-                </th>
-                <th className="px-5 py-3 text-left text-[11px] font-semibold tracking-wider text-slate-500 uppercase">
-                  作成日
-                </th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-100">
-              {tickets.map((ticket) => (
-                <tr key={ticket.id} className="transition hover:bg-teal-50/40">
-                  {/* 件名: 詳細ページへのリンク */}
-                  <td className="px-5 py-3.5">
-                    <Link
-                      href={`/tickets/${ticket.id}`}
-                      className="font-medium text-slate-900 transition hover:text-teal-700"
-                    >
-                      {ticket.title}
-                    </Link>
-                  </td>
-                  {/* ステータスバッジ (テナント mode に応じて Lite/Pro ラベルを切替) */}
-                  <td className="px-5 py-3.5">
-                    <span
-                      className={`inline-flex rounded-full px-2.5 py-0.5 text-xs font-medium ${STATUS_COLORS[ticket.status] ?? ''}`}
-                    >
-                      {getStatusLabel(ticket.status, mode)}
-                    </span>
-                  </td>
-                  {/* 優先度 (色付きテキスト) */}
-                  <td className={`px-5 py-3.5 ${PRIORITY_COLORS[ticket.priority] ?? ''}`}>
-                    {PRIORITY_LABELS[ticket.priority] ?? ticket.priority}
-                  </td>
-                  {/* カテゴリ名 (なければ "―") */}
-                  <td className="px-5 py-3.5 text-slate-500">{ticket.category?.name ?? '―'}</td>
-                  {/* 担当者名 (なければ "未割当") */}
-                  <td className="px-5 py-3.5 text-slate-500">
-                    {ticket.assignee?.name ?? '未割当'}
-                  </td>
-                  {/* 作成日 (日付のみ・日本時間) */}
-                  <td className="px-5 py-3.5 text-slate-400">
-                    {/* 一覧の作成日を日本時間 (年月日) で表示する */}
-                    {formatDateJP(ticket.createdAt)}
-                  </td>
+        <>
+          {/* デスクトップ用テーブル (md 以上で表示。情シス向けの密度の高い一覧) */}
+          <div className="hidden overflow-hidden rounded-2xl bg-white shadow-sm ring-1 ring-slate-100 md:block">
+            <table className="min-w-full divide-y divide-slate-100 text-sm">
+              <thead className="bg-slate-50/80">
+                <tr>
+                  <th className="px-5 py-3 text-left text-[11px] font-semibold tracking-wider text-slate-500 uppercase">
+                    件名
+                  </th>
+                  <th className="px-5 py-3 text-left text-[11px] font-semibold tracking-wider text-slate-500 uppercase">
+                    ステータス
+                  </th>
+                  <th className="px-5 py-3 text-left text-[11px] font-semibold tracking-wider text-slate-500 uppercase">
+                    優先度
+                  </th>
+                  <th className="px-5 py-3 text-left text-[11px] font-semibold tracking-wider text-slate-500 uppercase">
+                    カテゴリ
+                  </th>
+                  <th className="px-5 py-3 text-left text-[11px] font-semibold tracking-wider text-slate-500 uppercase">
+                    担当者
+                  </th>
+                  <th className="px-5 py-3 text-left text-[11px] font-semibold tracking-wider text-slate-500 uppercase">
+                    作成日
+                  </th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                {tickets.map((ticket) => (
+                  <tr key={ticket.id} className="transition hover:bg-teal-50/40">
+                    {/* 件名: 詳細ページへのリンク */}
+                    <td className="px-5 py-3.5">
+                      <Link
+                        href={`/tickets/${ticket.id}`}
+                        className="font-medium text-slate-900 transition hover:text-teal-700"
+                      >
+                        {ticket.title}
+                      </Link>
+                    </td>
+                    {/* ステータスバッジ (テナント mode に応じて Lite/Pro ラベルを切替) */}
+                    <td className="px-5 py-3.5">
+                      <span
+                        className={`inline-flex rounded-full px-2.5 py-0.5 text-xs font-medium ${STATUS_COLORS[ticket.status] ?? ''}`}
+                      >
+                        {getStatusLabel(ticket.status, mode)}
+                      </span>
+                    </td>
+                    {/* 優先度 (色付きテキスト) */}
+                    <td className={`px-5 py-3.5 ${PRIORITY_COLORS[ticket.priority] ?? ''}`}>
+                      {PRIORITY_LABELS[ticket.priority] ?? ticket.priority}
+                    </td>
+                    {/* カテゴリ名 (なければ "―") */}
+                    <td className="px-5 py-3.5 text-slate-500">{ticket.category?.name ?? '―'}</td>
+                    {/* 担当者名 (なければ "未割当") */}
+                    <td className="px-5 py-3.5 text-slate-500">
+                      {ticket.assignee?.name ?? '未割当'}
+                    </td>
+                    {/* 作成日 (日付のみ・日本時間) */}
+                    <td className="px-5 py-3.5 text-slate-400">
+                      {/* 一覧の作成日を日本時間 (年月日) で表示する */}
+                      {formatDateJP(ticket.createdAt)}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          {/* モバイル用カード (md 未満で表示。1 件 1 カードで全要素を縦に積む) */}
+          <ul className="space-y-3 md:hidden">
+            {tickets.map((ticket) => (
+              <li
+                key={ticket.id}
+                // 白カード + 影 + 境界線で 1 件をひとまとまりに見せる
+                className="rounded-2xl bg-white p-4 shadow-sm ring-1 ring-slate-100"
+              >
+                {/* 件名: カード全体をタップ領域にするためブロックリンク化 */}
+                <Link
+                  href={`/tickets/${ticket.id}`}
+                  className="block text-base font-medium text-slate-900 transition hover:text-teal-700"
+                >
+                  {ticket.title}
+                </Link>
+                {/* バッジ行: ステータス + 優先度 (折り返し可能) */}
+                <div className="mt-2 flex flex-wrap items-center gap-2">
+                  <span
+                    className={`inline-flex rounded-full px-2.5 py-0.5 text-xs font-medium ${STATUS_COLORS[ticket.status] ?? ''}`}
+                  >
+                    {getStatusLabel(ticket.status, mode)}
+                  </span>
+                  <span
+                    className={`inline-flex rounded-full px-2.5 py-0.5 text-xs font-medium ${PRIORITY_COLORS[ticket.priority] ?? ''}`}
+                  >
+                    {PRIORITY_LABELS[ticket.priority] ?? ticket.priority}
+                  </span>
+                </div>
+                {/* メタ情報行: カテゴリ / 担当者 / 作成日 (ラベル付きで小さく) */}
+                <dl className="mt-3 grid grid-cols-2 gap-x-3 gap-y-1.5 text-xs text-slate-500">
+                  <div className="col-span-2 flex justify-between">
+                    <dt className="text-slate-400">カテゴリ</dt>
+                    <dd className="text-slate-600">{ticket.category?.name ?? '―'}</dd>
+                  </div>
+                  <div className="col-span-2 flex justify-between">
+                    <dt className="text-slate-400">担当者</dt>
+                    <dd className="text-slate-600">{ticket.assignee?.name ?? '未割当'}</dd>
+                  </div>
+                  <div className="col-span-2 flex justify-between">
+                    <dt className="text-slate-400">作成日</dt>
+                    <dd className="text-slate-600">{formatDateJP(ticket.createdAt)}</dd>
+                  </div>
+                </dl>
+              </li>
+            ))}
+          </ul>
+        </>
       )}
 
       {/* 総ページ数が 2 以上のときのみページャを表示 */}

@@ -49,14 +49,24 @@ function matchesFilter(t: Ticket, filter: TicketListFilter, tenantId: string): b
   if (t.tenantId !== tenantId) return false;
   // 起票者フィルター: 指定があり一致しなければ除外
   if (filter.creatorId !== undefined && t.creatorId !== filter.creatorId) return false;
-  // 状態フィルター
+  // 状態フィルター (単一)
   if (filter.status !== undefined && t.status !== filter.status) return false;
+  // 状態フィルター (複数)。Lite「自分の未対応」など Open OR InProgress に使う
+  if (filter.statusIn && filter.statusIn.length > 0 && !filter.statusIn.includes(t.status))
+    return false;
   // 優先度フィルター
   if (filter.priority !== undefined && t.priority !== filter.priority) return false;
   // カテゴリフィルター
   if (filter.categoryId !== undefined && t.categoryId !== filter.categoryId) return false;
   // 担当者フィルター (undefined は無指定、null は未アサインのみ)
   if (filter.assigneeId !== undefined && t.assigneeId !== filter.assigneeId) return false;
+  // 期限切れフィルター: 期限あり / 期限超過 / 未解決 / 終息状態でない
+  if (filter.overdue) {
+    if (!t.resolutionDueAt) return false;
+    if (t.resolutionDueAt >= filter.overdue.now) return false;
+    if (t.resolvedAt !== null) return false;
+    if (t.status === 'Resolved' || t.status === 'Closed') return false;
+  }
   // テキスト検索フィルター (title または body の部分一致)
   if (filter.text) {
     // 大文字小文字を無視する場合は両方小文字化する

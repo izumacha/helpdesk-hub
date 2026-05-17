@@ -22,10 +22,21 @@ function buildWhere(f: TicketListFilter, tenantId: string): Prisma.TicketWhereIn
   // 各フィルタが指定されていれば条件を積み上げる
   if (f.creatorId !== undefined) where.creatorId = f.creatorId;
   if (f.status !== undefined) where.status = f.status;
+  // 複数状態の OR 絞り込み (Lite モードの「自分の未対応」で Open/InProgress を一度に取るため)
+  if (f.statusIn && f.statusIn.length > 0) where.status = { in: f.statusIn };
   if (f.priority !== undefined) where.priority = f.priority;
   if (f.categoryId !== undefined) where.categoryId = f.categoryId;
   // 担当者条件: null は未アサインのみ、文字列は完全一致
   if (f.assigneeId !== undefined) where.assigneeId = f.assigneeId;
+  // 期限切れフィルタ (Lite モードの「期限切れ」タブで使用)
+  // - resolutionDueAt < now (期限を過ぎている)
+  // - resolvedAt IS NULL (まだ解決していない)
+  // - status が Resolved/Closed でない (業務上の終息状態は除外)
+  if (f.overdue) {
+    where.resolutionDueAt = { lt: f.overdue.now };
+    where.resolvedAt = null;
+    where.status = { notIn: ['Resolved', 'Closed'] };
+  }
   // テキスト検索: title または body に contains を OR 条件で適用
   if (f.text) {
     // 大文字小文字を無視する場合は Prisma の 'insensitive' モードを指定

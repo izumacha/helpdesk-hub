@@ -168,8 +168,16 @@ test.describe('マルチテナント漏洩防止', () => {
     await login(page, DEFAULT_AGENT_EMAIL);
 
     await page.goto('/tickets');
+    // 不在判定はテキスト全体でカウント (絶対 0 であればよい)
     await expect(page.getByText(TENANT_B_TICKET_TITLE)).toHaveCount(0);
-    await expect(page.getByText(DEFAULT_TENANT_TICKET_TITLE)).toBeVisible();
+    // 存在判定はデスクトップテーブル側のリンクに絞る。
+    // /tickets はモバイルカード (md:hidden) とデスクトップテーブル (hidden md:block) を
+    // 同時 DOM 描画するため、getByText() だけでは複数要素にマッチして
+    // toBeVisible() が strict mode 違反を起こすことがある。
+    // CI の Playwright は Desktop Chrome (1280x720) で動くのでテーブル側に固定する
+    await expect(
+      page.getByRole('table').getByRole('link', { name: DEFAULT_TENANT_TICKET_TITLE }),
+    ).toBeVisible();
 
     const detailResponse = await page.goto(`/tickets/${TENANT_B_TICKET_ID}`);
     expect(detailResponse?.status()).toBe(404);
@@ -185,7 +193,10 @@ test.describe('マルチテナント漏洩防止', () => {
     await login(page, TENANT_B_AGENT_EMAIL);
 
     await page.goto('/tickets');
-    await expect(page.getByText(TENANT_B_TICKET_TITLE)).toBeVisible();
+    // 同上: テーブル側のリンクで存在を確認 (デュアル描画で strict mode 違反を避ける)
+    await expect(
+      page.getByRole('table').getByRole('link', { name: TENANT_B_TICKET_TITLE }),
+    ).toBeVisible();
     await expect(page.getByText(DEFAULT_TENANT_TICKET_TITLE)).toHaveCount(0);
   });
 
@@ -210,5 +221,43 @@ test.describe('マルチテナント漏洩防止', () => {
 
     expect(result.status).toBe(422);
     expect(result.payload?.error).toMatch(/入力値/);
+  });
+
+  // Pivot plan §3.1 / PR 本文の Lite モード仕様: 「同一テナント内の categoryId が送られても
+  // Lite モードでは保存しない (categoryId は null になる)」を回帰テストとして固定する。
+  // クロステナント検査だけでなく「Lite では category 機能そのものを提供しない」の方針が
+  // 仕様文と実装で別居しないようにするための防波堤
+  test('Liteテナントの依頼者が自テナントcategoryIdを直送してもcategoryIdはnullになる', async ({
+    page,
+  }) => {
+    // DB から default-tenant (Lite モード) のカテゴリ ID を 1 件取得
+    const defaultTenantCategory = await prisma.category.findFirstOrThrow({
+      where: { tenantId: 'default-tenant' },
+      select: { id: true },
+    });
+
+    await login(page, DEFAULT_REQUESTER_EMAIL);
+
+    // 自テナントの正規 categoryId を API に直送する
+    const result = await page.evaluate(async (categoryId) => {
+      const res = await fetch('/api/tickets', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({
+          title: 'E2E Lite自テナントcategoryId直送',
+          body: '同一テナントのcategoryIdでもLiteモードではnullに落とされることを確認する。',
+          priority: 'Medium',
+          categoryId,
+        }),
+      });
+      const payload = await res.json().catch(() => null);
+      return { status: res.status, payload };
+    }, defaultTenantCategory.id);
+
+    // 作成自体は成功する (クロステナントではないので 201)
+    expect(result.status).toBe(201);
+    // ただし保存時に Lite モードのため categoryId は null に正規化される
+    expect(result.payload?.categoryId).toBeNull();
   });
 });

@@ -4,6 +4,8 @@ import { Suspense } from 'react';
 import { auth } from '@/lib/auth';
 // 通知ベル (未読件数バッジ付きリンク)
 import { NotificationBell } from './NotificationBell';
+// モバイル用ハンバーガーボタン (md 未満でサイドバードロワーを開閉する)
+import { MobileNavToggle } from './MobileNavToggle';
 // ログアウト用サーバーアクション
 import { logout } from '@/features/auth/actions';
 
@@ -43,18 +45,18 @@ export async function Header() {
       : 'bg-teal-50 text-teal-800 ring-1 ring-teal-200';
 
   return (
-    <header className="flex h-16 items-center justify-between border-b border-slate-200 bg-white/85 px-6 backdrop-blur">
-      {/* 左側は将来用 (今は空) */}
-      <div />
-      {/* 右側: ログイン中ユーザー向けのコントロール群 */}
-      <div className="flex items-center gap-4">
+    <header className="flex h-16 items-center justify-between border-b border-slate-200 bg-white/85 px-4 backdrop-blur sm:px-6">
+      {/* 左側: モバイル時のみ表示するハンバーガーボタン (デスクトップは Sidebar 常時表示) */}
+      <MobileNavToggle />
+      {/* 右側: ログイン中ユーザー向けのコントロール群 (モバイルでは間隔を狭くする) */}
+      <div className="flex items-center gap-2 sm:gap-4">
         {session?.user && (
           <>
             {/* 通知ベル (未読件数取得中はフォールバックを表示、tenantId スコープ) */}
             <Suspense fallback={<span className="text-sm text-slate-500">通知</span>}>
               <NotificationBell userId={session.user.id!} tenantId={session.user.tenantId} />
             </Suspense>
-            {/* ユーザー情報: アバター丸 + 氏名 + ロール pill */}
+            {/* ユーザー情報: アバター丸 + 氏名 + ロール pill (モバイルではアバターのみ) */}
             <div className="flex items-center gap-2.5">
               {/* イニシャルを表示する円形アバター (ティール背景) */}
               <span
@@ -63,10 +65,14 @@ export async function Header() {
               >
                 {getInitials(session.user.name)}
               </span>
-              {/* 氏名 */}
-              <span className="text-sm font-medium text-slate-700">{session.user.name}</span>
-              {/* ロールを示す小さな pill */}
-              <span className={`rounded-full px-2 py-0.5 text-[11px] font-medium ${rolePillClass}`}>
+              {/* 氏名 (モバイルでは省略してアバターだけにする) */}
+              <span className="hidden text-sm font-medium text-slate-700 sm:inline">
+                {session.user.name}
+              </span>
+              {/* ロールを示す小さな pill (モバイルでは省略) */}
+              <span
+                className={`hidden rounded-full px-2 py-0.5 text-[11px] font-medium sm:inline ${rolePillClass}`}
+              >
                 {roleLabel}
               </span>
             </div>
@@ -74,7 +80,7 @@ export async function Header() {
             <form action={logout}>
               <button
                 type="submit"
-                className="rounded-lg px-3 py-1.5 text-sm text-slate-600 transition hover:bg-slate-100 hover:text-slate-900"
+                className="rounded-lg px-2 py-1.5 text-sm text-slate-600 transition hover:bg-slate-100 hover:text-slate-900 sm:px-3"
               >
                 ログアウト
               </button>

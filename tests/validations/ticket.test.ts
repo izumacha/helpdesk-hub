@@ -34,6 +34,40 @@ describe('createTicketSchema', () => {
     const r = createTicketSchema.safeParse({ ...base, title: 'a'.repeat(201) });
     expect(r.success).toBe(false);
   });
+
+  // dueDate 省略時は undefined に正規化されて通る (Lite フォームで未入力のケース)
+  it('accepts input without dueDate', () => {
+    const r = createTicketSchema.safeParse(base);
+    expect(r.success).toBe(true);
+    if (r.success) expect(r.data.dueDate).toBeUndefined();
+  });
+
+  // dueDate に空文字が来ても undefined 扱いで通る (HTML <input type="date"> が空のとき)
+  it('treats empty-string dueDate as undefined', () => {
+    const r = createTicketSchema.safeParse({ ...base, dueDate: '' });
+    expect(r.success).toBe(true);
+    if (r.success) expect(r.data.dueDate).toBeUndefined();
+  });
+
+  // 正しい YYYY-MM-DD は受理し、文字列として保持する
+  it('accepts a valid YYYY-MM-DD dueDate', () => {
+    const r = createTicketSchema.safeParse({ ...base, dueDate: '2026-12-31' });
+    expect(r.success).toBe(true);
+    if (r.success) expect(r.data.dueDate).toBe('2026-12-31');
+  });
+
+  // 形式不正 (区切りが違う) は拒否し、メッセージで形式を示唆する
+  it('rejects a malformed dueDate', () => {
+    const r = createTicketSchema.safeParse({ ...base, dueDate: '2026/12/31' });
+    expect(r.success).toBe(false);
+    if (!r.success) expect(r.error.issues[0].message).toMatch(/期限日/);
+  });
+
+  // 実在しない日付 (2 月 31 日) は拒否する
+  it('rejects an impossible calendar date', () => {
+    const r = createTicketSchema.safeParse({ ...base, dueDate: '2026-02-31' });
+    expect(r.success).toBe(false);
+  });
 });
 
 // コメント本文スキーマ

@@ -485,5 +485,114 @@ export function runTicketRepositoryContract(
       });
       expect(statsB.byStatus.New).toBe(2);
     });
+
+    // --- Lite モード追加フィルタ (statusIn / overdue) の契約 ---
+
+    // statusIn を渡すと指定した複数ステータスのチケットだけが取得できる
+    it('list with statusIn returns tickets matching any of the given statuses', async () => {
+      const { requester, categoryId } = await ctx.seedBasicFixture();
+      // New 状態のチケットを 1 件
+      const tNew = await ctx.repos.tickets.create({
+        title: 'new',
+        body: 'b',
+        priority: 'Low',
+        creatorId: requester.id,
+        categoryId,
+        tenantId: TENANT_ID,
+      });
+      // Open に遷移させたチケットを 1 件
+      const tOpen = await ctx.repos.tickets.create({
+        title: 'open',
+        body: 'b',
+        priority: 'Low',
+        creatorId: requester.id,
+        categoryId,
+        tenantId: TENANT_ID,
+      });
+      await ctx.repos.tickets.updateStatus(tOpen.id, 'Open', null, TENANT_ID);
+      // InProgress に遷移させたチケットを 1 件
+      const tInProgress = await ctx.repos.tickets.create({
+        title: 'in-progress',
+        body: 'b',
+        priority: 'Low',
+        creatorId: requester.id,
+        categoryId,
+        tenantId: TENANT_ID,
+      });
+      await ctx.repos.tickets.updateStatus(tInProgress.id, 'Open', null, TENANT_ID);
+      await ctx.repos.tickets.updateStatus(tInProgress.id, 'InProgress', null, TENANT_ID);
+
+      // statusIn=[Open, InProgress] で 2 件 (Open と InProgress) が返り New は除外される
+      const result = await ctx.repos.tickets.list({
+        filter: { statusIn: ['Open', 'InProgress'] },
+        page: { skip: 0, take: 50 },
+        tenantId: TENANT_ID,
+      });
+      const ids = result.map((t) => t.id).sort();
+      expect(ids).toEqual([tOpen.id, tInProgress.id].sort());
+      expect(ids).not.toContain(tNew.id);
+    });
+
+    // overdue フィルタが期限超過 + 未解決のみを返すこと
+    it('list with overdue filter returns only past-due, unresolved tickets', async () => {
+      const { requester, categoryId } = await ctx.seedBasicFixture();
+      // 基準時刻を未来側に設定 (作成済みチケットの期限を相対的に過去にする)
+      const now = new Date('2030-06-01T00:00:00Z');
+      const yesterday = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+      const tomorrow = new Date(now.getTime() + 24 * 60 * 60 * 1000);
+
+      // 期限超過 + 未解決のチケット (Open 状態) → ヒット対象
+      const overdueUnresolved = await ctx.repos.tickets.create({
+        title: 'overdue-open',
+        body: 'b',
+        priority: 'High',
+        creatorId: requester.id,
+        categoryId,
+        tenantId: TENANT_ID,
+        resolutionDueAt: yesterday,
+      });
+      await ctx.repos.tickets.updateStatus(overdueUnresolved.id, 'Open', null, TENANT_ID);
+      // 期限超過だが解決済み (Resolved) → 除外
+      const overdueResolved = await ctx.repos.tickets.create({
+        title: 'overdue-resolved',
+        body: 'b',
+        priority: 'High',
+        creatorId: requester.id,
+        categoryId,
+        tenantId: TENANT_ID,
+        resolutionDueAt: yesterday,
+      });
+      await ctx.repos.tickets.updateStatus(overdueResolved.id, 'Open', null, TENANT_ID);
+      await ctx.repos.tickets.updateStatus(overdueResolved.id, 'Resolved', new Date(), TENANT_ID);
+      // 期限が未来 → 除外
+      await ctx.repos.tickets.create({
+        title: 'future-due',
+        body: 'b',
+        priority: 'Low',
+        creatorId: requester.id,
+        categoryId,
+        tenantId: TENANT_ID,
+        resolutionDueAt: tomorrow,
+      });
+      // 期限なし → 除外
+      await ctx.repos.tickets.create({
+        title: 'no-due',
+        body: 'b',
+        priority: 'Low',
+        creatorId: requester.id,
+        categoryId,
+        tenantId: TENANT_ID,
+      });
+
+      // overdue フィルタで期限超過 + 未解決のみが返る
+      const overdue = await ctx.repos.tickets.list({
+        filter: { overdue: { now } },
+        page: { skip: 0, take: 50 },
+        tenantId: TENANT_ID,
+      });
+      expect(overdue.map((t) => t.id)).toEqual([overdueUnresolved.id]);
+      // count も同じ件数
+      expect(await ctx.repos.tickets.count({ overdue: { now } }, TENANT_ID)).toBe(1);
+    });
   });
 }

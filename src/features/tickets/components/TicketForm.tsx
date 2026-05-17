@@ -12,18 +12,22 @@ import { useRouter } from 'next/navigation';
 import { createTicketSchema, type CreateTicketFormValues } from '@/lib/validations/ticket';
 // 優先度の日本語ラベル
 import { PRIORITY_LABELS } from '@/lib/constants';
+// テナントモード型 (lite | pro)。Lite では入力項目を 3 つに絞る
+import type { TenantMode } from '@/domain/types';
 
 // プルダウン項目用の最小型 (id と name)
 type Category = { id: string; name: string };
 
-// 受け取る props (カテゴリ候補一覧)
+// 受け取る props (カテゴリ候補一覧 + テナント mode)
 interface Props {
   categories: Category[];
+  // テナントの動作モード。'lite' (既定) では件名/内容/期限日のみ表示する
+  mode: TenantMode;
 }
 
 // 入力欄に共通で当てるベースクラス (フォーカス時のティールリングを統一)
 const fieldBaseClass =
-  'block w-full rounded-lg border border-slate-200 bg-white px-4 py-2.5 text-sm text-slate-900 placeholder:text-slate-400 transition focus:border-teal-500 focus:outline-none focus:ring-2 focus:ring-teal-500/30';
+  'block w-full rounded-lg border border-slate-200 bg-white px-4 py-2.5 text-base text-slate-900 placeholder:text-slate-400 transition focus:border-teal-500 focus:outline-none focus:ring-2 focus:ring-teal-500/30 sm:text-sm';
 // 入力エラー時に追加で当てる枠色
 const fieldErrorClass = 'border-rose-400 focus:border-rose-500 focus:ring-rose-500/30';
 
@@ -37,11 +41,13 @@ function RequiredPill() {
 }
 
 // 新規チケット作成フォーム (POST /api/tickets を呼ぶ)
-export function TicketForm({ categories }: Props) {
+export function TicketForm({ categories, mode }: Props) {
   // 登録成功後の遷移用ルーター
   const router = useRouter();
   // サーバー側エラー (フォーム検証エラーとは別) の保持
   const [serverError, setServerError] = useState<string | null>(null);
+  // Lite モードフラグ (件名/内容/期限日のみの簡易フォームに切替)
+  const isLite = mode === 'lite';
   // react-hook-form の各種ヘルパー
   const {
     register,
@@ -50,7 +56,7 @@ export function TicketForm({ categories }: Props) {
   } = useForm<CreateTicketFormValues>({
     // Zod でフォームの値を検証
     resolver: zodResolver(createTicketSchema),
-    // 優先度の初期値は Medium
+    // 優先度の初期値は Medium (Lite では UI から選ばせず常に Medium のまま送る)
     defaultValues: { priority: 'Medium' as const },
   });
 
@@ -122,35 +128,67 @@ export function TicketForm({ categories }: Props) {
         {errors.body && <p className="mt-1.5 text-xs text-rose-600">{errors.body.message}</p>}
       </div>
 
-      {/* カテゴリ (選択任意) */}
-      <div>
-        <label htmlFor="categoryId" className="mb-1.5 block text-sm font-medium text-slate-700">
-          カテゴリ
-        </label>
-        <select id="categoryId" {...register('categoryId')} className={fieldBaseClass}>
-          <option value="">選択しない</option>
-          {categories.map((c) => (
-            <option key={c.id} value={c.id}>
-              {c.name}
-            </option>
-          ))}
-        </select>
-      </div>
+      {/* 期限日 (Lite モードのみ表示。Pro はカテゴリ/優先度で自動 SLA を使うため非表示) */}
+      {isLite && (
+        <div>
+          <label htmlFor="dueDate" className="mb-1.5 block text-sm font-medium text-slate-700">
+            いつまでに
+          </label>
+          <input
+            id="dueDate"
+            // YYYY-MM-DD 形式で値が送られる (Zod 側で同じ形式を期待)
+            type="date"
+            {...register('dueDate')}
+            aria-invalid={errors.dueDate ? 'true' : 'false'}
+            className={`${fieldBaseClass} ${errors.dueDate ? fieldErrorClass : ''}`}
+          />
+          {/* 期限日の検証エラー (形式不正・実在しない日付など) */}
+          {errors.dueDate && (
+            <p className="mt-1.5 text-xs text-rose-600">{errors.dueDate.message}</p>
+          )}
+          {/* 補足: 任意項目であることを明示 (Lite では SLA 自動計算より明示入力を優先) */}
+          <p className="mt-1 text-xs text-slate-400">
+            未入力の場合は自動で期限を設定します
+          </p>
+        </div>
+      )}
 
-      {/* 優先度 */}
-      <div>
-        <label htmlFor="priority" className="mb-1.5 block text-sm font-medium text-slate-700">
-          優先度
-        </label>
-        <select id="priority" {...register('priority')} className={fieldBaseClass}>
-          {/* PRIORITY_LABELS の [値, 表示名] を順に並べる */}
-          {Object.entries(PRIORITY_LABELS).map(([value, label]) => (
-            <option key={value} value={value}>
-              {label}
-            </option>
-          ))}
-        </select>
-      </div>
+      {/* カテゴリ (Pro モードのみ。Lite では非表示) */}
+      {!isLite && (
+        <div>
+          <label htmlFor="categoryId" className="mb-1.5 block text-sm font-medium text-slate-700">
+            カテゴリ
+          </label>
+          <select id="categoryId" {...register('categoryId')} className={fieldBaseClass}>
+            <option value="">選択しない</option>
+            {categories.map((c) => (
+              <option key={c.id} value={c.id}>
+                {c.name}
+              </option>
+            ))}
+          </select>
+        </div>
+      )}
+
+      {/* 優先度 (Pro モードのみ。Lite では Medium 固定送信のため hidden で保持) */}
+      {!isLite ? (
+        <div>
+          <label htmlFor="priority" className="mb-1.5 block text-sm font-medium text-slate-700">
+            優先度
+          </label>
+          <select id="priority" {...register('priority')} className={fieldBaseClass}>
+            {/* PRIORITY_LABELS の [値, 表示名] を順に並べる */}
+            {Object.entries(PRIORITY_LABELS).map(([value, label]) => (
+              <option key={value} value={value}>
+                {label}
+              </option>
+            ))}
+          </select>
+        </div>
+      ) : (
+        // Lite モードでも Zod スキーマが priority を必須とするため hidden で初期値を保持
+        <input type="hidden" {...register('priority')} value="Medium" />
+      )}
 
       {/* サーバー由来エラー (API レスポンス) ─ 柔らかなロゼ枠 */}
       {serverError && (

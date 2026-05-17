@@ -4,6 +4,8 @@ import { auth } from '@/lib/auth';
 import { repos } from '@/data';
 // 新規チケット入力フォーム (Client Component)
 import { TicketForm } from '@/features/tickets/components/TicketForm';
+// 現在ログイン中のテナントの動作モード (lite | pro) を取得するヘルパー
+import { getCurrentTenantMode } from '@/lib/tenant';
 
 // /tickets/new : 新規チケット作成ページ (Server Component)
 export default async function NewTicketPage() {
@@ -12,22 +14,29 @@ export default async function NewTicketPage() {
   // 未ログイン or tenantId 不在は描画しない (middleware が先に弾く想定)
   if (!session?.user?.id || !session.user.tenantId) return null;
 
-  // フォームのカテゴリ選択肢として、当該テナント内のカテゴリを名前順で取得 (port 経由)
-  const categories = await repos.categories.list(session.user.tenantId);
+  // セッションから tenantId を取り出し以降の port 呼び出しに伝搬する
+  const tenantId = session.user.tenantId;
+  // カテゴリ一覧とテナント mode を並列取得 (Lite なら mode によって UI を切替)
+  const [categories, mode] = await Promise.all([
+    repos.categories.list(tenantId),
+    getCurrentTenantMode(tenantId),
+  ]);
 
   return (
     // 中央寄せの幅 max-w-2xl コンテナ
     <div className="mx-auto max-w-2xl">
-      {/* ページヘッダー: タイトル + サブテキスト */}
+      {/* ページヘッダー: タイトル + サブテキスト (Lite/Pro でサブテキストを切替) */}
       <div className="mb-6">
         <h1 className="text-2xl font-bold text-slate-900">問い合わせ 新規登録</h1>
         <p className="mt-1 text-sm text-slate-500">
-          内容はサポート担当者に通知され、対応状況を追跡できます。
+          {mode === 'lite'
+            ? '件名・内容・期限だけで登録できます。'
+            : '内容はサポート担当者に通知され、対応状況を追跡できます。'}
         </p>
       </div>
-      {/* 白カードに包んでフォームを描画 (健診の問診票のような落ち着き) */}
-      <div className="rounded-2xl bg-white p-8 shadow-sm ring-1 ring-slate-100">
-        <TicketForm categories={categories} />
+      {/* 白カードに包んでフォームを描画 (モバイルは余白を控えめに) */}
+      <div className="rounded-2xl bg-white p-6 shadow-sm ring-1 ring-slate-100 sm:p-8">
+        <TicketForm categories={categories} mode={mode} />
       </div>
     </div>
   );
