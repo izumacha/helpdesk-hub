@@ -1,5 +1,5 @@
-// Vitest のテスト DSL + 環境変数スタブ
-import { afterEach, describe, expect, it, vi } from 'vitest';
+// Vitest のテスト DSL
+import { describe, expect, it } from 'vitest';
 // Node 標準のファイル操作 (一時ファイルを read / delete する)
 import { readFileSync, rmSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -14,16 +14,10 @@ function tempOutbox(): string {
 }
 
 describe('createConsoleEmailSender', () => {
-  // 各テスト終了後に環境変数スタブを必ず巻き戻す
-  afterEach(() => {
-    vi.unstubAllEnvs();
-  });
-
-  // 非本番では outbox ファイルに 1 行 JSON が追記されること
-  it('非本番では outbox に 1 行 JSON を追記する', async () => {
-    // NODE_ENV を 'development' に切り替える (vi.stubEnv は read-only 型を回避できる)
-    vi.stubEnv('NODE_ENV', 'development');
-
+  // EMAIL_DRIVER=console を選んだ時点で opt-in 扱い: outbox に 1 行 JSON が追記されること
+  // (NODE_ENV による条件分岐は持たない。CI E2E が next start = NODE_ENV=production で
+  //  動くが、E2E は outbox から URL を抽出する必要があるため)
+  it('outbox に 1 行 JSON を追記する', async () => {
     // 専用の一時ファイルを使う sender を生成
     const outboxPath = tempOutbox();
     const sender = createConsoleEmailSender({ outboxPath });
@@ -51,21 +45,23 @@ describe('createConsoleEmailSender', () => {
     }
   });
 
-  // 本番では outbox に書き出さないこと
-  it('本番 (NODE_ENV=production) では outbox を作成しない', async () => {
-    vi.stubEnv('NODE_ENV', 'production');
-
+  // 2 件以上の送信は追記され、JSON Lines として行ごとに読めること
+  it('複数件は JSON Lines として追記される', async () => {
     const outboxPath = tempOutbox();
     const sender = createConsoleEmailSender({ outboxPath });
 
-    // 1 件送信
-    await sender.send({
-      to: 'a@example.com',
-      subject: 's',
-      html: 'h',
-      text: 't',
-    });
-    // ファイルが作成されていないこと
-    expect(existsSync(outboxPath)).toBe(false);
+    try {
+      // 2 件送信
+      await sender.send({ to: 'a@example.com', subject: 's1', html: 'h', text: 't' });
+      await sender.send({ to: 'b@example.com', subject: 's2', html: 'h', text: 't' });
+      // ファイル全体を行ごとに解析
+      const lines = readFileSync(outboxPath, 'utf8').trim().split('\n');
+      expect(lines).toHaveLength(2);
+      // 行 1 と 2 が想定どおりの to を持つこと
+      expect(JSON.parse(lines[0]).to).toBe('a@example.com');
+      expect(JSON.parse(lines[1]).to).toBe('b@example.com');
+    } finally {
+      if (existsSync(outboxPath)) rmSync(outboxPath);
+    }
   });
 });

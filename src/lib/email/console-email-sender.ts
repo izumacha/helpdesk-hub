@@ -9,12 +9,14 @@ import path from 'node:path';
  * Console adapter: logs to stdout and appends a JSON line to
  * `.magic-link-outbox.jsonl` (project root, gitignored).
  *
- * Production usage is rejected — `getEmailSender()` selects this adapter
- * only when `EMAIL_DRIVER=console`. The outbox file write is additionally
- * skipped if `NODE_ENV === 'production'` to keep dev/test artifacts out of
- * any accidental prod deploy.
+ * `getEmailSender()` only selects this adapter when `EMAIL_DRIVER=console`,
+ * so usage is an explicit opt-in. We deliberately do NOT gate the outbox
+ * write on `NODE_ENV` — CI E2E runs the production build (`next start`,
+ * which forces `NODE_ENV=production`) but still relies on the outbox to
+ * recover the magic-link URL. Anyone running this adapter in a real
+ * production deployment has already opted into a "log + flat file" sink.
  *
- * The E2E suite reads the last JSON line of the outbox file to extract the
+ * The E2E suite reads the JSON lines of the outbox file to extract the
  * magic-link URL for assertion. No dev-only HTTP endpoint is exposed.
  */
 // 開発/テスト用のメール送信実装。実際には送らず、標準出力と outbox ファイルに記録する
@@ -31,9 +33,6 @@ export function createConsoleEmailSender(options?: { outboxPath?: string }): Ema
         subject: message.subject,
         textPreview: message.text.slice(0, 120),
       });
-
-      // 本番環境では outbox ファイルへの書き出しを行わない (誤って prod 投入時の漏洩防止)
-      if (process.env.NODE_ENV === 'production') return;
 
       // メッセージ全体を 1 行 JSON で append (E2E が末尾を読む想定)
       const line =
