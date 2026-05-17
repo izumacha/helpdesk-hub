@@ -6,6 +6,8 @@ import Credentials from 'next-auth/providers/credentials';
 import { compare } from 'bcryptjs';
 // データ層の Composition Root 経由でユーザー取得 (Prisma 直叩きを避ける)
 import { repos } from '@/data';
+// マジックリンクのトークンハッシュ計算 (生トークン -> DB 検索キー)
+import { hashMagicLinkToken } from '@/lib/magic-link';
 // ロール (権限) 型
 import type { Role } from '@/generated/prisma';
 
@@ -65,6 +67,47 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
           name: user.name, // 氏名
           role: user.role, // 権限
           tenantId: user.tenantId, // 所属テナント ID (マルチテナント化のキー)
+        };
+      },
+    }),
+    // マジックリンク (メール内ワンタイム URL) を受け付ける 2 つめの Credentials プロバイダ。
+    // /api/auth/magic-link/callback ルートが署名済みトークンを携えて signIn('magic-link', ...) を呼ぶ
+    Credentials({
+      id: 'magic-link', // 既定の Credentials Provider と区別するための ID
+      name: 'MagicLink', // 表示名 (UI には出さない)
+      credentials: {
+        token: { label: 'Token', type: 'text' }, // 1 入力フィールドのみ: ワンタイムトークン
+      },
+      // トークン検証: DB のハッシュ済みエントリと突き合わせ、期限・消費状態をチェックする
+      async authorize(credentials) {
+        // トークンが渡されていなければ失敗
+        if (!credentials?.token) return null;
+        // 受け取った生トークンを SHA-256 でハッシュして DB 検索キーに変換
+        const tokenHash = hashMagicLinkToken(credentials.token as string);
+        // ハッシュ一致のレコードを取得
+        const record = await repos.magicLinks.findByTokenHash(tokenHash);
+        // 見つからなければ失敗
+        if (!record) return null;
+        // 既に消費済みなら失敗 (単回使用)
+        if (record.consumedAt) return null;
+        // 失効済みなら失敗
+        if (record.expiresAt < new Date()) return null;
+
+        // トークン作成時に保存されていた email から既存ユーザーを引く
+        const user = await repos.users.findByEmail(record.email);
+        // ユーザーが消えていれば失敗 (孤児トークン)
+        if (!user) return null;
+
+        // 検証成功: 同じトークンを 2 度と使えなくする
+        await repos.magicLinks.markConsumed(record.id);
+
+        // セッションに乗せるユーザー情報を返す (パスワード経路と同じ shape)
+        return {
+          id: user.id,
+          email: user.email,
+          name: user.name,
+          role: user.role,
+          tenantId: user.tenantId,
         };
       },
     }),
