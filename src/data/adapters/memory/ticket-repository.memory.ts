@@ -103,20 +103,36 @@ export function makeTicketRepo(store: Store): TicketRepository {
       return attachRefs(t, store);
     },
 
-    // 詳細ページ用に、コメント/履歴/FAQ 候補を含むチケットを取得 (tenantId スコープ)
+    // 詳細ページ用に、コメント/履歴/FAQ 候補/添付を含むチケットを取得 (tenantId スコープ)
     async findByIdWithDetail(id, tenantId) {
       const t = store.tickets.get(id); // 本体取得
       if (!t || t.tenantId !== tenantId) return null; // テナント不一致は null
       const withRefs = attachRefs(t, store); // 関連情報を結合
 
-      // 対象チケットのコメントを古い順に整形
+      // 対象チケットの添付一覧を作成日時の昇順に整形しておく (コメントごとの絞り込みでも再利用)
+      const allAttachments = [...store.attachments.values()]
+        .filter((a) => a.ticketId === id && a.tenantId === tenantId)
+        .sort((a, b) => +a.createdAt - +b.createdAt);
+
+      // Attachment ドメイン型から AttachmentSummary (表示用最小情報) を取り出すヘルパー
+      const toSummary = (a: (typeof allAttachments)[number]) => ({
+        id: a.id,
+        mimeType: a.mimeType,
+        size: a.size,
+        originalName: a.originalName,
+        createdAt: a.createdAt,
+      });
+
+      // 対象チケットのコメントを古い順に整形 (各コメントの添付も同時に集約)
       const comments = [...store.comments.values()]
         .filter((c) => c.ticketId === id) // 対象チケットのみ
         .sort((a, b) => +a.createdAt - +b.createdAt) // 時系列 (古い→新しい)
         .map((c: TicketComment) => {
           const author = userSummary(store, c.authorId); // 書き込み者
           if (!author) throw new Error(`memory adapter: author ${c.authorId} missing`);
-          return { ...c, author };
+          // このコメントに紐づく添付だけ抽出してサマリ化する
+          const attachments = allAttachments.filter((a) => a.commentId === c.id).map(toSummary);
+          return { ...c, author, attachments };
         });
 
       // 対象チケットの履歴を新しい順に整形
@@ -132,12 +148,16 @@ export function makeTicketRepo(store: Store): TicketRepository {
       // 紐づく FAQ 候補を 1 件だけ検索 (なければ null)
       const faqRow = [...store.faq.values()].find((f) => f.ticketId === id) ?? null;
 
+      // チケット本体に直接添付された画像のみ (commentId が null のもの)
+      const ticketAttachments = allAttachments.filter((a) => a.commentId === null).map(toSummary);
+
       // 詳細オブジェクトを組み立てて返す
       const detail: TicketDetail = {
         ...withRefs,
         comments,
         histories,
         faqCandidate: faqRow ? { id: faqRow.id } : null,
+        attachments: ticketAttachments,
       };
       return detail;
     },
