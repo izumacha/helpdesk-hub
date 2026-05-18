@@ -1,5 +1,5 @@
 // Vitest のテスト DSL とモック機能
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 // メモリ実装の context (store/repos)
 import { createMemoryContext, type Store } from '@/data/adapters/memory';
 // リポジトリ束の型
@@ -27,12 +27,14 @@ vi.mock('@/data', () => ({
 let sendImpl: (message: { to: string; subject: string; html: string; text: string }) => Promise<void> = async (message) => {
   sentMessages.push(message);
 };
+// ファクトリ自体が throw する設定エラーをシミュレートできるよう、フラグ経由で挙動を切替
+let getEmailSenderImpl: () => EmailSender = () => ({
+  async send(message) {
+    await sendImpl(message);
+  },
+});
 vi.mock('@/lib/email', () => ({
-  getEmailSender: (): EmailSender => ({
-    async send(message) {
-      await sendImpl(message);
-    },
-  }),
+  getEmailSender: () => getEmailSenderImpl(),
 }));
 
 // 動的 import: 上のモック設定が反映された後で対象を読み込む
@@ -51,6 +53,12 @@ beforeEach(() => {
   sendImpl = async (message) => {
     sentMessages.push(message);
   };
+  // ファクトリも既定の「正常な EmailSender を返す」実装に戻す
+  getEmailSenderImpl = () => ({
+    async send(message) {
+      await sendImpl(message);
+    },
+  });
   // テナントを 1 つ用意 (User の FK 先として必要)
   store.tenants.set('default-tenant', {
     id: 'default-tenant',
@@ -59,6 +67,11 @@ beforeEach(() => {
     industry: null,
     createdAt: new Date(),
   });
+});
+
+// 各テスト後に環境変数スタブを必ず巻き戻す
+afterEach(() => {
+  vi.unstubAllEnvs();
 });
 
 describe('requestMagicLink', () => {
@@ -140,6 +153,45 @@ describe('requestMagicLink', () => {
     const requestMagicLink = await loadAction();
     await expect(requestMagicLink({ email: 'not-an-email' })).rejects.toThrow(
       /メールアドレス/,
+    );
+  });
+
+  // 本番で NEXTAUTH_URL が未設定なら、リンクが壊れるのを防ぐため起動時エラーにする
+  // (列挙対策の握り潰しの外で評価されるので、運用者にきちんと 500 が見える)
+  it('production で NEXTAUTH_URL 未設定なら例外を投げる (リンク先 localhost フォールバック禁止)', async () => {
+    vi.stubEnv('NODE_ENV', 'production');
+    vi.stubEnv('NEXTAUTH_URL', '');
+    const requestMagicLink = await loadAction();
+    await expect(requestMagicLink({ email: 'agent1@example.com' })).rejects.toThrow(
+      /NEXTAUTH_URL/,
+    );
+  });
+
+  // 設定不備 (EMAIL_DRIVER 不正など) は列挙対策のマスクを越えて呼び出し側まで伝わる。
+  // 「届かないメール」を silently 増やすより、運用者に 500 で見せる方を優先する
+  it('EmailSender ファクトリが throw する設定エラーは握り潰さず呼び出し側へ伝える', async () => {
+    // ユーザー seed (登録済み経路でも非登録経路でも結果は同じはず)
+    store.users.set('u-1', {
+      id: 'u-1',
+      email: 'a@example.com',
+      name: 'a',
+      passwordHash: 'x',
+      role: 'requester',
+      tenantId: 'default-tenant',
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    // ファクトリが設定エラーで throw する状況をシミュレート
+    getEmailSenderImpl = () => {
+      throw new Error('production では EMAIL_DRIVER=smtp の明示設定が必要です');
+    };
+    const requestMagicLink = await loadAction();
+    await expect(requestMagicLink({ email: 'a@example.com' })).rejects.toThrow(
+      /EMAIL_DRIVER/,
+    );
+    // 設定エラーは未登録メールでも同様に表面化する (列挙耐性が壊れないこと)
+    await expect(requestMagicLink({ email: 'unknown@example.com' })).rejects.toThrow(
+      /EMAIL_DRIVER/,
     );
   });
 

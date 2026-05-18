@@ -25,13 +25,20 @@ import { redirect } from 'next/navigation';
 
 // GET ハンドラ。Next.js App Router が自動でこの関数をルートに紐づけてくれる。
 //
-// TODO (フォローアップ): Microsoft Safe Links / Mimecast 等のメールゲートウェイは
-// 受信者がクリックする前にリンクを GET prefetch してマルウェア検査することがある。
-// 現実装は GET で即トークンを消費 (signIn) するため、prefetch 後にユーザーが踏むと
-// "magic-link-invalid" になる。標準的な対策は GET を「ログインしますか？」確認画面
-// にし、フォーム送信 (POST) で初めて消費する方式。Lite 導入初期の SMB は Google
-// Workspace / Office 365 中心でも Safe Links 系を強制している企業は少なめなので
-// 本 PR では deferred。実装する際は GET=HTML 確認ページ、POST=signIn に分ける。
+// TODO (フォローアップ / セキュリティ強化): 以下の 2 つの懸念を同一の対策で解決できる。
+//   1) GET prefetch によるトークン消費 (Microsoft Safe Links / Mimecast 等): 受信者が
+//      クリックする前にメールゲートウェイがリンクを GET prefetch してマルウェア検査し
+//      トークンが消費されてしまい、本人が踏むと "magic-link-invalid" になる
+//   2) Login CSRF / session swapping: URL トークン保有だけで認証が成立するため、攻撃者
+//      が自分のアカウントでマジックリンクを発行し、被害者をその URL に誘導すると、被害者
+//      のブラウザが攻撃者アカウントにログインしてしまう (Codex P2 指摘)
+//
+// 標準的な対策は GET を「ログインしますか？」確認ページ (state nonce + フォーム POST) に
+// 変え、ユーザー操作した POST でのみトークン消費する方式。両懸念ともこれで防げる。
+// 本 PR では UI 増分を抑えるため deferred (実装時は GET=HTML 確認ページ + POST=signIn)。
+// 現状の SMB Lite ターゲット (Google Workspace / Office 365 中心、Safe Links 強制企業は
+// 少数、login CSRF はマジックリンク開封導線という性質上 phishing 経路と区別しにくい) で
+// 受け入れる判断。
 export async function GET(request: Request) {
   // ?token=... を取り出す
   const url = new URL(request.url);
