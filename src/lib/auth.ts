@@ -78,28 +78,21 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
       credentials: {
         token: { label: 'Token', type: 'text' }, // 1 入力フィールドのみ: ワンタイムトークン
       },
-      // トークン検証: DB のハッシュ済みエントリと突き合わせ、期限・消費状態をチェックする
+      // トークン検証: 「未消費 + 失効前 + 存在」を 1 度の DB 更新で確定させて消費する
       async authorize(credentials) {
         // トークンが渡されていなければ失敗
         if (!credentials?.token) return null;
         // 受け取った生トークンを SHA-256 でハッシュして DB 検索キーに変換 (Web Crypto は async)
         const tokenHash = await hashMagicLinkToken(credentials.token as string);
-        // ハッシュ一致のレコードを取得
-        const record = await repos.magicLinks.findByTokenHash(tokenHash);
-        // 見つからなければ失敗
-        if (!record) return null;
-        // 既に消費済みなら失敗 (単回使用)
-        if (record.consumedAt) return null;
-        // 失効済みなら失敗
-        if (record.expiresAt < new Date()) return null;
+        // 原子的に消費 (未消費 & 失効前なら自身が成功し他は null)。検索 + 検証 + 消費を 1 操作で行う
+        const consumed = await repos.magicLinks.consumeValidToken({ tokenHash, now: new Date() });
+        // 消費に失敗 (消費済み / 失効済み / 不在) ならログイン拒否
+        if (!consumed) return null;
 
         // トークン作成時に保存されていた email から既存ユーザーを引く
-        const user = await repos.users.findByEmail(record.email);
+        const user = await repos.users.findByEmail(consumed.email);
         // ユーザーが消えていれば失敗 (孤児トークン)
         if (!user) return null;
-
-        // 検証成功: 同じトークンを 2 度と使えなくする
-        await repos.magicLinks.markConsumed(record.id);
 
         // セッションに乗せるユーザー情報を返す (パスワード経路と同じ shape)
         return {

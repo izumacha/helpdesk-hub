@@ -13,15 +13,20 @@ export interface MagicLinkRepository {
     requestedIp?: string | null; // 発行リクエスト元 IP (任意)
   }): Promise<MagicLinkToken>;
 
-  // tokenHash で 1 件取得 (見つからなければ null)。消費・期限切れ判定は呼び出し側で行う
+  // tokenHash で 1 件取得 (見つからなければ null)。読み取り専用の検査用途
   findByTokenHash(tokenHash: string): Promise<MagicLinkToken | null>;
 
-  // 指定 ID のトークンに consumedAt を立てて単回使用を強制する
-  markConsumed(id: string): Promise<void>;
+  // tokenHash で「未消費 かつ 失効前」のトークンを **原子的に** 消費する。
+  // 検索 + 検証 + 消費印を 1 操作で行うことで、同一トークンの並行クリックでも
+  // 高々 1 リクエストにしか成功させない (ワンタイム性をアプリ層ではなく DB 層で担保)。
+  // 戻り値:
+  //   - 該当行が見つかり消費に成功 → 消費前のドメイン型 (email を呼び出し側で利用)
+  //   - 既に消費済み / 失効済み / 存在しない → null
+  consumeValidToken(input: { tokenHash: string; now: Date }): Promise<MagicLinkToken | null>;
 
   // expiresAt が now より前のトークンを一括削除 (掃除用)。削除件数を返す
   deleteExpired(now: Date): Promise<number>;
 
-  // 指定メール宛に since 以降に発行されたトークン件数を返す (将来のレート制限用)
+  // 指定メール宛に since 以降に発行されたトークン件数を返す (発行レート制限用)
   countRecentByEmail(email: string, since: Date): Promise<number>;
 }

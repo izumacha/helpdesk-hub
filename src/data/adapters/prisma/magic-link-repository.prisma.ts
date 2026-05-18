@@ -31,14 +31,24 @@ export function makeMagicLinkRepo(db: PrismaLike): MagicLinkRepository {
       return row ? toMagicLinkToken(row) : null;
     },
 
-    // 指定 ID に consumedAt を立てて単回使用を強制する
-    async markConsumed(id) {
-      // updateMany を使うのは「既に消費済みなら 0 件で済ませる」ためではなく、
-      // 単純に id 一致で 1 件更新する目的。失敗時の例外を避けたいので update でなく updateMany
-      await db.magicLinkToken.update({
-        where: { id },
-        data: { consumedAt: new Date() },
+    // tokenHash で「未消費かつ失効前」のトークンを原子的に消費する。
+    // Prisma の updateMany は単一 SQL (UPDATE ... WHERE ...) として評価され、
+    // PostgreSQL の行ロックで並行クリックでも成功は 1 件に限られる。
+    async consumeValidToken({ tokenHash, now }) {
+      // 1 単一 UPDATE: 「未消費 (consumedAt IS NULL) かつ 失効前 (expiresAt >= now)」の行に消費印を立てる
+      const result = await db.magicLinkToken.updateMany({
+        where: {
+          tokenHash, // 検索キー (@unique なので最大 1 件)
+          consumedAt: null, // まだ使われていない
+          expiresAt: { gte: now }, // 失効していない
+        },
+        data: { consumedAt: now }, // 消費時刻を打刻
       });
+      // 0 件 = 既に消費済み / 失効 / 不在 のいずれか
+      if (result.count !== 1) return null;
+      // 消費直後の行を取り直して email / id 等を呼び出し側へ返す
+      const row = await db.magicLinkToken.findUnique({ where: { tokenHash } });
+      return row ? toMagicLinkToken(row) : null;
     },
 
     // expiresAt が now より前のトークンを一括削除して件数を返す

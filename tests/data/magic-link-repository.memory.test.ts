@@ -43,22 +43,70 @@ describe('MagicLinkRepository (memory)', () => {
     expect(await repos.magicLinks.findByTokenHash('wrong-hash')).toBeNull();
   });
 
-  // markConsumed: consumedAt が立って単回使用が強制できること
-  it('markConsumed で consumedAt が設定される', async () => {
+  // consumeValidToken: 未消費 + 失効前なら消費に成功し、行を返すこと
+  it('consumeValidToken: 未消費 + 失効前なら 1 度だけ成功する', async () => {
     const { repos } = createMemoryContext();
     // トークン発行
-    const created = await repos.magicLinks.create({
+    await repos.magicLinks.create({
       email: 'b@example.com',
-      tokenHash: 'h',
+      tokenHash: 'h-once',
       expiresAt: new Date(Date.now() + ONE_MINUTE),
     });
-    // 消費前は null
-    expect(created.consumedAt).toBeNull();
-    // 消費を記録
-    await repos.magicLinks.markConsumed(created.id);
-    // 再取得して consumedAt が設定されていることを確認
-    const after = await repos.magicLinks.findByTokenHash('h');
-    expect(after?.consumedAt).toBeInstanceOf(Date);
+    const now = new Date();
+    // 1 回目: 消費成功 (行を返す)
+    const first = await repos.magicLinks.consumeValidToken({ tokenHash: 'h-once', now });
+    expect(first).not.toBeNull();
+    expect(first?.email).toBe('b@example.com');
+    expect(first?.consumedAt).toBeInstanceOf(Date);
+
+    // 2 回目: 既に消費済みなので null
+    const second = await repos.magicLinks.consumeValidToken({ tokenHash: 'h-once', now });
+    expect(second).toBeNull();
+  });
+
+  // consumeValidToken: 失効済みのトークンは消費できないこと
+  it('consumeValidToken: 失効済みなら null を返す (消費印も立てない)', async () => {
+    const { repos, store } = createMemoryContext();
+    // 失効済みトークンを直接 store に投入
+    store.magicLinks.set('mlt-expired', {
+      id: 'mlt-expired',
+      email: 'c@example.com',
+      tokenHash: 'h-expired',
+      expiresAt: new Date(Date.now() - ONE_MINUTE), // 1 分前に失効
+      consumedAt: null,
+      requestedIp: null,
+      createdAt: new Date(Date.now() - 30 * ONE_MINUTE),
+    });
+    // 消費試行は null
+    const result = await repos.magicLinks.consumeValidToken({
+      tokenHash: 'h-expired',
+      now: new Date(),
+    });
+    expect(result).toBeNull();
+    // 消費印が立っていないことを確認 (失効済みの状態は変えない)
+    expect(store.magicLinks.get('mlt-expired')?.consumedAt).toBeNull();
+  });
+
+  // consumeValidToken: 並行 (Promise.all) 呼び出しでも成功は 1 件のみ。ワンタイム性を保証
+  it('consumeValidToken: 同時 2 回呼び出しても成功は 1 件のみ (ワンタイム性)', async () => {
+    const { repos } = createMemoryContext();
+    // 1 件のトークンを発行
+    await repos.magicLinks.create({
+      email: 'd@example.com',
+      tokenHash: 'h-race',
+      expiresAt: new Date(Date.now() + ONE_MINUTE),
+    });
+    const now = new Date();
+    // 同時に 2 リクエスト分の消費を発行 (Promise.all で並行扱い)
+    const [a, b] = await Promise.all([
+      repos.magicLinks.consumeValidToken({ tokenHash: 'h-race', now }),
+      repos.magicLinks.consumeValidToken({ tokenHash: 'h-race', now }),
+    ]);
+    // 結果が 1 件成功 + 1 件 null になっていることを確認 (順序は問わない)
+    const successes = [a, b].filter((r) => r !== null);
+    const failures = [a, b].filter((r) => r === null);
+    expect(successes).toHaveLength(1);
+    expect(failures).toHaveLength(1);
   });
 
   // deleteExpired: 期限切れだけが削除され、有効分は残ること

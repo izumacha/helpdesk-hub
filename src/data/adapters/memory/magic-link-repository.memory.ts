@@ -39,14 +39,30 @@ export function makeMagicLinkRepo(store: Store): MagicLinkRepository {
       return null;
     },
 
-    // 指定 ID に consumedAt を立てて単回使用を強制する
-    async markConsumed(id) {
-      // 対象トークンを取り出す
-      const t = store.magicLinks.get(id);
-      // 存在すれば consumedAt を現在時刻で上書きして再登録
-      if (t) {
-        store.magicLinks.set(id, { ...t, consumedAt: new Date() });
+    // tokenHash で「未消費かつ失効前」のトークンを原子的に消費する。
+    // JS は単一スレッドのため、check + update の間に他の callback は割り込めない。
+    // ただし関数本体で await を一切使わないことで、見た目上の同時呼び出し
+     // (Promise.all([consume, consume])) でも片方しか成功しないことを保証する。
+    async consumeValidToken({ tokenHash, now }) {
+      // 全トークンを走査して tokenHash 一致のエントリを探す
+      let target: { id: string; row: { consumedAt: Date | null; expiresAt: Date } } | null = null;
+      for (const [id, row] of store.magicLinks) {
+        if (row.tokenHash === tokenHash) {
+          target = { id, row };
+          break;
+        }
       }
+      // 該当なし
+      if (!target) return null;
+      // 既に消費済み
+      if (target.row.consumedAt !== null) return null;
+      // 失効済み
+      if (target.row.expiresAt < now) return null;
+      // 消費印を打って Map を上書き (await を挟まないので race にならない)
+      const updated = { ...store.magicLinks.get(target.id)!, consumedAt: now };
+      store.magicLinks.set(target.id, updated);
+      // 呼び出し側へ防御的コピーを返す
+      return { ...updated };
     },
 
     // expiresAt が now より前のトークンを一括削除して件数を返す
