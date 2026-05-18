@@ -36,6 +36,10 @@ vi.mock('@/data', () => ({
   get repos() {
     return repos;
   },
+}));
+
+// storage は別モジュールから export されているため別途モックする
+vi.mock('@/data/storage', () => ({
   get storage() {
     return storage;
   },

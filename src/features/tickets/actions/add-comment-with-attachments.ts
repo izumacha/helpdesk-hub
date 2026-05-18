@@ -6,8 +6,10 @@ import { revalidatePath } from 'next/cache';
 import { randomUUID } from 'node:crypto';
 // 現在のセッション (ログイン中ユーザー) を取得
 import { auth } from '@/lib/auth';
-// リポジトリ束 + UoW (トランザクション境界) + ストレージ Port
-import { repos, storage, uow } from '@/data';
+// リポジトリ束 + UoW (トランザクション境界)
+import { repos, uow } from '@/data';
+// 添付ファイル本体の StoragePort (Edge runtime 汚染回避のため別モジュールから取り込む)
+import { storage } from '@/data/storage';
 // 未読件数を SSE で即時配信するヘルパー
 import { broadcastUnreadCountToMany } from '@/features/notifications/notify';
 // エージェント権限判定 (agent または admin のとき true)

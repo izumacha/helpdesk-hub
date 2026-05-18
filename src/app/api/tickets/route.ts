@@ -4,8 +4,10 @@ import { NextResponse } from 'next/server';
 import { randomUUID } from 'node:crypto';
 // セッション取得
 import { auth } from '@/lib/auth';
-// リポジトリ束 (tickets/categories/attachments など) と Storage Port
-import { repos, storage, uow } from '@/data';
+// リポジトリ束 (tickets/categories/attachments など)
+import { repos, uow } from '@/data';
+// 添付ファイル本体の StoragePort (Edge runtime 汚染回避のため別モジュールから取り込む)
+import { storage } from '@/data/storage';
 // 優先度から解決期限を計算する SLA ヘルパー
 import { calculateResolutionDueAt } from '@/lib/sla';
 // 新規チケット入力の Zod スキーマ

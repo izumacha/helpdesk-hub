@@ -31,6 +31,10 @@ vi.mock('@/data', () => ({
   get uow() {
     return uow;
   },
+}));
+
+// storage は別モジュールから export されているため別途モックする
+vi.mock('@/data/storage', () => ({
   get storage() {
     return storage;
   },

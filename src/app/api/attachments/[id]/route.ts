@@ -2,8 +2,10 @@
 import { NextResponse } from 'next/server';
 // セッション取得
 import { auth } from '@/lib/auth';
-// データ層 (添付メタ + チケット + ストレージ)
-import { repos, storage } from '@/data';
+// データ層 (添付メタ + チケット)
+import { repos } from '@/data';
+// 添付ファイル本体の StoragePort (Edge runtime 汚染回避のため別モジュールから取り込む)
+import { storage } from '@/data/storage';
 // エージェント権限の判定 (agent | admin で true)
 import { isAgent } from '@/lib/role';
 
