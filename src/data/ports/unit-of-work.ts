@@ -1,6 +1,7 @@
 // 各リポジトリの契約 (port) を束ねて 1 セットとして扱うための型定義
 import type { CategoryRepository } from './category-repository';
 import type { FaqRepository } from './faq-repository';
+import type { MagicLinkRepository } from './magic-link-repository';
 import type { NotificationRepository } from './notification-repository';
 import type { TenantRepository } from './tenant-repository';
 import type { TicketCommentRepository } from './ticket-comment-repository';
@@ -18,6 +19,7 @@ export interface Repos {
   comments: TicketCommentRepository; // コメント操作
   categories: CategoryRepository; // カテゴリ操作
   tenants: TenantRepository; // テナント操作 (マルチテナント化)
+  magicLinks: MagicLinkRepository; // マジックリンクトークン操作 (パスワードレス認証)
 }
 
 // トランザクション境界を表す契約 (Unit of Work パターン)

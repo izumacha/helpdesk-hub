@@ -42,5 +42,8 @@ next-env.d.ts
 
 /src/generated/prisma
 
+# Console EmailSender が dev/test で書き出すアウトボックス (マジックリンクの平文を含む)
+.magic-link-outbox.jsonl
+
 # Claude Code agent worktrees / scratch state (per-session, never commit)
 .claude/

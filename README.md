@@ -72,6 +72,26 @@ npm run dev
 | agent1@example.com     | agent     | password123 |
 | admin@example.com      | admin     | password123 |
 
+## メール送信設定（マジックリンク認証 / 通知）
+
+ログイン用マジックリンクと、後続の通知メールに使う送信先は環境変数で切り替えます。
+
+| 環境変数                       | 用途                                                                      |
+| ------------------------------ | ------------------------------------------------------------------------- |
+| `EMAIL_DRIVER`                 | `smtp`（本番） / `console`（dev・E2E）                                    |
+| `EMAIL_FROM`                   | 差出人ヘッダ。`smtp` 経路では必須                                         |
+| `SMTP_HOST` / `SMTP_PORT`      | SMTP サーバ。`smtp` 経路では `SMTP_HOST` 必須、ポートは 1〜65535 の整数   |
+| `SMTP_USER` / `SMTP_PASSWORD`  | SMTP 認証情報（匿名 SMTP の場合は省略可）                                 |
+| `EMAIL_ALLOW_CONSOLE_IN_PROD`  | **CI / E2E 専用** の escape hatch（後述）                                 |
+
+### ⚠️ 本番デプロイ時の注意
+
+**本番では `EMAIL_ALLOW_CONSOLE_IN_PROD` を絶対に設定しないこと。**
+本番メール送信は `EMAIL_DRIVER=smtp` と `SMTP_HOST` / `EMAIL_FROM` を必須とします。
+
+- `EMAIL_DRIVER=smtp` 以外で起動した場合、`getEmailSender()` は起動時にエラーを投げます（設定漏れで「メールを確認してください」が表示されるのに実メールが届かない事故を防ぐためのフェイルファスト）。
+- `EMAIL_ALLOW_CONSOLE_IN_PROD=true` を併設するとそのチェックを迂回して `console` adapter（stdout + `.magic-link-outbox.jsonl` ファイルへの追記）が使えますが、これは **CI/E2E でテスト用 outbox を読みたい場合専用** です。本番デプロイ環境の `.env` / hosting の環境変数設定にこの値が混入しないよう、構成管理時に明示的に除外してください。
+
 ## コマンド一覧
 
 ```bash
