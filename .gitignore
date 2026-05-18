@@ -45,5 +45,8 @@ next-env.d.ts
 # Console EmailSender が dev/test で書き出すアウトボックス (マジックリンクの平文を含む)
 .magic-link-outbox.jsonl
 
+# ローカル開発時の添付ファイル保存先 (Local Storage Adapter のデフォルト)。本番では別ボリュームを使う想定
+/var/uploads/
+
 # Claude Code agent worktrees / scratch state (per-session, never commit)
 .claude/
