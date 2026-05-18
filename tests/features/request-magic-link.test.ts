@@ -136,6 +136,37 @@ describe('requestMagicLink', () => {
     );
   });
 
+  // 同一メール宛に短時間で大量に要求しても、上限を超えたらメール送信されないこと (発行スパム対策)
+  it('レート制限: 同一メール宛 15 分以内 5 通を超えると新規発行されない', async () => {
+    // ユーザー seed
+    store.users.set('u-rate', {
+      id: 'u-rate',
+      email: 'rate@example.com',
+      name: 'r',
+      passwordHash: 'x',
+      role: 'requester',
+      tenantId: 'default-tenant',
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+
+    const requestMagicLink = await loadAction();
+    // 上限 (5 件) ぴったりまでは発行が許される
+    for (let i = 0; i < 5; i++) {
+      await requestMagicLink({ email: 'rate@example.com' });
+    }
+    // 5 件の token と 5 通のメール送信があること
+    expect(store.magicLinks.size).toBe(5);
+    expect(sentMessages).toHaveLength(5);
+
+    // 6 件目はレート制限で発行されない (戻り値は ok のまま、副作用なし)
+    const result = await requestMagicLink({ email: 'rate@example.com' });
+    expect(result).toEqual({ ok: true });
+    // 件数は増えていないこと
+    expect(store.magicLinks.size).toBe(5);
+    expect(sentMessages).toHaveLength(5);
+  });
+
   // 期限切れトークンが掃除されること
   it('呼び出し時に失効済みトークンを掃除する', async () => {
     // ユーザー seed

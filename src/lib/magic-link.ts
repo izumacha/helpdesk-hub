@@ -11,6 +11,11 @@
 // マジックリンクの既定 TTL (15 分)。秒ではなくミリ秒で持つ
 export const MAGIC_LINK_TTL_MS = 15 * 60 * 1000;
 
+// 同一メール宛の発行レート制限 (発行スパム対策)。15 分間に 5 通までを上限とする
+export const MAGIC_LINK_RATE_LIMIT_WINDOW_MS = 15 * 60 * 1000;
+// 上記の窓内で許容される発行回数の上限。これを超えた場合は新規発行をスキップする
+export const MAGIC_LINK_RATE_LIMIT_MAX = 5;
+
 // 32 byte (256 bit) のランダム値を URL 安全な base64url 文字列にして返す
 // base64url なので URL に直接入れても percent-encode が要らない
 export function generateMagicLinkToken(): string {

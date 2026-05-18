@@ -20,11 +20,13 @@
 import { repos } from '@/data';
 // 環境変数で切り替わる EmailSender 実装を取得するファクトリ
 import { getEmailSender } from '@/lib/email';
-// マジックリンク用の純粋ヘルパー (トークン生成・ハッシュ・URL 構築・メール本文)
+// マジックリンク用の純粋ヘルパー (トークン生成・ハッシュ・URL 構築・メール本文 + 各種定数)
 import {
   buildMagicLinkUrl,
   generateMagicLinkToken,
   hashMagicLinkToken,
+  MAGIC_LINK_RATE_LIMIT_MAX,
+  MAGIC_LINK_RATE_LIMIT_WINDOW_MS,
   MAGIC_LINK_TTL_MS,
   renderMagicLinkEmail,
 } from '@/lib/magic-link';
@@ -69,12 +71,19 @@ export async function requestMagicLink(
   return { ok: true };
 }
 
-// 実際にトークン発行 + メール送信を行う内部関数。User が見つからない場合は何もしない
+// 実際にトークン発行 + メール送信を行う内部関数。User が見つからない or レート上限超過なら何もしない
 async function deliverMagicLinkIfUserExists(email: string): Promise<void> {
-  // メールから既存ユーザーを引く (テナント横断 lookup)
-  const user = await repos.users.findByEmail(email);
   // 期限切れトークンを一括掃除 (ベストエフォート。User の有無に関係なく行う)
   await repos.magicLinks.deleteExpired(new Date());
+
+  // 同一メール宛の直近発行件数を取得 (発行スパム対策のレート制限)
+  const since = new Date(Date.now() - MAGIC_LINK_RATE_LIMIT_WINDOW_MS);
+  const recent = await repos.magicLinks.countRecentByEmail(email, since);
+  // 上限超過なら新規発行をスキップ (例外は投げない: 列挙対策で呼び出し側からは成功/失敗が見えない)
+  if (recent >= MAGIC_LINK_RATE_LIMIT_MAX) return;
+
+  // メールから既存ユーザーを引く (テナント横断 lookup)
+  const user = await repos.users.findByEmail(email);
   // 未登録のメールに対しては何も発行しない (列挙されない)
   if (!user) return;
 
