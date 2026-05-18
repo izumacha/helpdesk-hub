@@ -1,6 +1,7 @@
 // リポジトリ束 (Repos) と UnitOfWork の型をインポート
 import type { Repos, UnitOfWork } from '@/data/ports/unit-of-work';
 // 各エンティティ用のメモリリポジトリ生成関数を取り込む
+import { makeAttachmentRepo } from './attachment-repository.memory';
 import { makeCategoryRepo } from './category-repository.memory';
 import { makeFaqRepo } from './faq-repository.memory';
 import { makeMagicLinkRepo } from './magic-link-repository.memory';
@@ -29,6 +30,7 @@ export function buildMemoryRepos(store: Store): Repos {
     categories: makeCategoryRepo(store),
     tenants: makeTenantRepo(store),
     magicLinks: makeMagicLinkRepo(store),
+    attachments: makeAttachmentRepo(store),
   };
 }
 

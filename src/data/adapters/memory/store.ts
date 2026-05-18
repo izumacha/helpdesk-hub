@@ -9,6 +9,8 @@ import type {
   TicketHistory,
   User,
 } from '@/domain/types';
+// 添付ファイルのドメイン型 (メモリストアで保持する用)
+import type { Attachment } from '@/domain/attachment';
 
 // メモリ内で保持するカテゴリ行 (id/name/作成日時 + テナント所属)
 export interface CategoryRow {
@@ -35,6 +37,7 @@ export interface Store {
   faq: Map<string, FaqCandidate>; // FAQ 候補
   notifications: Map<string, Notification>; // 通知
   magicLinks: Map<string, MagicLinkToken>; // マジックリンクトークン (パスワードレス認証)
+  attachments: Map<string, Attachment>; // 添付ファイルのメタ情報 (画像)
   idSeq: { value: number }; // 連番生成用のカウンタ (オブジェクトに包んで参照共有)
 }
 
@@ -51,6 +54,7 @@ export function createEmptyStore(): Store {
     faq: new Map(),
     notifications: new Map(),
     magicLinks: new Map(),
+    attachments: new Map(),
     idSeq: { value: 0 },
   };
 }
@@ -68,6 +72,7 @@ export function cloneStore(src: Store): Store {
     faq: new Map(src.faq),
     notifications: new Map(src.notifications),
     magicLinks: new Map(src.magicLinks),
+    attachments: new Map(src.attachments),
     idSeq: { value: src.idSeq.value },
   };
 }
@@ -84,6 +89,7 @@ export function overwriteStore(dst: Store, src: Store): void {
   dst.faq = new Map(src.faq);
   dst.notifications = new Map(src.notifications);
   dst.magicLinks = new Map(src.magicLinks);
+  dst.attachments = new Map(src.attachments);
   // 連番も元に戻す
   dst.idSeq.value = src.idSeq.value;
 }

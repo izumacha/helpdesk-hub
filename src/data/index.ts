@@ -10,22 +10,36 @@
 
 // Prisma クライアントのシングルトンを取り込む
 import { prisma } from '@/lib/prisma';
+// ローカル FS ストレージの生成関数 (添付ファイル本体の保存先)
+import { createLocalStorage } from './adapters/local/storage.local';
 // メモリ版の通知ブロードキャスタ実装
 import { createInMemoryNotificationBroadcaster } from './adapters/memory/notification-broadcaster.memory';
 // Prisma 版のリポジトリ束と UnitOfWork 生成関数
 import { buildPrismaRepos, buildPrismaUow } from './adapters/prisma';
 // ポート型 (外部アプリコードへの公開契約)
 import type { NotificationBroadcaster } from './ports/notification-broadcaster';
+import type { StoragePort } from './ports/storage';
 import type { Repos, UnitOfWork } from './ports/unit-of-work';
 
 // 外部アプリコードで使う型だけを再公開する (データ層の公開 API)
 export type { Repos, UnitOfWork } from './ports/unit-of-work';
 export type { NotificationBroadcaster } from './ports/notification-broadcaster';
+export type { StoragePort } from './ports/storage';
 
 // アプリ全体で共有する Prisma 版のリポジトリ束
 export const repos: Repos = buildPrismaRepos(prisma);
 // アプリ全体で共有する Prisma 版の UnitOfWork (トランザクション境界)
 export const uow: UnitOfWork = buildPrismaUow(prisma);
+
+/**
+ * Default storage adapter: local filesystem volume.
+ *
+ * Single-instance only. Multi-instance deployments must replace this with an
+ * S3-compatible adapter (see Phase 2 in docs/smb-dx-pivot-plan.md).
+ */
+// 添付ファイル本体の既定ストレージ (ローカル FS 実装)
+// UPLOAD_DIR 環境変数が指定されていればその値、未指定なら './var/uploads' を使う
+export const storage: StoragePort = createLocalStorage(process.env.UPLOAD_DIR ?? './var/uploads');
 
 /**
  * Default notification broadcaster: single-process in-memory registry.
