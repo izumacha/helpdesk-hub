@@ -67,19 +67,42 @@ async function atLeast<T>(promise: Promise<T>, ms: number): Promise<T> {
 
 // マジックリンク URL を組み立てるためのベース URL を解決する。
 // production で NEXTAUTH_URL が未設定だと、メールに http://localhost:3000 のリンクが
-// 入ってユーザーが開けない事故になる (Codex P1 指摘)。fail-fast で運用に伝える
+// 入ってユーザーが開けない事故になる (Codex P1 指摘)。fail-fast で運用に伝える。
+// 加えて、空白だけ / scheme なし / ホスト欠落のような壊れた値も WHATWG URL でパースし、
+// 失敗時は明示エラーにする (truthy 判定だけだと不正値が黙って出ていく Codex P2 指摘)
 function resolveMagicLinkBaseUrl(): string {
-  const url = process.env.NEXTAUTH_URL;
-  // 明示設定があればそれを使う
-  if (url) return url;
-  // 本番で未設定はリンクが壊れるので即エラー
-  if (process.env.NODE_ENV === 'production') {
+  // 前後空白を除去してから空判定する (".env で NEXTAUTH_URL=' ' " などを未指定扱い)
+  const raw = process.env.NEXTAUTH_URL?.trim();
+  // 未設定または空白だけの場合: 本番は即エラー、dev/test は localhost フォールバック
+  if (!raw) {
+    if (process.env.NODE_ENV === 'production') {
+      throw new Error(
+        'NEXTAUTH_URL is required in production to issue working magic-link URLs',
+      );
+    }
+    return 'http://localhost:3000';
+  }
+  // URL として解釈できることを WHATWG URL パーサで検証する
+  let parsed: URL;
+  try {
+    parsed = new URL(raw);
+  } catch {
     throw new Error(
-      'NEXTAUTH_URL is required in production to issue working magic-link URLs',
+      `NEXTAUTH_URL の形式が不正です ("${raw}"): http(s):// で始まる完全な URL を指定してください`,
     );
   }
-  // dev/test では localhost で十分
-  return 'http://localhost:3000';
+  // scheme が http/https 以外 (例: file://) や、host が空の URL は弾く
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    throw new Error(
+      `NEXTAUTH_URL の scheme は http または https である必要があります (実際: ${parsed.protocol})`,
+    );
+  }
+  if (!parsed.host) {
+    throw new Error('NEXTAUTH_URL に host が含まれていません');
+  }
+  // バリデーション済みの URL 文字列を返す (raw に含まれていた末尾スラッシュ等の差異は
+  // buildMagicLinkUrl 側で吸収される)
+  return raw;
 }
 
 // 公開する Server Action。フォームから直接呼べる形にする (FormData 経由でも JSON でも可)

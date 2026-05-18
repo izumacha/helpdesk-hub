@@ -49,13 +49,17 @@ export function getEmailSender(): EmailSender {
   }
 
   if (driver === 'smtp') {
-    // SMTP 経路を選択する場合は接続情報が揃っていることを確認
-    const host = process.env.SMTP_HOST;
+    // SMTP 経路を選択する場合は接続情報が揃っていることを確認。
+    // 文字列値は前後空白を除去してから空判定する: ".env で SMTP_HOST=' ' と書かれた場合に
+    // 「未指定」扱いにする (空白だけの値が Nodemailer 段階で初めて壊れて分からないのを防ぐ)
+    const host = process.env.SMTP_HOST?.trim() || undefined;
     // 既定ポートは STARTTLS 用の 587。?? は null/undefined しか拾わないので
-    // 空文字 (.env で SMTP_PORT="" と書かれた場合や stubEnv での明示空) も
-    // 未指定扱いにしたい → || でフォールバックさせる
-    const port = Number(process.env.SMTP_PORT || '587');
-    const from = process.env.EMAIL_FROM;
+    // 空文字や空白文字も未指定扱いにする (|| で trim 後にフォールバック)
+    const port = Number(process.env.SMTP_PORT?.trim() || '587');
+    const from = process.env.EMAIL_FROM?.trim() || undefined;
+    // SMTP 認証情報も trim。空白だけの値は「未指定」と同じ扱いにする
+    const smtpUser = process.env.SMTP_USER?.trim() || undefined;
+    const smtpPassword = process.env.SMTP_PASSWORD?.trim() || undefined;
     // 必須 (host / from) が無ければ起動を止める (誤設定で気付かず黙って失敗するより明示エラー)
     if (!host) throw new Error('EMAIL_DRIVER=smtp ですが SMTP_HOST が設定されていません');
     if (!from) throw new Error('EMAIL_DRIVER=smtp ですが EMAIL_FROM が設定されていません');
@@ -64,12 +68,19 @@ export function getEmailSender(): EmailSender {
     if (!Number.isInteger(port) || port <= 0 || port > 65535) {
       throw new Error('SMTP_PORT は 1〜65535 の整数で指定してください');
     }
+    // SMTP_USER と SMTP_PASSWORD は all-or-nothing。片方だけだと nodemailer が
+    // 認証情報を無視して匿名 SMTP 接続にダウングレードし、認証要求環境で全 send が失敗する
+    if ((smtpUser && !smtpPassword) || (!smtpUser && smtpPassword)) {
+      throw new Error(
+        'SMTP_USER と SMTP_PASSWORD は両方設定するか、両方とも空にしてください (片方だけは認証情報を黙って捨てる原因になります)',
+      );
+    }
     // Nodemailer 実装を生成してキャッシュ
     cached = createNodemailerEmailSender({
       host,
       port,
-      user: process.env.SMTP_USER,
-      password: process.env.SMTP_PASSWORD,
+      user: smtpUser,
+      password: smtpPassword,
       from,
     });
     return cached;

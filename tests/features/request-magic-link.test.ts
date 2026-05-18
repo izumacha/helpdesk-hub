@@ -167,6 +167,31 @@ describe('requestMagicLink', () => {
     );
   });
 
+  // 空白だけの NEXTAUTH_URL は未指定と同じく扱う (production ならエラー)
+  it('production で NEXTAUTH_URL が空白だけの値は未指定と同じくエラー', async () => {
+    vi.stubEnv('NODE_ENV', 'production');
+    vi.stubEnv('NEXTAUTH_URL', '   ');
+    const requestMagicLink = await loadAction();
+    await expect(requestMagicLink({ email: 'agent1@example.com' })).rejects.toThrow(
+      /NEXTAUTH_URL/,
+    );
+  });
+
+  // NEXTAUTH_URL が壊れた形式 (scheme なし / 不正な URL) なら明示エラー
+  it.each([
+    'not-a-url',
+    'example.com', // scheme 欠落
+    'http://', // host 欠落
+    'file:///etc/passwd', // 危険な scheme
+  ])('NEXTAUTH_URL=%s のような不正形式は例外を投げる', async (badUrl) => {
+    vi.stubEnv('NODE_ENV', 'test');
+    vi.stubEnv('NEXTAUTH_URL', badUrl);
+    const requestMagicLink = await loadAction();
+    await expect(requestMagicLink({ email: 'agent1@example.com' })).rejects.toThrow(
+      /NEXTAUTH_URL/,
+    );
+  });
+
   // 設定不備 (EMAIL_DRIVER 不正など) は列挙対策のマスクを越えて呼び出し側まで伝わる。
   // 「届かないメール」を silently 増やすより、運用者に 500 で見せる方を優先する
   it('EmailSender ファクトリが throw する設定エラーは握り潰さず呼び出し側へ伝える', async () => {

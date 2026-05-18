@@ -101,4 +101,49 @@ describe('getEmailSender', () => {
     const sender = getEmailSender();
     expect(typeof sender.send).toBe('function');
   });
+
+  // 空白だけの SMTP_HOST / EMAIL_FROM は trim 後に未指定扱いとなりエラーになること
+  it.each(['SMTP_HOST', 'EMAIL_FROM'])('%s が空白だけの値は未指定として扱う', (key) => {
+    vi.stubEnv('NODE_ENV', 'test');
+    vi.stubEnv('EMAIL_DRIVER', 'smtp');
+    vi.stubEnv('SMTP_HOST', 'smtp.example.com');
+    vi.stubEnv('EMAIL_FROM', 'noreply@example.com');
+    // 検証対象だけ空白に上書き
+    vi.stubEnv(key, '   ');
+    expect(() => getEmailSender()).toThrow(new RegExp(key));
+  });
+
+  // SMTP_USER と SMTP_PASSWORD は all-or-nothing。片方だけだと auth 無しにダウングレード
+  // して認証要求 SMTP で全 send が runtime 失敗する。これを起動時に検知してエラー
+  it('SMTP_USER だけ設定 / SMTP_PASSWORD 空 はエラー', () => {
+    vi.stubEnv('NODE_ENV', 'test');
+    vi.stubEnv('EMAIL_DRIVER', 'smtp');
+    vi.stubEnv('SMTP_HOST', 'smtp.example.com');
+    vi.stubEnv('EMAIL_FROM', 'noreply@example.com');
+    vi.stubEnv('SMTP_USER', 'user@example.com');
+    vi.stubEnv('SMTP_PASSWORD', '');
+    expect(() => getEmailSender()).toThrow(/SMTP_USER と SMTP_PASSWORD/);
+  });
+
+  it('SMTP_PASSWORD だけ設定 / SMTP_USER 空 はエラー', () => {
+    vi.stubEnv('NODE_ENV', 'test');
+    vi.stubEnv('EMAIL_DRIVER', 'smtp');
+    vi.stubEnv('SMTP_HOST', 'smtp.example.com');
+    vi.stubEnv('EMAIL_FROM', 'noreply@example.com');
+    vi.stubEnv('SMTP_USER', '');
+    vi.stubEnv('SMTP_PASSWORD', 'secret');
+    expect(() => getEmailSender()).toThrow(/SMTP_USER と SMTP_PASSWORD/);
+  });
+
+  // 両方空文字は「未指定」とみなして匿名 SMTP として通すこと (Mailhog 等の dev 用)
+  it('SMTP_USER / SMTP_PASSWORD 両方空文字は匿名 SMTP として許容', () => {
+    vi.stubEnv('NODE_ENV', 'test');
+    vi.stubEnv('EMAIL_DRIVER', 'smtp');
+    vi.stubEnv('SMTP_HOST', 'smtp.example.com');
+    vi.stubEnv('EMAIL_FROM', 'noreply@example.com');
+    vi.stubEnv('SMTP_USER', '');
+    vi.stubEnv('SMTP_PASSWORD', '');
+    const sender = getEmailSender();
+    expect(typeof sender.send).toBe('function');
+  });
 });
