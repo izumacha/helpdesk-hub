@@ -27,6 +27,24 @@ describe('getEmailSender', () => {
     expect(() => getEmailSender()).toThrow(/production では EMAIL_DRIVER=smtp/);
   });
 
+  // CI / E2E 用の escape hatch: EMAIL_ALLOW_CONSOLE_IN_PROD=true なら通す
+  it('production でも EMAIL_ALLOW_CONSOLE_IN_PROD=true なら console を許容', () => {
+    vi.stubEnv('NODE_ENV', 'production');
+    vi.stubEnv('EMAIL_DRIVER', 'console');
+    vi.stubEnv('EMAIL_ALLOW_CONSOLE_IN_PROD', 'true');
+    const sender = getEmailSender();
+    // インスタンスが返ること (例外を投げない)
+    expect(typeof sender.send).toBe('function');
+  });
+
+  // escape hatch の値が 'true' でないと許容しない (誤値での silent 通過を防ぐ)
+  it('production で EMAIL_ALLOW_CONSOLE_IN_PROD=1 (truthy だが文字列違い) はエラー', () => {
+    vi.stubEnv('NODE_ENV', 'production');
+    vi.stubEnv('EMAIL_DRIVER', 'console');
+    vi.stubEnv('EMAIL_ALLOW_CONSOLE_IN_PROD', '1');
+    expect(() => getEmailSender()).toThrow(/production では EMAIL_DRIVER=smtp/);
+  });
+
   // dev/test では EMAIL_DRIVER 未設定でも Console にフォールバック
   it('非 production では EMAIL_DRIVER 未設定で Console にフォールバック', () => {
     vi.stubEnv('NODE_ENV', 'test');

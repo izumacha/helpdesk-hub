@@ -31,13 +31,20 @@ export function getEmailSender(): EmailSender {
   // 環境変数 EMAIL_DRIVER の値で実装を切り替える (空文字も未指定扱い)
   const driver = process.env.EMAIL_DRIVER?.toLowerCase() || undefined;
 
+  // CI / E2E など「production build (next start = NODE_ENV=production) で動かしたいが
+  // 実メール送信ではなく outbox 経由で挙動を検証したい」シナリオ用の明示的オプトイン。
+  // この escape hatch を使う側 (CI workflow など) は、自分で console を選んでいることを
+  // 自覚しているとみなす。実本番では絶対に true にしないこと。
+  const allowConsoleInProd = process.env.EMAIL_ALLOW_CONSOLE_IN_PROD === 'true';
+
   // 本番で driver 未指定 / 'smtp' 以外を選んでいる場合は起動時にエラーにする。
   // 設定漏れで「ユーザーには『メールを確認してください』が出るのに実メールは送られない」
-  // という静かな壊れ方を防ぐため、明示的に SMTP 経路を要求する
-  if (process.env.NODE_ENV === 'production' && driver !== 'smtp') {
+  // という静かな壊れ方を防ぐため、明示的に SMTP 経路を要求する。
+  // ただし上記の opt-in が明示されている場合だけは console での起動を許可する
+  if (process.env.NODE_ENV === 'production' && driver !== 'smtp' && !allowConsoleInProd) {
     throw new Error(
       'production では EMAIL_DRIVER=smtp の明示設定が必要です ' +
-        '(dev/test 用の console adapter を本番で使うと実際のメールが送信されません)',
+        '(CI/E2E のように console を本番ビルドで使う場合は EMAIL_ALLOW_CONSOLE_IN_PROD=true を併設してください)',
     );
   }
 

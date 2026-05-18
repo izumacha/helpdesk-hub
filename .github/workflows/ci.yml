@@ -67,6 +67,11 @@ jobs:
       AUTH_TRUST_HOST: 'true'
       BASE_URL: http://localhost:3000
       CI: 'true'
+      # E2E はマジックリンク URL を outbox ファイルから抽出するため Console EmailSender を使う。
+      # next start (NODE_ENV=production) と組み合わせるので、production build 用の明示的オプトイン
+      # EMAIL_ALLOW_CONSOLE_IN_PROD も併設する (実本番では絶対に true にしないこと)。
+      EMAIL_DRIVER: console
+      EMAIL_ALLOW_CONSOLE_IN_PROD: 'true'
     steps:
       - uses: actions/checkout@v4
 
