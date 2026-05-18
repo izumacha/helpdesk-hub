@@ -16,12 +16,22 @@
  */
 // next-auth の signIn ヘルパー (Credentials Provider にトークンを渡して認証 + リダイレクト)
 import { signIn } from '@/lib/auth';
-// next-auth が認証失敗時に投げる基底エラー (CredentialsSignin もこれを継承)
-import { AuthError } from 'next-auth';
+// authorize() が null を返した時の専用エラー (= 認証拒否)。
+// AuthError は他にも CallbackRouteError / 設定不備系の運用エラーを含むため、
+// 「ログインリンクが無効」と表示してよいのは CredentialsSignin に限定する
+import { CredentialsSignin } from 'next-auth';
 // Next.js の HTTP リダイレクト (NEXT_REDIRECT を throw する形で動作する)
 import { redirect } from 'next/navigation';
 
-// GET ハンドラ。Next.js App Router が自動でこの関数をルートに紐づけてくれる
+// GET ハンドラ。Next.js App Router が自動でこの関数をルートに紐づけてくれる。
+//
+// TODO (フォローアップ): Microsoft Safe Links / Mimecast 等のメールゲートウェイは
+// 受信者がクリックする前にリンクを GET prefetch してマルウェア検査することがある。
+// 現実装は GET で即トークンを消費 (signIn) するため、prefetch 後にユーザーが踏むと
+// "magic-link-invalid" になる。標準的な対策は GET を「ログインしますか？」確認画面
+// にし、フォーム送信 (POST) で初めて消費する方式。Lite 導入初期の SMB は Google
+// Workspace / Office 365 中心でも Safe Links 系を強制している企業は少なめなので
+// 本 PR では deferred。実装する際は GET=HTML 確認ページ、POST=signIn に分ける。
 export async function GET(request: Request) {
   // ?token=... を取り出す
   const url = new URL(request.url);
@@ -42,12 +52,13 @@ export async function GET(request: Request) {
       redirectTo: '/login',
     });
   } catch (error) {
-    // 認証エラー (トークン不一致 / 期限切れ / 消費済み 等) は AuthError 系で来る
-    if (error instanceof AuthError) {
-      // 日本語メッセージ表示用のクエリ付きで /login に戻す
+    // authorize() が null を返したときの「認証拒否」だけを invalid 扱いにする。
+    // AuthError 系の他のサブクラス (CallbackRouteError / 設定不備系) は運用障害なので
+    // "magic-link-invalid" でユーザーに誤誘導せず、上位に投げて 500 にする
+    if (error instanceof CredentialsSignin) {
       redirect('/login?error=magic-link-invalid');
     }
-    // NEXT_REDIRECT などはそのまま上に伝播させる (Next.js が処理する)
+    // NEXT_REDIRECT や他の AuthError サブクラス、その他例外はそのまま上に伝播させる
     throw error;
   }
   // 通常はここに到達しない。型を満たすためのフォールバック

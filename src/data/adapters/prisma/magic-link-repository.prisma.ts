@@ -51,6 +51,12 @@ export function makeMagicLinkRepo(db: PrismaLike): MagicLinkRepository {
       return row ? toMagicLinkToken(row) : null;
     },
 
+    // 指定 ID を 1 件物理削除する (rollback 用)。存在しない ID でも例外で落とさない
+    async deleteById(id) {
+      // 既に消えている場合に Prisma の P2025 (record not found) を投げさせないよう deleteMany を使う
+      await db.magicLinkToken.deleteMany({ where: { id } });
+    },
+
     // expiresAt が now より前のトークンを一括削除して件数を返す
     async deleteExpired(now) {
       // 期限切れのものを deleteMany で物理削除

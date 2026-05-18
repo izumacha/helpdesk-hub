@@ -22,12 +22,15 @@ vi.mock('@/data', () => ({
   },
 }));
 
-// EmailSender ファクトリを差し替え。sentMessages に記録するだけのフェイクを返す
+// EmailSender ファクトリを差し替え。send は既定で sentMessages に記録するだけだが、
+// テストから throw に差し替えたいケースのために stub にしておく
+let sendImpl: (message: { to: string; subject: string; html: string; text: string }) => Promise<void> = async (message) => {
+  sentMessages.push(message);
+};
 vi.mock('@/lib/email', () => ({
   getEmailSender: (): EmailSender => ({
     async send(message) {
-      // 呼び出し内容を配列に記録 (後でアサート)
-      sentMessages.push(message);
+      await sendImpl(message);
     },
   }),
 }));
@@ -44,6 +47,10 @@ beforeEach(() => {
   store = ctx.store;
   repos = ctx.repos;
   sentMessages = [];
+  // 既定の sendImpl を「記録するだけ」に戻す (個別テストで上書きすることがある)
+  sendImpl = async (message) => {
+    sentMessages.push(message);
+  };
   // テナントを 1 つ用意 (User の FK 先として必要)
   store.tenants.set('default-tenant', {
     id: 'default-tenant',
@@ -134,6 +141,59 @@ describe('requestMagicLink', () => {
     await expect(requestMagicLink({ email: 'not-an-email' })).rejects.toThrow(
       /メールアドレス/,
     );
+  });
+
+  // メール送信が失敗しても呼び出し側には {ok: true} を返すこと (列挙耐性)
+  it('メール送信が失敗しても呼び出し側からは {ok: true} に見える (列挙耐性)', async () => {
+    // ユーザー seed
+    store.users.set('u-1', {
+      id: 'u-1',
+      email: 'fail@example.com',
+      name: 'f',
+      passwordHash: 'x',
+      role: 'requester',
+      tenantId: 'default-tenant',
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    // send を失敗するように差し替え
+    sendImpl = async () => {
+      throw new Error('simulated SMTP outage');
+    };
+    const requestMagicLink = await loadAction();
+    const result = await requestMagicLink({ email: 'fail@example.com' });
+    // 呼び出し側からは成功と区別できない
+    expect(result).toEqual({ ok: true });
+  });
+
+  // メール送信失敗時にはトークン行が削除されること (rate-limit を消費しない)
+  it('メール送信失敗時にトークン行が削除される (rate-limit 枠を消費しない)', async () => {
+    // ユーザー seed
+    store.users.set('u-2', {
+      id: 'u-2',
+      email: 'flaky@example.com',
+      name: 'fl',
+      passwordHash: 'x',
+      role: 'requester',
+      tenantId: 'default-tenant',
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    // 1 回目は失敗、2 回目は成功するように切替
+    let attempt = 0;
+    sendImpl = async (message) => {
+      attempt += 1;
+      if (attempt === 1) throw new Error('first attempt fails');
+      sentMessages.push(message);
+    };
+    const requestMagicLink = await loadAction();
+    // 1 回目: 失敗するが {ok:true} を返し、行は削除されているはず
+    await requestMagicLink({ email: 'flaky@example.com' });
+    expect(store.magicLinks.size).toBe(0); // rollback された
+    // 2 回目: 成功して 1 件残る
+    await requestMagicLink({ email: 'flaky@example.com' });
+    expect(store.magicLinks.size).toBe(1);
+    expect(sentMessages).toHaveLength(1);
   });
 
   // 同一メール宛に短時間で大量に要求しても、上限を超えたらメール送信されないこと (発行スパム対策)

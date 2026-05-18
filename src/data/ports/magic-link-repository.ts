@@ -24,6 +24,11 @@ export interface MagicLinkRepository {
   //   - 既に消費済み / 失効済み / 存在しない → null
   consumeValidToken(input: { tokenHash: string; now: Date }): Promise<MagicLinkToken | null>;
 
+  // 指定 ID のトークンを 1 件物理削除する (メール送信失敗時の rollback 用)。
+  // 失敗時に行を残すと countRecentByEmail のレート制限カウントを無意味に消費するため、
+  // delivery 失敗が確定したタイミングで呼び出して掃除する
+  deleteById(id: string): Promise<void>;
+
   // expiresAt が now より前のトークンを一括削除 (掃除用)。削除件数を返す
   deleteExpired(now: Date): Promise<number>;
 
