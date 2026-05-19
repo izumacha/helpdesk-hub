@@ -101,8 +101,9 @@ export async function POST(req: Request) {
     );
   }
 
-  // 添付ファイル群を検証 (件数 / MIME / サイズ)
-  const attachmentValidation = validateUploadedFiles(uploadedFiles);
+  // 添付ファイル群を検証 (件数 / MIME / サイズ / マジックバイト)
+  // マジックバイト確認のため async になっている (実 I/O は発生せず、in-memory バイト列の読み出し)
+  const attachmentValidation = await validateUploadedFiles(uploadedFiles);
   // 1 件でも違反があれば 422 で返す
   if (!attachmentValidation.ok) {
     return validationError(attachmentValidation.message, ['files']);

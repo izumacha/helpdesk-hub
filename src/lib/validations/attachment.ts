@@ -12,6 +12,8 @@ import {
   isAllowedImageMimeType,
   type AllowedImageMimeType,
 } from '@/domain/attachment';
+// マジックバイトによる中身偽装検証 (申告 MIME と実バイト列の整合チェック)
+import { MAGIC_BYTES_PEEK_LENGTH, verifyImageMagicBytes } from '@/domain/image-magic-bytes';
 
 // 検証成功時の戻り値型 (受け取った File をそのまま返す)
 export interface AttachmentValidationOk {
@@ -39,10 +41,12 @@ function formatMb(bytes: number): string {
   return (bytes / (1024 * 1024)).toFixed(1);
 }
 
-// アップロードされた File[] を検証する。1 ファイルでも違反があれば全体を失敗扱いにする
-export function validateUploadedFiles(
+// アップロードされた File[] を検証する。1 ファイルでも違反があれば全体を失敗扱いにする。
+// 申告 MIME (file.type) と件数 / サイズの安価な検査を先に通し、最後に各ファイル先頭 16 バイトの
+// マジックバイトを実バイト列で確認する (中身偽装への防御)。
+export async function validateUploadedFiles(
   files: File[],
-): AttachmentValidationOk | AttachmentValidationError {
+): Promise<AttachmentValidationOk | AttachmentValidationError> {
   // 件数 0 (添付なし) は許可: 添付任意のため成功で空配列を返す
   if (files.length === 0) {
     return { ok: true, files: [] };
@@ -70,11 +74,22 @@ export function validateUploadedFiles(
         message: `1 ファイルあたり ${formatMb(MAX_ATTACHMENT_SIZE_BYTES)}MB までです`,
       };
     }
-    // MIME は許可リストにあるものだけ通す
+    // MIME は許可リストにあるものだけ通す (申告ベース)
     if (!isAllowedImageMimeType(file.type)) {
       return {
         ok: false,
         message: `この形式のファイルは添付できません (許可: ${ALLOWED_IMAGE_MIME_TYPES.join(', ')})`,
+      };
+    }
+    // 中身偽装防御: 先頭 16 バイトを読み、申告 MIME と実マジックバイトの整合を確認する
+    // File.slice は同期、arrayBuffer は async だが既に in-memory のため実 I/O は発生しない
+    const headBuffer = await file.slice(0, MAGIC_BYTES_PEEK_LENGTH).arrayBuffer();
+    const headBytes = new Uint8Array(headBuffer);
+    if (!verifyImageMagicBytes(file.type, headBytes)) {
+      // 申告 MIME と中身が一致しないファイルは保存しない
+      return {
+        ok: false,
+        message: 'ファイルの内容が画像として認識できません',
       };
     }
     // 元ファイル名は trim して空なら "image" にフォールバックする (UI 表示のため)

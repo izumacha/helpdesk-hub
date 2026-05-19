@@ -18,6 +18,14 @@ export interface CreateAttachmentInput {
 }
 
 // 添付メタデータ用リポジトリの契約
+//
+// 注意: `delete` および DB の ON DELETE CASCADE は **メタデータしか消さない**。
+// 物理ファイル (StoragePort 配下) を消したい場合は、呼び出し側で以下のシーケンスを守ること:
+//   1. `listByTicket` / `findById` で削除対象の `storageKey` を取得する
+//   2. DB を削除する (リポジトリ or Ticket/Tenant の cascade)
+//   3. `storage.delete(storageKey)` を best-effort で呼ぶ
+// 削除 UI / 削除 Service を実装する際に上記のラッパーを 1 箇所に集約することで、
+// var/uploads/ に孤児ファイルが残らないようにする (Phase 2 以降の課題)。
 export interface AttachmentRepository {
   // 1 件作成 (StoragePort.put 成功後にメタを保存する用途)
   create(input: CreateAttachmentInput): Promise<Attachment>;
@@ -27,6 +35,7 @@ export interface AttachmentRepository {
   listByTicket(ticketId: string, tenantId: string): Promise<Attachment[]>;
   // チケットに紐づく添付の件数を返す (5 枚上限チェック用)
   countByTicket(ticketId: string, tenantId: string): Promise<number>;
-  // ID + tenantId で 1 件削除 (StoragePort.delete のロールバック相互運用に使う)
+  // ID + tenantId で 1 件削除 (StoragePort.delete のロールバック相互運用に使う)。
+  // 物理ファイルは別途 storage.delete を呼ぶこと
   delete(id: string, tenantId: string): Promise<void>;
 }

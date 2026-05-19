@@ -75,9 +75,9 @@ export async function POST(req: Request, { params }: Params) {
   }
   const trimmedBody = parsedBody.data;
 
-  // 添付ファイルを抽出して件数 / MIME / サイズを検証する
+  // 添付ファイルを抽出して件数 / MIME / サイズ / マジックバイトを検証する
   const files = form.getAll('files').filter((e): e is File => e instanceof File);
-  const attachmentValidation = validateUploadedFiles(files);
+  const attachmentValidation = await validateUploadedFiles(files);
   if (!attachmentValidation.ok) {
     return validationError(attachmentValidation.message, ['files']);
   }

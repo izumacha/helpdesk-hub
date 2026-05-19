@@ -123,9 +123,18 @@ async function seed() {
   return { ticketId: ticket.id, ticketB: ticketB.id };
 }
 
-// File を作るヘルパー
+// 既知のマジックバイト (validateUploadedFiles の整合チェックを通すため必要)
+const MAGIC: Record<string, Uint8Array> = {
+  'image/jpeg': new Uint8Array([0xff, 0xd8, 0xff, 0xe0]),
+  'image/png': new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+};
+
+// File を作るヘルパー (申告 MIME に対応するマジックバイトを先頭に置き、その後にテキスト本体を続ける)
 function makeFile(name: string, type: string, body: string): File {
-  return new File([new TextEncoder().encode(body)], name, { type });
+  const magic = MAGIC[type];
+  const text = new TextEncoder().encode(body);
+  const data = magic ? new Uint8Array([...magic, ...text]) : text;
+  return new File([data], name, { type });
 }
 
 // multipart Request を組み立てるヘルパー (Content-Type は undici が自動付与する)
@@ -257,5 +266,115 @@ describe('POST /api/tickets/[id]/comments', () => {
     const res = await POST(buildRequest('対応します', []), makeParams(ticketId));
     expect(res.status).toBe(201);
     expect(store.comments.size).toBe(1);
+  });
+
+  // ─────────────────────────────────────────────
+  // 通知ルート (誰に通知が飛ぶか) の仕様
+  // 旧 addComment Server Action のテストから移植 (PR レビュー指摘 #4 への対応)
+  // ─────────────────────────────────────────────
+
+  // 依頼者がコメント、担当者ありなら担当者だけに通知
+  it('notifies the assignee when a requester comments on an assigned ticket', async () => {
+    const { ticketId } = await seed();
+    // 担当者を割り当てておく
+    await repos.tickets.updateAssignee(ticketId, AGENT, TENANT);
+    mockSession = buildSession(REQUESTER, 'requester', TENANT);
+    const { POST } = await import('@/app/api/tickets/[id]/comments/route');
+    const res = await POST(buildRequest('追加情報です', []), makeParams(ticketId));
+    expect(res.status).toBe(201);
+
+    // 通知は担当者 1 名のみ
+    const notifications = [...store.notifications.values()];
+    expect(notifications).toHaveLength(1);
+    expect(notifications[0].userId).toBe(AGENT);
+    expect(notifications[0].type).toBe('commented');
+    expect(notifications[0].ticketId).toBe(ticketId);
+  });
+
+  // 依頼者がコメント、担当者未定ならテナント内全エージェントに通知
+  it('notifies every agent when a requester comments on an unassigned ticket', async () => {
+    const { ticketId } = await seed();
+    // テナント内に複数エージェントを追加
+    const now = new Date();
+    store.users.set('u-agt-2', {
+      id: 'u-agt-2',
+      email: 'agt2@example.com',
+      name: '鈴木',
+      passwordHash: 'x',
+      role: 'agent',
+      tenantId: TENANT,
+      createdAt: now,
+      updatedAt: now,
+    });
+    mockSession = buildSession(REQUESTER, 'requester', TENANT);
+    const { POST } = await import('@/app/api/tickets/[id]/comments/route');
+    const res = await POST(buildRequest('どうなってますか', []), makeParams(ticketId));
+    expect(res.status).toBe(201);
+
+    // 通知は全エージェントに届く
+    const notifications = [...store.notifications.values()];
+    expect(new Set(notifications.map((n) => n.userId))).toEqual(new Set([AGENT, 'u-agt-2']));
+    for (const n of notifications) {
+      expect(n.type).toBe('commented');
+      expect(n.ticketId).toBe(ticketId);
+    }
+  });
+
+  // エージェントがコメント、担当者未定なら依頼者にだけ通知
+  it('notifies the ticket creator when an agent comments on an unassigned ticket', async () => {
+    const { ticketId } = await seed();
+    mockSession = buildSession(AGENT, 'agent', TENANT);
+    const { POST } = await import('@/app/api/tickets/[id]/comments/route');
+    const res = await POST(buildRequest('確認しました', []), makeParams(ticketId));
+    expect(res.status).toBe(201);
+
+    const notifications = [...store.notifications.values()];
+    expect(notifications).toHaveLength(1);
+    expect(notifications[0].userId).toBe(REQUESTER);
+    expect(notifications[0].type).toBe('commented');
+  });
+
+  // エージェントがコメント、担当者ありなら依頼者と担当者の両方に通知
+  it('notifies both creator and assignee when an agent comments on an assigned ticket', async () => {
+    const { ticketId } = await seed();
+    // 別エージェント (u-agt-2) を作って担当者に
+    const now = new Date();
+    store.users.set('u-agt-2', {
+      id: 'u-agt-2',
+      email: 'agt2@example.com',
+      name: '鈴木',
+      passwordHash: 'x',
+      role: 'agent',
+      tenantId: TENANT,
+      createdAt: now,
+      updatedAt: now,
+    });
+    await repos.tickets.updateAssignee(ticketId, 'u-agt-2', TENANT);
+    // 投稿者は別エージェント (AGENT) で、依頼者 + 担当者の両方に通知が飛ぶ想定
+    mockSession = buildSession(AGENT, 'agent', TENANT);
+    const { POST } = await import('@/app/api/tickets/[id]/comments/route');
+    const res = await POST(buildRequest('対応を引き継ぎます', []), makeParams(ticketId));
+    expect(res.status).toBe(201);
+
+    const notifications = [...store.notifications.values()];
+    expect(new Set(notifications.map((n) => n.userId))).toEqual(new Set([REQUESTER, 'u-agt-2']));
+    for (const n of notifications) {
+      expect(n.type).toBe('commented');
+    }
+  });
+
+  // 投稿者自身には通知しない (重複通知の防止)
+  it('does not notify the commenter themselves', async () => {
+    const { ticketId } = await seed();
+    // 担当者と投稿者が同一 (AGENT)
+    await repos.tickets.updateAssignee(ticketId, AGENT, TENANT);
+    mockSession = buildSession(AGENT, 'agent', TENANT);
+    const { POST } = await import('@/app/api/tickets/[id]/comments/route');
+    const res = await POST(buildRequest('自分のコメント', []), makeParams(ticketId));
+    expect(res.status).toBe(201);
+
+    const notifications = [...store.notifications.values()];
+    // 依頼者 1 名にだけ届く (投稿者 = AGENT は除外)
+    expect(notifications.map((n) => n.userId)).toEqual([REQUESTER]);
   });
 });

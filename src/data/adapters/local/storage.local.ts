@@ -4,19 +4,22 @@
 
 // Node の fs/promises を非同期 I/O に使用する
 import { mkdir, readFile, unlink, writeFile } from 'node:fs/promises';
-// パス操作 (親ディレクトリ計算・絶対パス化) に使用する
-import { dirname, isAbsolute, resolve } from 'node:path';
+// パス操作 (親ディレクトリ計算・絶対パス化・OS 区切り対応の相対化) に使用する
+import { dirname, isAbsolute, relative, resolve } from 'node:path';
 // Port 契約をインポート
 import type { StoragePort } from '@/data/ports/storage';
 
 // 渡されたキーが「ルート配下に閉じている」ことを保証するヘルパー
-// "../" 等で外側に出ようとする攻撃的な key を拒否し、Path Traversal を防ぐ
+// "../" 等で外側に出ようとする攻撃的な key を拒否し、Path Traversal を防ぐ。
+// OS 依存のパス区切り (POSIX の '/' / Windows の '\\') に依存しない判定にするため
+// startsWith ではなく path.relative + .. 判定を使う
 function resolveSafePath(rootAbs: string, key: string): string {
-  // 候補となる絶対パスを計算する (join + resolve でセグメントを正規化)
+  // 候補となる絶対パスを計算する (resolve でセグメントを正規化)
   const candidate = resolve(rootAbs, key);
-  // ルート + パス区切り を接頭辞として持たないなら拒否する
-  // (ルート自身 = candidate === rootAbs もキーが空文字を意味するので拒否)
-  if (!candidate.startsWith(rootAbs + '/') && candidate !== rootAbs) {
+  // 候補をルートからの相対パスにする
+  // - '..' を含む / 絶対パスのまま / 空文字 (= ルート自身) のいずれも拒否
+  const rel = relative(rootAbs, candidate);
+  if (rel === '' || rel.startsWith('..') || isAbsolute(rel)) {
     throw new Error(`storage key escapes root: ${key}`);
   }
   // 安全と分かった絶対パスを返す

@@ -71,9 +71,20 @@ async function seed() {
   });
 }
 
-// File を作るヘルパー (バイト列の中身は実テキストで分かりやすくする)
+// 既知のマジックバイト (validateUploadedFiles の整合チェックを通すため必要)
+const MAGIC: Record<string, Uint8Array> = {
+  'image/jpeg': new Uint8Array([0xff, 0xd8, 0xff, 0xe0]),
+  'image/png': new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+};
+
+// File を作るヘルパー (申告 MIME に対応するマジックバイトを先頭に置き、その後にテキスト本体を続ける)
+// MIME がマジック未登録ならそのままテキストを返す (拒否ケースのテストで使う)
 function makeFile(name: string, type: string, body: string): File {
-  return new File([new TextEncoder().encode(body)], name, { type });
+  const magic = MAGIC[type];
+  const text = new TextEncoder().encode(body);
+  // マジックがあれば連結、無ければテキストだけで File を作る
+  const data = magic ? new Uint8Array([...magic, ...text]) : text;
+  return new File([data], name, { type });
 }
 
 // multipart/form-data リクエストを組み立てて Request 化する
