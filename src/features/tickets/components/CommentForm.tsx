@@ -2,8 +2,8 @@
 
 // テキストエリア / ファイル入力の参照と、送信中フラグ
 import { useRef, useState, useTransition } from 'react';
-// FormData 受け取り対応のコメント投稿サーバーアクション (添付ファイルもまとめて送信)
-import { addCommentWithAttachments } from '@/features/tickets/actions/add-comment-with-attachments';
+// 投稿後のサーバー側キャッシュを再取得させるためのルーター
+import { useRouter } from 'next/navigation';
 // 添付ファイル件数の上限 (UI ヒント表示用)
 import { MAX_ATTACHMENTS_PER_UPLOAD } from '@/domain/attachment';
 
@@ -13,7 +13,9 @@ interface Props {
 }
 
 // チケット詳細ページのコメント投稿フォーム
-// 本文 + 画像 (任意) をまとめて Server Action へ送る。
+// 本文 + 画像 (任意) を POST /api/tickets/[id]/comments にまとめて送信する。
+// Server Action ではなく Route Handler を使う理由: Server Action のリクエストボディは
+// 既定 1MB 上限のため、5 枚 × 10MB を許容する設計と相性が悪い (スマホ写真で踏みやすい)。
 export function CommentForm({ ticketId }: Props) {
   // 送信中フラグ + トランジション関数
   const [isPending, startTransition] = useTransition();
@@ -21,8 +23,10 @@ export function CommentForm({ ticketId }: Props) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   // ファイル入力への参照 (送信後にクリアするため)
   const fileRef = useRef<HTMLInputElement>(null);
-  // 送信エラー (Server Action がスローした日本語メッセージ) を保持する
+  // 送信エラー (Route Handler が返した日本語メッセージ) を保持する
   const [error, setError] = useState<string | null>(null);
+  // 投稿成功時にサーバーから新しいコメント / 添付 / 履歴を取り直すためのルーター
+  const router = useRouter();
 
   // 送信ハンドラ
   function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
@@ -31,7 +35,7 @@ export function CommentForm({ ticketId }: Props) {
     // フォームから FormData を組み立てる (本文 + files[])
     const form = e.currentTarget;
     const data = new FormData(form);
-    // 本文が空のときは送信せずヒントを出す (Server Action でも弾くがクライアント側で先に止める)
+    // 本文が空のときは送信せずヒントを出す (Route Handler でも弾くがクライアント側で先に止める)
     const body = ((data.get('body') ?? '') as string).trim();
     if (!body) return;
 
@@ -39,16 +43,30 @@ export function CommentForm({ ticketId }: Props) {
     setError(null);
     // 非ブロッキング送信
     startTransition(async () => {
-      try {
-        // サーバーアクションに FormData をそのまま渡す
-        await addCommentWithAttachments(ticketId, data);
+      // multipart/form-data を Route Handler へ POST する
+      // Content-Type は手動指定せず、ブラウザに boundary を自動付与させる
+      const res = await fetch(`/api/tickets/${ticketId}/comments`, {
+        method: 'POST',
+        body: data,
+      });
+
+      if (res.ok) {
         // 成功後にテキストエリアとファイル入力をクリアする
         if (textareaRef.current) textareaRef.current.value = '';
         if (fileRef.current) fileRef.current.value = '';
-      } catch (err) {
-        // Server Action 由来のエラーは UI にそのまま日本語で出す
-        const message = err instanceof Error ? err.message : '送信に失敗しました';
-        setError(message);
+        // サーバーキャッシュを refresh して新しいコメントを画面に反映する
+        router.refresh();
+        return;
+      }
+
+      // 失敗時: Route Handler の error / issues[0].message を読み取って画面に出す
+      try {
+        const err = (await res.json()) as { error?: string; issues?: Array<{ message?: string }> };
+        const issueMessage = Array.isArray(err.issues) ? err.issues[0]?.message : null;
+        setError(issueMessage ?? err.error ?? '送信に失敗しました');
+      } catch {
+        // JSON でないレスポンス (502 等) はステータスをそのまま伝える
+        setError(`送信に失敗しました (HTTP ${res.status})`);
       }
     });
   }
@@ -85,7 +103,7 @@ export function CommentForm({ ticketId }: Props) {
           className="mt-1 block w-full text-xs text-gray-700 file:mr-3 file:rounded-md file:border-0 file:bg-blue-50 file:px-3 file:py-1.5 file:text-xs file:font-medium file:text-blue-700 hover:file:bg-blue-100"
         />
       </div>
-      {/* Server Action エラー表示 */}
+      {/* Route Handler エラー表示 */}
       {error && (
         <p role="alert" className="text-xs text-rose-600">
           {error}

@@ -10,9 +10,11 @@ export interface StoragePutMeta {
 
 // 添付ファイル本体の I/O を抽象化したリポジトリ契約
 // - キー (storageKey) は呼び出し側で組み立てて渡す (例: tenantId/ticketId/uuid.ext)
+//   呼び出し側は UUID を含めることで実用上のキー衝突を回避する
+// - put は同名キーへの書き込みを **上書き** する。呼び出し側が UUID で一意性を担保している前提
 // - 例外を投げる/投げないは実装に委ねず、呼び出し側がエラーを catch してロールバックする
 export interface StoragePort {
-  // 指定キーにバイト列を保存する。既存ファイルは上書きしない (キー衝突は呼び出し側で防ぐ)
+  // 指定キーにバイト列を保存する。同名キーが既にある場合は上書きする
   put(key: string, data: Uint8Array, meta: StoragePutMeta): Promise<void>;
   // 指定キーのバイト列を読み出して返す。存在しなければ null
   get(key: string): Promise<Uint8Array | null>;

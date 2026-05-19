@@ -60,11 +60,14 @@ export async function GET(_req: Request, { params }: Params) {
   // (日本語ファイル名でもダウンロード時に正しい名前が出るようにする)
   const encodedName = encodeURIComponent(attachment.originalName);
   // 1 時間ブラウザにキャッシュさせる (private = 共有キャッシュ禁止、認可済みユーザー専用)
+  // X-Content-Type-Options: nosniff はユーザーアップロード物配信の防御として常時付与する
+  // (ブラウザの MIME スニッフィングを無効化し、image/* を script として実行される事故を防ぐ)
   const headers = new Headers({
     'Content-Type': attachment.mimeType,
     'Content-Length': String(bytes.length),
     'Content-Disposition': `inline; filename*=UTF-8''${encodedName}`,
     'Cache-Control': 'private, max-age=3600',
+    'X-Content-Type-Options': 'nosniff',
   });
   // Uint8Array を Blob でラップして Response に詰める
   // (Web 標準では Response の BodyInit に Uint8Array も含まれるが、
