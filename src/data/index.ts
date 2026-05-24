@@ -27,6 +27,10 @@ export const repos: Repos = buildPrismaRepos(prisma);
 // アプリ全体で共有する Prisma 版の UnitOfWork (トランザクション境界)
 export const uow: UnitOfWork = buildPrismaUow(prisma);
 
+// 注意: 添付ファイル本体の StoragePort (`storage`) は、Edge runtime (middleware) に
+// node:fs/promises / node:path が解決できないバンドルを混入させないために、
+// このモジュールでは公開しない。`@/data/storage` から個別に import すること。
+
 /**
  * Default notification broadcaster: single-process in-memory registry.
  *

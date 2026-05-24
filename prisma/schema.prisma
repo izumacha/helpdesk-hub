@@ -73,6 +73,12 @@ enum TenantMode {
   pro // 現行フル機能 (7 ステータス・SLA・エスカレーション・FAQ 候補)
 }
 
+// 添付ファイルの保存先種別 (将来 S3 互換ストレージへの差し替えで使い分ける)
+enum AttachmentStorage {
+  local // ローカルボリューム (./var/uploads/<tenantId>/<ticketId>/<uuid>.<ext>)
+  s3 // 互換オブジェクトストレージ (Phase 2 以降に予定)
+}
+
 // ─────────────────────────────────────────────
 // Tenant (組織/テナント。SaaS 化のためのデータ境界)
 // ─────────────────────────────────────────────
@@ -91,6 +97,7 @@ model Tenant {
   tickets       Ticket[]
   faqCandidates FaqCandidate[]
   notifications Notification[]
+  attachments   Attachment[] // 添付ファイル (テナント境界の保持に必須)
 }
 
 // ─────────────────────────────────────────────
@@ -111,12 +118,13 @@ model User {
   tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
 
   // Relations
-  createdTickets  Ticket[]        @relation("TicketCreator") // このユーザーが作ったチケット
-  assignedTickets Ticket[]        @relation("TicketAssignee") // このユーザーが担当のチケット
-  comments        TicketComment[] // このユーザーが投稿したコメント
-  histories       TicketHistory[] // このユーザーが起こした履歴イベント
-  faqCandidates   FaqCandidate[] // このユーザーが作成した FAQ 候補
-  notifications   Notification[] // このユーザー宛の通知
+  createdTickets      Ticket[]        @relation("TicketCreator") // このユーザーが作ったチケット
+  assignedTickets     Ticket[]        @relation("TicketAssignee") // このユーザーが担当のチケット
+  comments            TicketComment[] // このユーザーが投稿したコメント
+  histories           TicketHistory[] // このユーザーが起こした履歴イベント
+  faqCandidates       FaqCandidate[] // このユーザーが作成した FAQ 候補
+  notifications       Notification[] // このユーザー宛の通知
+  uploadedAttachments Attachment[] // このユーザーがアップロードした添付ファイル
 
   @@index([tenantId]) // テナントスコープ検索用
 }
@@ -200,6 +208,7 @@ model Ticket {
   histories     TicketHistory[] // 紐づく履歴一覧
   faqCandidate  FaqCandidate? // 紐づく FAQ 候補 (1:1)
   notifications Notification[] // このチケットを参照する通知
+  attachments   Attachment[] // 紐づく添付ファイル (画像)
 
   // 検索性能向上のためのインデックス
   @@index([creatorId]) // 作成者で絞り込む一覧用
@@ -275,8 +284,9 @@ model TicketComment {
   ticketId String // 紐づくチケット ID
   authorId String // 投稿者ユーザー ID
 
-  ticket Ticket @relation(fields: [ticketId], references: [id], onDelete: Cascade) // 親チケット削除時に一緒に消す
-  author User   @relation(fields: [authorId], references: [id]) // 投稿者
+  ticket      Ticket       @relation(fields: [ticketId], references: [id], onDelete: Cascade) // 親チケット削除時に一緒に消す
+  author      User         @relation(fields: [authorId], references: [id]) // 投稿者
+  attachments Attachment[] // このコメントに添付された画像 (現場の追加写真など)
 }
 
 // ─────────────────────────────────────────────
@@ -295,4 +305,33 @@ model TicketHistory {
 
   ticket    Ticket @relation(fields: [ticketId], references: [id], onDelete: Cascade) // 親チケット削除時に履歴も削除
   changedBy User   @relation(fields: [changedById], references: [id]) // 変更者
+}
+
+// ─────────────────────────────────────────────
+// Attachment (チケット/コメントに添付する画像)
+// ─────────────────────────────────────────────
+// docs/smb-dx-pivot-plan.md Phase 1 で要求される「スマホ写真添付」のための保存先。
+// ストレージ実体は storage カラムで切替可能 (現状 local のみ。Phase 2 で s3 対応予定)。
+
+model Attachment {
+  id           String            @id @default(cuid()) // 主キー
+  ticketId     String // 親チケット (必須: チケットに紐づかない添付は作らない)
+  commentId    String? // 紐づくコメント ID。null ならチケット本体への添付
+  uploaderId   String // アップロードを実行したユーザー
+  tenantId     String // 所属テナント (where に必ず注入する)
+  mimeType     String // 検証通過後の MIME (image/jpeg | image/png | image/webp | image/heic)
+  size         Int // バイト数 (10MB 上限の検証は API 側で行う)
+  originalName String // 元ファイル名 (UI のダウンロード/表示で利用)
+  storageKey   String // 保存先キー (例: tenantId/ticketId/<uuid>.jpg)
+  storage      AttachmentStorage @default(local) // 保存方式 (将来差し替え可)
+  createdAt    DateTime          @default(now()) // 添付日時
+
+  ticket   Ticket         @relation(fields: [ticketId], references: [id], onDelete: Cascade) // チケット削除で連鎖削除
+  comment  TicketComment? @relation(fields: [commentId], references: [id], onDelete: Cascade) // コメント削除で連鎖削除
+  uploader User           @relation(fields: [uploaderId], references: [id]) // アップローダーユーザー
+  tenant   Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade) // テナント削除で連鎖削除
+
+  @@index([ticketId]) // チケット詳細での一覧取得用
+  @@index([commentId]) // コメント単位での添付一覧用
+  @@index([tenantId]) // テナントスコープ検索用 (クロステナント遮断テスト用)
 }

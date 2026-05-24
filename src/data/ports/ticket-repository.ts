@@ -8,6 +8,8 @@ import type {
   TicketComment,
   TicketHistory,
 } from '@/domain/types';
+// 添付ファイルのサマリ型 (詳細画面でサムネ表示する際に必要な最小情報)
+import type { AttachmentSummary } from '@/domain/attachment-summary';
 import type { Page, Sort, TextFilter } from './filters';
 
 // チケット一覧の絞り込み条件
@@ -33,11 +35,19 @@ export interface TicketListFilter {
   overdue?: { now: Date };
 }
 
-// チケット詳細画面用の型 (コメント/履歴/FAQ 候補を同梱)
+// チケット詳細画面用の型 (コメント/履歴/FAQ 候補/添付を同梱)
 export interface TicketDetail extends TicketWithRefs {
-  comments: Array<TicketComment & { author: UserSummary }>; // コメント + 書き込み者
+  // コメント + 書き込み者 + そのコメントに紐づく添付一覧 (古い順)
+  comments: Array<
+    TicketComment & {
+      author: UserSummary;
+      attachments: AttachmentSummary[];
+    }
+  >;
   histories: Array<TicketHistory & { changedBy: UserSummary }>; // 履歴 + 変更者
   faqCandidate: { id: string } | null; // 紐づく FAQ 候補 (なければ null)
+  // チケット本体に直接添付された画像 (コメント添付ではないもの。古い順)
+  attachments: AttachmentSummary[];
 }
 
 // 担当者別の保持チケット件数を表す行 (ダッシュボード用)

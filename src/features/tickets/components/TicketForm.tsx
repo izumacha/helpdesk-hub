@@ -1,6 +1,6 @@
 'use client';
 
-// ローカル状態 (サーバーエラー保持) 用
+// ローカル状態 (サーバーエラー / 添付ファイル選択状態) 用
 import { useState } from 'react';
 // react-hook-form 本体 (フォーム状態管理)
 import { useForm } from 'react-hook-form';
@@ -14,6 +14,8 @@ import { createTicketSchema, type CreateTicketFormValues } from '@/lib/validatio
 import { PRIORITY_LABELS } from '@/lib/constants';
 // テナントモード型 (lite | pro)。Lite では入力項目を 3 つに絞る
 import type { TenantMode } from '@/domain/types';
+// 添付ファイル件数の上限 (UI ヒント表示用)
+import { MAX_ATTACHMENTS_PER_UPLOAD } from '@/domain/attachment';
 
 // プルダウン項目用の最小型 (id と name)
 type Category = { id: string; name: string };
@@ -46,6 +48,9 @@ export function TicketForm({ categories, mode }: Props) {
   const router = useRouter();
   // サーバー側エラー (フォーム検証エラーとは別) の保持
   const [serverError, setServerError] = useState<string | null>(null);
+  // 添付ファイル選択状態 (onChange でセット、送信後にクリア)
+  // ref を読まずに state 経由で渡すことで「render 中の ref 参照」警告を回避する
+  const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
   // Lite モードフラグ (件名/内容/期限日のみの簡易フォームに切替)
   const isLite = mode === 'lite';
   // react-hook-form の各種ヘルパー
@@ -61,20 +66,45 @@ export function TicketForm({ categories, mode }: Props) {
   });
 
   // 送信時の処理 (API ルートへ POST → 成功で詳細ページへ遷移)
+  // 添付ファイルの有無で送信方式を切替: 添付ありなら multipart/form-data、無しは従来どおり JSON
   async function onSubmit(data: CreateTicketFormValues) {
     // サーバーエラー表示をクリア
     setServerError(null);
-    // POST /api/tickets で作成
-    const res = await fetch('/api/tickets', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(data),
-    });
+
+    // 選択中のファイル (state から取得)
+    const hasFiles = selectedFiles.length > 0;
+
+    // 送信用のリクエスト本体を選択: hasFiles なら FormData、それ以外は JSON
+    let res: Response;
+    if (hasFiles) {
+      // multipart/form-data を組み立てる
+      const fd = new FormData();
+      // フォームの各フィールドを文字列として詰める (Zod は string を受け取る)
+      fd.set('title', data.title);
+      fd.set('body', data.body);
+      fd.set('priority', data.priority);
+      // optional フィールドは値があるときだけセットする
+      if (data.categoryId) fd.set('categoryId', data.categoryId);
+      if (data.dueDate) fd.set('dueDate', data.dueDate);
+      // ファイルは files キーに同名で複数 append する
+      for (const f of selectedFiles) fd.append('files', f, f.name);
+      // Content-Type は手動で指定せず、ブラウザに自動で boundary を組み立てさせる
+      res = await fetch('/api/tickets', { method: 'POST', body: fd });
+    } else {
+      // 添付なしの単純パス (従来どおり JSON で送る)
+      res = await fetch('/api/tickets', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(data),
+      });
+    }
 
     // 失敗時はエラー文言を表示して中断
     if (!res.ok) {
       const err = await res.json();
-      setServerError(err.error ?? '登録に失敗しました');
+      // 添付検証 (422 + issues に path:['files'] が入る) のメッセージも拾える
+      const issueMessage = Array.isArray(err.issues) ? err.issues[0]?.message : null;
+      setServerError(issueMessage ?? err.error ?? '登録に失敗しました');
       return;
     }
 
@@ -126,6 +156,31 @@ export function TicketForm({ categories, mode }: Props) {
           placeholder="問い合わせ内容を入力してください"
         />
         {errors.body && <p className="mt-1.5 text-xs text-rose-600">{errors.body.message}</p>}
+      </div>
+
+      {/* 添付ファイル (任意。スマホで撮った写真を最大 5 枚まで添付できる) */}
+      <div>
+        <label htmlFor="files" className="mb-1.5 block text-sm font-medium text-slate-700">
+          {/* Lite ではより平易な表記、Pro でも同じラベルで十分なので統一する */}
+          写真を添付
+        </label>
+        <input
+          id="files"
+          name="files"
+          type="file"
+          // 画像のみ受け付ける。MIME 検証は API 側でも行う (UI のフィルタは「ヒント」扱い)
+          accept="image/*"
+          // capture="environment" は対応ブラウザでスマホの背面カメラを直接起動する
+          capture="environment"
+          multiple
+          // 選択内容を state に保持する (送信時に state から FormData を組み立てる)
+          onChange={(e) => setSelectedFiles(Array.from(e.target.files ?? []))}
+          className="block w-full text-sm text-slate-700 file:mr-3 file:rounded-md file:border-0 file:bg-teal-50 file:px-3 file:py-1.5 file:text-xs file:font-medium file:text-teal-700 hover:file:bg-teal-100"
+        />
+        <p className="mt-1 text-xs text-slate-400">
+          {/* 件数とサイズの目安を 1 行で案内 (詳細は API のエラーメッセージに委ねる) */}
+          画像を最大 {MAX_ATTACHMENTS_PER_UPLOAD} 枚 / 1 枚 10MB まで添付できます (任意)
+        </p>
       </div>
 
       {/* 期限日 (Lite モードのみ表示。Pro はカテゴリ/優先度で自動 SLA を使うため非表示) */}

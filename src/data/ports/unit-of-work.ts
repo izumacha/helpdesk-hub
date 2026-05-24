@@ -1,4 +1,5 @@
 // 各リポジトリの契約 (port) を束ねて 1 セットとして扱うための型定義
+import type { AttachmentRepository } from './attachment-repository';
 import type { CategoryRepository } from './category-repository';
 import type { FaqRepository } from './faq-repository';
 import type { MagicLinkRepository } from './magic-link-repository';
@@ -20,6 +21,7 @@ export interface Repos {
   categories: CategoryRepository; // カテゴリ操作
   tenants: TenantRepository; // テナント操作 (マルチテナント化)
   magicLinks: MagicLinkRepository; // マジックリンクトークン操作 (パスワードレス認証)
+  attachments: AttachmentRepository; // 添付ファイル (画像) のメタ情報操作
 }
 
 // トランザクション境界を表す契約 (Unit of Work パターン)

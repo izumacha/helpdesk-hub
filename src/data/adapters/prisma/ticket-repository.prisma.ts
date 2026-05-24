@@ -10,7 +10,14 @@ import type {
   TicketRepository,
 } from '@/data/ports/ticket-repository';
 // Prisma 行 → ドメイン型のマッパー関数群
-import { toTicket, toTicketWithRefs, toUserSummary, toComment, toHistory } from './mappers';
+import {
+  toAttachmentSummary,
+  toComment,
+  toHistory,
+  toTicket,
+  toTicketWithRefs,
+  toUserSummary,
+} from './mappers';
 // Prisma クライアント共通型
 import type { PrismaLike } from './types';
 
@@ -76,16 +83,20 @@ export function makeTicketRepo(db: PrismaLike): TicketRepository {
       return row ? toTicketWithRefs(row) : null;
     },
 
-    // 詳細ページ用: 関連 + コメント + 履歴 + FAQ 候補を一括取得 (tenantId スコープ)
+    // 詳細ページ用: 関連 + コメント + 履歴 + FAQ 候補 + 添付を一括取得 (tenantId スコープ)
     async findByIdWithDetail(id, tenantId) {
       const row = await db.ticket.findFirst({
         where: { id, tenantId },
         include: {
           ...REFS_INCLUDE, // 起票者/担当者/カテゴリ
-          // コメントは古い順に、投稿者名を JOIN
+          // コメントは古い順に、投稿者名と添付一覧を JOIN
           comments: {
             orderBy: { createdAt: 'asc' },
-            include: { author: { select: { id: true, name: true } } },
+            include: {
+              author: { select: { id: true, name: true } },
+              // 各コメントに紐づく添付 (古い順)
+              attachments: { orderBy: { createdAt: 'asc' } },
+            },
           },
           // 履歴は新しい順に、変更者名を JOIN
           histories: {
@@ -94,6 +105,11 @@ export function makeTicketRepo(db: PrismaLike): TicketRepository {
           },
           // 紐づく FAQ 候補 (存在すれば ID のみ)
           faqCandidate: { select: { id: true } },
+          // チケット本体に直接添付された画像 (古い順) — commentId IS NULL のものだけに絞る
+          attachments: {
+            where: { commentId: null },
+            orderBy: { createdAt: 'asc' },
+          },
         },
       });
       // チケットが存在しなければ null を返す
@@ -104,12 +120,14 @@ export function makeTicketRepo(db: PrismaLike): TicketRepository {
         comments: row.comments.map((c) => ({
           ...toComment(c),
           author: toUserSummary(c.author),
+          attachments: c.attachments.map(toAttachmentSummary), // 各コメントの添付一覧
         })),
         histories: row.histories.map((h) => ({
           ...toHistory(h),
           changedBy: toUserSummary(h.changedBy),
         })),
         faqCandidate: row.faqCandidate ? { id: row.faqCandidate.id } : null,
+        attachments: row.attachments.map(toAttachmentSummary), // チケット直接添付の一覧
       };
     },
 

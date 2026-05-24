@@ -28,6 +28,8 @@ import { PrioritySelect } from '@/features/tickets/components/PrioritySelect';
 import { AssigneeSelect } from '@/features/tickets/components/AssigneeSelect';
 // コメント投稿フォーム
 import { CommentForm } from '@/features/tickets/components/CommentForm';
+// 添付ファイル (画像) のサムネ一覧コンポーネント
+import { AttachmentList } from '@/features/tickets/components/AttachmentList';
 // エスカレーション操作フォーム
 import { EscalationForm } from '@/features/tickets/components/EscalationForm';
 // SLA 状態判定 + ラベル/カラー定義
@@ -97,6 +99,12 @@ export default async function TicketDetailPage({ params }: Props) {
           <section className="rounded-lg bg-white p-5 shadow-sm">
             <h2 className="mb-3 text-sm font-semibold text-gray-500">問い合わせ内容</h2>
             <p className="whitespace-pre-wrap text-sm text-gray-800">{ticket.body}</p>
+            {/* チケット本体に直接添付された画像のサムネ一覧 (0 件なら描画しない) */}
+            {ticket.attachments.length > 0 && (
+              <div className="mt-4">
+                <AttachmentList attachments={ticket.attachments} heading="添付ファイル" />
+              </div>
+            )}
           </section>
 
           {/* コメントセクション */}
@@ -121,6 +129,12 @@ export default async function TicketDetailPage({ params }: Props) {
                       </span>
                     </div>
                     <p className="whitespace-pre-wrap text-sm text-gray-700">{c.body}</p>
+                    {/* コメントに紐づく添付があれば直下にサムネを描画する */}
+                    {c.attachments.length > 0 && (
+                      <div className="mt-2">
+                        <AttachmentList attachments={c.attachments} />
+                      </div>
+                    )}
                   </li>
                 ))}
               </ul>

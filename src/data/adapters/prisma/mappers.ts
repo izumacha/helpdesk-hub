@@ -12,6 +12,8 @@ import type {
   User,
   UserSummary,
 } from '@/domain/types';
+// 添付ファイル表示用のサマリ型
+import type { AttachmentSummary } from '@/domain/attachment-summary';
 
 // Prisma から取り出した User テーブルの型エイリアス (include なし)
 type UserRow = Prisma.UserGetPayload<Record<string, never>>;
@@ -35,6 +37,8 @@ type HistoryRow = Prisma.TicketHistoryGetPayload<Record<string, never>>;
 type FaqRow = Prisma.FaqCandidateGetPayload<Record<string, never>>;
 // MagicLinkToken テーブルの型エイリアス
 type MagicLinkRow = Prisma.MagicLinkTokenGetPayload<Record<string, never>>;
+// Attachment テーブルの型エイリアス
+type AttachmentRow = Prisma.AttachmentGetPayload<Record<string, never>>;
 
 // Prisma の User 行をドメイン型 User に変換する関数
 export function toUser(row: UserRow): User {
@@ -140,6 +144,18 @@ export function toMagicLinkToken(row: MagicLinkRow): MagicLinkToken {
     expiresAt: row.expiresAt,
     consumedAt: row.consumedAt,
     requestedIp: row.requestedIp,
+    createdAt: row.createdAt,
+  };
+}
+
+// Prisma の Attachment 行を画面表示用の AttachmentSummary に変換する関数
+// storageKey / uploaderId / tenantId など、画面で不要なフィールドは意図的に落とす
+export function toAttachmentSummary(row: AttachmentRow): AttachmentSummary {
+  return {
+    id: row.id,
+    mimeType: row.mimeType,
+    size: row.size,
+    originalName: row.originalName,
     createdAt: row.createdAt,
   };
 }

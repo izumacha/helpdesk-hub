@@ -24,8 +24,8 @@ import { getCurrentTenantMode } from '@/lib/tenant';
 import type { Priority, TicketStatus } from '@/domain/types';
 // レート制限 (連打防止) の共通ヘルパー
 import { enforceRateLimit } from '@/lib/rate-limit';
-// Zod スキーマ (コメント本文/エスカレーション理由の検証用)
-import { commentBodySchema, escalationReasonSchema } from '@/lib/validations/ticket';
+// Zod スキーマ (エスカレーション理由の検証用)
+import { escalationReasonSchema } from '@/lib/validations/ticket';
 // next-auth のセッション型
 import type { Session } from 'next-auth';
 
@@ -322,95 +322,6 @@ export async function escalateTicket(ticketId: string, reason: string) {
   revalidatePath(`/tickets/${ticketId}`);
 }
 
-// チケットにコメントを追加するサーバーアクション
-export async function addComment(ticketId: string, body: string) {
-  // セッション取得
-  const session = await auth();
-  // コメントはログイン済みなら (依頼者でも) 可
-  assertAuthenticatedUser(session);
-  // テナントスコープ用に tenantId を取り出す
-  const tenantId = session.user.tenantId;
-  // 60 秒あたり 20 件までに制限
-  enforceRateLimit(`ticket-comment:${session.user.id}`, { limit: 20, windowMs: 60_000 });
-
-  // 本文を Zod で検証
-  const parsedBody = commentBodySchema.safeParse(body);
-  // 検証失敗なら日本語エラー
-  if (!parsedBody.success) {
-    throw new Error(parsedBody.error.issues[0]?.message ?? 'コメントが不正です');
-  }
-  // 検証済み本文を取り出す
-  const trimmedBody = parsedBody.data;
-
-  // 対象チケットを tenantId スコープで取得
-  const ticket = await repos.tickets.findById(ticketId, tenantId);
-  // 無ければエラー
-  if (!ticket) throw new Error('チケットが見つかりません');
-
-  // 投稿者 ID とロールをまとめて抽出
-  const authorId = session.user.id;
-  const authorIsAgent = isAgent(session.user.role);
-  // エージェント、または自分が作成したチケットならコメント可
-  const canComment = authorIsAgent || ticket.creatorId === authorId;
-  // 権限が無ければ拒否
-  if (!canComment) {
-    throw new Error('このチケットへのコメント権限がありません');
-  }
-
-  // 通知対象 (依頼者/担当者/全エージェント など) を算出 (tenantId 伝搬)
-  const recipientIds = await resolveCommentRecipients(ticket, authorId, authorIsAgent, tenantId);
-  // 通知メッセージ (タイトル入り)
-  const message = `チケット「${ticket.title}」に新しいコメントが追加されました`;
-
-  // コメント保存と通知生成を 1 トランザクションで実行
-  await uow.run(async (r) => {
-    // コメント本体を保存
-    await r.comments.create({
-      ticketId,
-      authorId,
-      body: trimmedBody,
-    });
-    // 対象者全員に通知を作成
-    await Promise.all(
-      recipientIds.map((id) =>
-        r.notifications.create({
-          userId: id,
-          type: 'commented',
-          message,
-          ticketId,
-          // チケットと同じテナントスコープで通知を保存
-          tenantId: ticket.tenantId,
-        }),
-      ),
-    );
-  });
-
-  // 通知対象が 1 名以上いれば未読件数を一斉配信 (テナントを伝搬)
-  if (recipientIds.length > 0) await broadcastUnreadCountToMany(recipientIds, tenantId);
-  // 詳細ページのキャッシュを無効化
-  revalidatePath(`/tickets/${ticketId}`);
-}
-
-// コメント通知の送信先を決定するヘルパー
-async function resolveCommentRecipients(
-  ticket: { creatorId: string; assigneeId: string | null },
-  authorId: string,
-  authorIsAgent: boolean,
-  tenantId: string,
-): Promise<string[]> {
-  // 宛先候補を集める配列
-  const candidates: string[] = [];
-  // エージェントがコメントした場合: 依頼者 (+ 担当者が居れば担当者)
-  if (authorIsAgent) {
-    candidates.push(ticket.creatorId);
-    if (ticket.assigneeId) candidates.push(ticket.assigneeId);
-  } else if (ticket.assigneeId) {
-    // 依頼者がコメントし担当者が決まっている場合は担当者のみ
-    candidates.push(ticket.assigneeId);
-  } else {
-    // 依頼者がコメントし担当者未定なら全エージェントに通知 (取りこぼし防止、テナント内のみ)
-    candidates.push(...(await repos.users.listAgentIds(tenantId)));
-  }
-  // 重複排除し、コメント投稿者自身は除外して返す
-  return Array.from(new Set(candidates)).filter((id) => id !== authorId);
-}
+// 注: コメント追加処理は POST /api/tickets/[id]/comments (Route Handler) に統合した。
+// Server Action の既定 1MB ボディ上限ではスマホ写真添付 (10MB × 5 枚) を扱えないため、
+// 同じロジックを Route Handler に置いて UI / API 双方の入口を一本化している。
