@@ -180,6 +180,21 @@ describe('POST /api/tickets/[id]/comments', () => {
     expect(res.status).toBe(401);
   });
 
+  // レート制限超過は 429 + Retry-After を返す (500 にしない / Codex 指摘対応)
+  it('returns 429 with Retry-After when the comment rate limit is exceeded', async () => {
+    const { ticketId } = await seed();
+    mockSession = buildSession(REQUESTER, 'requester', TENANT);
+    const { POST } = await import('@/app/api/tickets/[id]/comments/route');
+    // 上限は 60 秒あたり 20 件。21 回投稿して 21 回目で 429 になることを確認する
+    let last: Response | undefined;
+    for (let i = 0; i < 21; i += 1) {
+      last = await POST(buildRequest(`コメント${i}`, []), makeParams(ticketId));
+    }
+    expect(last?.status).toBe(429);
+    // Retry-After ヘッダが秒数 (数値文字列) で付与されている
+    expect(Number(last?.headers.get('Retry-After'))).toBeGreaterThanOrEqual(0);
+  });
+
   // 正常系: 本文 + 画像 1 枚 → コメント + 添付 + storage 書き込み
   it('saves the comment and links the attachment via commentId', async () => {
     const { ticketId } = await seed();

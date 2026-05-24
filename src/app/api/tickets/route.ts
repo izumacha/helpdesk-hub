@@ -53,8 +53,10 @@ export async function POST(req: Request) {
   let rawInput: Record<string, unknown>;
   let uploadedFiles: File[] = [];
 
-  // Content-Type で JSON / multipart を判別する (大文字小文字を許容)
-  const contentType = req.headers.get('content-type') ?? '';
+  // Content-Type で JSON / multipart を判別する。
+  // メディアタイプは RFC 上 大文字小文字を区別しない (例: "Multipart/Form-Data; boundary=...")
+  // ため、小文字化してから比較し、プロキシ等が大文字化したヘッダでも正しく multipart と認識する
+  const contentType = (req.headers.get('content-type') ?? '').toLowerCase();
   if (contentType.includes('multipart/form-data')) {
     // multipart/form-data を FormData として読み出す
     let form: FormData;

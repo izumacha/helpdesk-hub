@@ -26,6 +26,19 @@ export type RateLimitOptions = {
 // キー (userId:scope) ごとの実行タイムスタンプ一覧を持つバケット
 const buckets = new Map<string, number[]>();
 
+// レート制限超過を表す専用エラー。
+// Server Action からは従来どおり Error として message が画面に surface する一方、
+// Route Handler 側では instanceof で判別して HTTP 429 + Retry-After にマップできる。
+export class RateLimitError extends Error {
+  // あと何秒待てば再試行できるか (Retry-After ヘッダ / UI 表示に使う)
+  readonly retryAfterSec: number;
+  constructor(message: string, retryAfterSec: number) {
+    super(message); // 日本語メッセージを Error.message に乗せる
+    this.name = 'RateLimitError'; // スタックトレース等での識別用
+    this.retryAfterSec = retryAfterSec; // 再試行までの待ち秒数を保持
+  }
+}
+
 // cutoff より古いタイムスタンプを配列から捨てて、生き残りだけ返すヘルパー関数
 function prune(timestamps: number[], cutoff: number): number[] {
   // Bucket entries are push-appended chronologically, so the first index
@@ -57,8 +70,12 @@ export function enforceRateLimit(
     const retryAfterMs = Math.max(0, live[0] + windowMs - now);
     // 切り上げて秒単位に変換 (ユーザーに見せる用)
     const retryAfterSec = Math.ceil(retryAfterMs / 1000);
-    // 日本語メッセージ付きでエラーを投げ、Server Action 経由で画面に表示させる
-    throw new Error(`操作の頻度が高すぎます。${retryAfterSec}秒ほど待ってから再度お試しください。`);
+    // 日本語メッセージ付きの専用エラーを投げる。
+    // Server Action 経由なら message が画面に出る / Route Handler なら 429 にマップされる
+    throw new RateLimitError(
+      `操作の頻度が高すぎます。${retryAfterSec}秒ほど待ってから再度お試しください。`,
+      retryAfterSec,
+    );
   }
 
   // 今回の実行時刻を履歴の末尾に追加

@@ -14,8 +14,8 @@ import { storage } from '@/data/storage';
 import { broadcastUnreadCountToMany } from '@/features/notifications/notify';
 // エージェント権限判定 (agent または admin のとき true)
 import { isAgent } from '@/lib/role';
-// レート制限ヘルパー
-import { enforceRateLimit } from '@/lib/rate-limit';
+// レート制限ヘルパー (超過時は RateLimitError を throw)
+import { enforceRateLimit, RateLimitError } from '@/lib/rate-limit';
 // コメント本文の Zod スキーマ
 import { commentBodySchema } from '@/lib/validations/ticket';
 // 添付ファイル検証ヘルパー
@@ -56,7 +56,20 @@ export async function POST(req: Request, { params }: Params) {
   const { id: ticketId } = await params;
 
   // 60 秒あたり 20 件までに制限 (既存 addComment と同じ閾値)
-  enforceRateLimit(`ticket-comment:${authorId}`, { limit: 20, windowMs: 60_000 });
+  // 超過は RateLimitError として投げられるので、HTTP 429 + Retry-After にマップする
+  // (500 にしてしまうとクライアントが「再試行可能な制限」と「サーバ障害」を区別できない)
+  try {
+    enforceRateLimit(`ticket-comment:${authorId}`, { limit: 20, windowMs: 60_000 });
+  } catch (err) {
+    if (err instanceof RateLimitError) {
+      return NextResponse.json(
+        { error: err.message },
+        { status: 429, headers: { 'Retry-After': String(err.retryAfterSec) } },
+      );
+    }
+    // 想定外のエラーはそのまま再 throw (Next.js が 500 にする)
+    throw err;
+  }
 
   // FormData として読み出す (multipart/form-data 専用)
   let form: FormData;

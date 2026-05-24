@@ -111,6 +111,32 @@ beforeEach(async () => {
 });
 
 describe('POST /api/tickets (multipart with attachments)', () => {
+  // Content-Type の大文字小文字を問わず multipart と判定される (Codex 指摘対応)
+  it('detects multipart even when the Content-Type is mixed case', async () => {
+    const { POST } = await import('@/app/api/tickets/route');
+    // まず通常の FormData リクエストを作り、自動付与された boundary 付き Content-Type を取り出す
+    const base = buildMultipartRequest({ title: 'T', body: 'b', priority: 'Medium' }, [
+      makeFile('a.jpg', 'image/jpeg', 'jpeg-bytes'),
+    ]);
+    const autoType = base.headers.get('content-type') ?? '';
+    const bodyBuf = await base.arrayBuffer();
+    // メディアタイプ部分だけ大文字化する (boundary パラメータは温存)
+    const upperType = autoType.replace('multipart/form-data', 'Multipart/Form-Data');
+    // 大文字化した Content-Type で同じボディを再構築する
+    const req = new Request('http://localhost/api/tickets', {
+      method: 'POST',
+      headers: { 'content-type': upperType },
+      body: bodyBuf,
+    });
+
+    const res = await POST(req);
+    // multipart として認識され、JSON パス (400) に落ちず 201 で作成される
+    expect(res.status).toBe(201);
+    const ticket = await res.json();
+    const attachments = await repos.attachments.listByTicket(ticket.id, TENANT);
+    expect(attachments).toHaveLength(1);
+  });
+
   // 正常系: 添付 2 件付きでチケットが作成され、storage と DB に正しく書き込まれる
   it('creates a ticket and saves all attachments to storage + DB', async () => {
     // 動的 import (mock 適用後)
