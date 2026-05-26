@@ -179,7 +179,8 @@ Zod schemas live in `src/lib/validations/` (currently `ticket.ts`). Use `safePar
 
 ### Codex レビュー（PR 作成時・push 時にコメント追加）
 
-- **PR を新規作成したとき、および PR ブランチへ push したときは、その PR に `@codex review` というコメントを追加**して Codex の自動レビューを起動すること。
+- **PR を新規作成するときは draft ではなく ready（open）状態にする**。draft で作成した場合は作成直後に ready 化（draft 解除）してから次の手順に進むこと。
+- **PR を ready 化して open にしたあと、および PR ブランチへ push したあとに、その PR に `@codex review` というコメントを追加**して Codex の自動レビューを起動すること。順序は「ready 化 → open → `@codex review` 投稿」を守る（draft のままコメントしない）。
 - コメントは Claude Code 自身（GitHub 連携ツール経由）で投稿する。`github-actions[bot]` 名義の自動コメントは Codex 側の接続ユーザーに解決されずレビューが起動しないため、ワークフローからの自動投稿は使わない。
 - Codex 連携（https://chatgpt.com/codex/cloud/settings/connectors ）が未接続の場合はレビューが返らないので、接続状況を前提に投稿する。
 
