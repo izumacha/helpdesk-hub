@@ -1,6 +1,17 @@
 # HelpDesk Hub
 
-社内ヘルプデスク向けチケット管理システム。対応漏れ・属人化・SLA遅延を防ぐための問い合わせ管理プラットフォームです。
+## 3分でわかる HelpDesk Hub
+
+HelpDesk Hub は、社内問い合わせの対応漏れ・属人化・SLA遅延を防ぐための
+ヘルプデスク向けチケット管理システムです。
+
+主な特徴:
+
+- requester / agent / admin のロール別権限管理
+- チケット登録、検索、担当者アサイン、コメント、履歴管理
+- SLA期限・期限超過の可視化
+- FAQ候補化によるナレッジ蓄積
+- Vitest / Playwright / GitHub Actions による品質担保
 
 <p align="center">
   <img src="docs/screenshots/dashboard.png" alt="HelpDesk Hub ダッシュボード画面" width="900" />
