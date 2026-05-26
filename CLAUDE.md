@@ -177,6 +177,12 @@ Zod schemas live in `src/lib/validations/` (currently `ticket.ts`). Use `safePar
   - scope: tickets, faq, notifications, auth, infra 等
 - 1 コミット = 1 論理変更。Prisma スキーマ変更とマイグレーションは同一コミットに含める。
 
+### Codex レビュー（PR 作成時・push 時にコメント追加）
+
+- **PR を新規作成したとき、および PR ブランチへ push したときは、その PR に `@codex review` というコメントを追加**して Codex の自動レビューを起動すること。
+- コメントは Claude Code 自身（GitHub 連携ツール経由）で投稿する。`github-actions[bot]` 名義の自動コメントは Codex 側の接続ユーザーに解決されずレビューが起動しないため、ワークフローからの自動投稿は使わない。
+- Codex 連携（https://chatgpt.com/codex/cloud/settings/connectors ）が未接続の場合はレビューが返らないので、接続状況を前提に投稿する。
+
 ## CI (GitHub Actions)
 
 - `.github/workflows/ci.yml` が lint → typecheck → test → E2E を実行する。PR を出す前にローカルで `npm run lint && npm run typecheck && npm run test` を通すこと。
