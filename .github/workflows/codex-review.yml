@@ -1,0 +1,34 @@
+# PR ブランチへの push 時に、本人 GitHub アカウント名義で `@codex review` を投稿し
+# Codex の自動レビューを起動するワークフロー。
+# bot 名義 (github-actions[bot]) のコメントは Codex の接続ユーザーに解決されず
+# レビューが起動しないため、本人の PAT (CODEX_REVIEW_TOKEN) を使って投稿する。
+name: Codex Review
+
+on:
+  pull_request:
+    # synchronize: 既存 PR ブランチへ追加 push したとき。
+    # PR 作成時 (opened) は Codex の automatic reviews が自動でレビューするため対象外。
+    types: [synchronize]
+
+# 同一 PR で連続 push したときは、古い実行をキャンセルして最新だけを残す。
+concurrency:
+  group: codex-review-${{ github.workflow }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  request-codex-review:
+    name: Request Codex review
+    runs-on: ubuntu-latest
+    # fork からの PR は secret (PAT) を参照できずコメント投稿に失敗するためスキップする。
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    # GITHUB_TOKEN は使わず PAT で認証するため、既定トークンの権限は不要。
+    permissions: {}
+    steps:
+      - name: Post @codex review comment as the repo owner
+        env:
+          # 本人アカウントの PAT。これで投稿するとコメント作者が本人になり Codex が解決できる。
+          GH_TOKEN: ${{ secrets.CODEX_REVIEW_TOKEN }}
+          # コメント対象の PR 番号。
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        # PR に `@codex review` とコメントして Codex の自動レビューを起動する。
+        run: gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --body "@codex review"

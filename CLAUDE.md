@@ -177,11 +177,13 @@ Zod schemas live in `src/lib/validations/` (currently `ticket.ts`). Use `safePar
   - scope: tickets, faq, notifications, auth, infra 等
 - 1 コミット = 1 論理変更。Prisma スキーマ変更とマイグレーションは同一コミットに含める。
 
-### Codex レビュー（PR 作成時・push 時にコメント追加）
+### Codex レビュー（PR 作成時・push 時にレビュー起動）
 
-- **PR を新規作成したとき、および PR ブランチへ push したときは、その PR に `@codex review` というコメントを追加**して Codex の自動レビューを起動すること。
-- コメントは Claude Code 自身（GitHub 連携ツール経由）で投稿する。`github-actions[bot]` 名義の自動コメントは Codex 側の接続ユーザーに解決されずレビューが起動しないため、ワークフローからの自動投稿は使わない。
-- Codex 連携（https://chatgpt.com/codex/cloud/settings/connectors ）が未接続の場合はレビューが返らないので、接続状況を前提に投稿する。
+- **PR 作成時**: Codex の automatic reviews（クラウドコネクタ側設定）が自動でレビューするため、追加のコメントは不要。
+- **PR ブランチへ push したとき (synchronize)**: `.github/workflows/codex-review.yml` が `@codex review` コメントを自動投稿してレビューを起動する。投稿は **本人 GitHub アカウントの PAT（secret `CODEX_REVIEW_TOKEN`）** で行う。`github-actions[bot]` 名義のコメントは Codex 側の接続ユーザーに解決されずレビューが起動しないため、必ず PAT を使う。
+- `CODEX_REVIEW_TOKEN` には `pull-requests: write` 権限の PAT を登録する。未登録だとワークフローのコメント投稿が失敗する。
+- 手動で追加レビューが欲しいときは Claude Code 自身（GitHub 連携ツール経由）で `@codex review` を投稿してよい（これも本人/連携ユーザー名義になるため解決される）。
+- Codex 連携（https://chatgpt.com/codex/cloud/settings/connectors ）が未接続の場合はレビューが返らないので、接続状況を前提にする。
 
 ## CI (GitHub Actions)
 
