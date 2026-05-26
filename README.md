@@ -2,6 +2,12 @@
 
 社内ヘルプデスク向けチケット管理システム。対応漏れ・属人化・SLA遅延を防ぐための問い合わせ管理プラットフォームです。
 
+<p align="center">
+  <img src="docs/screenshots/dashboard.png" alt="HelpDesk Hub ダッシュボード画面" width="900" />
+  <br />
+  <em>ダッシュボード — ステータス別件数・SLA 超過・担当者別ワークロードを一目で把握</em>
+</p>
+
 ## 主な機能
 
 | カテゴリ         | 機能                                                                   |
@@ -27,6 +33,13 @@
 | フォーム       | react-hook-form + @hookform/resolvers               |
 | テスト         | Vitest (unit), Playwright (E2E)                     |
 | インフラ       | Docker / Docker Compose                             |
+
+## スクリーンショット
+
+| ログイン | 問い合わせ一覧 | 問い合わせ詳細 |
+| :---: | :---: | :---: |
+| <img src="docs/screenshots/login.png" alt="ログイン画面" width="280" /> | <img src="docs/screenshots/tickets-list.png" alt="問い合わせ一覧画面" width="280" /> | <img src="docs/screenshots/ticket-detail.png" alt="問い合わせ詳細画面" width="280" /> |
+| マジックリンク / パスワードの2方式 | 検索・多条件フィルタ・タブ切替 | コメント・変更履歴・SLA/担当者操作 |
 
 ## セットアップ
 
