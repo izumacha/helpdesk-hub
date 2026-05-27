@@ -96,7 +96,14 @@ describe.runIf(SHOULD_RUN)('prisma adapter', () => {
       for (const [id, role, name] of userDefs) {
         // Prisma でユーザー行を作成する (passwordHash はテスト用ダミー)
         const row = await prisma.user.create({
-          data: { id, email: `${id}@example.com`, name, passwordHash: 'x', role, tenantId: TENANT_ID },
+          data: {
+            id,
+            email: `${id}@example.com`,
+            name,
+            passwordHash: 'x',
+            role,
+            tenantId: TENANT_ID,
+          },
         });
         // 作成結果をドメイン User へ整形して Map に保存する
         created.set(id, toDomainUser(row));
