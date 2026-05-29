@@ -43,6 +43,7 @@ npm run typecheck    # tsc --noEmit
 npm run lint         # next lint (ESLint 9 flat config + next/core-web-vitals)
 npm run format       # Prettier (100 col, single quotes, trailing commas)
 npm run test         # Vitest — unit tests in tests/
+npm run test:contract # Vitest — Prisma adapter contract test (RUN_PRISMA_CONTRACT=1 + DATABASE_URL 必須)
 npm run test:e2e     # Playwright — chromium only, baseURL from BASE_URL or localhost:3000
 npm run db:migrate   # prisma migrate dev
 npm run db:seed      # tsx prisma/seed.ts
@@ -143,6 +144,14 @@ Zod schemas live in `src/lib/validations/` (currently `ticket.ts`). Use `safePar
 ## Testing
 
 - Vitest `environment: 'node'`, picks up `tests/**/*.test.ts` only. The `@/*` alias is configured in `vitest.config.ts`. Unit tests so far cover pure logic (`ticket-status`, `sla`, `validations`) with no DB/Prisma access — keep that boundary; add DB-touching behavior to E2E instead.
+- `tests/data/ticket-repository.contract.prisma.test.ts` は本番 Prisma アダプタを契約テスト（クロステナント分離含む）で検証する **DB 依存テスト**。デフォルトは `RUN_PRISMA_CONTRACT` 未設定で skip され、フラグが立ったときだけ走る（dev DB の誤 TRUNCATE 防止のため `DATABASE_URL` の有無では判定しない）。**`beforeEach` で全テーブルを `TRUNCATE ... CASCADE` するため、dev DB (`helpdesk_hub`) を指してはいけない**。ローカル実行は dev とは別の専用 DB を 1 度だけ切ってから流す:
+  ```bash
+  docker compose up -d db
+  docker compose exec db psql -U postgres -c "CREATE DATABASE helpdesk_hub_contract;"  # 初回のみ
+  DATABASE_URL=postgresql://postgres:postgres@localhost:5432/helpdesk_hub_contract npx prisma db push --skip-generate
+  DATABASE_URL=postgresql://postgres:postgres@localhost:5432/helpdesk_hub_contract RUN_PRISMA_CONTRACT=1 npm run test:contract
+  ```
+  CI 上では PostgreSQL サービスコンテナが毎ジョブ新規起動されるため `helpdesk_hub` をそのまま使い、専用ジョブ `prisma-contract` が同じ `prisma db push` → `test:contract` を実行する。
 - Playwright is chromium-only, `fullyParallel: true`, retries only in CI. Selectors are regex-based against Japanese copy (`/ログイン/i`, `/メールアドレス|Email/i`) — match that style.
 
 ## Conventions to respect
@@ -187,4 +196,5 @@ Zod schemas live in `src/lib/validations/` (currently `ticket.ts`). Use `safePar
 ## CI (GitHub Actions)
 
 - `.github/workflows/ci.yml` が lint → typecheck → test → E2E を実行する。PR を出す前にローカルで `npm run lint && npm run typecheck && npm run test` を通すこと。
+- 専用ジョブ `prisma-contract` が PostgreSQL サービスコンテナ上で `npm run test:contract` を回す（`RUN_PRISMA_CONTRACT=1` を CI 側で設定）。本番 Prisma アダプタの契約（クロステナント分離 §3.3/§5.6 を含む）はここで担保する。
 - E2E は CI 上で PostgreSQL サービスコンテナを使う。ローカルでは `docker compose up db` で DB を起動してから `npm run test:e2e`。
