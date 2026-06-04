@@ -1,9 +1,7 @@
-// チケット状態型をインポート
-import type { TicketStatus } from '@/generated/prisma';
+// チケット状態型とテナントモード型 (lite | pro) を正準のドメイン型から 1 本でインポート
+import type { TicketStatus, TenantMode } from '@/domain/types';
 // Lite モードの 3 値型と型ガード関数を取り込み、mode-aware ラベル関数で使う
 import { isLiteStatus, type LiteStatus } from '@/domain/ticket-status';
-// テナントモード型 (lite | pro) を取り込み、mode-aware ラベル関数で使う
-import type { TenantMode } from '@/domain/types';
 
 // FAQ 候補化を許可するチケット状態一覧 (解決済みのみ候補化可能)
 export const FAQ_ELIGIBLE_STATUSES: readonly TicketStatus[] = ['Resolved'];

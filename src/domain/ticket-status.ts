@@ -1,5 +1,5 @@
-// チケット状態 (TicketStatus) の型を Prisma (DB 操作ライブラリ) が生成した定義から読み込む
-import type { TicketStatus } from '@/generated/prisma';
+// チケット状態 (TicketStatus) の型を「正準 (Single Source of Truth)」であるドメイン型定義から読み込む
+import type { TicketStatus } from '@/domain/types';
 // テナントモード型 (lite | pro) を取り込み、mode-aware な遷移取得関数で使う
 import type { TenantMode } from '@/domain/types';
 

@@ -9,7 +9,7 @@ import { repos } from '@/data';
 // マジックリンクのトークンハッシュ計算 (生トークン -> DB 検索キー)
 import { hashMagicLinkToken } from '@/lib/magic-link';
 // ロール (権限) 型
-import type { Role } from '@/generated/prisma';
+import type { Role } from '@/domain/types';
 
 // 本番環境で使ってはいけない「弱い/既定値」のシークレット一覧
 const WEAK_NEXTAUTH_SECRETS = new Set([

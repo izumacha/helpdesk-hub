@@ -1,7 +1,7 @@
 // データ層の Composition Root から履歴リポジトリ束を読み込む (Prisma 直叩きを避ける)
 import { repos } from '@/data';
 // 履歴の「どの項目が変わったか」を示す型をインポート
-import type { HistoryField } from '@/generated/prisma';
+import type { HistoryField } from '@/domain/types';
 
 // チケットの変更履歴を 1 件 DB に追加する共通関数
 // 呼び出し側は status/priority/assignee/escalation のいずれかが変わったときに呼ぶ

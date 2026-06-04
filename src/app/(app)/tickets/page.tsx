@@ -18,8 +18,8 @@ import { formatDateJP } from '@/lib/format-date';
 import { TicketFilters } from '@/features/tickets/components/TicketFilters';
 // 「自分の未対応 / 期限切れ / すべて」タブナビ (Client Component)
 import { TicketTabs, type TicketTabId } from '@/features/tickets/components/TicketTabs';
-// Prisma が生成した列挙型 (URL クエリの型ガード用)
-import type { TicketStatus, Priority } from '@/generated/prisma';
+// チケット状態・優先度の列挙型 (正準のドメイン型・URL クエリの型ガード用)
+import type { TicketStatus, Priority } from '@/domain/types';
 // データ層が公開しているチケット一覧フィルタ型 (port 経由クエリの引数)
 import type { TicketListFilter } from '@/data/ports/ticket-repository';
 

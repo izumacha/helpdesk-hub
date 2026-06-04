@@ -1,7 +1,7 @@
 // next-auth (認証ライブラリ) の既定セッション型をインポート
 import type { DefaultSession } from 'next-auth';
-// Prisma が生成したロール (権限) 型をインポート
-import type { Role } from '@/generated/prisma';
+// ロール (権限) 型を正準のドメイン型 (@/domain/types) からインポート
+import type { Role } from '@/domain/types';
 
 // next-auth モジュールの型定義を拡張するブロック (モジュール拡張)
 declare module 'next-auth' {

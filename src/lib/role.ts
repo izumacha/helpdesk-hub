@@ -1,5 +1,5 @@
-// Prisma が生成したロール (権限) 型をインポート
-import type { Role } from '@/generated/prisma';
+// ロール (権限) 型を正準のドメイン型 (@/domain/types) からインポート
+import type { Role } from '@/domain/types';
 
 // 渡されたロールが「担当者権限を持っている」と判定できるかを返す関数
 // agent または admin ならエージェント扱い (admin 限定チェックではないことに注意)
