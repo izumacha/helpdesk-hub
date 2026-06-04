@@ -19,6 +19,28 @@ const config = [
   ...nextCoreWebVitals,
   // TypeScript 向けルールを展開してマージ
   ...nextTypescript,
+  {
+    // 適用対象: src 配下の TypeScript / TSX ファイル全体
+    files: ['src/**/*.{ts,tsx}'],
+    // 例外: Prisma アダプタ層と Prisma クライアント生成箇所 (composition root) だけは生成物の直接 import を許可する
+    ignores: ['src/data/adapters/prisma/**', 'src/lib/prisma.ts'],
+    rules: {
+      // 指定したモジュールへの import をエラー化するルール
+      'no-restricted-imports': [
+        'error',
+        {
+          patterns: [
+            {
+              // Prisma の生成物 (@/generated/prisma 配下) への直接 import を禁止対象にする
+              group: ['@/generated/prisma', '@/generated/prisma/*'],
+              // 違反したときに開発者へ表示するメッセージ (代わりに使うべき場所を案内)
+              message: 'Prisma 生成物の直接 import は禁止。enum/型は正準である @/domain/types を使うこと。',
+            },
+          ],
+        },
+      ],
+    },
+  },
 ];
 
 // ESLint が読み取れるよう default export
