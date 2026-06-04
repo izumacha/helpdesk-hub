@@ -8,7 +8,7 @@ import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 // 「エージェント以上か」を判定するヘルパー
 import { isAgent } from '@/lib/role';
-// 権限を表す Prisma 型
+// 権限を表すドメイン型 (正準)
 import type { Role } from '@/domain/types';
 // 共通ブランドマーク
 import { Logo } from '@/components/brand/Logo';

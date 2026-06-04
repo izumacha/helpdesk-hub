@@ -6,7 +6,7 @@ import { useTransition } from 'react';
 import { updateTicketPriority } from '@/features/tickets/actions/update-ticket';
 // 優先度の日本語ラベル
 import { PRIORITY_LABELS } from '@/lib/constants';
-// 優先度の型 (Prisma 生成)
+// 優先度の型 (正準のドメイン型)
 import type { Priority } from '@/domain/types';
 
 // プルダウンに並べる優先度の順序
