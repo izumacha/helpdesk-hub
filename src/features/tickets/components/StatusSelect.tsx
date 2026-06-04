@@ -9,7 +9,7 @@ import { getStatusLabel } from '@/lib/constants';
 // 現ステータスから許可される遷移先一覧を返すドメイン関数 (mode に応じて Lite/Pro 表を切替)
 import { getAllowedTransitions } from '@/domain/ticket-status';
 // ステータス型 (Prisma 生成)
-import type { TicketStatus } from '@/generated/prisma';
+import type { TicketStatus } from '@/domain/types';
 // テナントモード型 (lite | pro)。ラベルと遷移表の切替に使う
 import type { TenantMode } from '@/domain/types';
 

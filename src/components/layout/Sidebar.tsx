@@ -9,7 +9,7 @@ import { usePathname } from 'next/navigation';
 // 「エージェント以上か」を判定するヘルパー
 import { isAgent } from '@/lib/role';
 // 権限を表す Prisma 型
-import type { Role } from '@/generated/prisma';
+import type { Role } from '@/domain/types';
 // 共通ブランドマーク
 import { Logo } from '@/components/brand/Logo';
 // モバイルナビ Context (ハンバーガーで開閉するドロワー状態)

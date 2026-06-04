@@ -9,7 +9,7 @@ import { getStatusLabel, PRIORITY_LABELS } from '@/lib/constants';
 // Lite モードで使う 3 ステータス (未対応 / 対応中 / 完了) の定義
 import { LITE_STATUSES } from '@/domain/ticket-status';
 // 列挙型 (Prisma 生成)
-import type { TicketStatus, Priority } from '@/generated/prisma';
+import type { TicketStatus, Priority } from '@/domain/types';
 // テナントモード型 (lite | pro)。フィルタ選択肢とラベルの切替に使う
 import type { TenantMode } from '@/domain/types';
 

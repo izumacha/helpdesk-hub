@@ -1,5 +1,5 @@
 // チケット状態型をインポート
-import type { TicketStatus } from '@/generated/prisma';
+import type { TicketStatus } from '@/domain/types';
 // Lite モードの 3 値型と型ガード関数を取り込み、mode-aware ラベル関数で使う
 import { isLiteStatus, type LiteStatus } from '@/domain/ticket-status';
 // テナントモード型 (lite | pro) を取り込み、mode-aware ラベル関数で使う
