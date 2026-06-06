@@ -6,6 +6,7 @@ export interface CreateCommentInput {
   ticketId: string; // 対象チケット ID
   authorId: string; // 書き込みユーザー ID
   body: string; // コメント本文
+  tenantId: string; // 所属テナント ID。親チケットがこのテナントに属することを Adapter が検証する
 }
 
 // コメント書き込み用リポジトリの契約 (port)
