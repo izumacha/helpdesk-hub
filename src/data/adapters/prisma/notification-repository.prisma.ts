@@ -44,9 +44,13 @@ export function makeNotificationRepo(db: PrismaLike): NotificationRepository {
       }));
     },
 
-    // 指定ユーザーの未読を一括で既読に更新 (ユーザーは単一テナント帰属なので tenantId 不要)
-    async markAllRead(userId) {
-      await db.notification.updateMany({ where: { userId, read: false }, data: { read: true } });
+    // 指定ユーザーの未読を一括で既読に更新 (tenantId を必ず where に含めてクロステナント既読化を防ぐ)
+    async markAllRead(userId, tenantId) {
+      // userId + tenantId + 未読 の 3 条件に一致する行だけを read: true に更新する
+      await db.notification.updateMany({
+        where: { userId, tenantId, read: false }, // テナントを跨いだ既読化を防ぐためテナントも条件に入れる
+        data: { read: true }, // 既読フラグを立てる
+      });
     },
   };
 }

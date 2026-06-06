@@ -17,14 +17,18 @@ export async function markAllRead() {
   const session = await auth();
   // 未ログインなら拒否
   if (!session?.user?.id) throw new Error('Unauthorized');
+  // 所属テナント ID を取り出す (クロステナント既読化を防ぐためのスコープキー)
+  const tenantId = session.user.tenantId;
+  // テナント未確定のセッションは拒否 (スコープ無しでの既読化を防ぐ)
+  if (!tenantId) throw new Error('Unauthorized');
   // 60 秒あたり最大 10 回までに制限
   enforceRateLimit(`notifications-mark-read:${session.user.id}`, {
     limit: 10,
     windowMs: 60_000,
   });
 
-  // 本人の未読通知を全て既読に更新 (port 経由)
-  await repos.notifications.markAllRead(session.user.id);
+  // 本人 かつ 自テナントの未読通知だけを既読に更新 (port 経由、tenantId スコープ必須)
+  await repos.notifications.markAllRead(session.user.id, tenantId);
 
   // 通知一覧ページのキャッシュを無効化
   revalidatePath('/notifications');
