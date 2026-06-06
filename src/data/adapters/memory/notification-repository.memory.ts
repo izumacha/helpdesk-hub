@@ -56,12 +56,12 @@ export function makeNotificationRepo(store: Store): NotificationRepository {
       });
     },
 
-    // 指定ユーザーの未読通知を全て既読に更新 (ユーザーは単一テナント帰属なので tenantId 不要)
-    async markAllRead(userId) {
+    // 指定ユーザーの未読通知を全て既読に更新 (tenantId を条件に含めてクロステナント既読化を防ぐ)
+    async markAllRead(userId, tenantId) {
       // Map の全エントリを走査
       for (const [id, n] of store.notifications) {
-        // 対象ユーザーかつ未読のものだけ read: true にして書き換え
-        if (n.userId === userId && !n.read) {
+        // 同じテナント かつ 対象ユーザー かつ 未読のものだけ read: true にして書き換え
+        if (n.tenantId === tenantId && n.userId === userId && !n.read) {
           store.notifications.set(id, { ...n, read: true });
         }
       }

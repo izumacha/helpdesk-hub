@@ -16,9 +16,10 @@ export interface NotificationListItem extends Notification {
 }
 
 // 通知ストアの契約 (port)
-// 取得系 (countUnread / list) は **tenantId 必須**。クロステナント漏洩防止のため、
-// 通知を引くときは必ず「当該ユーザー かつ 当該テナント」でフィルタする。
-// markAllRead は単一ユーザースコープなので tenantId 不要 (User は単一テナントに帰属)。
+// 取得系・更新系すべて **tenantId 必須**。クロステナント漏洩防止のため、
+// 通知を引く / 書き換えるときは必ず「当該ユーザー かつ 当該テナント」でフィルタする。
+// markAllRead も tenantId 必須でクロステナント既読化を防ぐ
+// (userId を偽装されても他テナント由来の通知まで既読にできないようにする)。
 export interface NotificationRepository {
   create(input: CreateNotificationInput): Promise<Notification>; // 通知を 1 件作成 (input.tenantId 必須)
   countUnread(userId: string, tenantId: string): Promise<number>; // 未読件数を取得
@@ -27,5 +28,5 @@ export interface NotificationRepository {
     opts: { limit: number },
     tenantId: string,
   ): Promise<NotificationListItem[]>; // 一覧取得
-  markAllRead(userId: string): Promise<void>; // 全通知を既読にする (ユーザースコープのみ)
+  markAllRead(userId: string, tenantId: string): Promise<void>; // 全通知を既読にする (ユーザー + テナントスコープ)
 }
