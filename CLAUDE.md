@@ -152,6 +152,7 @@ Zod schemas live in `src/lib/validations/` (currently `ticket.ts`). Use `safePar
   DATABASE_URL=postgresql://postgres:postgres@localhost:5432/helpdesk_hub_contract RUN_PRISMA_CONTRACT=1 npm run test:contract
   ```
   CI 上では PostgreSQL サービスコンテナが毎ジョブ新規起動されるため `helpdesk_hub` をそのまま使い、専用ジョブ `prisma-contract` が同じ `prisma db push` → `test:contract` を実行する。
+- `test:contract` は `tests/data/*.contract.prisma.test.ts` グロブで **すべての Prisma 契約スイート** (`ticket-repository` / `notification-repository` など) をまとめて選択する。新しい Prisma 契約テストを足すときはこの命名 (`*.contract.prisma.test.ts`) に揃えれば自動で対象に含まれる。各ファイルが `beforeEach` で同じ DB を `TRUNCATE` するため、`--no-file-parallelism` でファイルを **直列実行** し、並列実行による相互フィクスチャ破壊 (flaky) を防いでいる。
 - Playwright is chromium-only, `fullyParallel: true`, retries only in CI. Selectors are regex-based against Japanese copy (`/ログイン/i`, `/メールアドレス|Email/i`) — match that style.
 
 ## Conventions to respect
@@ -196,5 +197,5 @@ Zod schemas live in `src/lib/validations/` (currently `ticket.ts`). Use `safePar
 ## CI (GitHub Actions)
 
 - `.github/workflows/ci.yml` が lint → typecheck → test → E2E を実行する。PR を出す前にローカルで `npm run lint && npm run typecheck && npm run test` を通すこと。
-- 専用ジョブ `prisma-contract` が PostgreSQL サービスコンテナ上で `npm run test:contract` を回す（`RUN_PRISMA_CONTRACT=1` を CI 側で設定）。本番 Prisma アダプタの契約（クロステナント分離 §3.3/§5.6 を含む）はここで担保する。
+- 専用ジョブ `prisma-contract` が PostgreSQL サービスコンテナ上で `npm run test:contract` を回す（`RUN_PRISMA_CONTRACT=1` を CI 側で設定）。本番 Prisma アダプタの契約（`ticket-repository` のクロステナント分離 §3.3/§5.6 と `notification-repository` の tenant スコープ `markAllRead` を含む）はここで担保する。`test:contract` は `tests/data/*.contract.prisma.test.ts` を `--no-file-parallelism` で直列実行する（共有 DB の TRUNCATE 競合回避）。
 - E2E は CI 上で PostgreSQL サービスコンテナを使う。ローカルでは `docker compose up db` で DB を起動してから `npm run test:e2e`。

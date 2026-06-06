@@ -14,7 +14,7 @@
     "lint": "eslint .",
     "format": "prettier --write .",
     "test": "vitest run",
-    "test:contract": "vitest run tests/data/ticket-repository.contract.prisma.test.ts",
+    "test:contract": "vitest run --no-file-parallelism tests/data/*.contract.prisma.test.ts",
     "test:e2e": "playwright test",
     "db:seed": "tsx prisma/seed.ts",
     "db:migrate": "prisma migrate dev",
