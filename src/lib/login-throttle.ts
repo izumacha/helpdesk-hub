@@ -16,6 +16,15 @@
  * Same single-instance caveat as `rate-limit.ts` / `sse-subscribers.ts`: the
  * registry is an in-process Map and assumes one Next.js instance. Horizontal
  * scaling requires moving this to Redis / a shared store.
+ *
+ * Availability tradeoff: a hard email lockout means someone who knows a
+ * victim's email can keep that account locked by sending failed passwords.
+ * This is inherent to failed-attempt lockout and is accepted here because it is
+ * (a) bounded by the 15-minute rolling window (auto-recovers) and (b) escapable
+ * via the magic-link login provider, which is intentionally NOT throttled — a
+ * locked-out user can always sign in through the emailed one-time link. Do not
+ * add throttling to the magic-link path without providing another recovery
+ * route.
  */
 
 // 窓内で許容する連続失敗回数 (これ以上はロックアウト)
