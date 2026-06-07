@@ -120,6 +120,7 @@ export async function POST(req: Request, { params }: Params) {
         ticketId,
         authorId,
         body: trimmedBody,
+        tenantId, // 親チケットのテナント一致を Adapter 側でも検証する (issue #123)
       });
 
       // 添付ファイルがあれば 1 件ずつ「ストレージ書き込み → メタ INSERT」の順に処理する

@@ -2,12 +2,12 @@
 import NextAuth from 'next-auth';
 // 認証方式としてメール+パスワードを扱う Credentials プロバイダ
 import Credentials from 'next-auth/providers/credentials';
-// bcryptjs のパスワード照合関数 (ハッシュと平文を安全に比較)
-import { compare } from 'bcryptjs';
 // データ層の Composition Root 経由でユーザー取得 (Prisma 直叩きを避ける)
 import { repos } from '@/data';
 // マジックリンクのトークンハッシュ計算 (生トークン -> DB 検索キー)
 import { hashMagicLinkToken } from '@/lib/magic-link';
+// パスワード認証ロジック (スロットル + ダミー bcrypt 比較込み)。単体テスト可能なよう分離 (issue #119)
+import { passwordAuthorize } from '@/lib/password-authorize';
 // ロール (権限) 型
 import type { Role } from '@/domain/types';
 
@@ -21,15 +21,29 @@ const WEAK_NEXTAUTH_SECRETS = new Set([
 
 // 環境変数から NextAuth のシークレットを取得
 const secret = process.env.NEXTAUTH_SECRET;
-// シークレットが未設定なら警告 (サーバー再起動でセッションが失効する危険)
-if (!secret) {
+// 本番実行かどうか (NODE_ENV=production)
+const isProduction = process.env.NODE_ENV === 'production';
+// `next build` はこのモジュールを NODE_ENV=production で import するが、ビルド時点では
+// 実行用シークレットが未設定でも正常。ビルドフェーズでは fail-fast せず実行時のみ止める。
+const isBuildPhase = process.env.NEXT_PHASE === 'phase-production-build';
+// シークレットが未設定、または既知の弱い/プレースホルダ値かどうかを判定
+const secretIsWeak = !secret || WEAK_NEXTAUTH_SECRETS.has(secret);
+// 弱い場合: 本番実行時は致命的に扱い、それ以外は警告に留める (issue #121)
+if (secretIsWeak) {
+  // 状況に応じた説明メッセージを組み立てる
+  const detail = !secret
+    ? 'NEXTAUTH_SECRET is not set'
+    : 'NEXTAUTH_SECRET is set to a known placeholder/weak value';
+  // 本番実行 (ビルドフェーズを除く) では、セッション偽造を防ぐため起動を止める (fail-fast)
+  if (isProduction && !isBuildPhase) {
+    // magic-link の NEXTAUTH_URL fail-fast と同方針で、運用に強制的に気づかせる
+    throw new Error(
+      `[auth] ${detail}. Generate a strong secret (e.g. \`openssl rand -base64 32\`) and set NEXTAUTH_SECRET before deploying.`,
+    );
+  }
+  // 開発・ビルド時は警告のみ (起動は継続)
   console.warn(
-    '[auth] NEXTAUTH_SECRET is not set — sessions will not be verifiable across restarts.',
-  );
-  // シークレットが既知の弱い値なら、本番投入前に強固な値に差し替えるよう警告
-} else if (WEAK_NEXTAUTH_SECRETS.has(secret)) {
-  console.warn(
-    '[auth] NEXTAUTH_SECRET is set to a known placeholder value. Generate a strong secret (e.g. `openssl rand -base64 32`) before deploying.',
+    `[auth] ${detail}. Generate a strong secret (e.g. \`openssl rand -base64 32\`) before deploying to production.`,
   );
 }
 
@@ -44,31 +58,9 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
         email: { label: 'Email', type: 'email' },
         password: { label: 'Password', type: 'password' },
       },
-      // 実際の認証ロジック。成功ならユーザーオブジェクト、失敗なら null を返す
-      async authorize(credentials) {
-        // 入力不足ならすぐ失敗
-        if (!credentials?.email || !credentials?.password) return null;
-
-        // email で User を検索 (port 経由)
-        const user = await repos.users.findByEmail(credentials.email as string);
-
-        // ユーザー未存在、またはパスワード未設定なら失敗
-        if (!user || !user.passwordHash) return null;
-
-        // 入力パスワードを DB のハッシュと比較 (bcrypt)
-        const isValid = await compare(credentials.password as string, user.passwordHash);
-        // 一致しなければ失敗
-        if (!isValid) return null;
-
-        // 認証成功: セッションに乗せるユーザー情報を返す
-        return {
-          id: user.id, // ユーザー ID
-          email: user.email, // メール
-          name: user.name, // 氏名
-          role: user.role, // 権限
-          tenantId: user.tenantId, // 所属テナント ID (マルチテナント化のキー)
-        };
-      },
+      // 実際の認証ロジックは password-authorize.ts に分離 (スロットル + ダミー比較込み)。
+      // 単体テストから直接 passwordAuthorize を検証できるようにするため。
+      authorize: passwordAuthorize,
     }),
     // マジックリンク (メール内ワンタイム URL) を受け付ける 2 つめの Credentials プロバイダ。
     // /api/auth/magic-link/callback ルートが署名済みトークンを携えて signIn('magic-link', ...) を呼ぶ
