@@ -28,6 +28,7 @@ type Params = { params: Promise<{ id: string }> };
 
 // 422 (バリデーションエラー) を共通フォーマットで返すヘルパー
 function validationError(message: string, path: (string | number)[]) {
+  // Zod 互換の issues 形状で 422 レスポンスを返す (フォーム側が読みやすいよう整形)
   return NextResponse.json(
     {
       error: '入力値が正しくありません',
