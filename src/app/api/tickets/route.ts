@@ -61,8 +61,10 @@ export async function POST(req: Request) {
     // multipart/form-data を FormData として読み出す
     let form: FormData;
     try {
-      form = await req.formData();
-    } catch {
+      form = await req.formData(); // ブラウザが送った multipart ボディを FormData オブジェクトに変換する
+    } catch (formErr) {
+      // FormData の読み出し失敗はサーバログにエラーとして記録する (握りつぶさない)
+      console.error('[POST /api/tickets] failed to parse FormData', formErr);
       // 不正な FormData は 400 で弾く
       return NextResponse.json(
         { error: 'リクエストの形式が正しくありません' },
@@ -84,8 +86,10 @@ export async function POST(req: Request) {
   } else {
     // 従来どおり JSON ボディとして読み出す
     try {
-      rawInput = (await req.json()) as Record<string, unknown>;
-    } catch {
+      rawInput = (await req.json()) as Record<string, unknown>; // JSON を JS オブジェクトに変換する
+    } catch (jsonErr) {
+      // JSON の解析失敗はサーバログにエラーとして記録する (握りつぶさない)
+      console.error('[POST /api/tickets] failed to parse JSON body', jsonErr);
       return NextResponse.json(
         { error: 'リクエストの形式が正しくありません' },
         { status: 400 },
@@ -210,8 +214,9 @@ export async function POST(req: Request) {
     await Promise.all(
       writtenKeys.map((key) =>
         storage.delete(key).catch((cleanupErr) => {
-          // 削除失敗はログだけ残して握りつぶす (リトライ用 GC は将来の課題)
-          console.warn('[POST /api/tickets] failed to clean up storage', { key, cleanupErr });
+          // ストレージ削除失敗はエラーとしてログに残す (リトライ用 GC は将来の課題)
+          // warn ではなく error: ロールバック失敗は警告ではなく本物のエラー
+          console.error('[POST /api/tickets] failed to clean up storage', { key, cleanupErr });
         }),
       ),
     );
