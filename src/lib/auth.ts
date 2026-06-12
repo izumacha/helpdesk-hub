@@ -119,7 +119,7 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
         } else {
           // User が DB から削除済みなら、JWT を無効化して再ログインを促す
           // (next-auth v5 は jwt callback での throw を session 失効として扱う)
-          throw new Error('User no longer exists. Please sign in again.');
+          throw new Error('ユーザーが存在しません。再度ログインしてください。');
         }
       }
       // 更新したトークンを返す

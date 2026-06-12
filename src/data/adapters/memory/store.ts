@@ -20,12 +20,9 @@ export interface CategoryRow {
   tenantId: string; // 所属テナント ID (マルチテナント化のキー)
 }
 
-/**
- * In-memory store used by the test adapter.
- *
- * The `idSeq` counter is per-store so different test contexts never share state
- * and produce stable id sequences in isolation.
- */
+// テスト用アダプタが使うインメモリストア。
+// `idSeq` カウンタはストアごとに独立しているので、テストコンテキスト間で状態が混ざらず
+// 連番 ID も安定して再現できる。
 // テスト用メモリストアの型。エンティティごとに Map を持つ
 export interface Store {
   tenants: Map<string, Tenant>; // テナント (マルチテナント化)

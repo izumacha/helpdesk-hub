@@ -1,13 +1,8 @@
-/**
- * Port: notification broadcaster.
- *
- * Abstracts the delivery of unread-count SSE events to connected clients.
- * The SSE route handler and Server Actions depend on this port, not on any
- * concrete registry implementation. Swap adapters (Redis pub/sub, Postgres
- * `LISTEN/NOTIFY`, etc.) without touching the call sites.
- *
- * Tracking: see GitHub issue #60.
- */
+// Port: 通知ブロードキャスター。
+// 未読件数 SSE イベントを接続中クライアントへ届ける処理を抽象化する。
+// SSE ルートハンドラと Server Action はこのポートにのみ依存し、
+// 具体的な実装 (in-memory Map, Redis pub/sub, Postgres LISTEN/NOTIFY 等) には依存しない。
+// 追跡: GitHub issue #60。
 
 // SSE 接続 1 本分を表すコントローラー型 (Web 標準 ReadableStream のコントローラー)
 export type BroadcastController = ReadableStreamDefaultController<Uint8Array>;

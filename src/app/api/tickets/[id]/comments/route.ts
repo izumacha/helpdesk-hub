@@ -44,8 +44,8 @@ function validationError(message: string, path: (string | number)[]) {
 export async function POST(req: Request, { params }: Params) {
   // セッション取得
   const session = await auth();
-  // 未ログインなら 401
-  if (!session?.user?.id) {
+  // 未ログイン、または tenantId が取得できない場合は 401 (tenantId が null だと後続の where 句注入が機能しないため)
+  if (!session?.user?.id || !session.user.tenantId) {
     return NextResponse.json({ error: '認証が必要です' }, { status: 401 });
   }
   // セッションから tenantId / 投稿者を取り出す
@@ -76,7 +76,9 @@ export async function POST(req: Request, { params }: Params) {
   let form: FormData;
   try {
     form = await req.formData();
-  } catch {
+  } catch (err) {
+    // FormData のパースに失敗した場合はログに残してから 400 を返す
+    console.error('[POST /api/tickets/[id]/comments] FormData のパースに失敗しました', err);
     return NextResponse.json({ error: 'リクエストの形式が正しくありません' }, { status: 400 });
   }
 
