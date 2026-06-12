@@ -44,8 +44,8 @@ function validationError(message: string, path: (string | number)[]) {
 export async function POST(req: Request, { params }: Params) {
   // セッション取得
   const session = await auth();
-  // 未ログインなら 401
-  if (!session?.user?.id) {
+  // 未ログイン、または tenantId が取得できない場合は 401 (tenantId が null だと後続の where 句注入が機能しないため)
+  if (!session?.user?.id || !session.user.tenantId) {
     return NextResponse.json({ error: '認証が必要です' }, { status: 401 });
   }
   // セッションから tenantId / 投稿者を取り出す
