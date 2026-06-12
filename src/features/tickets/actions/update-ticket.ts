@@ -20,6 +20,8 @@ import {
 } from '@/domain/ticket-status';
 // セッションの tenantId からテナント mode (lite | pro) を取得するヘルパー
 import { getCurrentTenantMode } from '@/lib/tenant';
+// ステータス・優先度などの一元管理ラベル取得関数
+import { getStatusLabel } from '@/lib/constants';
 // 型のみインポート (優先度/ステータス)
 import type { Priority, TicketStatus } from '@/domain/types';
 // レート制限 (連打防止) の共通ヘルパー
@@ -129,7 +131,8 @@ export async function updateTicketStatus(ticketId: string, newStatus: TicketStat
     await r.notifications.create({
       userId: ticket.creatorId, // 通知の受信者は起票者
       type: 'statusChanged', // 通知の種別: ステータス変更
-      message: `チケット「${ticket.title}」のステータスが「${newStatus}」に変更されました`, // 表示文言
+      // getStatusLabel で「InProgress」→「対応中」のようにテナントモードに合わせた日本語表示に変換
+      message: `チケット「${ticket.title}」のステータスが「${getStatusLabel(newStatus, mode)}」に変更されました`, // 表示文言
       ticketId, // 関連チケット ID
       tenantId: ticket.tenantId, // テナントスコープ (クロステナント漏洩防止)
     });
