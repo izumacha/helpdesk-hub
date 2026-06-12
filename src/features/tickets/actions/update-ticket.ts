@@ -61,6 +61,10 @@ export async function updateTicketStatus(ticketId: string, newStatus: TicketStat
   // 10 秒あたり 10 回までに制限 (チケット単位)
   enforceRateLimit(`ticket-status:${session.user.id}:${ticketId}`, { limit: 10, windowMs: 10_000 });
 
+  // uow.run の外で起票者 ID を保持して、コミット後の broadcastUnreadCount に使う
+  // (ticket は uow.run 内で取得するため、クロージャ変数として外側に宣言しておく必要がある)
+  let ticketCreatorId: string | null = null;
+
   // 1 トランザクションでチケット更新と履歴記録を実行
   await uow.run(async (r) => {
     // 対象チケットを tenantId スコープで取得
@@ -119,7 +123,20 @@ export async function updateTicketStatus(ticketId: string, newStatus: TicketStat
       oldValue: ticket.status,
       newValue: newStatus,
     });
+    // 起票者 ID を外側変数に渡す (コミット後の SSE 配信に使う)
+    ticketCreatorId = ticket.creatorId;
+    // 起票者にステータス変更通知を DB に書き込む
+    await r.notifications.create({
+      userId: ticket.creatorId, // 通知の受信者は起票者
+      type: 'statusChanged', // 通知の種別: ステータス変更
+      message: `チケット「${ticket.title}」のステータスが「${newStatus}」に変更されました`, // 表示文言
+      ticketId, // 関連チケット ID
+      tenantId: ticket.tenantId, // テナントスコープ (クロステナント漏洩防止)
+    });
   });
+
+  // 起票者の未読件数を SSE でリアルタイム配信 (トランザクションコミット後に呼ぶ)
+  if (ticketCreatorId) await broadcastUnreadCount(ticketCreatorId, tenantId);
 
   // チケット詳細ページのキャッシュを無効化して再描画
   revalidatePath(`/tickets/${ticketId}`);

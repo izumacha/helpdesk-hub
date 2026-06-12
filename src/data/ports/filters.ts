@@ -1,15 +1,10 @@
-/**
- * Provider-neutral query primitives used by repository ports.
- *
- * Adapters are responsible for translating these into native query shapes
- * (e.g. Prisma `WhereInput`, Drizzle/Kysely builders, raw SQL).
- */
+// リポジトリポートで使う、プロバイダ非依存のクエリ用プリミティブ型。
+// アダプタが Prisma WhereInput や SQL など、各 ORM / DB 固有の形に変換する責務を持つ。
 
 // 文字列部分一致フィルター (LIKE 検索相当)
 export interface TextFilter {
   contains: string; // 部分一致させたい文字列
-  /** If true, match is case-insensitive (adapter-specific implementation). */
-  caseInsensitive?: boolean; // 大文字小文字を無視するか (各アダプタで実装)
+  caseInsensitive?: boolean; // true のとき大文字小文字を無視する (各アダプタで実装)
 }
 
 // ページング指定 (skip 件飛ばして take 件取得)

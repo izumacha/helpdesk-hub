@@ -76,7 +76,9 @@ export async function POST(req: Request, { params }: Params) {
   let form: FormData;
   try {
     form = await req.formData();
-  } catch {
+  } catch (err) {
+    // FormData のパースに失敗した場合はログに残してから 400 を返す
+    console.error('[POST /api/tickets/[id]/comments] FormData のパースに失敗しました', err);
     return NextResponse.json({ error: 'リクエストの形式が正しくありません' }, { status: 400 });
   }
 

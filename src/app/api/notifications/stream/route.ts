@@ -60,16 +60,18 @@ export async function GET(): Promise<Response> {
         const initialCount = await getUnreadNotificationCount(userId, tenantId);
         // count イベントとして即時送信 (UI の初期表示用)
         controller.enqueue(sseEvent('count', { count: initialCount }));
-      } catch {
-        // 致命的ではないので握りつぶす (以後のブロードキャストは届く)
+      } catch (err) {
+        // 初期カウント取得失敗はログに残す (致命的ではないので以後のブロードキャストは継続する)
+        console.error('[GET /api/notifications/stream] 初期未読件数の取得に失敗しました', err);
       }
 
       // 30 秒ごとにコメント行を送って接続を切らせないようにする
       keepaliveTimer = setInterval(() => {
         try {
           controller.enqueue(sseComment('ping'));
-        } catch {
-          // 送信失敗 (既に切断) ならタイマー停止
+        } catch (err) {
+          // 送信失敗 (既に切断済み) の場合はタイマーを停止してリソースを解放する
+          console.error('[GET /api/notifications/stream] keep-alive 送信失敗 (切断済み)', err);
           clearInterval(keepaliveTimer);
         }
       }, KEEPALIVE_INTERVAL_MS);
