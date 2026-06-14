@@ -63,9 +63,10 @@ export async function updateTicketStatus(ticketId: string, newStatus: TicketStat
   // 10 秒あたり 10 回までに制限 (チケット単位)
   enforceRateLimit(`ticket-status:${session.user.id}:${ticketId}`, { limit: 10, windowMs: 10_000 });
 
-  // uow.run の外で起票者 ID を保持して、コミット後の broadcastUnreadCount に使う
+  // コミット後の broadcastUnreadCount に渡す「通知を実際に書き込んだ起票者 ID」を保持する
   // (ticket は uow.run 内で取得するため、クロージャ変数として外側に宣言しておく必要がある)
-  let ticketCreatorId: string | null = null;
+  // 自己更新 (起票者=操作者) では通知を作らないため null のままにし、無駄な SSE 配信を避ける
+  let notifiedCreatorId: string | null = null;
 
   // 1 トランザクションでチケット更新と履歴記録を実行
   await uow.run(async (r) => {
@@ -125,8 +126,6 @@ export async function updateTicketStatus(ticketId: string, newStatus: TicketStat
       oldValue: ticket.status,
       newValue: newStatus,
     });
-    // 起票者 ID を外側変数に渡す (コミット後の SSE 配信に使う)
-    ticketCreatorId = ticket.creatorId;
     // 自分以外の起票者にのみ通知を送る (エージェント本人が起票したチケットを更新する場合は自己通知しない)
     if (ticket.creatorId !== session.user.id) {
       // 起票者にステータス変更通知を DB に書き込む
@@ -138,11 +137,14 @@ export async function updateTicketStatus(ticketId: string, newStatus: TicketStat
         ticketId, // 関連チケット ID
         tenantId: ticket.tenantId, // テナントスコープ (クロステナント漏洩防止)
       });
+      // 通知を書き込んだ起票者 ID を外側変数に渡す (コミット後の SSE 配信に使う)
+      notifiedCreatorId = ticket.creatorId;
     }
   });
 
-  // 起票者の未読件数を SSE でリアルタイム配信 (トランザクションコミット後に呼ぶ)
-  if (ticketCreatorId) await broadcastUnreadCount(ticketCreatorId, tenantId);
+  // 通知を実際に書き込んだ場合のみ、起票者の未読件数を SSE でリアルタイム配信する
+  // (トランザクションコミット後に呼ぶ。自己更新時は notifiedCreatorId が null なので配信しない)
+  if (notifiedCreatorId) await broadcastUnreadCount(notifiedCreatorId, tenantId);
 
   // チケット詳細ページのキャッシュを無効化して再描画
   revalidatePath(`/tickets/${ticketId}`);
