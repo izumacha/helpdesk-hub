@@ -39,8 +39,10 @@ function validationError(message: string, path: (string | number)[]) {
 export async function POST(req: Request) {
   // セッション取得
   const session = await auth();
-  // 未ログインなら 401 を返す
-  if (!session?.user?.id) {
+  // 未ログイン、または tenantId が取得できない場合は 401。
+  // tenantId が null だと以降の where 句注入(テナント分離)が効かず、NOT NULL 列への
+  // 書き込みも 500 になるため、他の認証付き入口(コメント投稿等)と同じく早期に弾く。
+  if (!session?.user?.id || !session.user.tenantId) {
     return NextResponse.json({ error: '認証が必要です' }, { status: 401 });
   }
 
