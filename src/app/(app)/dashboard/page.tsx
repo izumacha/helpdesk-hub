@@ -8,8 +8,14 @@ import { repos } from '@/data';
 import { isAgent as checkIsAgent } from '@/lib/role';
 // ステータスの日本語ラベル + Tailwind カラークラス
 import { STATUS_LABELS, STATUS_COLORS } from '@/lib/constants';
+// 現在ログイン中のテナントの動作モード (lite | pro) を取得するヘルパー
+import { getCurrentTenantMode } from '@/lib/tenant';
+// タブ ('mine' / 'overdue') の絞り込み条件を一元管理する純粋関数 (一覧ページと共有)
+import { applyTabFilter } from '@/features/tickets/tab-filter';
+// データ層が公開しているチケット一覧フィルタ型 (件数取得の引数)
+import type { TicketListFilter } from '@/data/ports/ticket-repository';
 
-// /dashboard : 集計ダッシュボード (役割で表示項目が変わる)
+// /dashboard : 集計ダッシュボード (テナント mode と役割で表示が変わる)
 export default async function DashboardPage() {
   // セッション取得
   const session = await auth();
@@ -20,9 +26,20 @@ export default async function DashboardPage() {
   const isAgent = checkIsAgent(session.user.role);
   // セッションから tenantId を取り出して以降の port 呼び出しに伝搬する
   const tenantId = session.user.tenantId;
-  // SLA 判定基準時刻 (現在時刻)
+  // SLA / 期限 判定基準時刻 (現在時刻)
   const now = new Date();
+  // テナントの動作モード (lite | pro) を取得し、表示内容を切り替える
+  const mode = await getCurrentTenantMode(tenantId);
 
+  // Lite モードのテナントは「自分の未対応 / 期限切れ」の 2 枚タイルだけの簡易版を表示する
+  // (Pivot plan §3.1 / §2 ギャップ表: 一人運用では SLA・担当者別の集計は意味が薄いため置換)
+  if (mode === 'lite') {
+    return (
+      <LiteDashboard isAgent={isAgent} userId={session.user.id} tenantId={tenantId} now={now} />
+    );
+  }
+
+  // 以降は Pro モードの従来ダッシュボード (情シス向けのフル集計)
   // ダッシュボード用 3 指標を 1 メソッドで取得 (内部は groupBy で 3 クエリに集約、tenantId スコープ)
   // - byStatus: 7 状態それぞれの件数 (依頼者なら自身のチケットに限定)
   // - slaOverdue / workload: 当該テナント内全件対象 (表示は呼び出し側で role 制御)
@@ -169,6 +186,78 @@ export default async function DashboardPage() {
           </div>
         </section>
       )}
+    </div>
+  );
+}
+
+// Lite モード用の簡易ダッシュボード (自分の未対応 / 期限切れ の 2 枚タイル)
+// Pivot plan §3.1 に対応。一覧タブと同じ条件 (applyTabFilter) で件数を数え、
+// タイルをタップすると該当タブの一覧 (/tickets?tab=...) へ遷移する。
+async function LiteDashboard({
+  isAgent,
+  userId,
+  tenantId,
+  now,
+}: {
+  isAgent: boolean; // 担当者 (agent/admin) かどうか。'mine' の絞り込み方が依頼者と変わる
+  userId: string; // ログインユーザー ID ('mine' で自分の担当/起票を絞る)
+  tenantId: string; // テナントスコープ (件数取得に必須)
+  now: Date; // 期限超過判定の基準時刻
+}) {
+  // 件数集計の共通土台。依頼者は自分のチケットのみ、担当者は全件 (creatorId 未指定)
+  const baseFilter: TicketListFilter = {
+    creatorId: isAgent ? undefined : userId,
+  };
+  // 一覧タブと同一の条件を再利用して「自分の未対応」「期限切れ」のフィルタを組み立てる
+  const mineFilter = applyTabFilter(baseFilter, 'mine', { isAgent, userId, now });
+  const overdueFilter = applyTabFilter(baseFilter, 'overdue', { isAgent, userId, now });
+
+  // 2 つの件数を並列に取得 (どちらも tenantId スコープ)
+  const [mineCount, overdueCount] = await Promise.all([
+    repos.tickets.count(mineFilter, tenantId),
+    repos.tickets.count(overdueFilter, tenantId),
+  ]);
+
+  return (
+    <div className="space-y-8">
+      {/* ページヘッダー: タイトル + やさしいサブテキスト (Lite はカタカナ/英語を避ける) */}
+      <div>
+        <h1 className="text-2xl font-bold text-slate-900">ホーム</h1>
+        <p className="mt-1 text-sm text-slate-500">
+          いま対応が必要な問い合わせをまとめています。タイルを押すと一覧を開けます。
+        </p>
+      </div>
+
+      {/* 2 枚タイル (スマホでは縦 1 列、sm 以上で 2 列) */}
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+        {/* 自分の未対応 (Open / InProgress)。落ち着いたティールで主要導線として強調 */}
+        <Link
+          href="/tickets?tab=mine"
+          className="rounded-2xl bg-white p-6 shadow-sm ring-1 ring-slate-100 transition duration-200 hover:-translate-y-0.5 hover:shadow-md hover:ring-teal-200"
+        >
+          <p className="text-sm font-medium text-slate-500">自分の未対応</p>
+          <p className="mt-2 text-4xl font-bold text-teal-700">{mineCount}</p>
+          <p className="mt-1 text-xs text-slate-400">未対応・対応中の問い合わせ</p>
+        </Link>
+
+        {/* 期限切れ。件数 0 はニュートラル、1 件以上はロゼで注意喚起 */}
+        <Link
+          href="/tickets?tab=overdue"
+          className={`rounded-2xl bg-white p-6 shadow-sm ring-1 transition duration-200 hover:-translate-y-0.5 hover:shadow-md ${
+            overdueCount > 0
+              ? 'ring-rose-200 hover:ring-rose-300'
+              : 'ring-slate-100 hover:ring-teal-200'
+          }`}
+        >
+          <p className="text-sm font-medium text-slate-500">期限切れ</p>
+          <p
+            className={`mt-2 text-4xl font-bold ${overdueCount > 0 ? 'text-rose-700' : 'text-slate-400'}`}
+          >
+            {overdueCount}
+          </p>
+          <p className="mt-1 text-xs text-slate-400">期限を過ぎた未完了の問い合わせ</p>
+        </Link>
+      </div>
     </div>
   );
 }
