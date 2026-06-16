@@ -40,6 +40,24 @@ export function getStatusLabel(status: TicketStatus, mode: TenantMode): string {
   return STATUS_LABELS[status] ?? status;
 }
 
+// テナントの動作モード (lite | pro) の一覧。設定画面の選択肢生成や反復に使う
+// (順序は UI の表示順。lite を既定として先頭に置く)
+export const TENANT_MODES: readonly TenantMode[] = ['lite', 'pro'];
+
+// テナントモードの日本語表示ラベル (設定画面の見出し・現在値表示に使う)
+export const TENANT_MODE_LABELS: Record<TenantMode, string> = {
+  lite: 'かんたんモード（Lite）', // SMB 向けの簡易モード
+  pro: '詳細モード（Pro）', // 情シス向けのフル機能モード
+};
+
+// テナントモードの説明文 (設定画面で各モードの違いを利用者に伝える)
+export const TENANT_MODE_DESCRIPTIONS: Record<TenantMode, string> = {
+  // Lite: ステータスを 3 つに絞り、用語をやさしくした中小企業向けモード
+  lite: 'ステータスを「未対応 / 対応中 / 完了」の3つに絞り、用語をやさしくした中小企業向けのモードです。エスカレーションや詳細なSLAは表示しません。',
+  // Pro: 7 ステータス・SLA・エスカレーション・FAQ 候補などフル機能を有効化
+  pro: '7つのステータス・SLA期限・エスカレーション・FAQ候補など、情シス向けのすべての機能を有効にします。',
+};
+
 // 優先度キーに対応する日本語表示ラベル
 export const PRIORITY_LABELS: Record<string, string> = {
   Low: '低',

@@ -17,5 +17,17 @@ export function makeTenantRepo(store: Store): TenantRepository {
       const t = store.tenants.get('default-tenant');
       return t ? { ...t } : null;
     },
+
+    // テナントの動作モード (lite | pro) を更新し、更新後の Tenant を返す
+    async updateMode(id, mode) {
+      // 対象テナントを Map から取得 (存在しなければ Prisma の update と同様にエラー)
+      const t = store.tenants.get(id);
+      if (!t) throw new Error('テナントが見つかりません');
+      // mode だけ差し替えた新しいオブジェクトを作り Map に書き戻す
+      const updated = { ...t, mode };
+      store.tenants.set(id, updated);
+      // 防御的コピーを返す (呼び出し側で破壊されないように)
+      return { ...updated };
+    },
   };
 }

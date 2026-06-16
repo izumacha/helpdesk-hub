@@ -20,13 +20,16 @@ interface Props {
   role: Role;
 }
 
-// メニュー項目定義 (agentOnly の項目はエージェント以上のみ表示)
-const navItems = [
+// メニュー項目定義
+// - agentOnly: エージェント以上 (agent / admin) のみ表示
+// - adminOnly: 管理者 (admin) のみ表示 (テナント設定など組織管理向け)
+const navItems: { href: string; label: string; agentOnly?: boolean; adminOnly?: boolean }[] = [
   { href: '/dashboard', label: 'ダッシュボード' },
   { href: '/tickets', label: '問い合わせ一覧' },
   { href: '/tickets/new', label: '新規登録' },
   { href: '/faq', label: 'FAQ候補', agentOnly: true },
   { href: '/notifications', label: '通知' },
+  { href: '/settings', label: '設定', adminOnly: true },
 ];
 
 // 左サイドバー (折りたたみ + 役割別メニュー出し分け + モバイルドロワー)
@@ -40,7 +43,16 @@ export function Sidebar({ role }: Props) {
   const { open: mobileOpen, closeNav } = useMobileNav();
 
   // 権限に応じて表示できる項目だけに絞り込む
-  const visibleItems = navItems.filter((item) => !item.agentOnly || isAgent(role));
+  // - agentOnly: agent / admin のみ
+  // - adminOnly: admin のみ (テナント設定など)
+  const visibleItems = navItems.filter((item) => {
+    // adminOnly 項目は admin ロールのときだけ表示する
+    if (item.adminOnly) return role === 'admin';
+    // agentOnly 項目は agent / admin のときだけ表示する
+    if (item.agentOnly) return isAgent(role);
+    // それ以外は全ロールに表示する
+    return true;
+  });
   // メニュー項目がアクティブかどうかを判定 (完全一致 + 一部 prefix マッチ)
   const isItemActive = (href: string) => {
     // ルート "/" は完全一致のみ
