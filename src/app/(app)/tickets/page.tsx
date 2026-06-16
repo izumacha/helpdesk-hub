@@ -18,6 +18,8 @@ import { formatDateJP } from '@/lib/format-date';
 import { TicketFilters } from '@/features/tickets/components/TicketFilters';
 // 「自分の未対応 / 期限切れ / すべて」タブナビ (Client Component)
 import { TicketTabs, type TicketTabId } from '@/features/tickets/components/TicketTabs';
+// タブ ('mine' / 'overdue') の絞り込み条件を一元管理する純粋関数 (ダッシュボードと共有)
+import { applyTabFilter } from '@/features/tickets/tab-filter';
 // チケット状態・優先度の列挙型 (正準のドメイン型・URL クエリの型ガード用)
 import type { TicketStatus, Priority } from '@/domain/types';
 // データ層が公開しているチケット一覧フィルタ型 (port 経由クエリの引数)
@@ -78,8 +80,8 @@ export default async function TicketsPage({ searchParams }: Props) {
   // タブ ID を正規化 ('all' / 'mine' / 'overdue' のいずれか)
   const tab = parseTabParam(sp.tab);
 
-  // データ層に渡す TicketListFilter を組み立てる
-  const filter: TicketListFilter = {
+  // データ層に渡す TicketListFilter を組み立てる (検索/絞り込みの基本条件)
+  const baseFilter: TicketListFilter = {
     // RBAC: 依頼者は自分のチケットのみ (エージェントは creatorId 未指定 = 全件)
     creatorId: isAgent ? undefined : session.user.id,
     // フリーワード検索 (タイトル/本文の部分一致、大文字小文字無視)
@@ -94,20 +96,13 @@ export default async function TicketsPage({ searchParams }: Props) {
     assigneeId: normalizeAssigneeId(sp.assigneeId),
   };
 
-  // タブ別の追加フィルタを上書き適用する
-  // - mine: 「自分の未対応」= ステータスが Open または InProgress
-  //   - エージェントは「担当が自分」のもの
-  //   - 依頼者は creatorId 既定 (自分のチケット) で自動的に絞り込まれているため status だけ追加
-  // - overdue: 期限切れ + 未解決 (status=Resolved/Closed は除外)
-  if (tab === 'mine') {
-    filter.statusIn = ['Open', 'InProgress'];
-    if (isAgent) {
-      filter.assigneeId = session.user.id;
-    }
-  } else if (tab === 'overdue') {
-    // 現在時刻基準で期限超過判定を行う
-    filter.overdue = { now: new Date() };
-  }
+  // タブ別の追加条件 ('mine' / 'overdue') を共通ヘルパーで適用する
+  // (タブの意味はダッシュボードと共有する applyTabFilter に集約し、二重定義を避ける)
+  const filter = applyTabFilter(baseFilter, tab, {
+    isAgent,
+    userId: session.user.id,
+    now: new Date(),
+  });
 
   // セッションから tenantId を取り出して以降の port 呼び出しに伝搬する
   const tenantId = session.user.tenantId;
