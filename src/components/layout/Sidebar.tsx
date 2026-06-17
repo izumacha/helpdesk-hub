@@ -8,29 +8,32 @@ import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 // 「エージェント以上か」を判定するヘルパー
 import { isAgent } from '@/lib/role';
-// 権限を表すドメイン型 (正準)
-import type { Role } from '@/domain/types';
+// 権限・テナントモードを表すドメイン型 (正準)
+import type { Role, TenantMode } from '@/domain/types';
 // 共通ブランドマーク
 import { Logo } from '@/components/brand/Logo';
 // モバイルナビ Context (ハンバーガーで開閉するドロワー状態)
 import { useMobileNav } from './MobileNavProvider';
 
-// サイドバーが受け取る props (現在のロール)
+// サイドバーが受け取る props (現在のロールとテナントモード)
 interface Props {
   role: Role;
+  mode: TenantMode;
 }
 
-// メニュー項目定義 (agentOnly の項目はエージェント以上のみ表示)
+// メニュー項目定義
+// - agentOnly: エージェント以上のみ表示
+// - proOnly: Pro モードのテナントのみ表示 (Lite では用語簡素化のため隠す)
 const navItems = [
   { href: '/dashboard', label: 'ダッシュボード' },
   { href: '/tickets', label: '問い合わせ一覧' },
   { href: '/tickets/new', label: '新規登録' },
-  { href: '/faq', label: 'FAQ候補', agentOnly: true },
+  { href: '/faq', label: 'FAQ候補', agentOnly: true, proOnly: true },
   { href: '/notifications', label: '通知' },
 ];
 
 // 左サイドバー (折りたたみ + 役割別メニュー出し分け + モバイルドロワー)
-export function Sidebar({ role }: Props) {
+export function Sidebar({ role, mode }: Props) {
   // 現在の URL パス (アクティブ強調に使う)
   const pathname = usePathname();
   // デスクトップ向けの折りたたみ状態 (true で幅を縮める)。モバイル開閉とは直交
@@ -39,8 +42,11 @@ export function Sidebar({ role }: Props) {
   // (md 未満ではこの open に従って画面外/画面内へスライドする)
   const { open: mobileOpen, closeNav } = useMobileNav();
 
-  // 権限に応じて表示できる項目だけに絞り込む
-  const visibleItems = navItems.filter((item) => !item.agentOnly || isAgent(role));
+  // 権限とモードに応じて表示できる項目だけに絞り込む
+  // (agentOnly はエージェント以上のみ、proOnly は Pro テナントのみ表示)
+  const visibleItems = navItems.filter(
+    (item) => (!item.agentOnly || isAgent(role)) && (!item.proOnly || mode === 'pro'),
+  );
   // メニュー項目がアクティブかどうかを判定 (完全一致 + 一部 prefix マッチ)
   const isItemActive = (href: string) => {
     // ルート "/" は完全一致のみ
