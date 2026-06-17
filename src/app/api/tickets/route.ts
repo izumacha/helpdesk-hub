@@ -142,6 +142,9 @@ export async function POST(req: Request) {
   const effectivePriority = mode === 'lite' ? 'Medium' : priority;
   // Lite モードではカテゴリ機能を提供しないため保存時に null へ落とす
   const effectiveCategoryId = mode === 'lite' ? null : (categoryId ?? null);
+  // 初期ステータス: Lite では 3 値の起点 'Open'(未対応) で起票する。
+  // Pro は undefined を渡して DB 既定の 'New'(新規) のままにする (既存挙動を維持)
+  const initialStatus = mode === 'lite' ? ('Open' as const) : undefined;
 
   // 作成時刻 (SLA 期限の計算基準)
   const now = new Date();
@@ -159,6 +162,7 @@ export async function POST(req: Request) {
       categoryId: effectiveCategoryId,
       creatorId: userId,
       tenantId,
+      status: initialStatus, // Lite は 'Open'、Pro は undefined(既定 New)
       resolutionDueAt,
     });
     return NextResponse.json(ticket, { status: 201 });
@@ -180,6 +184,7 @@ export async function POST(req: Request) {
         categoryId: effectiveCategoryId,
         creatorId: userId,
         tenantId,
+        status: initialStatus, // Lite は 'Open'、Pro は undefined(既定 New)
         resolutionDueAt,
       });
       // 添付ファイルを 1 件ずつ「ストレージ書き込み → メタ INSERT」の順に処理する

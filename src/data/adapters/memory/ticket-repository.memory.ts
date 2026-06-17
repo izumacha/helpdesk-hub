@@ -245,7 +245,7 @@ export function makeTicketRepo(store: Store): TicketRepository {
         id: nextId(store, 'tkt'), // 'tkt_...' 形式の一意 ID
         title: input.title,
         body: input.body,
-        status: 'New', // 新規状態でスタート
+        status: input.status ?? 'New', // 初期ステータス: 指定があればそれ、未指定なら New でスタート
         priority: input.priority,
         createdAt: now,
         updatedAt: now,

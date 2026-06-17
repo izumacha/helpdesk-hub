@@ -70,6 +70,42 @@ export function runTicketRepositoryContract(
       expect(found?.priority).toBe('High');
     });
 
+    // status を省略すると DB 既定の New で起票されること (Pro 既定の挙動)
+    it('create without status defaults to New', async () => {
+      const { requester, categoryId } = await ctx.seedBasicFixture();
+      // status を渡さずに作成する
+      const created = await ctx.repos.tickets.create({
+        title: 'プリンタが動かない',
+        body: '電源は入るが印刷されない',
+        priority: 'Medium',
+        creatorId: requester.id,
+        categoryId,
+        tenantId: TENANT_ID,
+      });
+      // 初期ステータスは New になる
+      expect(created.status).toBe('New');
+    });
+
+    // status を明示すると、その値で起票されること (Lite は 'Open'=未対応 で起票する)
+    it('create honors an explicit initial status', async () => {
+      const { requester, categoryId } = await ctx.seedBasicFixture();
+      // Lite モードを模して status: 'Open' を明示的に渡す
+      const created = await ctx.repos.tickets.create({
+        title: 'メールが届かない',
+        body: '昨日から受信できていない',
+        priority: 'Medium',
+        creatorId: requester.id,
+        categoryId,
+        tenantId: TENANT_ID,
+        status: 'Open',
+      });
+      // 指定したとおり Open(未対応) で起票される
+      expect(created.status).toBe('Open');
+      // 取り直しても Open のまま永続化されていること
+      const found = await ctx.repos.tickets.findById(created.id, TENANT_ID);
+      expect(found?.status).toBe('Open');
+    });
+
     // list の creatorId フィルタと並び順 (新しい順) が正しいこと
     it('list applies creatorId filter and returns most-recent first', async () => {
       const { requester, agentA, categoryId } = await ctx.seedBasicFixture();
