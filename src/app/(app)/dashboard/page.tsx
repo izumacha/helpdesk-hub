@@ -6,8 +6,14 @@ import { auth } from '@/lib/auth';
 import { repos } from '@/data';
 // 「エージェント以上か」を判定 (別名 import で同名変数と区別)
 import { isAgent as checkIsAgent } from '@/lib/role';
-// ステータスの日本語ラベル + Tailwind カラークラス
-import { STATUS_LABELS, STATUS_COLORS } from '@/lib/constants';
+// ステータスの日本語ラベル(mode 対応) + Tailwind カラークラス
+import { getStatusLabel, STATUS_COLORS } from '@/lib/constants';
+// 現在テナントの動作モード(lite | pro)を取得するヘルパー
+import { getCurrentTenantMode } from '@/lib/tenant';
+// Lite モードで表示する 3 ステータス(未対応/対応中/完了)の定義
+import { LITE_STATUSES } from '@/domain/ticket-status';
+// ステータス型 (statCards の要素型に使用)
+import type { TicketStatus } from '@/domain/types';
 
 // /dashboard : 集計ダッシュボード (役割で表示項目が変わる)
 export default async function DashboardPage() {
@@ -20,6 +26,10 @@ export default async function DashboardPage() {
   const isAgent = checkIsAgent(session.user.role);
   // セッションから tenantId を取り出して以降の port 呼び出しに伝搬する
   const tenantId = session.user.tenantId;
+  // テナントの動作モード (lite | pro) を取得 (tenantId を渡して二重 session 読み込みを回避)
+  const mode = await getCurrentTenantMode(tenantId);
+  // Pro モードかどうか (SLA / 担当者別ワークロードの表示判定に使う)
+  const isPro = mode === 'pro';
   // SLA 判定基準時刻 (現在時刻)
   const now = new Date();
 
@@ -33,10 +43,10 @@ export default async function DashboardPage() {
     tenantId,
   });
 
-  // SLA 超過件数 (依頼者には表示しないので 0 にしておく)
-  const slaOverdueCount = isAgent ? stats.slaOverdue : 0;
-  // 担当者別ワークロード (依頼者には表示しないので空配列)
-  const workload = isAgent ? stats.workload : [];
+  // SLA 超過件数 (依頼者と Lite テナントには表示しないので 0 にしておく)
+  const slaOverdueCount = isAgent && isPro ? stats.slaOverdue : 0;
+  // 担当者別ワークロード (依頼者と Lite テナントには表示しないので空配列)
+  const workload = isAgent && isPro ? stats.workload : [];
 
   // 表示用に担当者 ID 一覧を抽出 (未割当行は除外)
   const assigneeIds = workload
@@ -50,15 +60,15 @@ export default async function DashboardPage() {
   // ID → 名前の辞書を作成
   const nameMap = Object.fromEntries(assigneeNames.map((u) => [u.id, u.name]));
 
-  // ステータスカードに表示する順序付き配列 (byStatus からそのまま取り出す)
-  const statCards = [
-    { status: 'New', count: stats.byStatus.New },
-    { status: 'Open', count: stats.byStatus.Open },
-    { status: 'WaitingForUser', count: stats.byStatus.WaitingForUser },
-    { status: 'InProgress', count: stats.byStatus.InProgress },
-    { status: 'Escalated', count: stats.byStatus.Escalated },
-    { status: 'Resolved', count: stats.byStatus.Resolved },
-  ];
+  // カードに表示するステータスの順序。Lite は 3 値(未対応/対応中/完了)、Pro は従来どおり
+  const cardStatuses: TicketStatus[] = isPro
+    ? ['New', 'Open', 'WaitingForUser', 'InProgress', 'Escalated', 'Resolved']
+    : [...LITE_STATUSES];
+  // ステータスカードに表示する順序付き配列 (byStatus から件数を引く)
+  const statCards = cardStatuses.map((status) => ({
+    status,
+    count: stats.byStatus[status],
+  }));
 
   // SLA 超過カードのトーン (件数 0 はニュートラル、>0 はロゼで強調)
   const slaIsAlert = slaOverdueCount > 0;
@@ -69,7 +79,9 @@ export default async function DashboardPage() {
       <div>
         <h1 className="text-2xl font-bold text-slate-900">ダッシュボード</h1>
         <p className="mt-1 text-sm text-slate-500">
-          現在の対応状況と各担当者の負荷を一目で把握できます。
+          {isPro
+            ? '現在の対応状況と各担当者の負荷を一目で把握できます。'
+            : '現在の対応状況を一目で把握できます。'}
         </p>
       </div>
 
@@ -78,7 +90,9 @@ export default async function DashboardPage() {
         <h2 className="mb-4 text-xs font-semibold tracking-wider text-slate-500 uppercase">
           ステータス別件数
         </h2>
-        <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-6">
+        <div
+          className={`grid grid-cols-2 gap-4 sm:grid-cols-3 ${isPro ? 'lg:grid-cols-6' : 'lg:grid-cols-3'}`}
+        >
           {statCards.map((card) => (
             // カードクリックで該当ステータスのフィルタ済み一覧へ遷移
             <Link
@@ -90,15 +104,15 @@ export default async function DashboardPage() {
               <span
                 className={`mt-2 inline-flex rounded-full px-2.5 py-0.5 text-xs font-medium ${STATUS_COLORS[card.status]}`}
               >
-                {STATUS_LABELS[card.status]}
+                {getStatusLabel(card.status, mode)}
               </span>
             </Link>
           ))}
         </div>
       </section>
 
-      {/* SLA 超過件数 (エージェントのみ表示) */}
-      {isAgent && (
+      {/* SLA 超過件数 (Pro モードのエージェントのみ表示。Lite では SLA を扱わない) */}
+      {isAgent && isPro && (
         <section>
           <h2 className="mb-4 text-xs font-semibold tracking-wider text-slate-500 uppercase">
             SLA 超過
@@ -117,8 +131,8 @@ export default async function DashboardPage() {
         </section>
       )}
 
-      {/* 担当者別 未完了件数 (エージェントのみ・データがある場合のみ表示) */}
-      {isAgent && workload.length > 0 && (
+      {/* 担当者別 未完了件数 (Pro モードのエージェントのみ・データがある場合のみ表示) */}
+      {isAgent && isPro && workload.length > 0 && (
         <section>
           <h2 className="mb-4 text-xs font-semibold tracking-wider text-slate-500 uppercase">
             担当者別 未完了件数
