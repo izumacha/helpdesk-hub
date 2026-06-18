@@ -22,14 +22,22 @@ interface Props {
 }
 
 // メニュー項目定義
-// - agentOnly: エージェント以上のみ表示
+// - agentOnly: エージェント以上 (agent / admin) のみ表示
+// - adminOnly: 管理者 (admin) のみ表示 (テナント設定など組織管理向け)
 // - proOnly: Pro モードのテナントのみ表示 (Lite では用語簡素化のため隠す)
-const navItems = [
+const navItems: {
+  href: string;
+  label: string;
+  agentOnly?: boolean;
+  adminOnly?: boolean;
+  proOnly?: boolean;
+}[] = [
   { href: '/dashboard', label: 'ダッシュボード' },
   { href: '/tickets', label: '問い合わせ一覧' },
   { href: '/tickets/new', label: '新規登録' },
   { href: '/faq', label: 'FAQ候補', agentOnly: true, proOnly: true },
   { href: '/notifications', label: '通知' },
+  { href: '/settings', label: '設定', adminOnly: true },
 ];
 
 // 左サイドバー (折りたたみ + 役割別メニュー出し分け + モバイルドロワー)
@@ -42,11 +50,19 @@ export function Sidebar({ role, mode }: Props) {
   // (md 未満ではこの open に従って画面外/画面内へスライドする)
   const { open: mobileOpen, closeNav } = useMobileNav();
 
-  // 権限とモードに応じて表示できる項目だけに絞り込む
-  // (agentOnly はエージェント以上のみ、proOnly は Pro テナントのみ表示)
-  const visibleItems = navItems.filter(
-    (item) => (!item.agentOnly || isAgent(role)) && (!item.proOnly || mode === 'pro'),
-  );
+  // 権限とテナントモードに応じて表示できる項目だけに絞り込む
+  // 1 項目に複数の制約 (例: FAQ候補 = agentOnly + proOnly) が付くため、各制約を個別に判定し
+  // どれか 1 つでも満たさなければ隠す (早期 return で「いずれか不適合なら除外」を表現)
+  const visibleItems = navItems.filter((item) => {
+    // adminOnly 項目は admin ロール以外には表示しない
+    if (item.adminOnly && role !== 'admin') return false;
+    // agentOnly 項目は agent / admin 以外には表示しない
+    if (item.agentOnly && !isAgent(role)) return false;
+    // proOnly 項目は Pro テナント以外 (= Lite) には表示しない
+    if (item.proOnly && mode !== 'pro') return false;
+    // すべての制約を満たした項目だけ表示する
+    return true;
+  });
   // メニュー項目がアクティブかどうかを判定 (完全一致 + 一部 prefix マッチ)
   const isItemActive = (href: string) => {
     // ルート "/" は完全一致のみ

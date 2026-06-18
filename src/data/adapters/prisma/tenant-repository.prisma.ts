@@ -36,5 +36,13 @@ export function makeTenantRepo(db: PrismaLike): TenantRepository {
       const row = await db.tenant.findUnique({ where: { id: 'default-tenant' } });
       return row ? toTenant(row) : null;
     },
+
+    // テナントの動作モード (lite | pro) を更新し、更新後の行をドメイン型で返す
+    async updateMode(id, mode) {
+      // 主キー (tenantId) で対象テナントを特定し mode 列のみ更新する
+      const row = await db.tenant.update({ where: { id }, data: { mode } });
+      // 更新後の行をドメイン型に詰め替えて返す
+      return toTenant(row);
+    },
   };
 }

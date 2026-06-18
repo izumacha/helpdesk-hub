@@ -18,23 +18,25 @@ async function login(page: Page, email = 'agent1@example.com') {
 
 // Lite モード (seed 既定) の画面挙動を検証する
 test.describe('Lite モード', () => {
-  // ダッシュボードは Lite の 3 ステータスだけを表示し、Pro 専用の指標を出さない
-  test('ダッシュボードは3ステータスのみ表示し SLA を出さない', async ({ page }) => {
+  // Lite のダッシュボードは「自分の未対応 / 期限切れ」の 2 タイル簡易版 (Pivot plan §3.1) を表示し、
+  // Pro 専用の指標 (SLA 超過・担当者別ワークロード) や Pro 用語を出さない
+  test('ダッシュボードは Lite 簡易版 (2タイル) を表示し SLA を出さない', async ({ page }) => {
     // エージェントでログイン (Pro 専用要素が role ではなく mode で隠れることを確かめるため)
     await login(page);
     // ダッシュボードへ遷移
     await page.goto('/dashboard');
-    // 見出しが表示される
-    await expect(page.getByRole('heading', { name: 'ダッシュボード' })).toBeVisible();
-    // Lite の 3 ラベル (未対応/対応中/完了) が表示される
-    await expect(page.getByText('未対応').first()).toBeVisible();
-    await expect(page.getByText('対応中').first()).toBeVisible();
-    await expect(page.getByText('完了').first()).toBeVisible();
+    // Lite では見出しが「ホーム」(カタカナ/英語を避けたやさしい用語) になる
+    await expect(page.getByRole('heading', { name: 'ホーム' })).toBeVisible();
+    // 2 枚タイルのラベル (自分の未対応 / 期限切れ) が表示される
+    await expect(page.getByText('自分の未対応')).toBeVisible();
+    await expect(page.getByText('期限切れ')).toBeVisible();
     // Pro 用語 (新規/エスカレーション) のカードは存在しない
     await expect(page.getByText('新規', { exact: true })).toHaveCount(0);
     await expect(page.getByText('エスカレーション', { exact: true })).toHaveCount(0);
     // SLA 超過セクションは Lite では非表示
     await expect(page.getByText('SLA 超過')).toHaveCount(0);
+    // 担当者別ワークロードも Lite では非表示
+    await expect(page.getByText('担当者別 未完了件数')).toHaveCount(0);
   });
 
   // サイドバーに FAQ候補メニューが出ない (Lite では proOnly のため隠れる)
