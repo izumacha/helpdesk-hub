@@ -1,3 +1,5 @@
+// React の cache() で「同一リクエスト内の同じ呼び出し」をメモ化する (重複 DB クエリ回避)
+import { cache } from 'react';
 // セッションからログインユーザーの tenantId を取得するための NextAuth 関数
 import { auth } from '@/lib/auth';
 // Composition Root からテナント取得用リポジトリ束を取り込む
@@ -9,7 +11,9 @@ import type { TenantMode } from '@/domain/types';
 // - 引数 tenantId が渡されればその値で Tenant を引く (page で既に session を取っているケース向けの最適化)
 // - 引数が無ければ auth() でセッションを引き、その tenantId を使う
 // - セッション無し / Tenant が見つからない場合は安全側に倒して 'lite' を返す (DB 既定値と一致)
-export async function getCurrentTenantMode(tenantId?: string): Promise<TenantMode> {
+// cache() でラップする理由: 1 ページ描画では layout と page が同じ tenantId で本関数を 2 回呼ぶ。
+// React の cache() は同一リクエスト・同一引数の結果を共有するので、Tenant への重複 SELECT を 1 回に減らせる。
+export const getCurrentTenantMode = cache(async (tenantId?: string): Promise<TenantMode> => {
   // 呼び出し側が tenantId を持っていれば二重に session を読まないようそのまま使う
   let resolvedTenantId = tenantId;
   // tenantId が渡っていない場合のみ NextAuth のセッションから引き出す
@@ -25,4 +29,4 @@ export async function getCurrentTenantMode(tenantId?: string): Promise<TenantMod
   const tenant = await repos.tenants.findById(resolvedTenantId);
   // Tenant が見つからなければ既定 mode (lite) にフォールバック (削除/不整合への防御)
   return tenant?.mode ?? 'lite';
-}
+});

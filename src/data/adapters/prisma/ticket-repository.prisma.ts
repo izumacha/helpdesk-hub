@@ -212,6 +212,8 @@ export function makeTicketRepo(db: PrismaLike): TicketRepository {
         data: {
           title: input.title,
           body: input.body,
+          // 初期ステータス: 指定があればそれを使い、未指定なら undefined を渡して Prisma 既定(New)に任せる
+          status: input.status ?? undefined,
           priority: input.priority,
           categoryId: input.categoryId,
           creatorId: input.creatorId,

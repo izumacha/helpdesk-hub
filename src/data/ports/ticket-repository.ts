@@ -71,6 +71,7 @@ export interface CreateTicketInput {
   categoryId: string | null; // カテゴリ (無指定は null)
   creatorId: string; // 起票者 ID
   tenantId: string; // 所属テナント ID (マルチテナント化のキー)
+  status?: TicketStatus; // 初期ステータス (未指定なら DB 既定の New。Lite では 'Open'=未対応 で起票する)
   firstResponseDueAt?: Date | null; // 初回応答期限 (SLA)
   resolutionDueAt?: Date | null; // 解決期限 (SLA)
 }

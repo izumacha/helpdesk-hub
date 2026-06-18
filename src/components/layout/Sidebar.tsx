@@ -8,32 +8,40 @@ import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 // 「エージェント以上か」を判定するヘルパー
 import { isAgent } from '@/lib/role';
-// 権限を表すドメイン型 (正準)
-import type { Role } from '@/domain/types';
+// 権限・テナントモードを表すドメイン型 (正準)
+import type { Role, TenantMode } from '@/domain/types';
 // 共通ブランドマーク
 import { Logo } from '@/components/brand/Logo';
 // モバイルナビ Context (ハンバーガーで開閉するドロワー状態)
 import { useMobileNav } from './MobileNavProvider';
 
-// サイドバーが受け取る props (現在のロール)
+// サイドバーが受け取る props (現在のロールとテナントモード)
 interface Props {
   role: Role;
+  mode: TenantMode;
 }
 
 // メニュー項目定義
 // - agentOnly: エージェント以上 (agent / admin) のみ表示
 // - adminOnly: 管理者 (admin) のみ表示 (テナント設定など組織管理向け)
-const navItems: { href: string; label: string; agentOnly?: boolean; adminOnly?: boolean }[] = [
+// - proOnly: Pro モードのテナントのみ表示 (Lite では用語簡素化のため隠す)
+const navItems: {
+  href: string;
+  label: string;
+  agentOnly?: boolean;
+  adminOnly?: boolean;
+  proOnly?: boolean;
+}[] = [
   { href: '/dashboard', label: 'ダッシュボード' },
   { href: '/tickets', label: '問い合わせ一覧' },
   { href: '/tickets/new', label: '新規登録' },
-  { href: '/faq', label: 'FAQ候補', agentOnly: true },
+  { href: '/faq', label: 'FAQ候補', agentOnly: true, proOnly: true },
   { href: '/notifications', label: '通知' },
   { href: '/settings', label: '設定', adminOnly: true },
 ];
 
 // 左サイドバー (折りたたみ + 役割別メニュー出し分け + モバイルドロワー)
-export function Sidebar({ role }: Props) {
+export function Sidebar({ role, mode }: Props) {
   // 現在の URL パス (アクティブ強調に使う)
   const pathname = usePathname();
   // デスクトップ向けの折りたたみ状態 (true で幅を縮める)。モバイル開閉とは直交
@@ -42,15 +50,17 @@ export function Sidebar({ role }: Props) {
   // (md 未満ではこの open に従って画面外/画面内へスライドする)
   const { open: mobileOpen, closeNav } = useMobileNav();
 
-  // 権限に応じて表示できる項目だけに絞り込む
-  // - agentOnly: agent / admin のみ
-  // - adminOnly: admin のみ (テナント設定など)
+  // 権限とテナントモードに応じて表示できる項目だけに絞り込む
+  // 1 項目に複数の制約 (例: FAQ候補 = agentOnly + proOnly) が付くため、各制約を個別に判定し
+  // どれか 1 つでも満たさなければ隠す (早期 return で「いずれか不適合なら除外」を表現)
   const visibleItems = navItems.filter((item) => {
-    // adminOnly 項目は admin ロールのときだけ表示する
-    if (item.adminOnly) return role === 'admin';
-    // agentOnly 項目は agent / admin のときだけ表示する
-    if (item.agentOnly) return isAgent(role);
-    // それ以外は全ロールに表示する
+    // adminOnly 項目は admin ロール以外には表示しない
+    if (item.adminOnly && role !== 'admin') return false;
+    // agentOnly 項目は agent / admin 以外には表示しない
+    if (item.agentOnly && !isAgent(role)) return false;
+    // proOnly 項目は Pro テナント以外 (= Lite) には表示しない
+    if (item.proOnly && mode !== 'pro') return false;
+    // すべての制約を満たした項目だけ表示する
     return true;
   });
   // メニュー項目がアクティブかどうかを判定 (完全一致 + 一部 prefix マッチ)
