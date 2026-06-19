@@ -54,7 +54,8 @@ export async function createInvitation(formData: FormData): Promise<CreateInvita
   // フォーム入力 (role / email) を Zod で検証する
   const parsed = createInvitationSchema.safeParse({
     role: formData.get('role'),
-    email: formData.get('email'),
+    // 任意フィールドはフォーム未送信時に null になるため空文字へ正規化する (スキーマは '' を許容)
+    email: formData.get('email') ?? '',
   });
   // 検証失敗ならユーザー向け日本語メッセージで throw
   if (!parsed.success) {
