@@ -45,7 +45,7 @@ beforeEach(() => {
     [TENANT_A, 'A 組織'],
     [TENANT_B, 'B 組織'],
   ] as const) {
-    store.tenants.set(id, { id, name, mode: 'lite', industry: null, createdAt: now });
+    store.tenants.set(id, { id, name, mode: 'lite', industry: null, inboundToken: null, createdAt: now });
   }
 });
 

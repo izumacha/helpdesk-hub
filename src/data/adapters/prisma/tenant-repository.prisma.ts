@@ -18,6 +18,7 @@ function toTenant(row: TenantRow): Tenant {
     name: row.name,
     mode: row.mode,
     industry: row.industry,
+    inboundToken: row.inboundToken, // メール取り込みアドレスのローカルパート (未発行なら null)
     createdAt: row.createdAt,
   };
 }
@@ -37,6 +38,13 @@ export function makeTenantRepo(db: PrismaLike): TenantRepository {
       return row ? toTenant(row) : null;
     },
 
+    // メール取り込み用トークン (転送アドレスのローカルパート) でテナントを引く
+    async findByInboundToken(token) {
+      // @unique 列なので findUnique で 1 件特定できる (見つからなければ null)
+      const row = await db.tenant.findUnique({ where: { inboundToken: token } });
+      return row ? toTenant(row) : null;
+    },
+
     // 新規テナント (組織) を 1 件作成する (運用者向けのテナント作成フォーム用)
     async create(input) {
       // Prisma 経由で行を作成。mode 未指定なら SMB 既定の lite で作る
@@ -45,6 +53,7 @@ export function makeTenantRepo(db: PrismaLike): TenantRepository {
           name: input.name, // 組織名
           industry: input.industry ?? null, // 業種テンプレ識別子 (任意)
           mode: input.mode ?? 'lite', // 動作モード (既定 lite)
+          inboundToken: input.inboundToken ?? null, // メール取り込みアドレスのローカルパート (任意)
         },
       });
       // 作成行をドメイン型に変換して返す

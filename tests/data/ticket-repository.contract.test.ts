@@ -26,6 +26,7 @@ function makeMemoryContext(): ContractContext {
       name: 'デフォルト組織',
       mode: 'lite',
       industry: null,
+      inboundToken: null, // メール取り込み未発行 (テスト用フィクスチャ)
       createdAt: now,
     });
     // 投入するユーザーのテーブル (id, role, name)
@@ -72,6 +73,7 @@ function makeMemoryContext(): ContractContext {
       name: '別組織',
       mode: 'lite',
       industry: null,
+      inboundToken: null, // メール取り込み未発行 (テスト用フィクスチャ)
       createdAt: now,
     });
     // テナント B 専属の依頼者ユーザーを 1 名作る

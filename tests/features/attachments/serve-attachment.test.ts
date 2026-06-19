@@ -56,7 +56,7 @@ async function seed() {
   const now = new Date();
   // テナント A・B を投入
   for (const t of [TENANT_A, TENANT_B]) {
-    store.tenants.set(t, { id: t, name: t, mode: 'lite', industry: null, createdAt: now });
+    store.tenants.set(t, { id: t, name: t, mode: 'lite', industry: null, inboundToken: null, createdAt: now });
   }
   // ユーザーを投入する
   const users: Array<[string, 'requester' | 'agent', string]> = [

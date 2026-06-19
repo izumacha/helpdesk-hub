@@ -34,7 +34,10 @@ export function isValidTransition(
 // - mode === 'lite' かつ from が Lite 3 値のいずれかなら Lite 用遷移表を引く
 // - mode === 'lite' でも from が非 Lite (例: 旧データの Escalated/Resolved 等) なら Pro 表に
 //   フォールバックして「Lite に戻すための経路」を確保する (Pivot Plan §5.2)
-export function getAllowedTransitions(from: TicketStatus, mode: TenantMode = 'pro'): TicketStatus[] {
+export function getAllowedTransitions(
+  from: TicketStatus,
+  mode: TenantMode = 'pro',
+): TicketStatus[] {
   // Lite モードかつ from が Lite 対応 3 値なら Lite 遷移表を返す (型ガードで narrow)
   if (mode === 'lite' && isLiteStatus(from)) {
     return ALLOWED_TRANSITIONS_LITE[from];
@@ -78,4 +81,13 @@ export function isValidLiteTransition(from: LiteStatus, to: LiteStatus): boolean
 export function getAllowedLiteTransitions(from: LiteStatus): LiteStatus[] {
   // 許可表からそのまま返す (配列を共有するので呼び出し側で変更しないこと)
   return ALLOWED_TRANSITIONS_LITE[from];
+}
+
+// 新規起票時の初期ステータスを mode に応じて返す (Web フォーム / メール取り込み 共通の単一ルール)。
+// - Lite テナント: 3 値の起点 'Open'(未対応) で起票する
+// - Pro テナント: undefined を返し、DB 既定値 'New'(新規) に任せる (既存挙動を維持)
+// 起票経路 (POST /api/tickets・メール取り込み 等) で同じ判定をコピーせず、ここを唯一の源にする。
+export function initialStatusForMode(mode: TenantMode): TicketStatus | undefined {
+  // Lite は 'Open'、それ以外 (pro) は undefined
+  return mode === 'lite' ? 'Open' : undefined;
 }

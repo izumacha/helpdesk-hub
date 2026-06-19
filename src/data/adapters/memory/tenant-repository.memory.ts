@@ -20,6 +20,16 @@ export function makeTenantRepo(store: Store): TenantRepository {
       return t ? { ...t } : null;
     },
 
+    // メール取り込み用トークン (転送アドレスのローカルパート) でテナントを引く
+    async findByInboundToken(token) {
+      // 全テナントを走査し inboundToken が一致する最初の 1 件を返す (テスト規模なら線形で十分)
+      for (const t of store.tenants.values()) {
+        if (t.inboundToken === token) return { ...t }; // 防御的コピーを返す
+      }
+      // 一致なしは null
+      return null;
+    },
+
     // 新規テナント (組織) を 1 件作成する (テナント作成フォーム用)
     async create(input) {
       // 新しいテナント行を組み立てる (mode 未指定なら lite)
@@ -28,6 +38,7 @@ export function makeTenantRepo(store: Store): TenantRepository {
         name: input.name,
         mode: input.mode ?? 'lite',
         industry: input.industry ?? null,
+        inboundToken: input.inboundToken ?? null, // メール取り込みアドレスのローカルパート (任意)
         createdAt: new Date(),
       };
       // ストアの Map に登録

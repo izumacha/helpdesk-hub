@@ -56,6 +56,7 @@ async function seed() {
     name: 'デフォルト組織',
     mode: 'pro',
     industry: null,
+    inboundToken: null, // メール取り込み未発行 (テスト用フィクスチャ)
     createdAt: now,
   });
   // ユーザー雛形
@@ -426,6 +427,7 @@ describe('updateTicketAssignee (provider-agnostic)', () => {
       name: '別組織',
       mode: 'lite',
       industry: null,
+      inboundToken: null, // メール取り込み未発行 (テスト用フィクスチャ)
       createdAt: now,
     });
     // 別テナントのエージェントを store に直接投入

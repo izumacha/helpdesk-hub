@@ -34,6 +34,7 @@ function makeMemoryContext(): NotificationContractContext {
         name,
         mode: 'lite',
         industry: null,
+        inboundToken: null, // メール取り込み未発行 (テスト用フィクスチャ)
         createdAt: now,
       });
     }

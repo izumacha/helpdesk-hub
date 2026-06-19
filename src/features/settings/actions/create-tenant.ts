@@ -26,6 +26,8 @@ import { enforceRateLimit } from '@/lib/rate-limit';
 import { assertAdminSession } from '@/lib/role';
 // テナント作成フォームの入力検証スキーマ
 import { createTenantSchema } from '@/lib/validations/invite';
+// メール取り込み用の転送アドレストークンを払い出すヘルパー (Phase 2)
+import { generateInboundToken } from '@/lib/inbound-email';
 
 // createTenant の戻り値型 (作成したテナント ID と初代管理者メールを返す)
 export interface CreateTenantResult {
@@ -67,8 +69,14 @@ export async function createTenant(formData: FormData): Promise<CreateTenantResu
       throw new Error('このメールアドレスは既に登録されています。別のメールを指定してください。');
     }
 
-    // 新しいテナント (組織) を作成する。mode 未指定で SMB 既定の lite になる
-    const tenant = await tx.tenants.create({ name: tenantName, industry: industry ?? null });
+    // 新しいテナント (組織) を作成する。mode 未指定で SMB 既定の lite になる。
+    // メール取り込み (Phase 2) の専用転送アドレス用トークンを払い出して紐付ける
+    // (作成時に発行しておくことで、運用者は最初から取り込みアドレスを案内できる)
+    const tenant = await tx.tenants.create({
+      name: tenantName,
+      industry: industry ?? null,
+      inboundToken: generateInboundToken(),
+    });
     // パスワードを bcrypt でハッシュ化する (cost 12)
     const passwordHash = await hash(adminPassword, 12);
     // 初代管理者 (admin) を作成テナントに所属させて作る

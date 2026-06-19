@@ -24,7 +24,7 @@ async function seed() {
   const now = new Date();
   // テナント A・B を投入 (Lite モード)
   for (const t of [TENANT_A, TENANT_B]) {
-    store.tenants.set(t, { id: t, name: t, mode: 'lite', industry: null, createdAt: now });
+    store.tenants.set(t, { id: t, name: t, mode: 'lite', industry: null, inboundToken: null, createdAt: now });
   }
   // テナント A のユーザーを 1 人投入する
   store.users.set(USER_A, {
