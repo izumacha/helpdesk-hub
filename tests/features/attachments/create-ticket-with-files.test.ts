@@ -56,6 +56,7 @@ async function seed() {
     name: 'デフォルト組織',
     mode: 'lite',
     industry: null,
+    inboundToken: null, // メール取り込み未発行 (テスト用フィクスチャ)
     createdAt: now,
   });
   // 依頼者ユーザーを投入

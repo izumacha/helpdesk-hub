@@ -12,9 +12,12 @@ export default auth((req) => {
   // /login と同様にログインガードの対象外にする。
   const isInvitePage = req.nextUrl.pathname.startsWith('/invite');
   const isApiAuth = req.nextUrl.pathname.startsWith('/api/auth');
+  // メール取り込み等の受信 Webhook はセッションを持たず、ルート側で共有シークレットを
+  // 検証して自前で認可する (Phase 2)。セッション認証ガードの対象外にする。
+  const isApiInbound = req.nextUrl.pathname.startsWith('/api/inbound');
   const isApiRoute = req.nextUrl.pathname.startsWith('/api/');
 
-  if (isApiAuth) return NextResponse.next();
+  if (isApiAuth || isApiInbound) return NextResponse.next();
 
   if (isApiRoute) {
     if (!isLoggedIn) {

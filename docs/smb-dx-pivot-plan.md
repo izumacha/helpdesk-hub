@@ -125,7 +125,7 @@
 
 ### Phase 2 — 既存チャネルからの取り込み（4 週間）★ 差別化の本丸
 
-- [ ] **メール取り込み**: 専用転送アドレス（例: `tenant-abc@inbox.helpdesk-hub.app`）に転送するとチケット化。SendGrid Inbound Parse / Postmark Inbound / Amazon SES + S3 + Lambda のいずれかを Adapter 化
+- [x] **メール取り込み**: 専用転送アドレス（例: `tenant-abc@inbox.helpdesk-hub.app`）に転送するとチケット化。`POST /api/inbound/email` を Webhook として実装（SendGrid Inbound Parse 形式の multipart / JSON 双方を受理）。テナントは `Tenant.inboundToken`（宛先ローカルパート）で特定、共有シークレット検証＋既知メンバー以外は隔離。純粋パーサ `src/lib/inbound-email.ts` ＋ ユニット/ルートテスト付き
 - [ ] スレッド継続（`In-Reply-To` ヘッダで紐付け）
 - [ ] **LINE 公式アカウント連携（β）**: 友だち追加 → メッセージ送信でチケット化、担当者の返信が LINE に返る
 - [ ] メール通知テンプレートの整備（HTML、日本語、件名規約）

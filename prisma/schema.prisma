@@ -89,6 +89,11 @@ model Tenant {
   name      String // 組織名 (画面表示用)
   mode      TenantMode @default(lite) // Lite/Pro モード (既定は SMB 向けの lite)
   industry  String? // 業種テンプレ識別子 (Phase 3 でカテゴリ初期投入に利用)
+  // メール取り込み用の専用転送アドレスの識別子 (Phase 2 メール取り込み)。
+  // 受信メールの宛先ローカルパート (例: <inboundToken>@inbox.helpdesk-hub.app) に埋め込み、
+  // Webhook (/api/inbound/email) でこの値からテナントを特定する。@unique でテナント一意。
+  // 既存テナント分のバックフィル中は null を許容する (発行前は取り込み無効)。
+  inboundToken String? @unique // メール取り込みアドレスのローカルパート (null=未発行)
   createdAt DateTime   @default(now()) // 作成日時
 
   // 配下のリソース (テナント削除で連鎖削除)

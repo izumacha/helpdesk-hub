@@ -22,7 +22,14 @@ function seed() {
   const now = new Date();
   // テナント A・B を Lite モードで作成する
   for (const t of [TENANT_A, TENANT_B]) {
-    store.tenants.set(t, { id: t, name: t, mode: 'lite', industry: null, createdAt: now });
+    store.tenants.set(t, {
+      id: t,
+      name: t,
+      mode: 'lite',
+      industry: null,
+      inboundToken: null,
+      createdAt: now,
+    });
   }
 }
 
@@ -68,5 +75,54 @@ describe('TenantRepository.updateMode (memory)', () => {
     const updated = await repos.tenants.updateMode(TENANT_A, 'lite');
     // mode は lite のまま
     expect(updated.mode).toBe('lite');
+  });
+});
+
+// メール取り込み (Phase 2) で使う findByInboundToken の単体テスト。
+// 転送アドレスのローカルパート (inboundToken) からテナントを特定できることを確認する。
+describe('TenantRepository.findByInboundToken (memory)', () => {
+  // 各テストでメモリ context を作り直す
+  beforeEach(() => {
+    const ctx = createMemoryContext();
+    store = ctx.store;
+    repos = ctx.repos;
+    // 取り込みトークン付きでテナント A を、トークン無しでテナント B を投入する
+    const now = new Date();
+    store.tenants.set(TENANT_A, {
+      id: TENANT_A,
+      name: TENANT_A,
+      mode: 'lite',
+      industry: null,
+      inboundToken: 'token-a',
+      createdAt: now,
+    });
+    store.tenants.set(TENANT_B, {
+      id: TENANT_B,
+      name: TENANT_B,
+      mode: 'lite',
+      industry: null,
+      inboundToken: null,
+      createdAt: now,
+    });
+  });
+
+  // トークン一致でテナントを引ける
+  it('トークンが一致するテナントを返す', async () => {
+    const tenant = await repos.tenants.findByInboundToken('token-a');
+    expect(tenant?.id).toBe(TENANT_A);
+  });
+
+  // 未知トークンは null
+  it('一致するトークンが無ければ null を返す', async () => {
+    const tenant = await repos.tenants.findByInboundToken('no-such-token');
+    expect(tenant).toBeNull();
+  });
+
+  // inboundToken=null のテナントに null で誤ヒットしないこと
+  it('null トークンで誤ヒットしない', async () => {
+    // 万一 null をトークンとして渡しても、token-a の行だけが一致対象であること
+    const tenant = await repos.tenants.findByInboundToken('token-a');
+    expect(tenant?.id).toBe(TENANT_A);
+    // (B は inboundToken=null なので決して引かれない)
   });
 });

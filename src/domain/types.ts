@@ -40,6 +40,7 @@ export interface Tenant {
   name: string; // 組織名 (画面表示用)
   mode: TenantMode; // Lite/Pro モード
   industry: string | null; // 業種テンプレ識別子 (未設定なら null)
+  inboundToken: string | null; // メール取り込み用アドレスのローカルパート (未発行なら null)
   createdAt: Date; // 作成日時
 }
 

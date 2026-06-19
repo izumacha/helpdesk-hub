@@ -26,8 +26,10 @@ async function main() {
   // 同 id を投入しているので、ここでは upsert で再投入を安全に行う
   const tenant = await prisma.tenant.upsert({
     where: { id: 'default-tenant' },
-    update: {},
-    create: { id: 'default-tenant', name: 'デフォルト組織', mode: 'lite' },
+    update: { inboundToken: 'default' }, // 既存 default-tenant にもメール取り込みトークンを補完する
+    // inboundToken: メール取り込み (Phase 2) の専用転送アドレス用ローカルパート。
+    // 開発・E2E では固定値 'default' を使い、宛先 default@<domain> で取り込みを再現できるようにする
+    create: { id: 'default-tenant', name: 'デフォルト組織', mode: 'lite', inboundToken: 'default' },
   });
   // 以降のシード行ですべてこの tenantId を引き継ぐ
   const tenantId = tenant.id;
@@ -38,43 +40,85 @@ async function main() {
   const requester1 = await prisma.user.upsert({
     where: { email: 'requester1@example.com' },
     update: {},
-    create: { email: 'requester1@example.com', name: '田中 花子', passwordHash: password, role: Role.requester, tenantId },
+    create: {
+      email: 'requester1@example.com',
+      name: '田中 花子',
+      passwordHash: password,
+      role: Role.requester,
+      tenantId,
+    },
   });
   // 依頼者ユーザー2
   const requester2 = await prisma.user.upsert({
     where: { email: 'requester2@example.com' },
     update: {},
-    create: { email: 'requester2@example.com', name: '鈴木 一郎', passwordHash: password, role: Role.requester, tenantId },
+    create: {
+      email: 'requester2@example.com',
+      name: '鈴木 一郎',
+      passwordHash: password,
+      role: Role.requester,
+      tenantId,
+    },
   });
   // 依頼者ユーザー3
   const requester3 = await prisma.user.upsert({
     where: { email: 'requester3@example.com' },
     update: {},
-    create: { email: 'requester3@example.com', name: '伊藤 直子', passwordHash: password, role: Role.requester, tenantId },
+    create: {
+      email: 'requester3@example.com',
+      name: '伊藤 直子',
+      passwordHash: password,
+      role: Role.requester,
+      tenantId,
+    },
   });
   // エージェント1 (ヘルプデスク担当者)
   const agent1 = await prisma.user.upsert({
     where: { email: 'agent1@example.com' },
     update: {},
-    create: { email: 'agent1@example.com', name: '佐藤 健太', passwordHash: password, role: Role.agent, tenantId },
+    create: {
+      email: 'agent1@example.com',
+      name: '佐藤 健太',
+      passwordHash: password,
+      role: Role.agent,
+      tenantId,
+    },
   });
   // エージェント2
   const agent2 = await prisma.user.upsert({
     where: { email: 'agent2@example.com' },
     update: {},
-    create: { email: 'agent2@example.com', name: '山田 美咲', passwordHash: password, role: Role.agent, tenantId },
+    create: {
+      email: 'agent2@example.com',
+      name: '山田 美咲',
+      passwordHash: password,
+      role: Role.agent,
+      tenantId,
+    },
   });
   // エージェント3
   const agent3 = await prisma.user.upsert({
     where: { email: 'agent3@example.com' },
     update: {},
-    create: { email: 'agent3@example.com', name: '中村 大輔', passwordHash: password, role: Role.agent, tenantId },
+    create: {
+      email: 'agent3@example.com',
+      name: '中村 大輔',
+      passwordHash: password,
+      role: Role.agent,
+      tenantId,
+    },
   });
   // 管理者ユーザー (admin ロール)
   const admin = await prisma.user.upsert({
     where: { email: 'admin@example.com' },
     update: {},
-    create: { email: 'admin@example.com', name: '管理者', passwordHash: password, role: Role.admin, tenantId },
+    create: {
+      email: 'admin@example.com',
+      name: '管理者',
+      passwordHash: password,
+      role: Role.admin,
+      tenantId,
+    },
   });
 
   // 進捗ログ
@@ -231,11 +275,31 @@ async function main() {
   // ── Comments ─────────────────────────────────────────
   // 各チケットに紐づくコメントの定義 (やり取りの履歴を再現)
   const commentDefs = [
-    { ticketId: 'seed-t-02', authorId: agent1.id, body: '確認します。メールアドレスを教えてください。' },
-    { ticketId: 'seed-t-02', authorId: requester2.id, body: 'suzuki@example.com です。よろしくお願いします。' },
-    { ticketId: 'seed-t-03', authorId: agent1.id, body: 'ドライバを再インストールしたところ認識されました。' },
-    { ticketId: 'seed-t-05', authorId: agent3.id, body: '添付ファイルをスキャンしました。マルウェアは検出されませんでしたが念のためパスワードの変更を推奨します。' },
-    { ticketId: 'seed-t-06', authorId: agent1.id, body: 'アクセス権限の設定を確認します。マシン名を教えてください。' },
+    {
+      ticketId: 'seed-t-02',
+      authorId: agent1.id,
+      body: '確認します。メールアドレスを教えてください。',
+    },
+    {
+      ticketId: 'seed-t-02',
+      authorId: requester2.id,
+      body: 'suzuki@example.com です。よろしくお願いします。',
+    },
+    {
+      ticketId: 'seed-t-03',
+      authorId: agent1.id,
+      body: 'ドライバを再インストールしたところ認識されました。',
+    },
+    {
+      ticketId: 'seed-t-05',
+      authorId: agent3.id,
+      body: '添付ファイルをスキャンしました。マルウェアは検出されませんでしたが念のためパスワードの変更を推奨します。',
+    },
+    {
+      ticketId: 'seed-t-06',
+      authorId: agent1.id,
+      body: 'アクセス権限の設定を確認します。マシン名を教えてください。',
+    },
     { ticketId: 'seed-t-06', authorId: requester1.id, body: 'PC-TANAKA-001 です。' },
   ];
 
@@ -252,10 +316,34 @@ async function main() {
   // ── Histories ─────────────────────────────────────────
   // 変更履歴 (担当変更・ステータス変更・エスカレーション) の定義
   const historyDefs = [
-    { ticketId: 'seed-t-02', changedById: admin.id, field: 'assignee' as const, oldValue: null, newValue: agent1.name },
-    { ticketId: 'seed-t-03', changedById: agent1.id, field: 'status' as const, oldValue: 'Open', newValue: 'Resolved' },
-    { ticketId: 'seed-t-05', changedById: agent3.id, field: 'escalation' as const, oldValue: 'InProgress', newValue: 'Escalated' },
-    { ticketId: 'seed-t-09', changedById: admin.id, field: 'assignee' as const, oldValue: null, newValue: agent3.name },
+    {
+      ticketId: 'seed-t-02',
+      changedById: admin.id,
+      field: 'assignee' as const,
+      oldValue: null,
+      newValue: agent1.name,
+    },
+    {
+      ticketId: 'seed-t-03',
+      changedById: agent1.id,
+      field: 'status' as const,
+      oldValue: 'Open',
+      newValue: 'Resolved',
+    },
+    {
+      ticketId: 'seed-t-05',
+      changedById: agent3.id,
+      field: 'escalation' as const,
+      oldValue: 'InProgress',
+      newValue: 'Escalated',
+    },
+    {
+      ticketId: 'seed-t-09',
+      changedById: admin.id,
+      field: 'assignee' as const,
+      oldValue: null,
+      newValue: agent3.name,
+    },
   ];
 
   // 同一の (ticketId, changedById, field) があれば追加しない
@@ -277,7 +365,8 @@ async function main() {
         ticketId: 'seed-t-03',
         createdById: agent1.id,
         question: '共有プリンターで「プリンターが見つかりません」と表示される',
-        answer: 'プリンタードライバを削除し、最新のドライバを再インストールすることで解決します。[コントロールパネル] → [デバイスとプリンター] → 対象プリンターを右クリックして削除後、再度追加してください。',
+        answer:
+          'プリンタードライバを削除し、最新のドライバを再インストールすることで解決します。[コントロールパネル] → [デバイスとプリンター] → 対象プリンターを右クリックして削除後、再度追加してください。',
         status: 'Published',
         // 元チケットと同じテナントスコープで保存
         tenantId,
@@ -293,7 +382,8 @@ async function main() {
         ticketId: 'seed-t-08',
         createdById: agent2.id,
         question: 'ノートPCのバッテリーの持ちが急に悪くなった',
-        answer: 'バッテリーのキャリブレーションを実施してください。完全放電後に満充電することで正確な残量表示が回復します。改善しない場合はバッテリー交換が必要です。',
+        answer:
+          'バッテリーのキャリブレーションを実施してください。完全放電後に満充電することで正確な残量表示が回復します。改善しない場合はバッテリー交換が必要です。',
         status: 'Candidate',
         // 元チケットと同じテナントスコープで保存
         tenantId,
@@ -304,14 +394,26 @@ async function main() {
   // 完了メッセージとログイン用情報の表示
   console.log('✅ FAQ candidates seeded');
   console.log('\nSeed completed!\nDefault password: password123');
-  console.log('Users:', [
-    'requester1@example.com', 'requester2@example.com', 'requester3@example.com',
-    'agent1@example.com', 'agent2@example.com', 'agent3@example.com',
-    'admin@example.com',
-  ].join(', '));
+  console.log(
+    'Users:',
+    [
+      'requester1@example.com',
+      'requester2@example.com',
+      'requester3@example.com',
+      'agent1@example.com',
+      'agent2@example.com',
+      'agent3@example.com',
+      'admin@example.com',
+    ].join(', '),
+  );
 }
 
 // メイン処理を実行: 失敗したら終了コード 1、最後に必ず DB 接続を閉じる
 main()
-  .catch((e) => { console.error(e); process.exit(1); })
-  .finally(async () => { await prisma.$disconnect(); });
+  .catch((e) => {
+    console.error(e);
+    process.exit(1);
+  })
+  .finally(async () => {
+    await prisma.$disconnect();
+  });
