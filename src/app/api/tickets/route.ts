@@ -16,6 +16,8 @@ import { createTicketSchema } from '@/lib/validations/ticket';
 import { validateUploadedFiles } from '@/lib/validations/attachment';
 // MIME → 拡張子の対応表 (storageKey の組み立てで使用)
 import { MIME_TO_EXTENSION } from '@/domain/attachment';
+// 新規起票時の初期ステータスを mode から決める共通ルール (メール取り込みと単一の源を共有)
+import { initialStatusForMode } from '@/domain/ticket-status';
 // テナントの動作モード (lite | pro) を取得するヘルパー
 import { getCurrentTenantMode } from '@/lib/tenant';
 // 'YYYY-MM-DD' を JST 終端 Date に変換するヘルパー (サーバ TZ 非依存)
@@ -68,10 +70,7 @@ export async function POST(req: Request) {
       // FormData の読み出し失敗はサーバログにエラーとして記録する (握りつぶさない)
       console.error('[POST /api/tickets] failed to parse FormData', formErr);
       // 不正な FormData は 400 で弾く
-      return NextResponse.json(
-        { error: 'リクエストの形式が正しくありません' },
-        { status: 400 },
-      );
+      return NextResponse.json({ error: 'リクエストの形式が正しくありません' }, { status: 400 });
     }
     // テキスト系フィールドを 1 つのオブジェクトに集約 (Zod へ渡すため)
     rawInput = {
@@ -82,9 +81,7 @@ export async function POST(req: Request) {
       dueDate: form.get('dueDate') ?? undefined,
     };
     // files フィールドを全て拾い、File 型だけ抽出する (空入力で文字列 "" が混ざるのを除外)
-    uploadedFiles = form
-      .getAll('files')
-      .filter((entry): entry is File => entry instanceof File);
+    uploadedFiles = form.getAll('files').filter((entry): entry is File => entry instanceof File);
   } else {
     // 従来どおり JSON ボディとして読み出す
     try {
@@ -92,10 +89,7 @@ export async function POST(req: Request) {
     } catch (jsonErr) {
       // JSON の解析失敗はサーバログにエラーとして記録する (握りつぶさない)
       console.error('[POST /api/tickets] failed to parse JSON body', jsonErr);
-      return NextResponse.json(
-        { error: 'リクエストの形式が正しくありません' },
-        { status: 400 },
-      );
+      return NextResponse.json({ error: 'リクエストの形式が正しくありません' }, { status: 400 });
     }
   }
 
@@ -142,9 +136,9 @@ export async function POST(req: Request) {
   const effectivePriority = mode === 'lite' ? 'Medium' : priority;
   // Lite モードではカテゴリ機能を提供しないため保存時に null へ落とす
   const effectiveCategoryId = mode === 'lite' ? null : (categoryId ?? null);
-  // 初期ステータス: Lite では 3 値の起点 'Open'(未対応) で起票する。
-  // Pro は undefined を渡して DB 既定の 'New'(新規) のままにする (既存挙動を維持)
-  const initialStatus = mode === 'lite' ? ('Open' as const) : undefined;
+  // 初期ステータス: Lite では 3 値の起点 'Open'(未対応)、Pro は undefined で DB 既定 'New'。
+  // メール取り込み経路と同じ共通ルール (initialStatusForMode) を唯一の源にして使う
+  const initialStatus = initialStatusForMode(mode);
 
   // 作成時刻 (SLA 期限の計算基準)
   const now = new Date();
@@ -229,9 +223,6 @@ export async function POST(req: Request) {
     );
     // 元のエラーをサーバログに出して 500 を返す
     console.error('[POST /api/tickets] attachment save failed', err);
-    return NextResponse.json(
-      { error: '添付ファイルの保存に失敗しました' },
-      { status: 500 },
-    );
+    return NextResponse.json({ error: '添付ファイルの保存に失敗しました' }, { status: 500 });
   }
 }

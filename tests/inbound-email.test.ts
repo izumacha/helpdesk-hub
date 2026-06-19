@@ -27,6 +27,11 @@ describe('extractEmailAddress', () => {
     expect(extractEmailAddress('  user@example.com  ')).toBe('user@example.com');
   });
 
+  // RFC 5322 のコメント付き "addr (Name)" 形式もアドレスを取り出す
+  it('"addr (コメント)" 形式からアドレスを取り出す', () => {
+    expect(extractEmailAddress('ichiro@example.com (鈴木 一郎)')).toBe('ichiro@example.com');
+  });
+
   // 妥当でない入力 / 空は null
   it('空・null・不正な値は null', () => {
     expect(extractEmailAddress(null)).toBeNull();

@@ -46,12 +46,18 @@ export function extractEmailAddress(raw: string | null | undefined): string | nu
   const angle = trimmed.match(/<([^>]+)>/);
   // 山括弧があればその中身、無ければ全体をアドレス候補とする
   const candidate = (angle ? angle[1] : trimmed).trim().toLowerCase();
-  // 簡易なアドレス妥当性チェック (ローカルパート@ドメイン、空白なし、長さ上限内)。
+  // 候補が「ローカルパート@ドメイン」として妥当かを返す内部判定。
   // 外部入力に対し ReDoS を避けるためネストした量指定子を使わない単純パターンにする
-  if (candidate.length > INBOUND_ADDRESS_MAX) return null;
-  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(candidate)) return null;
-  // 妥当なアドレスを返す
-  return candidate;
+  const isValid = (v: string) =>
+    v.length <= INBOUND_ADDRESS_MAX && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v);
+  // まず素直な候補で判定する (大多数は "addr" / "名前 <addr>" でここを通る)
+  if (isValid(candidate)) return candidate;
+  // フォールバック: RFC 5322 のコメント付き "addr (Name)" 形式は括弧コメントを落として再判定する。
+  // (空白を含む別パターンを拾わないよう、" (" 以降だけを削るピンポイントな救済に留める)
+  const beforeComment = trimmed.split(' (')[0].trim().toLowerCase();
+  if (beforeComment !== candidate && isValid(beforeComment)) return beforeComment;
+  // どちらでも妥当でなければアドレス無しとして null を返す
+  return null;
 }
 
 // メールアドレスから "@" より前のローカルパートだけを取り出す。

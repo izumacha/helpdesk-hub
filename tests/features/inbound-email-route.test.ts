@@ -180,4 +180,49 @@ describe('POST /api/inbound/email', () => {
     expect(res.status).toBe(422);
     expect(store.tickets.size).toBe(0);
   });
+
+  // multipart (SendGrid 形式): 宛先は envelope を優先、送信者はヘッダ From を優先する。
+  // envelope.from を詐称 (MAIL FROM 偽装) してもヘッダ From の既知メンバーで起票されること。
+  it('multipart で envelope.from を詐称してもヘッダ From で起票する', async () => {
+    // FormData を組み立てる (Request が自動で multipart の content-type を付ける)
+    const form = new FormData();
+    // envelope: 宛先は正しいトークン、from は詐称アドレス
+    form.set(
+      'envelope',
+      JSON.stringify({ to: [`${TOKEN}@inbox.helpdesk-hub.app`], from: 'spoofed@evil.com' }),
+    );
+    // ヘッダ from は既知メンバー (本人特定はこちらを優先する)
+    form.set('from', '鈴木 一郎 <ichiro@example.com>');
+    form.set('subject', 'マルチパート取り込み');
+    form.set('text', '本文');
+    const req = new Request('http://localhost/api/inbound/email', {
+      method: 'POST',
+      headers: { 'x-inbound-secret': SECRET },
+      body: form,
+    });
+    const { POST } = await import('@/app/api/inbound/email/route');
+    const res = await POST(req);
+    // 既知メンバー (ヘッダ From) で起票される。envelope の詐称 from は使われない
+    expect(res.status).toBe(201);
+    const json = (await res.json()) as { ticketId: string };
+    expect(store.tickets.get(json.ticketId)?.creatorId).toBe(MEMBER_ID);
+  });
+
+  // Content-Length が上限超過なら本体を読む前に 413 で弾く
+  it('巨大なメール (Content-Length 超過) は 413 を返す', async () => {
+    const req = new Request('http://localhost/api/inbound/email', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-inbound-secret': SECRET,
+        // 上限 (25MB) を超える Content-Length を申告する
+        'content-length': String(30 * 1024 * 1024),
+      },
+      body: JSON.stringify(VALID_EMAIL),
+    });
+    const { POST } = await import('@/app/api/inbound/email/route');
+    const res = await POST(req);
+    expect(res.status).toBe(413);
+    expect(store.tickets.size).toBe(0);
+  });
 });

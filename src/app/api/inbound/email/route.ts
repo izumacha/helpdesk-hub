@@ -20,13 +20,24 @@ import { NextResponse } from 'next/server';
 import { timingSafeEqual } from 'node:crypto';
 // データ層 (テナント / ユーザー / チケットのリポジトリ束)
 import { repos } from '@/data';
+// 新規起票時の初期ステータスを mode から決める共通ルール (Web フォーム起票と単一の源を共有)
+import { initialStatusForMode } from '@/domain/ticket-status';
 // 受信メールの正規化ヘルパー (純粋関数)
 import { parseInboundEmail } from '@/lib/inbound-email';
+// 公開エンドポイントの流量制限 (§9: DoS / リソース枯渇防止)
+import { enforceRateLimit, RateLimitError } from '@/lib/rate-limit';
 // 優先度から解決期限を計算する SLA ヘルパー (Web フォーム起票と同じ既定値に揃える)
 import { calculateResolutionDueAt } from '@/lib/sla';
 
 // このルートは Node ランタイムで動かす (node:crypto / Prisma を使うため Edge では動かない)
 export const runtime = 'nodejs';
+
+// 受信ボディの最大バイト数 (一般的なメール送信上限の 25MB)。これを超える Content-Length は
+// パース前に拒否し、巨大ボディの全読み込みによるメモリ枯渇 (§9) を防ぐ
+const MAX_INBOUND_BODY_BYTES = 25 * 1024 * 1024;
+// テナント単位の取り込み流量上限。共有シークレット漏洩時でもテナントあたりの起票を抑える。
+// (キーはテナント ID なのでバケット数は実在テナント数で頭打ち = メモリも有界)
+const INBOUND_RATE_LIMIT = { limit: 120, windowMs: 60_000 } as const;
 
 // 2 つのシークレット文字列を定数時間で比較する (タイミング攻撃対策)。
 // 長さが違う場合は早期 false (情報量は長さのみで実用上問題なし)。
@@ -86,10 +97,12 @@ async function readInboundFields(req: Request): Promise<{
     }
     // FormData の値を string | null に正規化する小ヘルパー
     const str = (v: FormDataEntryValue | null): string | null => (typeof v === 'string' ? v : null);
-    // envelope 由来を優先しつつ、無ければヘッダ (to/from) で補完する
+    // 宛先 (ルーティング): envelope の RCPT を優先する (ヘッダ To より実配送先として確実)。
+    // 送信者 (本人特定): ヘッダ From を優先する (人間が送った差出人。envelope from=MAIL FROM は
+    // 戻り先で本人性が弱い)。いずれも DKIM/SPF 検証は将来課題で、現状は既知メンバー判定で守る。
     return {
       to: envTo ?? str(form.get('to')),
-      from: envFrom ?? str(form.get('from')),
+      from: str(form.get('from')) ?? envFrom,
       subject: str(form.get('subject')),
       text: str(form.get('text')),
     };
@@ -120,6 +133,13 @@ export async function POST(req: Request) {
   if (!provided || !secretsMatch(provided, expectedSecret)) {
     // 不一致は 401 (なりすまし POST を拒否)
     return NextResponse.json({ error: '認証に失敗しました' }, { status: 401 });
+  }
+
+  // Content-Length が上限超過なら本体を読む前に 413 で弾く (巨大ボディのメモリ枯渇防止 §9)。
+  // ヘッダが無い (chunked) 場合まではここでは防げないため、後段の長さ上限と併用する
+  const contentLength = Number(req.headers.get('content-length') ?? '0');
+  if (Number.isFinite(contentLength) && contentLength > MAX_INBOUND_BODY_BYTES) {
+    return NextResponse.json({ error: 'メールが大きすぎます' }, { status: 413 });
   }
 
   // 受信メールのフィールドを取り出す (JSON / multipart 両対応)
@@ -157,6 +177,21 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: '取り込み先が見つかりません' }, { status: 404 });
   }
 
+  // テナント単位で取り込み流量を制限する (シークレット漏洩時の起票スパムを抑える §9)。
+  // 超過時は 429 + Retry-After で返し、プロバイダの後刻リトライに委ねる
+  try {
+    enforceRateLimit(`inbound-email:${tenant.id}`, INBOUND_RATE_LIMIT);
+  } catch (err) {
+    // 流量超過専用エラーだけを 429 にマップ。それ以外は想定外なので上位へ投げる
+    if (err instanceof RateLimitError) {
+      return NextResponse.json(
+        { error: '取り込みが混み合っています' },
+        { status: 429, headers: { 'Retry-After': String(err.retryAfterSec) } },
+      );
+    }
+    throw err;
+  }
+
   // 送信者がそのテナントの既知メンバーかを確認する。
   // findByEmail はテナント横断のため、必ず tenantId 一致まで検査してクロステナント起票を防ぐ。
   const sender = await repos.users.findByEmail(email.senderAddress);
@@ -168,8 +203,8 @@ export async function POST(req: Request) {
 
   // 起票時刻 (SLA 期限の計算基準)
   const now = new Date();
-  // Lite モードでは 3 値の起点 'Open' (未対応) で起票し、Pro は DB 既定 (New) のままにする
-  const initialStatus = tenant.mode === 'lite' ? ('Open' as const) : undefined;
+  // 初期ステータスは Web フォーム起票と同じ共通ルールで決める (Lite='Open' / Pro=DB既定 New)
+  const initialStatus = initialStatusForMode(tenant.mode);
   // メールには期限指定が無いため、Web フォーム起票と同じく優先度 Medium ベースで解決期限を算出する
   const resolutionDueAt = calculateResolutionDueAt('Medium', now);
 
