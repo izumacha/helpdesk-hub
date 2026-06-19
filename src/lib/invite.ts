@@ -9,6 +9,8 @@
 // 生トークンの生成・ハッシュ化はマジックリンクと共通 (Web Crypto 実装)
 export { generateMagicLinkToken as generateInviteToken } from '@/lib/magic-link';
 export { hashMagicLinkToken as hashInviteToken } from '@/lib/magic-link';
+// HTML 本文に外部由来文字列を差し込む前のエスケープ (共有ヘルパーを再利用)
+import { escapeHtml } from '@/lib/html-escape';
 
 // 招待リンクの既定 TTL (7 日)。ログイン用マジックリンク (15 分) より長めにする。
 // 招待は「あとで受け取って登録する」運用が前提のため、即時性は不要で猶予を持たせる。
@@ -59,15 +61,4 @@ export function renderInviteEmail(input: {
   `.trim();
   // 3 点セットを返す
   return { subject, text, html };
-}
-
-// HTML に挿入する文字列を最低限エスケープする (差出側自前 URL / 組織名でも念のため)
-function escapeHtml(s: string): string {
-  // 危険な 5 文字だけを実体参照に変換
-  return s
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;');
 }
