@@ -12,6 +12,12 @@ import { repos, uow } from '@/data';
 import { storage } from '@/data/storage';
 // 未読件数を SSE で即時配信するヘルパー
 import { broadcastUnreadCountToMany } from '@/features/notifications/notify';
+// 環境変数で切り替わる EmailSender 実装を取得するファクトリ (依頼者宛メール送信用)
+import { getEmailSender } from '@/lib/email';
+// メール内リンクのベース URL を解決する共通ヘルパー
+import { resolveAppBaseUrl } from '@/lib/app-url';
+// 依頼者宛「返信が届きました」メールの URL 構築 / 本文組み立て (純粋ヘルパー)
+import { buildTicketUrl, renderTicketReplyEmail } from '@/lib/ticket-email';
 // エージェント権限判定 (agent または admin のとき true)
 import { isAgent } from '@/lib/role';
 // レート制限ヘルパー (超過時は RateLimitError を throw)
@@ -182,11 +188,65 @@ export async function POST(req: Request, { params }: Params) {
 
   // 通知対象が 1 名以上いれば未読件数を一斉配信
   if (recipientIds.length > 0) await broadcastUnreadCountToMany(recipientIds, tenantId);
+
+  // Phase 2「対応すると依頼者にメールで返信が届く」(docs/smb-dx-pivot-plan.md §4 Phase 2):
+  // 担当者がコメント (返信) した場合は、依頼者がアプリにログインしなくても内容を確認できるよう
+  // 依頼者宛にメールを送る。コメント保存はコミット済みなので、メール送信はベストエフォートとし
+  // 失敗してもレスポンスは 201 のままにする (アプリ内通知 / SSE は既に成立している)。
+  if (authorIsAgent) {
+    await sendReplyEmailToRequester({
+      ticket,
+      authorId,
+      authorName: session.user.name ?? '担当者',
+      commentBody: trimmedBody,
+      ticketId,
+    });
+  }
+
   // 詳細ページのキャッシュを無効化して再描画させる
   revalidatePath(`/tickets/${ticketId}`);
 
   // 成功は 201 で空ボディ相当に近い JSON を返す (フロントは画面遷移しない)
   return NextResponse.json({ ok: true }, { status: 201 });
+}
+
+// 担当者の返信を依頼者へメールで届ける内部ヘルパー (ベストエフォート / 副作用は send のみ)。
+// 例外は呼び出し側に伝播させず、ログに残して握り潰す: メール送信の失敗で「コメントは保存できたのに
+// 500 が返る」事態 (= フロントが二重投稿しかねない) を避けるため。
+async function sendReplyEmailToRequester(args: {
+  ticket: { creatorId: string; title: string };
+  authorId: string;
+  authorName: string;
+  commentBody: string;
+  ticketId: string;
+}): Promise<void> {
+  const { ticket, authorId, authorName, commentBody, ticketId } = args;
+  // 自分が起票したチケットに自分で返信した場合は自分宛メールを送らない
+  if (ticket.creatorId === authorId) return;
+
+  try {
+    // 依頼者 (起票者) のメールアドレスを引く (認証用なのでテナント横断 lookup)
+    const creator = await repos.users.findById(ticket.creatorId);
+    // 依頼者が見つからない / メール未設定なら送りようがないのでスキップ
+    if (!creator?.email) return;
+
+    // メール内リンクのベース URL を解決 (production で NEXTAUTH_URL 未設定なら throw → 下で握る)
+    const baseUrl = resolveAppBaseUrl();
+    // チケット詳細ページへの導線 URL を組み立てる
+    const ticketUrl = buildTicketUrl(baseUrl, ticketId);
+    // 件名 / 本文 (Text / HTML) を純粋ヘルパーで構築
+    const { subject, text, html } = renderTicketReplyEmail({
+      ticketTitle: ticket.title,
+      ticketUrl,
+      commentBody,
+      agentName: authorName,
+    });
+    // 設定された EmailSender (console / smtp) 経由で送信
+    await getEmailSender().send({ to: creator.email, subject, text, html });
+  } catch (err) {
+    // 送信失敗はサーバログに残すだけ (依頼者への通知はアプリ内にも残っている)
+    console.error('[POST /api/tickets/[id]/comments] 依頼者宛メール送信に失敗しました', err);
+  }
 }
 
 // コメント通知の送信先を決定する内部ヘルパー (既存 addComment と同じロジック)
