@@ -1,6 +1,7 @@
 // ドメイン型をインポート (メモリストア内に保持するデータ型)
 import type {
   FaqCandidate,
+  Invitation,
   MagicLinkToken,
   Notification,
   Tenant,
@@ -34,6 +35,7 @@ export interface Store {
   faq: Map<string, FaqCandidate>; // FAQ 候補
   notifications: Map<string, Notification>; // 通知
   magicLinks: Map<string, MagicLinkToken>; // マジックリンクトークン (パスワードレス認証)
+  invitations: Map<string, Invitation>; // 招待リンクトークン (メンバー招待)
   attachments: Map<string, Attachment>; // 添付ファイルのメタ情報 (画像)
   idSeq: { value: number }; // 連番生成用のカウンタ (オブジェクトに包んで参照共有)
 }
@@ -51,6 +53,7 @@ export function createEmptyStore(): Store {
     faq: new Map(),
     notifications: new Map(),
     magicLinks: new Map(),
+    invitations: new Map(),
     attachments: new Map(),
     idSeq: { value: 0 },
   };
@@ -69,6 +72,7 @@ export function cloneStore(src: Store): Store {
     faq: new Map(src.faq),
     notifications: new Map(src.notifications),
     magicLinks: new Map(src.magicLinks),
+    invitations: new Map(src.invitations),
     attachments: new Map(src.attachments),
     idSeq: { value: src.idSeq.value },
   };
@@ -86,6 +90,7 @@ export function overwriteStore(dst: Store, src: Store): void {
   dst.faq = new Map(src.faq);
   dst.notifications = new Map(src.notifications);
   dst.magicLinks = new Map(src.magicLinks);
+  dst.invitations = new Map(src.invitations);
   dst.attachments = new Map(src.attachments);
   // 連番も元に戻す
   dst.idSeq.value = src.idSeq.value;

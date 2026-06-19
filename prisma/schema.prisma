@@ -98,6 +98,7 @@ model Tenant {
   faqCandidates FaqCandidate[]
   notifications Notification[]
   attachments   Attachment[] // 添付ファイル (テナント境界の保持に必須)
+  invitations   Invitation[] // メンバー招待リンク (発行〜受諾までのワンタイムトークン)
 }
 
 // ─────────────────────────────────────────────
@@ -146,6 +147,32 @@ model MagicLinkToken {
   createdAt   DateTime  @default(now()) // 作成日時
 
   @@index([email]) // メール単位の掃除・将来のレート制限カウントに使う
+  @@index([expiresAt]) // 期限切れ一括削除を高速化する
+}
+
+// ─────────────────────────────────────────────
+// Invitation (テナントへのメンバー招待リンクのワンタイムトークン)
+// ─────────────────────────────────────────────
+
+// admin が発行する招待リンクの正体。MagicLinkToken と同じく生トークンは URL のみで持ち、
+// DB には SHA-256 ハッシュだけを保存する。MagicLinkToken と違い「どのテナントに・どの権限で
+// 参加させるか」が発行時点で確定しているため tenantId / role を必ず持つ (受諾時に入力から
+// テナントを注入させない = クロステナント参加を防ぐための要)。
+model Invitation {
+  id          String    @id @default(cuid()) // 主キー (cuid)
+  tokenHash   String    @unique // 生トークンの SHA-256 ハッシュ (生は DB に保存しない)
+  email       String? // 宛先メール (任意。指定時はその人専用の案内メールも送る)
+  role        Role      @default(requester) // 参加後に付与する権限 (メンバー=requester / 担当者=agent)
+  expiresAt   DateTime // 失効時刻 (発行から 7 日後を想定。ログイン用より長め)
+  consumedAt  DateTime? // 受諾済み時刻。null なら未使用 (単回使用を強制)
+  invitedById String? // 発行した admin の User ID (監査用。ユーザー削除時は null 化される想定で任意)
+  createdAt   DateTime  @default(now()) // 作成日時
+
+  // 参加先テナント (招待リンクの本質。テナント削除で連鎖削除)
+  tenantId String
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId]) // テナント単位の一覧・掃除用
   @@index([expiresAt]) // 期限切れ一括削除を高速化する
 }
 

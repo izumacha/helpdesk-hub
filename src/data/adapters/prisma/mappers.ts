@@ -2,6 +2,7 @@
 import type { Prisma } from '@/generated/prisma';
 // ドメイン型 (アダプタが返すべき型) をインポート
 import type {
+  Invitation,
   MagicLinkToken,
   Notification,
   FaqCandidate,
@@ -37,6 +38,8 @@ type HistoryRow = Prisma.TicketHistoryGetPayload<Record<string, never>>;
 type FaqRow = Prisma.FaqCandidateGetPayload<Record<string, never>>;
 // MagicLinkToken テーブルの型エイリアス
 type MagicLinkRow = Prisma.MagicLinkTokenGetPayload<Record<string, never>>;
+// Invitation テーブルの型エイリアス
+type InvitationRow = Prisma.InvitationGetPayload<Record<string, never>>;
 // Attachment テーブルの型エイリアス
 type AttachmentRow = Prisma.AttachmentGetPayload<Record<string, never>>;
 
@@ -144,6 +147,22 @@ export function toMagicLinkToken(row: MagicLinkRow): MagicLinkToken {
     expiresAt: row.expiresAt,
     consumedAt: row.consumedAt,
     requestedIp: row.requestedIp,
+    createdAt: row.createdAt,
+  };
+}
+
+// Prisma の Invitation 行をドメイン型 Invitation に変換する関数
+export function toInvitation(row: InvitationRow): Invitation {
+  // 必要なフィールドだけを詰め替えて返す (生トークンは元から保存していないので無い)
+  return {
+    id: row.id,
+    tokenHash: row.tokenHash,
+    email: row.email,
+    role: row.role,
+    expiresAt: row.expiresAt,
+    consumedAt: row.consumedAt,
+    invitedById: row.invitedById,
+    tenantId: row.tenantId, // 参加先テナント (受諾時の信頼の起点)
     createdAt: row.createdAt,
   };
 }

@@ -4,6 +4,7 @@ import type { Repos, UnitOfWork } from '@/data/ports/unit-of-work';
 import { makeAttachmentRepo } from './attachment-repository.memory';
 import { makeCategoryRepo } from './category-repository.memory';
 import { makeFaqRepo } from './faq-repository.memory';
+import { makeInvitationRepo } from './invitation-repository.memory';
 import { makeMagicLinkRepo } from './magic-link-repository.memory';
 import { makeNotificationRepo } from './notification-repository.memory';
 import { cloneStore, createEmptyStore, overwriteStore, type Store } from './store';
@@ -30,6 +31,7 @@ export function buildMemoryRepos(store: Store): Repos {
     categories: makeCategoryRepo(store),
     tenants: makeTenantRepo(store),
     magicLinks: makeMagicLinkRepo(store),
+    invitations: makeInvitationRepo(store),
     attachments: makeAttachmentRepo(store),
   };
 }
