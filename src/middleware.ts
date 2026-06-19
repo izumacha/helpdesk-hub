@@ -8,6 +8,9 @@ import { isAgent } from '@/lib/role';
 export default auth((req) => {
   const isLoggedIn = !!req.auth;
   const isAuthPage = req.nextUrl.pathname.startsWith('/login');
+  // 招待受諾ページは未認証で開ける公開ページ (トークン自体が認可の根拠)。
+  // /login と同様にログインガードの対象外にする。
+  const isInvitePage = req.nextUrl.pathname.startsWith('/invite');
   const isApiAuth = req.nextUrl.pathname.startsWith('/api/auth');
   const isApiRoute = req.nextUrl.pathname.startsWith('/api/');
 
@@ -25,13 +28,14 @@ export default auth((req) => {
     return NextResponse.next();
   }
 
-  if (!isLoggedIn && !isAuthPage) {
+  if (!isLoggedIn && !isAuthPage && !isInvitePage) {
     return NextResponse.redirect(new URL('/login', req.url));
   }
 
   // 認証済み HTML 遷移でも tenantId 不在なら /login に戻す (旧 JWT 互換性のセーフティネット)
-  // 通常は auth.ts の jwt callback が補完するが、補完失敗時の最後の砦としてここでも判定する
-  if (isLoggedIn && !isAuthPage && !req.auth?.user?.tenantId) {
+  // 通常は auth.ts の jwt callback が補完するが、補完失敗時の最後の砦としてここでも判定する。
+  // 招待受諾ページは公開のため対象外 (ログイン済みでも閲覧を許す)
+  if (isLoggedIn && !isAuthPage && !isInvitePage && !req.auth?.user?.tenantId) {
     return NextResponse.redirect(new URL('/login', req.url));
   }
 
