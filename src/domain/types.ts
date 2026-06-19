@@ -134,6 +134,21 @@ export interface MagicLinkToken {
   createdAt: Date; // 作成日時
 }
 
+// テナントへのメンバー招待リンク 1 件分
+// 生トークンは URL のみで保持し、DB には SHA-256 ハッシュ (tokenHash) を保存する。
+// 発行時点で参加先 (tenantId) と付与権限 (role) が確定しているのが MagicLinkToken との違い。
+export interface Invitation {
+  id: string; // 招待 ID (主キー)
+  tokenHash: string; // 生トークンの SHA-256 ハッシュ
+  email: string | null; // 宛先メール (任意。未指定ならリンク手渡し想定)
+  role: Role; // 参加後に付与する権限 (requester=メンバー / agent=担当者)
+  expiresAt: Date; // 失効時刻 (発行 7 日後)
+  consumedAt: Date | null; // 受諾済み時刻。null なら未使用 (単回使用を強制)
+  invitedById: string | null; // 発行した admin の User ID (監査用)
+  tenantId: string; // 参加先テナント ID (受諾時はこの値でユーザーを作る = 入力から注入しない)
+  createdAt: Date; // 作成日時
+}
+
 // ユーザー向け通知 1 件分
 export interface Notification {
   id: string; // 通知 ID

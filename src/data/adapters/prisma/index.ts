@@ -5,6 +5,7 @@ import type { Repos, UnitOfWork } from '@/data/ports/unit-of-work';
 import { makeAttachmentRepo } from './attachment-repository.prisma';
 import { makeCategoryRepo } from './category-repository.prisma';
 import { makeFaqRepo } from './faq-repository.prisma';
+import { makeInvitationRepo } from './invitation-repository.prisma';
 import { makeMagicLinkRepo } from './magic-link-repository.prisma';
 import { makeNotificationRepo } from './notification-repository.prisma';
 import { makeTenantRepo } from './tenant-repository.prisma';
@@ -31,6 +32,7 @@ export function buildPrismaRepos(db: PrismaLike): Repos {
     categories: makeCategoryRepo(db),
     tenants: makeTenantRepo(db),
     magicLinks: makeMagicLinkRepo(db),
+    invitations: makeInvitationRepo(db),
     attachments: makeAttachmentRepo(db),
   };
 }

@@ -32,6 +32,8 @@
  */
 // データ層の Composition Root (Prisma 直叩きを避けるための入口)
 import { repos } from '@/data';
+// メール内リンクのベース URL を解決する共通ヘルパー (招待リンクと共有)
+import { resolveAppBaseUrl } from '@/lib/app-url';
 // 環境変数で切り替わる EmailSender 実装を取得するファクトリ
 import { getEmailSender, type EmailSender } from '@/lib/email';
 // マジックリンク用の純粋ヘルパー (トークン生成・ハッシュ・URL 構築・メール本文 + 各種定数)
@@ -65,46 +67,6 @@ async function atLeast<T>(promise: Promise<T>, ms: number): Promise<T> {
   return value;
 }
 
-// マジックリンク URL を組み立てるためのベース URL を解決する。
-// production で NEXTAUTH_URL が未設定だと、メールに http://localhost:3000 のリンクが
-// 入ってユーザーが開けない事故になる (Codex P1 指摘)。fail-fast で運用に伝える。
-// 加えて、空白だけ / scheme なし / ホスト欠落のような壊れた値も WHATWG URL でパースし、
-// 失敗時は明示エラーにする (truthy 判定だけだと不正値が黙って出ていく Codex P2 指摘)
-function resolveMagicLinkBaseUrl(): string {
-  // 前後空白を除去してから空判定する (".env で NEXTAUTH_URL=' ' " などを未指定扱い)
-  const raw = process.env.NEXTAUTH_URL?.trim();
-  // 未設定または空白だけの場合: 本番は即エラー、dev/test は localhost フォールバック
-  if (!raw) {
-    if (process.env.NODE_ENV === 'production') {
-      throw new Error(
-        'NEXTAUTH_URL is required in production to issue working magic-link URLs',
-      );
-    }
-    return 'http://localhost:3000';
-  }
-  // URL として解釈できることを WHATWG URL パーサで検証する
-  let parsed: URL;
-  try {
-    parsed = new URL(raw);
-  } catch {
-    throw new Error(
-      `NEXTAUTH_URL の形式が不正です ("${raw}"): http(s):// で始まる完全な URL を指定してください`,
-    );
-  }
-  // scheme が http/https 以外 (例: file://) や、host が空の URL は弾く
-  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
-    throw new Error(
-      `NEXTAUTH_URL の scheme は http または https である必要があります (実際: ${parsed.protocol})`,
-    );
-  }
-  if (!parsed.host) {
-    throw new Error('NEXTAUTH_URL に host が含まれていません');
-  }
-  // バリデーション済みの URL 文字列を返す (raw に含まれていた末尾スラッシュ等の差異は
-  // buildMagicLinkUrl 側で吸収される)
-  return raw;
-}
-
 // 公開する Server Action。フォームから直接呼べる形にする (FormData 経由でも JSON でも可)
 export async function requestMagicLink(
   input: { email: string },
@@ -120,11 +82,11 @@ export async function requestMagicLink(
   const email = parsed.data.email;
 
   // ── 列挙対策マスクの外で設定不備を先に表面化させる ──
-  // getEmailSender() / resolveMagicLinkBaseUrl() は環境変数の妥当性チェックを兼ねるため、
+  // getEmailSender() / resolveAppBaseUrl() は環境変数の妥当性チェックを兼ねるため、
   // ここで投げた例外は呼び出し側 (= 操作した運用者) にそのまま 500 として返したい。
   // ループ内の delivery 例外 (DB / SMTP 一時障害) とは扱いを分ける (Codex P1 指摘)。
   // 未登録メールでも同じく throw されるので列挙耐性は壊れない
-  const baseUrl = resolveMagicLinkBaseUrl();
+  const baseUrl = resolveAppBaseUrl();
   const sender = getEmailSender();
 
   // 最低限の遅延を確保しつつ本処理を実行する。

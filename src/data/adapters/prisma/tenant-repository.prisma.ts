@@ -37,6 +37,20 @@ export function makeTenantRepo(db: PrismaLike): TenantRepository {
       return row ? toTenant(row) : null;
     },
 
+    // 新規テナント (組織) を 1 件作成する (運用者向けのテナント作成フォーム用)
+    async create(input) {
+      // Prisma 経由で行を作成。mode 未指定なら SMB 既定の lite で作る
+      const row = await db.tenant.create({
+        data: {
+          name: input.name, // 組織名
+          industry: input.industry ?? null, // 業種テンプレ識別子 (任意)
+          mode: input.mode ?? 'lite', // 動作モード (既定 lite)
+        },
+      });
+      // 作成行をドメイン型に変換して返す
+      return toTenant(row);
+    },
+
     // テナントの動作モード (lite | pro) を更新し、更新後の行をドメイン型で返す
     async updateMode(id, mode) {
       // 主キー (tenantId) で対象テナントを特定し mode 列のみ更新する

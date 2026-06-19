@@ -8,23 +8,10 @@ import { auth } from '@/lib/auth';
 import { repos } from '@/data';
 // 連打防止のための共通レート制限ヘルパー
 import { enforceRateLimit } from '@/lib/rate-limit';
+// 管理者権限を強制する共通アサーション (組織設定系で共有)
+import { assertAdminSession } from '@/lib/role';
 // テナントモード入力 (lite | pro) の Zod 検証スキーマ
 import { tenantModeSchema } from '@/lib/validations/tenant';
-// next-auth のセッション型
-import type { Session } from 'next-auth';
-
-// セッションが管理者 (admin) 権限を持つことを保証するアサーション関数
-// テナント全体の動作モード変更は組織設定にあたるため、agent ではなく admin のみ許可する
-function assertAdminSession(session: Session | null): asserts session is Session {
-  // 未ログイン (ユーザー ID 無し) は拒否
-  if (!session?.user?.id) throw new Error('ログインが必要です');
-  // tenantId 不在は middleware で弾く想定だが、Server Action でも防御的にチェック
-  if (!session.user.tenantId) throw new Error('ログインが必要です');
-  // admin 以外 (agent / requester) は拒否 (テナント設定は管理者専用)
-  if (session.user.role !== 'admin') {
-    throw new Error('この操作は管理者のみ実行できます');
-  }
-}
 
 // テナントの動作モード (lite | pro) を切り替えるサーバーアクション
 export async function updateTenantMode(formData: FormData): Promise<void> {

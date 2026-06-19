@@ -1,7 +1,7 @@
 // ユーザーリポジトリの契約 (port) と、ドメイン型/ストア型をインポート
 import type { UserRepository } from '@/data/ports/user-repository';
-import type { UserSummary } from '@/domain/types';
-import type { Store } from './store';
+import type { User, UserSummary } from '@/domain/types';
+import { nextId, type Store } from './store';
 
 // メモリストアを使ったユーザーリポジトリを生成する関数
 export function makeUserRepo(store: Store): UserRepository {
@@ -21,6 +21,34 @@ export function makeUserRepo(store: Store): UserRepository {
       }
       // 見つからなければ null
       return null;
+    },
+
+    // 新規ユーザーを 1 件作成する (招待受諾・初代管理者登録用)
+    async create(input) {
+      // email の @unique 制約を擬似的に再現する: 既存メールと重複したら例外で弾く
+      for (const u of store.users.values()) {
+        if (u.email === input.email) {
+          // Prisma の P2002 (unique 制約違反) 相当のエラーを投げて呼び出し側に重複を伝える
+          throw new Error('このメールアドレスは既に登録されています');
+        }
+      }
+      // 現在時刻 (作成・更新日時に使う)
+      const now = new Date();
+      // 新しいユーザー行を組み立てる
+      const user: User = {
+        id: nextId(store, 'usr'), // 'usr_...' 形式の一意 ID
+        email: input.email,
+        name: input.name,
+        passwordHash: input.passwordHash,
+        role: input.role,
+        tenantId: input.tenantId,
+        createdAt: now,
+        updatedAt: now,
+      };
+      // ストアの Map に登録
+      store.users.set(user.id, user);
+      // 防御的コピーを返す
+      return { ...user };
     },
 
     // 当該テナント内の agent または admin を名前順で一覧取得

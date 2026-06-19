@@ -109,8 +109,8 @@
 
 - [ ] `Tenant` モデル追加 + 全関連テーブルへの `tenantId` 付与 + マイグレーション
 - [ ] `auth.ts` の session 拡張（`tenantId` 載せる）と middleware でのスコープ強制
-- [ ] テナント作成 / 招待リンク発行画面（admin 用）
-- [ ] 既存 E2E / Vitest をテナント前提に修正
+- [x] テナント作成 / 招待リンク発行画面（admin 用）
+- [x] 既存 E2E / Vitest をテナント前提に修正
 
 ### Phase 1 — Lite モード MVP（4 週間）★ 最重要
 

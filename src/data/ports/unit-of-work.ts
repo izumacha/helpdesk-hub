@@ -2,6 +2,7 @@
 import type { AttachmentRepository } from './attachment-repository';
 import type { CategoryRepository } from './category-repository';
 import type { FaqRepository } from './faq-repository';
+import type { InvitationRepository } from './invitation-repository';
 import type { MagicLinkRepository } from './magic-link-repository';
 import type { NotificationRepository } from './notification-repository';
 import type { TenantRepository } from './tenant-repository';
@@ -21,6 +22,7 @@ export interface Repos {
   categories: CategoryRepository; // カテゴリ操作
   tenants: TenantRepository; // テナント操作 (マルチテナント化)
   magicLinks: MagicLinkRepository; // マジックリンクトークン操作 (パスワードレス認証)
+  invitations: InvitationRepository; // 招待リンクトークン操作 (メンバー招待)
   attachments: AttachmentRepository; // 添付ファイル (画像) のメタ情報操作
 }
 

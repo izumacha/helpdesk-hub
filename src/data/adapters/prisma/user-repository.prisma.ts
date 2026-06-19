@@ -18,6 +18,22 @@ export function makeUserRepo(db: PrismaLike): UserRepository {
       return row ? toUser(row) : null;
     },
 
+    // 新規ユーザーを 1 件作成する (招待受諾・初代管理者登録用)
+    async create(input) {
+      // Prisma 経由で行を作成 (email の @unique 制約に反すると P2002 が投げられる)
+      const row = await db.user.create({
+        data: {
+          email: input.email, // ログイン用メール (正規化済み)
+          name: input.name, // 表示名
+          passwordHash: input.passwordHash, // bcrypt 済みハッシュ
+          role: input.role, // 付与する権限
+          tenantId: input.tenantId, // 所属テナント
+        },
+      });
+      // 作成行をドメイン型に変換して返す
+      return toUser(row);
+    },
+
     // 当該テナント内の agent または admin を名前順で取得 (担当者候補)
     async listAgents(tenantId) {
       const rows = await db.user.findMany({
