@@ -82,7 +82,7 @@ export async function requestMagicLink(
   const email = parsed.data.email;
 
   // ── 列挙対策マスクの外で設定不備を先に表面化させる ──
-  // getEmailSender() / resolveMagicLinkBaseUrl() は環境変数の妥当性チェックを兼ねるため、
+  // getEmailSender() / resolveAppBaseUrl() は環境変数の妥当性チェックを兼ねるため、
   // ここで投げた例外は呼び出し側 (= 操作した運用者) にそのまま 500 として返したい。
   // ループ内の delivery 例外 (DB / SMTP 一時障害) とは扱いを分ける (Codex P1 指摘)。
   // 未登録メールでも同じく throw されるので列挙耐性は壊れない

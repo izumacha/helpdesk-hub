@@ -44,8 +44,8 @@ const nameSchema = z
   .min(1, 'お名前は必須です')
   .max(NAME_MAX_LENGTH, 'お名前が長すぎます');
 
-// メール入力の共通スキーマ (必須・正規化)
-const emailSchema = z
+// メール入力の共通スキーマ (必須・正規化)。招待受諾でユーザー入力メールの検証にも使うため export する
+export const emailSchema = z
   .string()
   .trim()
   .min(1, 'メールアドレスは必須です')

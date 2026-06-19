@@ -54,8 +54,9 @@ export async function createInvitation(formData: FormData): Promise<CreateInvita
   // フォーム入力 (role / email) を Zod で検証する
   const parsed = createInvitationSchema.safeParse({
     role: formData.get('role'),
-    // 任意フィールドはフォーム未送信時に null になるため空文字へ正規化する (スキーマは '' を許容)
-    email: formData.get('email') ?? '',
+    // 任意フィールドは未送信時 null・空白のみの入力も「未指定」扱いにしたいので trim して渡す
+    // (スキーマは '' を未指定として undefined に正規化する)
+    email: (formData.get('email') ?? '').toString().trim(),
   });
   // 検証失敗ならユーザー向け日本語メッセージで throw
   if (!parsed.success) {
@@ -76,6 +77,11 @@ export async function createInvitation(formData: FormData): Promise<CreateInvita
     throw new Error('招待の発行が多すぎます。しばらく待ってから再度お試しください。');
   }
 
+  // 受諾ページ URL のベースを「行を作る前」に解決して fail-fast する。
+  // production で NEXTAUTH_URL 未設定だと resolveAppBaseUrl が throw するが、行作成後に
+  // 呼ぶと招待行だけが孤児として DB に残り URL も admin に渡らない。先に解決して防ぐ。
+  const baseUrl = resolveAppBaseUrl();
+
   // 256-bit のランダムトークンを生成し、SHA-256 ハッシュを DB に保存する (生は URL のみ)
   const rawToken = generateInviteToken();
   const tokenHash = await hashInviteToken(rawToken);
@@ -91,8 +97,8 @@ export async function createInvitation(formData: FormData): Promise<CreateInvita
     invitedById: session.user.id,
   });
 
-  // 受諾ページの URL を組み立てる (NEXTAUTH_URL ベース)
-  const url = buildInviteUrl(resolveAppBaseUrl(), rawToken);
+  // 受諾ページの URL を組み立てる (先に解決済みの baseUrl を使う)
+  const url = buildInviteUrl(baseUrl, rawToken);
 
   // email を指定した場合のみ案内メールを送る。送信失敗してもリンクは返す (admin が手渡し可能)
   if (email) {

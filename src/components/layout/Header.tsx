@@ -8,13 +8,8 @@ import { NotificationBell } from './NotificationBell';
 import { MobileNavToggle } from './MobileNavToggle';
 // ログアウト用サーバーアクション
 import { logout } from '@/features/auth/actions/logout';
-
-// ロール表示用の日本語ラベル (技術名を画面に出さないため)
-const ROLE_LABELS: Record<string, string> = {
-  admin: '管理者',
-  agent: '担当者',
-  requester: '依頼者',
-};
+// ロール表示用の日本語ラベル (一元管理された単一参照元。技術名を画面に出さないため)
+import { ROLE_LABELS } from '@/lib/constants';
 
 // 名前から最大 2 文字のイニシャル (アバター用) を作る
 // 日本語名は先頭 1 文字、英語名は単語頭を 2 文字に

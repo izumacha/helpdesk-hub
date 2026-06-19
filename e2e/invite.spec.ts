@@ -94,11 +94,12 @@ test.describe('メンバー招待フロー', () => {
     await p1.waitForURL(/\/tickets/);
     await ctx1.close();
 
-    // 2 回目に同じリンクを開くと「無効/使用済み」の案内が出る
+    // 2 回目に同じリンクを開くと「無効/使用済み」の案内が出る。
+    // role=alert は Next.js のルートアナウンサーとも一致してしまうため、本文テキストで特定する
     const ctx2 = await browser.newContext();
     const p2 = await ctx2.newPage();
     await p2.goto(inviteUrl);
-    await expect(p2.getByRole('alert')).toContainText(/無効|期限|使用/);
+    await expect(p2.getByText(/この招待リンクは無効/)).toBeVisible();
     await ctx2.close();
 
     // 後始末 (1 回目で作ったユーザーを消す)

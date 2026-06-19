@@ -4,6 +4,8 @@
 import { useState, useTransition } from 'react';
 // テナント作成のサーバーアクション
 import { createTenant } from '@/features/settings/actions/create-tenant';
+// パスワード最小長の単一参照元 (サーバー検証スキーマと共有)
+import { PASSWORD_MIN_LENGTH } from '@/lib/validations/invite';
 
 // 新しい組織 (テナント) と初代管理者を作成するフォーム
 export function CreateTenantForm() {
@@ -110,14 +112,14 @@ export function CreateTenantForm() {
         {/* 管理者パスワード */}
         <div className="space-y-1">
           <label htmlFor="adminPassword" className="block text-sm font-medium text-slate-700">
-            パスワード（8文字以上）
+            パスワード（{PASSWORD_MIN_LENGTH}文字以上）
           </label>
           <input
             id="adminPassword"
             name="adminPassword"
             type="password"
             required
-            minLength={8}
+            minLength={PASSWORD_MIN_LENGTH}
             autoComplete="new-password"
             className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm focus:border-teal-400 focus:outline-none focus:ring-1 focus:ring-teal-200"
             placeholder="••••••••"

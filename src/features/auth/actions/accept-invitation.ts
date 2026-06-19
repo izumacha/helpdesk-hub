@@ -21,8 +21,8 @@ import { hash } from 'bcryptjs';
 import { repos, uow } from '@/data';
 // 招待トークンのハッシュ化 (生トークン → DB 保存値と同じ SHA-256 へ)
 import { hashInviteToken } from '@/lib/invite';
-// 受諾フォームの入力検証スキーマと、宛先メール任意入力の正規化用スキーマ
-import { acceptInvitationSchema } from '@/lib/validations/invite';
+// 受諾フォームの入力検証スキーマと、ユーザー入力メールの検証・正規化スキーマ
+import { acceptInvitationSchema, emailSchema } from '@/lib/validations/invite';
 
 // accept の戻り値型。作成に使ったメールを返し、クライアントがそのままログインに使う
 export interface AcceptInvitationResult {
@@ -47,12 +47,22 @@ export async function acceptInvitation(
   // 検証済みの氏名・パスワード
   const { name, password } = parsed.data;
 
-  // 招待行に email が無い場合に使う「招待される人が自分で入力したメール」を取り出して正規化する
+  // 招待行に email が無い場合に使う「招待される人が自分で入力したメール」を取り出す。
+  // 空文字/空白だけなら未入力扱い (null)、入力があれば共通スキーマでメール形式・長さを検証する。
+  // (trim/lowercase だけだと不正形式や過大長がそのまま User.email に入り、Prisma 500 になり得る)
   const rawInputEmail = formData.get('email');
-  const inputEmail =
-    typeof rawInputEmail === 'string' && rawInputEmail.trim() !== ''
-      ? rawInputEmail.trim().toLowerCase()
-      : null;
+  let inputEmail: string | null = null;
+  // 文字列かつ空白除去後に中身がある場合のみ検証へ回す
+  if (typeof rawInputEmail === 'string' && rawInputEmail.trim() !== '') {
+    // メール形式・最大長を検証し、小文字へ正規化する
+    const emailParsed = emailSchema.safeParse(rawInputEmail);
+    // 形式不正・過大長ならユーザー向け日本語メッセージで throw (消費前に弾く)
+    if (!emailParsed.success) {
+      throw new Error(emailParsed.error.issues[0]?.message ?? '正しいメールアドレスを入力してください');
+    }
+    // 検証済みの正規化メール
+    inputEmail = emailParsed.data;
+  }
 
   // 生トークンを DB 保存値と同じ SHA-256 ハッシュへ変換する
   const tokenHash = await hashInviteToken(rawToken);

@@ -10,6 +10,8 @@ import { useState } from 'react';
 import { acceptInvitation } from '@/features/auth/actions/accept-invitation';
 // エージェント権限判定 (ログイン後の遷移先決定で利用)
 import { isAgent } from '@/lib/role';
+// パスワード最小長の単一参照元 (サーバー検証スキーマと共有)
+import { PASSWORD_MIN_LENGTH } from '@/lib/validations/invite';
 
 // 受け取る props (受諾対象トークンと、メール入力が必要か)
 interface Props {
@@ -105,14 +107,14 @@ export function AcceptInviteForm({ token, needsEmail }: Props) {
       {/* パスワード入力 */}
       <div>
         <label htmlFor="password" className="mb-1.5 block text-sm font-medium text-slate-700">
-          パスワード（8文字以上）
+          パスワード（{PASSWORD_MIN_LENGTH}文字以上）
         </label>
         <input
           id="password"
           name="password"
           type="password"
           required
-          minLength={8}
+          minLength={PASSWORD_MIN_LENGTH}
           autoComplete="new-password"
           className="block w-full rounded-lg border border-slate-200 bg-slate-50/60 px-4 py-2.5 text-sm text-slate-900 transition placeholder:text-slate-400 focus:border-teal-500 focus:bg-white focus:ring-2 focus:ring-teal-500/30 focus:outline-none"
           placeholder="••••••••"

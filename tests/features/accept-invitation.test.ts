@@ -117,6 +117,24 @@ describe('acceptInvitation', () => {
     expect([...store.users.values()].some((u) => u.email === 'self@example.com')).toBe(true);
   });
 
+  // メール無し招待で不正な形式のメールを入力した場合は拒否されること (消費されない)
+  it('メール無し招待で不正なメール形式は拒否される', async () => {
+    // メール無しの招待を用意する
+    const rawToken = await seedInvitation({ tenantId: TENANT_B, role: 'requester', email: null });
+    const tokenHash = await hashInviteToken(rawToken);
+    const acceptInvitation = await loadAction();
+    // 不正な形式のメールを入力すると拒否される
+    await expect(
+      acceptInvitation(
+        rawToken,
+        makeForm({ name: '不正', password: 'password123', email: 'not-an-email' }),
+      ),
+    ).rejects.toThrow(/メールアドレス/);
+    // 招待は未消費のまま (消費前に弾いている)
+    const invitation = await repos.invitations.findByTokenHash(tokenHash);
+    expect(invitation?.consumedAt).toBeNull();
+  });
+
   // 同じ招待リンクは 2 回使えないこと (単回使用)
   it('同じ招待リンクは 2 回受諾できない', async () => {
     // 有効な招待を用意する

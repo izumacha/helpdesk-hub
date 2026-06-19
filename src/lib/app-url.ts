@@ -14,7 +14,7 @@ export function resolveAppBaseUrl(): string {
   // 未設定または空白だけの場合: 本番は即エラー、dev/test は localhost フォールバック
   if (!raw) {
     if (process.env.NODE_ENV === 'production') {
-      throw new Error('NEXTAUTH_URL is required in production to issue working magic-link URLs');
+      throw new Error('NEXTAUTH_URL is required in production to issue working email links');
     }
     return 'http://localhost:3000';
   }
