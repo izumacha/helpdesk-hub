@@ -2,10 +2,14 @@
 import { auth } from '@/lib/auth';
 // 現在ログイン中のテナントの動作モード (lite | pro) を取得するヘルパー
 import { getCurrentTenantMode } from '@/lib/tenant';
+// クライアント遷移付きリンク (テナント作成画面への導線)
+import Link from 'next/link';
 // モードの日本語ラベル (現在値の表示に使う)
 import { TENANT_MODE_LABELS } from '@/lib/constants';
 // Lite / Pro 切替フォーム (Client Component)
 import { TenantModeForm } from '@/features/settings/components/TenantModeForm';
+// メンバー招待リンク発行フォーム (Client Component)
+import { InviteForm } from '@/features/settings/components/InviteForm';
 
 // /settings : テナント設定ページ (現状は Lite/Pro モードの切替のみ。管理者専用)
 export default async function SettingsPage() {
@@ -50,6 +54,39 @@ export default async function SettingsPage() {
         </div>
         {/* 切替フォーム本体 (現在値を初期選択として渡す) */}
         <TenantModeForm current={mode} />
+      </section>
+
+      {/* メンバー招待カード */}
+      <section className="space-y-4 rounded-2xl bg-white p-6 shadow-sm ring-1 ring-slate-100">
+        <div>
+          {/* セクション見出し */}
+          <h2 className="text-base font-semibold text-slate-900">メンバーを招待</h2>
+          {/* 説明: リンクを発行して共有する運用を伝える */}
+          <p className="mt-1 text-sm text-slate-500">
+            招待リンクを発行して共有すると、相手は組織のメンバーとして参加できます。
+          </p>
+        </div>
+        {/* 招待リンク発行フォーム本体 */}
+        <InviteForm />
+      </section>
+
+      {/* テナント (組織) 作成カード */}
+      <section className="space-y-4 rounded-2xl bg-white p-6 shadow-sm ring-1 ring-slate-100">
+        <div>
+          {/* セクション見出し */}
+          <h2 className="text-base font-semibold text-slate-900">新しい組織を作成</h2>
+          {/* 説明: 運用者が別組織を立ち上げる導線 */}
+          <p className="mt-1 text-sm text-slate-500">
+            別の組織（テナント）を新規に作成し、その初代管理者を登録します。
+          </p>
+        </div>
+        {/* テナント作成フォームへの導線 (別ページ) */}
+        <Link
+          href="/settings/tenants/new"
+          className="inline-block rounded-lg border border-teal-300 bg-white px-4 py-2 text-sm font-semibold text-teal-800 transition hover:bg-teal-50"
+        >
+          組織を作成する
+        </Link>
       </section>
     </div>
   );

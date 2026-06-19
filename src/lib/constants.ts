@@ -1,5 +1,5 @@
-// チケット状態型とテナントモード型 (lite | pro) を正準のドメイン型から 1 本でインポート
-import type { TicketStatus, TenantMode } from '@/domain/types';
+// チケット状態型・テナントモード型 (lite | pro)・権限型を正準のドメイン型から 1 本でインポート
+import type { TicketStatus, TenantMode, Role } from '@/domain/types';
 // Lite モードの 3 値型と型ガード関数を取り込み、mode-aware ラベル関数で使う
 import { isLiteStatus, type LiteStatus } from '@/domain/ticket-status';
 
@@ -57,6 +57,18 @@ export const TENANT_MODE_DESCRIPTIONS: Record<TenantMode, string> = {
   // Pro: 7 ステータス・SLA・エスカレーション・FAQ 候補などフル機能を有効化
   pro: '7つのステータス・SLA期限・エスカレーション・FAQ候補など、情シス向けのすべての機能を有効にします。',
 };
+
+// 権限 (Role) の日本語表示ラベル (Pivot plan §3.1 の用語表に基づく)。
+// admin も組織管理者は「対応する人」なので担当者扱いの語彙に寄せる (UI ではロール 2 種に簡素化)。
+export const ROLE_LABELS: Record<Role, string> = {
+  requester: 'メンバー', // 問い合わせを出す人 (依頼者)
+  agent: '担当者', // 問い合わせに対応する人
+  admin: '管理者', // 組織の管理者 (担当者 + 設定権限)
+};
+
+// 招待リンクで付与できる権限の一覧 (招待画面の選択肢に使う)。
+// admin は招待リンク経由では付与しない (管理者は別途テナント作成フォームで登録する想定)。
+export const INVITABLE_ROLES: readonly Role[] = ['requester', 'agent'];
 
 // 優先度キーに対応する日本語表示ラベル
 export const PRIORITY_LABELS: Record<string, string> = {
