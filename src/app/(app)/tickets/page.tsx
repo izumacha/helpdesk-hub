@@ -69,8 +69,10 @@ export default async function TicketsPage({ searchParams }: Props) {
   const sp = await searchParams;
   // セッション取得
   const session = await auth();
-  // 未ログインなら描画しない
-  if (!session?.user?.id) return null;
+  // 未ログイン、または tenantId 欠落（テナント未確定）なら描画しない。
+  // 他の入口（api/tickets・comments・faq-actions・stream）と同じく tenantId を明示ガードし、
+  // クロステナント漏洩を多層防御で防ぐ（CLAUDE.md §3 マルチテナント / §9）。
+  if (!session?.user?.id || !session.user.tenantId) return null;
 
   // ロール判定
   const isAgent = checkIsAgent(session.user.role);
