@@ -10,7 +10,7 @@
  * 山括弧なしの値で、受信側の normalizeMessageId が返す表記に一致させる。
  */
 
-// 衝突しない一意サフィックスを作るための UUID 生成 (Node の Web Crypto)
+// 衝突しない一意サフィックスを作るための UUID 生成 (Node 標準の crypto)
 import { randomUUID } from 'node:crypto';
 
 // Message-ID のドメイン部が未設定のときに使う既定ドメイン (取り込みドメインと揃える想定)

@@ -143,6 +143,9 @@ export function normalizeMessageId(raw: string | null | undefined): string | nul
   if (value.length === 0 || value.length > INBOUND_MESSAGE_ID_MAX) return null;
   // Message-ID は addr-spec 形なので、空白を含まず "@" を 1 つ以上持つことを最低条件にする
   if (/\s/.test(value) || !value.includes('@')) return null;
+  // 外側 1 組の山括弧を外した後に山括弧が残るのは不正 (例: "<a@b><c@d>" のような複数 ID)。
+  // ここで弾かないと送受信で表記が食い違い、スレッドの突き合わせが静かに外れるため null にする。
+  if (value.includes('<') || value.includes('>')) return null;
   // 正規化済みの値を返す
   return value;
 }

@@ -17,8 +17,12 @@ export function makeEmailThreadRepo(store: Store): EmailThreadRepository {
       );
       // 1 件も無ければ null
       if (matches.length === 0) return null;
-      // 最も新しく記録された対応を優先する (Prisma 実装の orderBy createdAt desc に揃える)
-      matches.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+      // 最も新しく記録された対応を優先する (Prisma 実装の orderBy createdAt desc に揃える)。
+      // createdAt 同値のときは id を副キーにして並びを決定的にする (Prisma の orderBy と同じ規則)。
+      matches.sort((a, b) => {
+        const byTime = b.createdAt.getTime() - a.createdAt.getTime();
+        return byTime !== 0 ? byTime : a.id < b.id ? 1 : a.id > b.id ? -1 : 0;
+      });
       // 先頭 (最新) の ticketId を返す
       return matches[0].ticketId;
     },

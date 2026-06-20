@@ -13,7 +13,9 @@ export function makeEmailThreadRepo(db: PrismaLike): EmailThreadRepository {
       const row = await db.emailThreadRef.findFirst({
         where: { tenantId, messageId: { in: messageIds } }, // 必ず tenantId でスコープ (クロステナント遮断 §9)
         select: { ticketId: true }, // 逆引きに必要なのは ticketId のみ
-        orderBy: { createdAt: 'desc' }, // 直近に紐づけた対応を優先
+        // 直近に紐づけた対応を優先。createdAt 同値 (同一リクエスト内の複数登録など) でも結果が
+        // ブレないよう id を副キーにして並びを決定的にする (メモリ実装と挙動を揃える)
+        orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
       });
       // 見つかれば ticketId、無ければ null
       return row?.ticketId ?? null;

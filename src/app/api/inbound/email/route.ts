@@ -227,6 +227,8 @@ export async function POST(req: Request) {
 
   // 冪等性: この受信メールの Message-ID を既に取り込み済みなら、二重起票/二重コメントを避ける。
   // Webhook は at-least-once 配送 (再送あり) なので、同じ Message-ID を見たら過去のチケットを返す。
+  // 注意: Message-ID が取れない (null) メールはこの重複判定が効かず、新規起票パスと同じ at-least-once
+  // 挙動 (再送で重複しうる) になる。実メールはほぼ必ず Message-ID を持つため通常は冪等に処理される。
   if (email.messageId) {
     const already = await repos.emailThreads.findTicketIdByMessageIds([email.messageId], tenant.id);
     if (already) {
@@ -249,6 +251,10 @@ export async function POST(req: Request) {
       const senderIsAgent = isAgent(sender.role);
       // 追記の権限: エージェント、または自分が起票したチケットのみ (第三者メンバーの混線/露出を防ぐ)。
       // 権限の無いメンバーは隔離扱い (202) にして無視する。
+      // セキュリティ注意 (§9 / §8 リスク表): 送信者の本人性はヘッダ From + 既知メンバー判定に依存し、
+      // DKIM/SPF 検証は未実装 (既存メール取り込みと同じ前提 = 将来課題)。エージェントの From を詐称した
+      // なりすまし POST は、共有シークレット (INBOUND_EMAIL_SECRET) と取り込みトークンの両方を要するため
+      // 信頼境界はプロバイダ側にあるが、本人性を強める SPF/DKIM 検証を後続で入れること。
       if (!senderIsAgent && ticket.creatorId !== sender.id) {
         console.warn(
           '[POST /api/inbound/email] quarantined: sender not allowed to append to thread',

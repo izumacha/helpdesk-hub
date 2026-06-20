@@ -229,6 +229,8 @@ describe('normalizeMessageId', () => {
     expect(normalizeMessageId('no-at-sign')).toBeNull();
     expect(normalizeMessageId('<a b@example.com>')).toBeNull();
     expect(normalizeMessageId('x@' + 'a'.repeat(INBOUND_MESSAGE_ID_MAX))).toBeNull();
+    // 外側 1 組を外しても山括弧が残る (複数 ID 連結) のは不正
+    expect(normalizeMessageId('<a@b><c@d>')).toBeNull();
   });
 });
 
