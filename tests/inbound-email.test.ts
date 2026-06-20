@@ -7,13 +7,18 @@ import { describe, expect, it } from 'vitest';
 import {
   INBOUND_BODY_MAX,
   INBOUND_DEFAULT_SUBJECT,
+  INBOUND_MAX_REFERENCE_IDS,
+  INBOUND_MESSAGE_ID_MAX,
   INBOUND_SUBJECT_MAX,
   buildInboundAddress,
   extractEmailAddress,
   extractInboundToken,
+  extractMessageIds,
   generateInboundToken,
   localPartOf,
+  normalizeMessageId,
   parseInboundEmail,
+  readRawHeader,
 } from '@/lib/inbound-email';
 
 describe('extractEmailAddress', () => {
@@ -170,5 +175,107 @@ describe('parseInboundEmail', () => {
       { expectedDomain: 'inbox.helpdesk-hub.app' },
     );
     expect(result.ok).toBe(false);
+  });
+
+  // スレッド継続: Message-ID / In-Reply-To / References を正規化して取り込む
+  it('Message-ID と参照 ID を正規化して email に載せる', () => {
+    const result = parseInboundEmail({
+      to: 'abc123@inbox.helpdesk-hub.app',
+      from: 'ichiro@example.com',
+      subject: 'Re: プリンター',
+      text: '直りました',
+      messageId: '  <reply-1@inbox.helpdesk-hub.app>  ',
+      inReplyTo: '<orig-1@example.com>',
+      references: '<root@example.com> <orig-1@example.com>',
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    // 山括弧と前後空白を除いた値になる
+    expect(result.email.messageId).toBe('reply-1@inbox.helpdesk-hub.app');
+    // In-Reply-To + References を統合し重複排除する (orig-1 は 1 件に)
+    expect(result.email.referenceIds).toEqual(['orig-1@example.com', 'root@example.com']);
+  });
+
+  // スレッド継続: ヘッダが無いメールは messageId=null / referenceIds=[] になる
+  it('スレッドヘッダが無ければ messageId は null・参照は空配列', () => {
+    const result = parseInboundEmail({
+      to: 'abc123@inbox.helpdesk-hub.app',
+      from: 'ichiro@example.com',
+      subject: '新規',
+      text: '本文',
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.email.messageId).toBeNull();
+    expect(result.email.referenceIds).toEqual([]);
+  });
+});
+
+describe('normalizeMessageId', () => {
+  // 山括弧と前後空白を外す
+  it('"<id@host>" から山括弧を外して返す', () => {
+    expect(normalizeMessageId('  <abc@example.com>  ')).toBe('abc@example.com');
+  });
+
+  // 山括弧なしでも妥当ならそのまま
+  it('山括弧なしの妥当な値はそのまま返す', () => {
+    expect(normalizeMessageId('abc@example.com')).toBe('abc@example.com');
+  });
+
+  // 空・null・"@" 無し・空白入り・長すぎは null (fail-closed)
+  it('不正な値は null を返す', () => {
+    expect(normalizeMessageId(null)).toBeNull();
+    expect(normalizeMessageId('')).toBeNull();
+    expect(normalizeMessageId('no-at-sign')).toBeNull();
+    expect(normalizeMessageId('<a b@example.com>')).toBeNull();
+    expect(normalizeMessageId('x@' + 'a'.repeat(INBOUND_MESSAGE_ID_MAX))).toBeNull();
+  });
+});
+
+describe('extractMessageIds', () => {
+  // 空白区切りの "<id>" 列を分解して正規化する
+  it('References の "<id> <id>" 列を分解する', () => {
+    expect(extractMessageIds('<a@x.com>\n <b@y.com>')).toEqual(['a@x.com', 'b@y.com']);
+  });
+
+  // 山括弧が無い単一トークンも受ける
+  it('山括弧なしの単一トークンも受ける', () => {
+    expect(extractMessageIds('a@x.com')).toEqual(['a@x.com']);
+  });
+
+  // 取り込み件数は上限でクランプする (DoS 防止)
+  it('参照 ID は上限件数までに切り詰める', () => {
+    // 上限 + 10 件の "<id>" を並べる
+    const many = Array.from(
+      { length: INBOUND_MAX_REFERENCE_IDS + 10 },
+      (_, i) => `<id${i}@x.com>`,
+    ).join(' ');
+    expect(extractMessageIds(many).length).toBe(INBOUND_MAX_REFERENCE_IDS);
+  });
+
+  // 空・null は空配列
+  it('空・null は空配列', () => {
+    expect(extractMessageIds(null)).toEqual([]);
+    expect(extractMessageIds('')).toEqual([]);
+  });
+});
+
+describe('readRawHeader', () => {
+  // 生ヘッダ文字列から大文字小文字を無視して値を取り出す
+  it('ヘッダ名を大文字小文字無視で取り出す', () => {
+    const raw = 'From: a@x.com\r\nMessage-ID: <m1@x.com>\r\nSubject: hi';
+    expect(readRawHeader(raw, 'message-id')).toBe('<m1@x.com>');
+  });
+
+  // 折り返された継続行 (先頭が空白) を 1 行に連結する
+  it('折り返し継続行を連結する', () => {
+    const raw = 'References: <a@x.com>\r\n <b@x.com>\r\nSubject: hi';
+    expect(readRawHeader(raw, 'References')).toBe('<a@x.com> <b@x.com>');
+  });
+
+  // 見つからない / 空入力は null
+  it('見つからなければ null', () => {
+    expect(readRawHeader('Subject: hi', 'Message-ID')).toBeNull();
+    expect(readRawHeader(null, 'Message-ID')).toBeNull();
   });
 });

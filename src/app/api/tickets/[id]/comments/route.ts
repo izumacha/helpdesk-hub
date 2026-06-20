@@ -18,8 +18,12 @@ import { getEmailSender } from '@/lib/email';
 import { resolveAppBaseUrl } from '@/lib/app-url';
 // 依頼者宛「返信が届きました」メールの URL 構築 / 本文組み立て (純粋ヘルパー)
 import { buildTicketUrl, renderTicketReplyEmail } from '@/lib/ticket-email';
+// 返信メールに付与する決定的 Message-ID の生成 (スレッド継続の起点)
+import { buildReplyMessageId, resolveMessageIdDomain } from '@/lib/email-message-id';
 // エージェント権限判定 (agent または admin のとき true)
 import { isAgent } from '@/lib/role';
+// コメント通知の宛先決定 (メール取り込みのスレッド継続と共有するヘルパー)
+import { resolveCommentRecipients } from '@/lib/comment-recipients';
 // レート制限ヘルパー (超過時は RateLimitError を throw)
 import { enforceRateLimit, RateLimitError } from '@/lib/rate-limit';
 // コメント本文の Zod スキーマ
@@ -200,6 +204,7 @@ export async function POST(req: Request, { params }: Params) {
       authorName: session.user.name ?? '担当者',
       commentBody: trimmedBody,
       ticketId,
+      tenantId,
     });
   }
 
@@ -219,8 +224,9 @@ async function sendReplyEmailToRequester(args: {
   authorName: string;
   commentBody: string;
   ticketId: string;
+  tenantId: string;
 }): Promise<void> {
-  const { ticket, authorId, authorName, commentBody, ticketId } = args;
+  const { ticket, authorId, authorName, commentBody, ticketId, tenantId } = args;
   // 自分が起票したチケットに自分で返信した場合は自分宛メールを送らない
   if (ticket.creatorId === authorId) return;
 
@@ -241,34 +247,26 @@ async function sendReplyEmailToRequester(args: {
       commentBody,
       agentName: authorName,
     });
-    // 設定された EmailSender (console / smtp) 経由で送信
-    await getEmailSender().send({ to: creator.email, subject, text, html });
+    // Phase 2 スレッド継続: 返信メールに決定的 Message-ID を付与する。依頼者がこのメールに
+    // 返信すると In-Reply-To にこの値が載るので、受信 Webhook 側で元チケットへ紐付けられる。
+    const replyMessageId = buildReplyMessageId(ticketId, resolveMessageIdDomain());
+    // Message-ID → チケットの対応を先に登録する (送信前でも害は無く、登録漏れを避けられる)。
+    // register は冪等なので再送・重複でも安全。
+    await repos.emailThreads.register({
+      messageId: replyMessageId.normalized, // 山括弧なしの正規化値 (受信側の表記と一致)
+      ticketId, // この返信が属するチケット
+      tenantId, // 所属テナント (突き合わせスコープ)
+    });
+    // 設定された EmailSender (console / smtp) 経由で送信 (Message-ID ヘッダ付き)
+    await getEmailSender().send({
+      to: creator.email,
+      subject,
+      text,
+      html,
+      messageId: replyMessageId.header,
+    });
   } catch (err) {
     // 送信失敗はサーバログに残すだけ (依頼者への通知はアプリ内にも残っている)
     console.error('[POST /api/tickets/[id]/comments] 依頼者宛メール送信に失敗しました', err);
   }
-}
-
-// コメント通知の送信先を決定する内部ヘルパー (既存 addComment と同じロジック)
-async function resolveCommentRecipients(
-  ticket: { creatorId: string; assigneeId: string | null },
-  authorId: string,
-  authorIsAgent: boolean,
-  tenantId: string,
-): Promise<string[]> {
-  // 宛先候補を集める配列
-  const candidates: string[] = [];
-  // エージェントがコメントした場合: 依頼者 (+ 担当者が居れば担当者)
-  if (authorIsAgent) {
-    candidates.push(ticket.creatorId);
-    if (ticket.assigneeId) candidates.push(ticket.assigneeId);
-  } else if (ticket.assigneeId) {
-    // 依頼者がコメントし担当者が決まっている場合は担当者のみ
-    candidates.push(ticket.assigneeId);
-  } else {
-    // 依頼者がコメントし担当者未定なら全エージェントに通知 (テナント内のみ)
-    candidates.push(...(await repos.users.listAgentIds(tenantId)));
-  }
-  // 重複排除し、コメント投稿者自身は除外して返す
-  return Array.from(new Set(candidates)).filter((id) => id !== authorId);
 }

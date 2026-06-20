@@ -13,6 +13,10 @@ export interface EmailMessage {
   subject: string; // 件名 (日本語想定)
   html: string; // HTML 本文 (リッチ表示用)
   text: string; // テキスト本文 (HTML 非対応クライアント用フォールバック)
+  // 任意: このメールに付与する Message-ID (山括弧込み "<...>")。
+  // Phase 2 スレッド継続で、依頼者がこのメールに返信したとき In-Reply-To で元チケットへ
+  // 紐付けられるよう、呼び出し側が決定的な Message-ID を指定して送る。未指定なら送信側に委ねる。
+  messageId?: string;
 }
 
 // 任意のトランスポート (Console / Nodemailer SMTP / 将来の SES など) を抽象化する契約

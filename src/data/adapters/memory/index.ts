@@ -3,6 +3,7 @@ import type { Repos, UnitOfWork } from '@/data/ports/unit-of-work';
 // 各エンティティ用のメモリリポジトリ生成関数を取り込む
 import { makeAttachmentRepo } from './attachment-repository.memory';
 import { makeCategoryRepo } from './category-repository.memory';
+import { makeEmailThreadRepo } from './email-thread-repository.memory';
 import { makeFaqRepo } from './faq-repository.memory';
 import { makeInvitationRepo } from './invitation-repository.memory';
 import { makeMagicLinkRepo } from './magic-link-repository.memory';
@@ -33,6 +34,7 @@ export function buildMemoryRepos(store: Store): Repos {
     magicLinks: makeMagicLinkRepo(store),
     invitations: makeInvitationRepo(store),
     attachments: makeAttachmentRepo(store),
+    emailThreads: makeEmailThreadRepo(store),
   };
 }
 

@@ -19,6 +19,12 @@ export const INBOUND_BODY_MAX = 100_000;
 export const INBOUND_ADDRESS_MAX = 254;
 // 件名が空のときに使う既定タイトル (Lite 用語に合わせ専門用語を避ける)
 export const INBOUND_DEFAULT_SUBJECT = '(件名なし)';
+// Message-ID 1 件の最大長 (文字数)。RFC 5322 の行長上限 (998) に合わせ、異常に長い値を弾く
+export const INBOUND_MESSAGE_ID_MAX = 998;
+// 1 通から取り込む参照 Message-ID の最大数。References が肥大化したメールでの走査コスト/DoS を抑える (§9)
+export const INBOUND_MAX_REFERENCE_IDS = 50;
+// 生ヘッダ文字列を走査する際の最大長 (文字数)。巨大ヘッダの全走査によるコスト/DoS を抑える上限 (§9)
+const INBOUND_RAW_HEADER_MAX = 64_000;
 // 自動生成する取り込みトークンの長さ (英小文字 + 数字)。十分長く取り衝突を実質ゼロにする
 const INBOUND_TOKEN_LENGTH = 16;
 // 取り込みトークンに使う文字集合。メールのローカルパートに安全な英小文字 + 数字のみに限定する
@@ -31,6 +37,8 @@ export interface ParsedInboundEmail {
   senderName: string; // 送信者の表示名 (取れなければアドレスを流用)
   subject: string; // 件名 (空なら既定タイトル / 上限まで切り詰め済み)
   body: string; // 本文テキスト (上限まで切り詰め済み)
+  messageId: string | null; // この受信メール自身の Message-ID (正規化済み / 取れなければ null)
+  referenceIds: string[]; // In-Reply-To + References から得た参照 Message-ID 群 (重複排除済み / スレッド継続用)
 }
 
 // "表示名 <addr@example.com>" や "addr@example.com" から純粋なメールアドレスを取り出す。
@@ -120,6 +128,86 @@ export function generateInboundToken(): string {
   return token;
 }
 
+// "<id@host>" 形式から山括弧と前後空白を除いた正規化済み Message-ID を返す。
+// 妥当な形 (空白を含まず "@" を持つ addr-spec 風) でなければ null を返す (fail-closed)。
+// 受信メールのヘッダと送信メールの生成側を同じ関数で正規化し、突き合わせの表記揺れを無くす。
+export function normalizeMessageId(raw: string | null | undefined): string | null {
+  // 空入力は Message-ID 無しとして扱う
+  if (!raw) return null;
+  // 前後の空白を除去する
+  let value = raw.trim();
+  // 先頭・末尾を 1 組だけ囲む山括弧があれば中身を取り出す ("<id@host>" → "id@host")
+  const wrapped = value.match(/^<([^>]*)>$/);
+  if (wrapped) value = wrapped[1].trim();
+  // 長さ上限を超える / 空 のものは弾く
+  if (value.length === 0 || value.length > INBOUND_MESSAGE_ID_MAX) return null;
+  // Message-ID は addr-spec 形なので、空白を含まず "@" を 1 つ以上持つことを最低条件にする
+  if (/\s/.test(value) || !value.includes('@')) return null;
+  // 正規化済みの値を返す
+  return value;
+}
+
+// In-Reply-To / References ヘッダ値から複数の Message-ID を取り出す (空白区切りの "<id>" 列)。
+// 取り込み数は上限でクランプし、各値を normalizeMessageId で検証する (重複は呼び出し側で排除)。
+export function extractMessageIds(raw: string | null | undefined): string[] {
+  // 空入力は参照無し
+  if (!raw) return [];
+  // 走査コストを抑えるため、入力長を上限でクランプしてから解析する (§9 DoS 対策)
+  const capLen = INBOUND_MESSAGE_ID_MAX * INBOUND_MAX_REFERENCE_IDS;
+  const capped = raw.length > capLen ? raw.slice(0, capLen) : raw;
+  // まず "<...>" の塊を拾う ([^>]+ は単純なので線形時間 / ReDoS なし)。無ければ空白区切りで分解する
+  const tokens = capped.match(/<[^>]+>/g) ?? capped.trim().split(/\s+/);
+  // 検証を通った Message-ID を上限までためる
+  const out: string[] = [];
+  for (const token of tokens) {
+    // 上限に達したら打ち切る (これ以上の参照は無視)
+    if (out.length >= INBOUND_MAX_REFERENCE_IDS) break;
+    // 1 件を正規化・検証する
+    const id = normalizeMessageId(token);
+    // 妥当なものだけ採用する
+    if (id) out.push(id);
+  }
+  // Message-ID の配列を返す
+  return out;
+}
+
+// 生ヘッダ文字列 (例: SendGrid Inbound Parse の "headers" フィールド) から、指定ヘッダの値を 1 件取り出す。
+// ヘッダ名は大文字小文字を区別せず、折り返された継続行 (先頭が空白の行) は 1 行に連結する。
+// 見つからなければ null。プロバイダが個別フィールドを提供しない場合のフォールバックに使う。
+export function readRawHeader(rawHeaders: string | null | undefined, name: string): string | null {
+  // 空入力はヘッダ無し
+  if (!rawHeaders) return null;
+  // 走査コストを抑えるため入力長を上限でクランプする (§9)
+  const capped =
+    rawHeaders.length > INBOUND_RAW_HEADER_MAX
+      ? rawHeaders.slice(0, INBOUND_RAW_HEADER_MAX)
+      : rawHeaders;
+  // 探したいヘッダ名を小文字化して比較に使う
+  const target = name.toLowerCase();
+  // CRLF / LF どちらの改行でも行に分割する
+  const lines = capped.split(/\r?\n/);
+  for (let i = 0; i < lines.length; i++) {
+    // 現在行
+    const line = lines[i];
+    // "名前: 値" の区切りコロンの位置を探す
+    const colon = line.indexOf(':');
+    // コロンが無い / 先頭にある行はヘッダ行ではないのでスキップ
+    if (colon <= 0) continue;
+    // ヘッダ名が一致しなければスキップ (大文字小文字無視)
+    if (line.slice(0, colon).trim().toLowerCase() !== target) continue;
+    // 値部分を取り出す
+    let value = line.slice(colon + 1).trim();
+    // 後続の継続行 (先頭が空白) を 1 行に連結する (References は折り返されやすい)
+    for (let j = i + 1; j < lines.length && /^[ \t]/.test(lines[j]); j++) {
+      value += ' ' + lines[j].trim();
+    }
+    // 最初に一致したヘッダの値を返す
+    return value;
+  }
+  // 見つからなければ null
+  return null;
+}
+
 // 文字列を指定長で安全に切り詰める内部ヘルパー (上限超過時のみ切る)
 function clamp(value: string, max: number): string {
   // 上限以内ならそのまま、超えていれば先頭 max 文字に切り詰める
@@ -134,6 +222,9 @@ export function parseInboundEmail(
     from?: string | null; // 送信者 (ヘッダ or envelope 由来)
     subject?: string | null; // 件名
     text?: string | null; // テキスト本文
+    messageId?: string | null; // この受信メールの Message-ID ヘッダ (スレッド継続用)
+    inReplyTo?: string | null; // In-Reply-To ヘッダ (直接の返信元 Message-ID)
+    references?: string | null; // References ヘッダ (スレッド上の Message-ID 列)
   },
   options?: { expectedDomain?: string | null }, // 宛先ドメイン検証 (任意)
 ): { ok: true; email: ParsedInboundEmail } | { ok: false; reason: string } {
@@ -167,6 +258,12 @@ export function parseInboundEmail(
   );
   // 本文は上限まで切り詰める (空でも許容: 件名だけのメールもあり得る)
   const body = clamp((fields.text ?? '').trim(), INBOUND_BODY_MAX);
+  // この受信メール自身の Message-ID を正規化する (後続の返信を紐付けるための記録用)
+  const messageId = normalizeMessageId(fields.messageId);
+  // In-Reply-To と References から参照 Message-ID を集め、重複を排除する (スレッド継続の突き合わせキー)
+  const referenceIds = Array.from(
+    new Set([...extractMessageIds(fields.inReplyTo), ...extractMessageIds(fields.references)]),
+  );
   // 正規化済みの受信メールを返す
   return {
     ok: true,
@@ -176,6 +273,8 @@ export function parseInboundEmail(
       senderName: clamp(senderName, INBOUND_ADDRESS_MAX),
       subject,
       body,
+      messageId,
+      referenceIds,
     },
   };
 }
