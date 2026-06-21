@@ -6,6 +6,7 @@ import { makeCategoryRepo } from './category-repository.memory';
 import { makeEmailThreadRepo } from './email-thread-repository.memory';
 import { makeFaqRepo } from './faq-repository.memory';
 import { makeInvitationRepo } from './invitation-repository.memory';
+import { makeLocationRepo } from './location-repository.memory';
 import { makeMagicLinkRepo } from './magic-link-repository.memory';
 import { makeNotificationRepo } from './notification-repository.memory';
 import { cloneStore, createEmptyStore, overwriteStore, type Store } from './store';
@@ -35,6 +36,7 @@ export function buildMemoryRepos(store: Store): Repos {
     invitations: makeInvitationRepo(store),
     attachments: makeAttachmentRepo(store),
     emailThreads: makeEmailThreadRepo(store),
+    locations: makeLocationRepo(store), // Phase 4 多拠点
   };
 }
 

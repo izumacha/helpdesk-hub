@@ -84,6 +84,7 @@ export function toTicket(row: TicketRow): Ticket {
     creatorId: row.creatorId,
     assigneeId: row.assigneeId,
     categoryId: row.categoryId,
+    locationId: row.locationId, // 拠点 ID (Phase 4 多拠点。null なら未指定)
     tenantId: row.tenantId, // 所属テナント (マルチテナント化のキー)
   };
 }

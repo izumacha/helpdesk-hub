@@ -40,6 +40,11 @@ export function makeTenantRepo(store: Store): TenantRepository {
         industry: input.industry ?? null,
         inboundToken: input.inboundToken ?? null, // メール取り込みアドレスのローカルパート (任意)
         slackWebhookUrl: null, // 新規テナントは Slack 通知未設定 (null = 無効)
+        // Phase 4 課金: 新規テナントは無料プラン・Stripe 未連携で初期化
+        subscriptionPlan: 'free',
+        stripeCustomerId: null,
+        stripeSubscriptionId: null,
+        stripeSubscriptionStatus: null,
         createdAt: new Date(),
       };
       // ストアの Map に登録
@@ -67,6 +72,32 @@ export function makeTenantRepo(store: Store): TenantRepository {
       if (!t) throw new Error('テナントが見つかりません');
       // slackWebhookUrl だけ差し替えた新しいオブジェクトを作り Map に書き戻す
       const updated = { ...t, slackWebhookUrl: url };
+      store.tenants.set(id, updated);
+      // 防御的コピーを返す
+      return { ...updated };
+    },
+
+    // Phase 4 課金: Stripe の連携情報を一括更新する (Webhook 受信時に呼ぶ)
+    async updateStripeSubscription(id, data) {
+      // 対象テナントを Map から取得 (存在しなければエラー)
+      const t = store.tenants.get(id);
+      if (!t) throw new Error('テナントが見つかりません');
+      // 渡されたフィールドだけ差し替える (undefined はスキップ)
+      const updated: Tenant = {
+        ...t,
+        // undefined でなければ上書きし、undefined なら既存値を維持する
+        stripeCustomerId:
+          data.stripeCustomerId !== undefined ? data.stripeCustomerId : t.stripeCustomerId,
+        stripeSubscriptionId:
+          data.stripeSubscriptionId !== undefined
+            ? data.stripeSubscriptionId
+            : t.stripeSubscriptionId,
+        stripeSubscriptionStatus:
+          data.stripeSubscriptionStatus !== undefined
+            ? data.stripeSubscriptionStatus
+            : t.stripeSubscriptionStatus,
+        subscriptionPlan: data.subscriptionPlan ?? t.subscriptionPlan,
+      };
       store.tenants.set(id, updated);
       // 防御的コピーを返す
       return { ...updated };

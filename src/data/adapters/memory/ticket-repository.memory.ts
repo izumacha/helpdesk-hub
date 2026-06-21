@@ -60,6 +60,10 @@ function matchesFilter(t: Ticket, filter: TicketListFilter, tenantId: string): b
   if (filter.categoryId !== undefined && t.categoryId !== filter.categoryId) return false;
   // 担当者フィルター (undefined は無指定、null は未アサインのみ)
   if (filter.assigneeId !== undefined && t.assigneeId !== filter.assigneeId) return false;
+  // 拠点フィルター (undefined は無指定、null は拠点未設定のみ、文字列は完全一致)
+  if (filter.locationId !== undefined && t.locationId !== filter.locationId) return false;
+  // 作成日時フィルター: この日時以降に作成されたチケットのみ (月間件数カウント用)
+  if (filter.createdAfter !== undefined && t.createdAt < filter.createdAfter) return false;
   // 期限切れフィルター: 期限あり / 期限超過 / 未解決 / 終息状態でない
   if (filter.overdue) {
     if (!t.resolutionDueAt) return false;
@@ -258,6 +262,7 @@ export function makeTicketRepo(store: Store): TicketRepository {
         creatorId: input.creatorId,
         assigneeId: null, // 初期は未アサイン
         categoryId: input.categoryId,
+        locationId: input.locationId ?? null, // 拠点 ID (Phase 4 多拠点。未指定なら null)
         tenantId: input.tenantId, // 所属テナントを必ず保存
       };
       // ストアに登録

@@ -26,6 +26,8 @@ export interface TicketListFilter {
    * otherwise = exact match on assigneeId.
    */
   assigneeId?: string | null; // 担当者条件 (null は未アサインのみ)
+  locationId?: string | null; // 拠点 ID で絞る (Phase 4 多拠点。null は拠点未設定のみ)
+  createdAfter?: Date; // この日時以降に作成されたチケットのみ (Phase 4 課金: 月間件数カウント用)
   /**
    * 期限切れ未解決のみを取得するフィルタ (Lite モードの「期限切れ」タブで使用)。
    * `now` 時点で `resolutionDueAt < now` かつ `resolvedAt IS NULL`、
@@ -69,6 +71,7 @@ export interface CreateTicketInput {
   body: string; // 本文
   priority: Priority; // 優先度
   categoryId: string | null; // カテゴリ (無指定は null)
+  locationId?: string | null; // 拠点 ID (Phase 4 多拠点。未指定は null)
   creatorId: string; // 起票者 ID
   tenantId: string; // 所属テナント ID (マルチテナント化のキー)
   status?: TicketStatus; // 初期ステータス (未指定なら DB 既定の New。Lite では 'Open'=未対応 で起票する)

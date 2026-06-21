@@ -50,6 +50,8 @@ interface Props {
     priority?: string;
     categoryId?: string;
     assigneeId?: string;
+    // Phase 4 多拠点: 拠点で絞り込む
+    locationId?: string;
     // 一覧の絞り込みタブ ('mine' = 自分の未対応 / 'overdue' = 期限切れ / 未指定/'all' = 全件)
     tab?: string;
     page?: string;
@@ -96,6 +98,8 @@ export default async function TicketsPage({ searchParams }: Props) {
     categoryId: sp.categoryId || undefined,
     // 担当者絞り込み (URL クエリの 'unassigned' をここで null に正規化)
     assigneeId: normalizeAssigneeId(sp.assigneeId),
+    // 拠点絞り込み (空文字は無指定として扱う。Phase 4 多拠点)
+    locationId: sp.locationId || undefined,
   };
 
   // タブ別の追加条件 ('mine' / 'overdue') を共通ヘルパーで適用する
@@ -108,8 +112,8 @@ export default async function TicketsPage({ searchParams }: Props) {
 
   // セッションから tenantId を取り出して以降の port 呼び出しに伝搬する
   const tenantId = session.user.tenantId;
-  // 表示用データを並列取得 (一覧/総件数/カテゴリ/担当者候補/テナント mode、全て port + tenantId スコープ)
-  const [tickets, total, categories, agents, mode] = await Promise.all([
+  // 表示用データを並列取得 (一覧/総件数/カテゴリ/担当者候補/テナント mode/拠点一覧)
+  const [tickets, total, categories, agents, mode, locations] = await Promise.all([
     repos.tickets.list({
       filter,
       page: { skip, take: PAGE_SIZE },
@@ -122,6 +126,8 @@ export default async function TicketsPage({ searchParams }: Props) {
     isAgent ? repos.users.listAgents(tenantId) : Promise.resolve([]),
     // テナントの動作モード (lite | pro) を取得し、ステータス表記を Lite/Pro で切り替える
     getCurrentTenantMode(tenantId),
+    // Phase 4 多拠点: 拠点一覧をフィルタプルダウン用に取得する
+    repos.locations.listByTenant(tenantId),
   ]);
 
   // 総ページ数を計算
@@ -166,7 +172,13 @@ export default async function TicketsPage({ searchParams }: Props) {
 
       {/* 検索フィルタ (Client Component を Suspense で安全にラップ、テナント mode をそのまま伝搬) */}
       <Suspense>
-        <TicketFilters categories={categories} agents={agents} isAgent={isAgent} mode={mode} />
+        <TicketFilters
+          categories={categories}
+          agents={agents}
+          isAgent={isAgent}
+          mode={mode}
+          locations={locations}
+        />
       </Suspense>
 
       {/* 件数表示 (落ち着いたグレー) */}

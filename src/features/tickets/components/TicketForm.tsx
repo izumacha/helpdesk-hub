@@ -19,10 +19,14 @@ import { MAX_ATTACHMENTS_PER_UPLOAD } from '@/domain/attachment';
 
 // プルダウン項目用の最小型 (id と name)
 type Category = { id: string; name: string };
+// 拠点プルダウン用の最小型
+type Location = { id: string; name: string };
 
-// 受け取る props (カテゴリ候補一覧 + テナント mode)
+// 受け取る props (カテゴリ候補一覧 + 拠点一覧 + テナント mode)
 interface Props {
   categories: Category[];
+  // Phase 4 多拠点: 拠点プルダウン用の拠点一覧 (空なら非表示)
+  locations: Location[];
   // テナントの動作モード。'lite' (既定) では件名/内容/期限日のみ表示する
   mode: TenantMode;
 }
@@ -45,7 +49,7 @@ function RequiredPill() {
 // 新規チケット作成フォーム (POST /api/tickets を呼ぶ)
 // モバイルではステップ式 UI（ステップ 1: タイトル/内容 → ステップ 2: 写真/オプション）、
 // デスクトップ (sm 以上) では全フィールドを 1 ページに表示する。
-export function TicketForm({ categories, mode }: Props) {
+export function TicketForm({ categories, locations, mode }: Props) {
   // 登録成功後の遷移用ルーター
   const router = useRouter();
   // サーバー側エラー (フォーム検証エラーとは別) の保持
@@ -110,6 +114,8 @@ export function TicketForm({ categories, mode }: Props) {
       // optional フィールドは値があるときだけセットする
       if (data.categoryId) fd.set('categoryId', data.categoryId);
       if (data.dueDate) fd.set('dueDate', data.dueDate);
+      // 拠点 ID が選択されている場合にセットする (Phase 4 多拠点)
+      if (data.locationId) fd.set('locationId', data.locationId);
       // ファイルは files キーに同名で複数 append する
       for (const f of selectedFiles) fd.append('files', f, f.name);
       // Content-Type は手動で指定せず、ブラウザに自動で boundary を組み立てさせる
@@ -280,6 +286,25 @@ export function TicketForm({ categories, mode }: Props) {
               {Object.entries(PRIORITY_LABELS).map(([value, label]) => (
                 <option key={value} value={value}>
                   {label}
+                </option>
+              ))}
+            </select>
+          </div>
+        )}
+
+        {/* 拠点 (登録された拠点が 1 件以上ある場合のみ表示。Lite/Pro 両方で使える) */}
+        {locations.length > 0 && (
+          <div>
+            <label htmlFor="locationId" className="mb-1.5 block text-sm font-medium text-slate-700">
+              拠点・店舗
+            </label>
+            <select id="locationId" {...register('locationId')} className={fieldBaseClass}>
+              {/* 未選択は「指定なし」にする */}
+              <option value="">指定なし</option>
+              {/* 登録済み拠点を列挙する */}
+              {locations.map((l) => (
+                <option key={l.id} value={l.id}>
+                  {l.name}
                 </option>
               ))}
             </select>

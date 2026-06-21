@@ -55,7 +55,7 @@ function seed() {
     mode: 'lite',
     industry: null,
     inboundToken: TOKEN,
-    slackWebhookUrl: null, // Slack 通知未設定 (テスト用フィクスチャ)
+    slackWebhookUrl: null, subscriptionPlan: 'free' as const, stripeCustomerId: null, stripeSubscriptionId: null, stripeSubscriptionStatus: null, // Slack 通知未設定 (テスト用フィクスチャ)
     createdAt: now,
   });
   // テナント所属の既知メンバー (送信者として許可される)
@@ -174,7 +174,7 @@ describe('POST /api/inbound/email', () => {
       mode: 'lite',
       industry: null,
       inboundToken: 'other-token',
-      slackWebhookUrl: null, // Slack 通知未設定 (テスト用フィクスチャ)
+      slackWebhookUrl: null, subscriptionPlan: 'free' as const, stripeCustomerId: null, stripeSubscriptionId: null, stripeSubscriptionStatus: null, // Slack 通知未設定 (テスト用フィクスチャ)
       createdAt: now,
     });
     store.users.set('u-other', {

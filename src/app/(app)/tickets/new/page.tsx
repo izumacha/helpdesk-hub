@@ -16,10 +16,12 @@ export default async function NewTicketPage() {
 
   // セッションから tenantId を取り出し以降の port 呼び出しに伝搬する
   const tenantId = session.user.tenantId;
-  // カテゴリ一覧とテナント mode を並列取得 (Lite なら mode によって UI を切替)
-  const [categories, mode] = await Promise.all([
+  // カテゴリ一覧・テナント mode・拠点一覧を並列取得する
+  const [categories, mode, locations] = await Promise.all([
     repos.categories.list(tenantId),
     getCurrentTenantMode(tenantId),
+    // Phase 4 多拠点: 拠点プルダウン用の一覧を取得する
+    repos.locations.listByTenant(tenantId),
   ]);
 
   return (
@@ -36,7 +38,8 @@ export default async function NewTicketPage() {
       </div>
       {/* 白カードに包んでフォームを描画 (モバイルは余白を控えめに) */}
       <div className="rounded-2xl bg-white p-6 shadow-sm ring-1 ring-slate-100 sm:p-8">
-        <TicketForm categories={categories} mode={mode} />
+        {/* locations を渡すことで拠点プルダウンが表示される (登録なしなら非表示) */}
+        <TicketForm categories={categories} locations={locations} mode={mode} />
       </div>
     </div>
   );

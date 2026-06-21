@@ -12,7 +12,11 @@ import { TenantModeForm } from '@/features/settings/components/TenantModeForm';
 import { InviteForm } from '@/features/settings/components/InviteForm';
 // Phase 4: Slack/Teams Webhook URL 設定フォーム (Client Component)
 import { SlackWebhookForm } from '@/features/settings/components/SlackWebhookForm';
-// テナント情報取得 (slackWebhookUrl の初期値を渡すため)
+// Phase 4 多拠点: 拠点管理セクション (Client Component)
+import { LocationsSection } from '@/features/settings/components/LocationsSection';
+// Phase 4 課金: サブスクリプション管理セクション (Client Component)
+import { BillingSection } from '@/features/settings/components/BillingSection';
+// テナント情報取得 (slackWebhookUrl / 拠点一覧 / プラン情報の初期値を渡すため)
 import { repos } from '@/data';
 
 // /settings : テナント設定ページ (現状は Lite/Pro モードの切替のみ。管理者専用)
@@ -34,8 +38,13 @@ export default async function SettingsPage() {
 
   // 現在のテナントモード (lite | pro) を取得してフォームの初期値にする
   const mode = await getCurrentTenantMode(session.user.tenantId);
-  // Phase 4: テナント情報を取得して Slack Webhook URL の現在値を取得する
-  const tenant = await repos.tenants.findById(session.user.tenantId);
+  // Phase 4: テナント情報と拠点一覧を並列取得する
+  const [tenant, locations] = await Promise.all([
+    // テナント情報 (slackWebhookUrl / プラン / Stripe 情報の現在値を取得)
+    repos.tenants.findById(session.user.tenantId),
+    // 拠点一覧 (LocationsSection の初期値として渡す)
+    repos.locations.listByTenant(session.user.tenantId),
+  ]);
 
   return (
     <div className="mx-auto max-w-2xl space-y-6">
@@ -90,6 +99,40 @@ export default async function SettingsPage() {
         </div>
         {/* Webhook URL 設定フォーム (現在の URL を初期値として渡す) */}
         <SlackWebhookForm current={tenant?.slackWebhookUrl ?? null} />
+      </section>
+
+      {/* Phase 4 多拠点: 拠点管理カード */}
+      <section className="space-y-4 rounded-2xl bg-white p-6 shadow-sm ring-1 ring-slate-100">
+        <div>
+          {/* セクション見出し */}
+          <h2 className="text-base font-semibold text-slate-900">拠点・店舗管理</h2>
+          {/* 説明: 拠点を登録すると問い合わせ票で場所を選べる */}
+          <p className="mt-1 text-sm text-slate-500">
+            店舗・工場・支店などの拠点を登録すると、問い合わせを受け付ける際に場所を選択できます。
+            拠点を削除しても、紐づく問い合わせのデータは消えず拠点欄が空になります。
+          </p>
+        </div>
+        {/* 拠点一覧と追加フォーム (初期値をサーバーから渡す) */}
+        <LocationsSection locations={locations} />
+      </section>
+
+      {/* Phase 4 課金: サブスクリプション管理カード */}
+      <section className="space-y-4 rounded-2xl bg-white p-6 shadow-sm ring-1 ring-slate-100">
+        <div>
+          {/* セクション見出し */}
+          <h2 className="text-base font-semibold text-slate-900">課金プラン</h2>
+          {/* 説明: 現在プランの確認とアップグレードを案内する */}
+          <p className="mt-1 text-sm text-slate-500">
+            現在の料金プランを確認し、アップグレードや解約の管理ができます。
+            Standard・Pro へのアップグレードは Stripe の安全な決済ページに移動します。
+          </p>
+        </div>
+        {/* プラン情報と操作ボタン */}
+        <BillingSection
+          currentPlan={tenant?.subscriptionPlan ?? 'free'}
+          stripeStatus={tenant?.stripeSubscriptionStatus ?? null}
+          hasStripeCustomer={!!tenant?.stripeCustomerId}
+        />
       </section>
 
       {/* テナント (組織) 作成カード */}

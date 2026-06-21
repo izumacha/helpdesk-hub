@@ -16,6 +16,7 @@ import type { TenantMode } from '@/domain/types';
 // プルダウン項目用の最小限の型
 type Category = { id: string; name: string };
 type Agent = { id: string; name: string };
+type Location = { id: string; name: string };
 
 // 受け取る props (絞り込み候補と権限フラグ、テナントの動作モード)
 interface Props {
@@ -23,6 +24,8 @@ interface Props {
   agents: Agent[];
   isAgent: boolean;
   mode: TenantMode;
+  // Phase 4 多拠点: 拠点フィルタ用の拠点一覧 (空なら非表示)
+  locations: Location[];
 }
 
 // プルダウンに並べる Pro モード用ステータス/優先度の順序 (7 値)
@@ -42,7 +45,7 @@ const fieldBaseClass =
   'rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700 transition focus:border-teal-500 focus:outline-none focus:ring-2 focus:ring-teal-500/30';
 
 // チケット一覧ページの絞り込み (URL クエリと同期)
-export function TicketFilters({ categories, agents, isAgent, mode }: Props) {
+export function TicketFilters({ categories, agents, isAgent, mode, locations }: Props) {
   // テナントが Lite なら 3 値、Pro なら従来 7 値をフィルタ候補として使う
   const statusOptions: TicketStatus[] = mode === 'lite' ? [...LITE_STATUSES] : ALL_STATUSES_PRO;
   // Lite モードかどうか (true ならフィルタをキーワード検索のみに縮約する)
@@ -164,6 +167,21 @@ export function TicketFilters({ categories, agents, isAgent, mode }: Props) {
                 {agents.map((a) => (
                   <option key={a.id} value={a.id}>
                     {a.name}
+                  </option>
+                ))}
+              </select>
+            )}
+            {/* 拠点絞り込み (登録された拠点が 1 件以上ある場合のみ表示) */}
+            {locations.length > 0 && (
+              <select
+                value={searchParams.get('locationId') ?? ''}
+                onChange={(e) => update('locationId', e.target.value)}
+                className={fieldBaseClass}
+              >
+                <option value="">すべての拠点</option>
+                {locations.map((l) => (
+                  <option key={l.id} value={l.id}>
+                    {l.name}
                   </option>
                 ))}
               </select>

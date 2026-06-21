@@ -1,5 +1,5 @@
-// ドメイン層の Tenant 型とテナントモード型 (lite | pro) を参照
-import type { Tenant, TenantMode } from '@/domain/types';
+// ドメイン層の Tenant 型とテナントモード・課金プラン型を参照
+import type { SubscriptionPlan, Tenant, TenantMode } from '@/domain/types';
 
 // Tenant 操作の契約 (port)。取得系に加え、Lite/Pro モード切替の更新系を提供する
 export interface TenantRepository {
@@ -24,4 +24,16 @@ export interface TenantRepository {
   // null を渡すと外部通知を無効化する (設定画面の「削除」操作に対応)。
   // id はセッション由来の tenantId のみを渡すこと (クロステナント変更防止)。
   updateSlackWebhookUrl(id: string, url: string | null): Promise<Tenant>;
+  // Phase 4 課金: Stripe Billing の連携情報をまとめて更新する。
+  // Stripe Webhook 受信時に呼び出し、Customer ID・Subscription ID・状態・プランを一括更新。
+  // id はセッション/Webhook由来のテナント ID のみを渡すこと (クロステナント更新防止)。
+  updateStripeSubscription(
+    id: string,
+    data: {
+      stripeCustomerId?: string | null;
+      stripeSubscriptionId?: string | null;
+      stripeSubscriptionStatus?: string | null;
+      subscriptionPlan?: SubscriptionPlan;
+    },
+  ): Promise<Tenant>;
 }

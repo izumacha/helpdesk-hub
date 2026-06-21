@@ -35,7 +35,7 @@ function makeMemoryContext(): NotificationContractContext {
         mode: 'lite',
         industry: null,
         inboundToken: null, // メール取り込み未発行 (テスト用フィクスチャ)
-      slackWebhookUrl: null, // Slack 通知未設定 (テスト用フィクスチャ)
+      slackWebhookUrl: null, subscriptionPlan: 'free' as const, stripeCustomerId: null, stripeSubscriptionId: null, stripeSubscriptionStatus: null, // Slack 通知未設定 (テスト用フィクスチャ)
         createdAt: now,
       });
     }

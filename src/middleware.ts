@@ -19,9 +19,13 @@ export default auth((req) => {
   // 検証して自前で認可する (Phase 2)。セッション認証ガードの対象外にする。
   // 末尾スラッシュ込みで前方一致させ、/api/inboundx のような別名ルートまで誤って開けない。
   const isApiInbound = req.nextUrl.pathname.startsWith('/api/inbound/');
+  // Stripe Webhook はサーバー間通信のためセッションを持たない。
+  // ルート側で HMAC 署名検証 (stripe.webhooks.constructEvent) を行うため、
+  // セッション認証ガードの対象外にする (Phase 4 課金)。
+  const isApiWebhook = req.nextUrl.pathname.startsWith('/api/webhooks/');
   const isApiRoute = req.nextUrl.pathname.startsWith('/api/');
 
-  if (isApiAuth || isApiInbound) return NextResponse.next();
+  if (isApiAuth || isApiInbound || isApiWebhook) return NextResponse.next();
 
   if (isApiRoute) {
     if (!isLoggedIn) {
