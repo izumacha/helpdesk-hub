@@ -72,7 +72,7 @@ async function seed() {
   const now = new Date();
   // テナント A・B を投入 (Lite モード)
   for (const t of [TENANT, TENANT_B]) {
-    store.tenants.set(t, { id: t, name: t, mode: 'lite', industry: null, inboundToken: null, createdAt: now });
+    store.tenants.set(t, { id: t, name: t, mode: 'lite', industry: null, inboundToken: null, slackWebhookUrl: null, createdAt: now });
   }
   // テナント A のユーザー: requester ×2 + agent ×1
   const users: Array<[string, 'requester' | 'agent', string]> = [

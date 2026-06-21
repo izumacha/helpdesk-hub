@@ -11,6 +11,9 @@ export default auth((req) => {
   // 招待受諾ページは未認証で開ける公開ページ (トークン自体が認可の根拠)。
   // /login と同様にログインガードの対象外にする。
   const isInvitePage = req.nextUrl.pathname.startsWith('/invite');
+  // ヘルプセンター (Phase 3) は未認証でも閲覧できる公開ページ。
+  // 「30 分で導入開始」シナリオで、ログイン前にヘルプを参照できることが重要。
+  const isHelpPage = req.nextUrl.pathname.startsWith('/help');
   const isApiAuth = req.nextUrl.pathname.startsWith('/api/auth');
   // メール取り込み等の受信 Webhook はセッションを持たず、ルート側で共有シークレットを
   // 検証して自前で認可する (Phase 2)。セッション認証ガードの対象外にする。
@@ -32,14 +35,14 @@ export default auth((req) => {
     return NextResponse.next();
   }
 
-  if (!isLoggedIn && !isAuthPage && !isInvitePage) {
+  if (!isLoggedIn && !isAuthPage && !isInvitePage && !isHelpPage) {
     return NextResponse.redirect(new URL('/login', req.url));
   }
 
   // 認証済み HTML 遷移でも tenantId 不在なら /login に戻す (旧 JWT 互換性のセーフティネット)
   // 通常は auth.ts の jwt callback が補完するが、補完失敗時の最後の砦としてここでも判定する。
-  // 招待受諾ページは公開のため対象外 (ログイン済みでも閲覧を許す)
-  if (isLoggedIn && !isAuthPage && !isInvitePage && !req.auth?.user?.tenantId) {
+  // 招待受諾ページ・ヘルプページは公開のため対象外 (ログイン済みでも閲覧を許す)
+  if (isLoggedIn && !isAuthPage && !isInvitePage && !isHelpPage && !req.auth?.user?.tenantId) {
     return NextResponse.redirect(new URL('/login', req.url));
   }
 

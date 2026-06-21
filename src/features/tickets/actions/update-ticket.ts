@@ -36,6 +36,8 @@ import { renderTicketStatusChangedEmail, renderAssignedEmail, buildTicketUrl } f
 import { getEmailSender } from '@/lib/email';
 // メールに埋め込むリンクのベース URL を解決するヘルパー
 import { resolveAppBaseUrl } from '@/lib/app-url';
+// Phase 4: Slack/Teams 外部通知ヘルパー (失敗してもチケット操作を止めない)
+import { sendOutboundNotification } from '@/lib/outbound-notify';
 
 // セッションがログイン済みであることを保証するアサーション関数
 function assertAuthenticatedUser(session: Session | null): asserts session is Session {
@@ -162,24 +164,29 @@ export async function updateTicketStatus(ticketId: string, newStatus: TicketStat
   if (notifiedCreatorId) await broadcastUnreadCount(notifiedCreatorId, tenantId);
 
   // Phase 2: ステータス変更を依頼者へメールで通知する (ベストエフォート)
-  // TypeScript の CFA は async クロージャ内の let 変数への再代入を追跡できないため、
-  // 型アサーション (as) を使って「この時点では非 null」と明示する。
-  // ticketSnapshot が null のままの場合 (変更なし / 見つからない) は early-exit している。
-  // eslint-disable-next-line @typescript-eslint/no-unnecessary-type-assertion
-  const snapForMail = ticketSnapshot as { creatorId: string; title: string } | null;
-  // oldStatus も同様に const に取り出して null チェックを行う
-  // eslint-disable-next-line @typescript-eslint/no-unnecessary-type-assertion
-  const oldStatusForMail = oldStatus as TicketStatus | null;
-  // スナップショットと変更前ステータスが両方揃い、かつ自分以外への通知の場合のみ送信する
-  if (snapForMail !== null && oldStatusForMail !== null && snapForMail.creatorId !== session.user.id) {
+  // ticketSnapshot と oldStatus は uow.run 内で代入される let 変数。
+  // null チェックで絞り込んでから送信する (変更なし / チケット未取得のケースは skip)。
+  if (ticketSnapshot !== null && oldStatus !== null && ticketSnapshot.creatorId !== session.user.id) {
     // メール送信を別関数に切り出して try/catch で囲み、失敗してもチケット更新は巻き戻さない
     await sendStatusChangedEmailToRequester({
       ticketId,
-      ticketTitle: snapForMail.title,
-      creatorId: snapForMail.creatorId,
-      oldStatus: oldStatusForMail,
+      ticketTitle: ticketSnapshot.title,
+      creatorId: ticketSnapshot.creatorId,
+      oldStatus,
       newStatus,
       mode,
+    });
+  }
+
+  // Phase 4: Slack/Teams 外部通知 (ステータス変更をチャネルに投稿する)
+  // スナップショットが取れた場合のみ送信 (変更なしや見つからないケースは skip)
+  if (ticketSnapshot !== null) {
+    // ベースURLを取得してチケットリンクを組み立てる
+    const baseUrl = resolveAppBaseUrl();
+    await sendOutboundNotification(tenantId, {
+      subject: `ステータスが変更されました: ${ticketSnapshot.title}`,
+      body: `「${ticketSnapshot.title}」のステータスが「${getStatusLabel(newStatus, mode)}」に変更されました。`,
+      ticketUrl: `${baseUrl}/tickets/${ticketId}`,
     });
   }
 
