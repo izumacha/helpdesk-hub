@@ -109,8 +109,9 @@ export async function POST(req: Request) {
   // ボディを文字列として読み込む (署名検証は JSON.parse 前の生テキストに対して行う必要がある)
   const rawBody = await req.text();
 
-  // X-Line-Signature ヘッダを取得する (存在しなければ 401)
-  const signature = req.headers.get('x-line-signature');
+  // X-Line-Signature ヘッダを取得する。trim() でプロキシが付加した空白を除去してから比較する
+  // (末尾に \n 等が付くと Buffer の長さが変わり定数時間比較が失敗して正規リクエストを弾く)
+  const signature = req.headers.get('x-line-signature')?.trim() ?? null;
   if (!signature) {
     // 署名ヘッダが無いリクエストは LINE サーバからのものではないと判断して拒否する
     return NextResponse.json({ error: '署名ヘッダがありません' }, { status: 401 });
@@ -187,11 +188,16 @@ export async function POST(req: Request) {
     // LINE ユーザー ID を取得する (user タイプ以外は '不明' とする)
     const lineUserId = event.source.userId ?? '不明';
 
+    // 空白のみのメッセージはタイトルが空文字列になるため起票対象外としてスキップする
+    // (LINE は空文字メッセージを送信できる場合があり、Zod min(1) を持たないこのパスでは別途ガードが必要)
+    const trimmedText = textMessage.text.trim();
+    if (!trimmedText) continue;
+
     // チケットタイトルはメッセージテキストの先頭 MAX_TITLE_LENGTH 文字にする
     const title =
-      textMessage.text.length > MAX_TITLE_LENGTH
-        ? `${textMessage.text.slice(0, MAX_TITLE_LENGTH)}…`
-        : textMessage.text;
+      trimmedText.length > MAX_TITLE_LENGTH
+        ? `${trimmedText.slice(0, MAX_TITLE_LENGTH)}…`
+        : trimmedText;
 
     // チケット本文: LINE ユーザー ID と全メッセージテキストを含める (担当者が手動連絡できるよう)
     const ticketBody = `[LINE 経由の問い合わせ]\nLINE ユーザー ID: ${lineUserId}\n\n${textMessage.text}`;

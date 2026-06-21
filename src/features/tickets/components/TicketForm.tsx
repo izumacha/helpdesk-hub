@@ -79,6 +79,16 @@ export function TicketForm({ categories, mode }: Props) {
     if (valid) setStep(2);
   }
 
+  // モバイルのステップ 2 でフォームを送信したとき、ステップ 1 のフィールド (title/body) に
+  // バリデーションエラーがある場合はステップ 1 に戻ってエラーを表示させる。
+  // (ステップ 1 div が CSS hidden になっているとエラー <p> が不可視になるため)
+  function handleInvalid(fieldErrors: typeof errors) {
+    // title または body にエラーがあればステップ 1 へ戻る (エラー表示を visible にする)
+    if (fieldErrors.title || fieldErrors.body) {
+      setStep(1);
+    }
+  }
+
   // 送信時の処理 (API ルートへ POST → 成功で詳細ページへ遷移)
   // 添付ファイルの有無で送信方式を切替: 添付ありなら multipart/form-data、無しは従来どおり JSON
   async function onSubmit(data: CreateTicketFormValues) {
@@ -128,7 +138,7 @@ export function TicketForm({ categories, mode }: Props) {
   }
 
   return (
-    <form onSubmit={handleSubmit(onSubmit)} className="space-y-6">
+    <form onSubmit={handleSubmit(onSubmit, handleInvalid)} className="space-y-6">
       {/* ステップインジケーター (モバイルのみ表示。デスクトップは全フィールドを 1 画面で見せる) */}
       <div className="flex items-center justify-center gap-2 sm:hidden" aria-hidden="true">
         {/* ステップ 1 のドット (現在ステップなら teal、済んだら slate) */}
