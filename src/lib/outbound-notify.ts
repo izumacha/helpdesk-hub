@@ -9,6 +9,8 @@ import { createSlackNotifier } from '@/data/adapters/slack/slack-notifier';
 import type { OutboundMessage } from '@/data/ports/outbound-notifier';
 // テナント情報取得 (slackWebhookUrl の参照)
 import { repos } from '@/data';
+// SSRF ガード: 送信直前に URL の安全性を再検証する (DNS リバインディング対策の二重防御)
+import { isUnsafeUrl } from '@/lib/ssrf-guard';
 
 // 指定テナントの外部通知チャネルにメッセージを送信する
 // - slackWebhookUrl が null なら何もしない (通知無効の正常系)
@@ -21,6 +23,17 @@ export async function sendOutboundNotification(
   const tenant = await repos.tenants.findById(tenantId);
   // slackWebhookUrl が未設定なら送信しない (正常終了)
   if (!tenant?.slackWebhookUrl) return;
+
+  // SSRF 二重防御: 保存時 (update-slack-webhook.ts) に検証済みだが、
+  // DNS リバインディング攻撃 (登録時はパブリック IP → 後に内部 IP に変更) を緩和するため
+  // 送信直前にもリテラル IP パターンを再検証する。
+  // ※ これは完全な DNS リバインディング防止ではないが、静的パターンの二重チェックにより
+  //   攻撃コストを高める (完全防止には DNS ルックアップフック等が必要)。
+  if (isUnsafeUrl(tenant.slackWebhookUrl)) {
+    // 安全でない URL が DB に残っている場合はスキップしてエラーをログに残す
+    console.error('[outbound-notify] SSRF ガード: 安全でない Webhook URL をスキップしました');
+    return;
+  }
 
   // Slack Adapter を生成してメッセージを送信する
   const notifier = createSlackNotifier(tenant.slackWebhookUrl);

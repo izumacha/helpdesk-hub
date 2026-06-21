@@ -27,32 +27,52 @@ interface SlackBlock {
 // Slack は成功時 "ok" (2 バイト) を返すが、念のため 1KB まで許容する
 const MAX_RESPONSE_SIZE_BYTES = 1024;
 
+// ユーザー入力を Slack mrkdwn に埋め込む前にエスケープする。
+// Slack mrkdwn では < URL|ラベル > 記法がクリッカブルリンクとして解釈されるため、
+// ユーザー由来の < と > を HTML エンティティに変換してインジェクションを防ぐ。
+// エスケープ順序: & を先に変換しないと &lt; の & が再変換されて二重エンコードになる。
+function escapeMrkdwn(text: string): string {
+  // & → &amp; (必ず最初に変換する)
+  const step1 = text.replace(/&/g, '&amp;');
+  // < → &lt; (リンク記法の開き括弧を無効化)
+  const step2 = step1.replace(/</g, '&lt;');
+  // > → &gt; (リンク記法の閉じ括弧を無効化)
+  return step2.replace(/>/g, '&gt;');
+}
+
 // Slack / Teams Incoming Webhook を使った OutboundNotifier 実装を生成するファクトリ関数
 // webhookUrl: Slack または Teams の Incoming Webhook URL
 export function createSlackNotifier(webhookUrl: string): OutboundNotifier {
   return {
     // メッセージを Slack / Teams へ送信する
     async send(message: OutboundMessage): Promise<void> {
+      // ユーザー由来のテキストを mrkdwn インジェクション対策としてエスケープする。
+      // チケットタイトル (subject) や本文 (body) には requester が任意の文字列を入力できるため、
+      // < URL|ラベル > 形式のフィッシングリンクが Slack チャネルに表示されるのを防ぐ。
+      const safeSubject = escapeMrkdwn(message.subject);
+      const safeBody = escapeMrkdwn(message.body);
+
       // Slack Block Kit でリッチなメッセージを構築する。
       // フォールバック用 text と blocks の両方を送り、クライアントが blocks 非対応でも読める。
       const blocks: SlackBlock[] = [
         {
-          // 件名をボールドヘッダーとして表示 (mrkdwn で *...* を使う)
+          // 件名をボールドヘッダーとして表示 (mrkdwn で *...* を使う; 中身はエスケープ済み)
           type: 'section',
-          text: { type: 'mrkdwn', text: `*${message.subject}*` },
+          text: { type: 'mrkdwn', text: `*${safeSubject}*` },
         },
         {
           // 区切り線で件名と本文を分ける
           type: 'divider',
         },
         {
-          // 本文をプレーンテキストで表示
+          // 本文をプレーンテキストで表示 (エスケープ済みのためリンクは埋め込まれない)
           type: 'section',
-          text: { type: 'mrkdwn', text: message.body },
+          text: { type: 'mrkdwn', text: safeBody },
         },
       ];
 
       // チケット URL が指定されている場合はリンクを追加する (Slack mrkdwn の <URL|ラベル> 記法)
+      // ticketUrl はシステム生成値 (baseUrl + ticketId) のため、ユーザー入力ではなくエスケープ不要
       if (message.ticketUrl) {
         blocks.push({
           type: 'section',
@@ -65,8 +85,8 @@ export function createSlackNotifier(webhookUrl: string): OutboundNotifier {
 
       // Slack Incoming Webhook のペイロードを組み立てる
       const payload: SlackPayload = {
-        // blocks 非対応クライアント向けのフォールバックテキスト
-        text: `[HelpDesk Hub] ${message.subject}\n${message.body}`,
+        // blocks 非対応クライアント向けのフォールバックテキスト (エスケープ済みを使う)
+        text: `[HelpDesk Hub] ${safeSubject}\n${safeBody}`,
         blocks,
       };
 

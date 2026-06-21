@@ -23,7 +23,8 @@ function escapeCSVCell(value: string | null | undefined): string {
   // (Excel / LibreOffice Calc は =, +, -, @ で始まるセルを数式として評価する)
   const neutralised = /^[=+\-@]/.test(value) ? `\t${value}` : value;
   // 特殊文字が含まれる場合はダブルクォートで囲む
-  if (neutralised.includes(',') || neutralised.includes('"') || neutralised.includes('\n')) {
+  // \r のみ (CR-only) の改行も Excel が行区切りとして解釈するため \n と同様に処理する
+  if (neutralised.includes(',') || neutralised.includes('"') || neutralised.includes('\n') || neutralised.includes('\r')) {
     return `"${neutralised.replace(/"/g, '""')}"`;
   }
   return neutralised;
