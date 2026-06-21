@@ -15,6 +15,35 @@ import { applyTabFilter } from '@/features/tickets/tab-filter';
 // データ層が公開しているチケット一覧フィルタ型 (件数取得の引数)
 import type { TicketListFilter } from '@/data/ports/ticket-repository';
 
+// チュートリアルセクションに表示する「はじめかた」ステップ一覧 (Phase 3 オンボーディング)。
+// 3 ステップ固定。変更が必要なら以下の配列を直接編集する (各所に散らさない §6 定数の一元管理)。
+const GETTING_STARTED_STEPS = [
+  {
+    step: 1, // ステップ番号 (表示用)
+    title: 'スタッフを招待する', // ステップのタイトル
+    description: '設定画面の「招待リンク発行」からメンバーを招待しましょう。', // 補足説明
+    href: '/settings/invite', // 誘導先のリンク (ない場合は null)
+  },
+  {
+    step: 2,
+    title: 'メールの転送アドレスを設定する',
+    description:
+      '設定画面に専用の転送アドレスが表示されます。Gmail や Outlook の自動転送を設定すると、メールが届くたびに自動で問い合わせが作成されます。',
+    href: '/settings',
+  },
+  {
+    step: 3,
+    title: 'スマホから試してみる',
+    description:
+      'このページをスマホのブラウザで開き、ホーム画面に追加すると、アプリのように使えます。',
+    href: null,
+  },
+] as const;
+
+// チュートリアルセクションを表示するかどうかの閾値 (テナント全体のチケット件数がこれ未満なら表示)
+// 初期サンプルチケット 2 件を含むため「5 件以下」にしておくと通常の使い始めで常に表示される
+const TUTORIAL_TICKET_THRESHOLD = 10;
+
 // /dashboard : 集計ダッシュボード (テナント mode と役割で表示が変わる)
 export default async function DashboardPage() {
   // セッション取得
@@ -34,8 +63,17 @@ export default async function DashboardPage() {
   // Lite モードのテナントは「自分の未対応 / 期限切れ」の 2 枚タイルだけの簡易版を表示する
   // (Pivot plan §3.1 / §2 ギャップ表: 一人運用では SLA・担当者別の集計は意味が薄いため置換)
   if (mode === 'lite') {
+    // Phase 3 オンボーディング: エージェント向けにチュートリアルセクションを表示する
+    // チケット総数が閾値未満のテナントに限定して表示する (使い始め期間のみ案内する)
+    const totalTickets = isAgent ? await repos.tickets.count({}, tenantId) : 0;
     return (
-      <LiteDashboard isAgent={isAgent} userId={session.user.id} tenantId={tenantId} now={now} />
+      <LiteDashboard
+        isAgent={isAgent}
+        userId={session.user.id}
+        tenantId={tenantId}
+        now={now}
+        showTutorial={isAgent && totalTickets < TUTORIAL_TICKET_THRESHOLD}
+      />
     );
   }
 
@@ -190,7 +228,7 @@ export default async function DashboardPage() {
   );
 }
 
-// Lite モード用の簡易ダッシュボード (自分の未対応 / 期限切れ の 2 枚タイル)
+// Lite モード用の簡易ダッシュボード (自分の未対応 / 期限切れ の 2 枚タイル + チュートリアル)
 // Pivot plan §3.1 に対応。一覧タブと同じ条件 (applyTabFilter) で件数を数え、
 // タイルをタップすると該当タブの一覧 (/tickets?tab=...) へ遷移する。
 async function LiteDashboard({
@@ -198,11 +236,13 @@ async function LiteDashboard({
   userId,
   tenantId,
   now,
+  showTutorial,
 }: {
   isAgent: boolean; // 担当者 (agent/admin) かどうか。'mine' の絞り込み方が依頼者と変わる
   userId: string; // ログインユーザー ID ('mine' で自分の担当/起票を絞る)
   tenantId: string; // テナントスコープ (件数取得に必須)
   now: Date; // 期限超過判定の基準時刻
+  showTutorial: boolean; // Phase 3: チュートリアルセクションを表示するかどうか
 }) {
   // 件数集計の共通土台。依頼者は自分のチケットのみ、担当者は全件 (creatorId 未指定)
   const baseFilter: TicketListFilter = {
@@ -258,6 +298,60 @@ async function LiteDashboard({
           <p className="mt-1 text-xs text-slate-400">期限を過ぎた未完了の問い合わせ</p>
         </Link>
       </div>
+
+      {/* Phase 3 チュートリアルセクション: 使い始め期間のエージェントにだけ表示する */}
+      {/* チケット件数が閾値を超えたら自動的に非表示になる (操作に慣れた後は邪魔にならないよう) */}
+      {showTutorial && (
+        <section>
+          {/* セクションタイトル */}
+          <h2 className="mb-4 text-xs font-semibold tracking-wider text-slate-500 uppercase">
+            はじめかた
+          </h2>
+          {/* ステップカード列 (スマホ縦積み → sm 以上で 3 列) */}
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+            {GETTING_STARTED_STEPS.map(({ step, title, description, href }) => (
+              // ステップカード: リンクがあればクリッカブルに、なければ静的カードにする
+              href ? (
+                <Link
+                  key={step}
+                  href={href}
+                  className="rounded-2xl bg-slate-50 p-5 ring-1 ring-slate-200 transition duration-200 hover:bg-teal-50 hover:ring-teal-200"
+                >
+                  {/* ステップ番号バッジ */}
+                  <span className="inline-flex h-6 w-6 items-center justify-center rounded-full bg-teal-100 text-xs font-bold text-teal-700">
+                    {step}
+                  </span>
+                  {/* ステップのタイトル */}
+                  <p className="mt-2 text-sm font-semibold text-slate-800">{title}</p>
+                  {/* ステップの補足説明 */}
+                  <p className="mt-1 text-xs text-slate-500">{description}</p>
+                </Link>
+              ) : (
+                <div
+                  key={step}
+                  className="rounded-2xl bg-slate-50 p-5 ring-1 ring-slate-200"
+                >
+                  {/* ステップ番号バッジ (リンクなし版) */}
+                  <span className="inline-flex h-6 w-6 items-center justify-center rounded-full bg-teal-100 text-xs font-bold text-teal-700">
+                    {step}
+                  </span>
+                  {/* ステップのタイトル */}
+                  <p className="mt-2 text-sm font-semibold text-slate-800">{title}</p>
+                  {/* ステップの補足説明 */}
+                  <p className="mt-1 text-xs text-slate-500">{description}</p>
+                </div>
+              )
+            ))}
+          </div>
+          {/* 問い合わせ一覧のサンプルチケットへのリンク (操作確認を促す) */}
+          <p className="mt-3 text-xs text-slate-400">
+            問い合わせ一覧にサンプルの問い合わせが 2 件入っています。
+            <Link href="/tickets" className="ml-1 text-teal-700 underline hover:text-teal-800">
+              一覧を見る
+            </Link>
+          </p>
+        </section>
+      )}
     </div>
   );
 }
