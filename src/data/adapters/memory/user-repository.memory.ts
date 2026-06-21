@@ -96,13 +96,14 @@ export function makeUserRepo(store: Store): UserRepository {
       return out;
     },
 
-    // Phase 4 課金: テナント内のユーザー総数を返す (プランのユーザー上限チェック用)
+    // Phase 4 課金: テナント内のスタッフ (agent + admin) 数を返す (プランのシート上限チェック用)
+    // requester (エンドユーザー) はシートを消費しない — ヘルプデスク製品の標準的な課金モデル
     async countByTenant(tenantId) {
-      // 全ユーザーの中からテナント一致のものを数える
+      // agent と admin のみをカウントする (requester は上限対象外)
       let count = 0;
       for (const u of store.users.values()) {
-        // テナントが一致するユーザーをカウントする
-        if (u.tenantId === tenantId) count++;
+        // テナントが一致し、かつスタッフロール (agent | admin) のユーザーのみ数える
+        if (u.tenantId === tenantId && (u.role === 'agent' || u.role === 'admin')) count++;
       }
       return count;
     },

@@ -12,11 +12,11 @@ import type { SubscriptionPlan } from '@/domain/types';
 // プランごとの上限値定数
 // ─────────────────────────────────────────────────────────────────────────────
 
-// ユーザー数上限 (プランごと)。超えた場合は新規招待・アカウント登録を拒否する
+// スタッフシート上限 (プランごと)。agent + admin のみカウントし requester はシートを消費しない
 export const USER_LIMIT: Record<SubscriptionPlan, number> = {
-  free: 3, // Free: 3 名まで
-  standard: 10, // Standard: 10 名まで
-  pro: 30, // Pro: 30 名まで
+  free: 3, // Free: スタッフ 3 名まで
+  standard: 10, // Standard: スタッフ 10 名まで
+  pro: 30, // Pro: スタッフ 30 名まで
 };
 
 // 月間チケット起票数の上限 (プランごと)。Free のみ制限あり

@@ -58,11 +58,20 @@ export function makeLocationRepo(db: PrismaLike): LocationRepository {
       return toLocation(row);
     },
 
-    // 拠点名・補足説明を更新する (tenantId スコープで他テナントは no-op)
+    // 拠点名・補足説明を更新する (tenantId スコープで他テナントは not-found エラー)
     async update(id, tenantId, data) {
-      // テナント ID を条件に含めることでクロステナント更新を防ぐ
+      // まず対象拠点がこのテナントに属するか findFirst で確認する。
+      // db.location.update の where は PK (id) のみで解決されるため tenantId は AND にならない。
+      // deleteMany は任意 WHERE をサポートするが update は @@unique 経由でしか複合条件を取れない。
+      // 事前 findFirst でテナント所有を検証してから id のみで更新することでクロステナントを防ぐ。
+      const existing = await db.location.findFirst({ where: { id, tenantId } });
+      // 見つからない場合は他テナントの行か存在しない行 — 更新を拒否する
+      if (!existing) {
+        throw new Error(`Location not found: ${id}`);
+      }
+      // テナント所有を確認後、PK だけで更新する (Prisma の update は PK 必須)
       const row = await db.location.update({
-        where: { id, tenantId }, // Prisma の複合 where (Prisma v5 から id + tenantId を AND で指定可)
+        where: { id },
         data: {
           // undefined なら Prisma が該当フィールドをスキップする
           name: data.name,

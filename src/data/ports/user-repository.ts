@@ -22,6 +22,7 @@ export interface UserRepository {
   listAgents(tenantId: string): Promise<UserSummary[]>; // 当該テナント内の agent/admin 一覧
   listAgentIds(tenantId: string): Promise<string[]>; // 当該テナント内の agent/admin の ID だけ
   findSummariesByIds(ids: string[], tenantId: string): Promise<UserSummary[]>; // テナント内 ID 配列から概要
-  // Phase 4 課金: テナント内のアクティブなユーザー数を返す (プランのユーザー上限チェック用)
+  // Phase 4 課金: テナント内のスタッフ (agent + admin) 数を返す (プランのシート上限チェック用)
+  // requester はカウントしない — シートはヘルプデスクスタッフ分のみ消費する
   countByTenant(tenantId: string): Promise<number>;
 }

@@ -67,10 +67,11 @@ export function makeUserRepo(db: PrismaLike): UserRepository {
       return rows.map(toUserSummary);
     },
 
-    // Phase 4 課金: テナント内のユーザー総数を返す (プランのユーザー上限チェック用)
+    // Phase 4 課金: テナント内のスタッフ (agent + admin) 数を返す (プランのシート上限チェック用)
+    // requester (エンドユーザー) はシートを消費しない — ヘルプデスク製品の標準的な課金モデル
     async countByTenant(tenantId) {
-      // Prisma の count でテナントスコープのユーザー数を集計する
-      return db.user.count({ where: { tenantId } });
+      // agent と admin のみをカウントする (requester は上限対象外)
+      return db.user.count({ where: { tenantId, role: { in: ['agent', 'admin'] } } });
     },
   };
 }

@@ -75,7 +75,10 @@ export async function createCheckoutSession(
       // ユーザーがキャンセルした場合のリダイレクト先
       cancel_url: `${baseUrl}/settings?billing=canceled`,
       // 既存の Stripe Customer がいればそちらに紐づける (なければ新規作成される)
-      ...(tenant.stripeCustomerId ? { customer: tenant.stripeCustomerId } : {}),
+      // customer と customer_email は同時に指定できないため、排他的に渡す
+      ...(tenant.stripeCustomerId
+        ? { customer: tenant.stripeCustomerId } // 既存 Customer に紐づける
+        : { customer_email: session.user.email ?? undefined }), // 新規 Customer のメール事前入力
       // Webhook でテナントを特定するためにメタデータを埋め込む
       // Stripe のメタデータは文字列のキーバリューペアのみ使用可
       subscription_data: {
@@ -83,8 +86,6 @@ export async function createCheckoutSession(
           tenantId: session.user.tenantId, // Webhook でテナントを特定するためのキー
         },
       },
-      // 顧客のメールアドレスを事前入力してフォームを簡略化する
-      customer_email: session.user.email ?? undefined,
     });
 
     // Stripe Checkout の支払いページ URL を返す

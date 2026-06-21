@@ -75,6 +75,9 @@ export function stripeStatusToPlan(
     // キャンセル・支払い遅延 (past_due | canceled 等) は free に降格
     return 'free';
   }
+  // Price ID が空文字の場合は環境変数未設定またはデータ不備なので free にフォールバック
+  // (空文字同士が一致して意図せず pro/standard に昇格するのを防ぐ)
+  if (!priceId) return 'free';
   // 有効なサブスクの Price ID でプランを判定する
   if (priceId === STRIPE_PRICE_IDS.pro) return 'pro';
   if (priceId === STRIPE_PRICE_IDS.standard) return 'standard';
