@@ -94,14 +94,15 @@ export async function createTenant(formData: FormData): Promise<CreateTenantResu
     if (industry) {
       // 指定 ID のテンプレートを取得する (存在しなければ undefined)
       const template = findIndustryTemplate(industry);
-      // テンプレートが見つかった場合のみカテゴリを一括作成する
+      // テンプレートが見つかった場合のみカテゴリを順次作成する
       if (template) {
-        // カテゴリ名のリストを並列 create に変換して実行する (順序不問なので Promise.all で並列化)
-        await Promise.all(
-          template.categories.map((name) =>
-            tx.categories.create({ name, tenantId: tenant.id })
-          )
-        );
+        // Prisma のインタラクティブトランザクション内では 1 つの接続を直列に使うため
+        // Promise.all で並列クエリを投げると "Transaction already closed" になる場合がある。
+        // for...of + await で直列実行して安全性を保つ (カテゴリは数件なので性能上問題なし)
+        for (const name of template.categories) {
+          // カテゴリを 1 件ずつトランザクション内で作成する
+          await tx.categories.create({ name, tenantId: tenant.id });
+        }
       }
     }
     // 作成結果を返す

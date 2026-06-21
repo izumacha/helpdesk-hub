@@ -27,6 +27,74 @@ const PRIORITY_MAP: Record<string, Priority> = {
   低: 'Low', // 「低」→ Low
 };
 
+// RFC 4180 準拠の CSV 行パーサ (引用符を含むフィールドでもカンマを正しく扱う)
+// 例: `"PCトラブル, ネットワーク",高` → ['PCトラブル, ネットワーク', '高']
+function parseCsvLine(line: string): string[] {
+  // 解析結果を格納する配列
+  const fields: string[] = [];
+  // 現在のフィールド文字列を蓄積するバッファ
+  let current = '';
+  // フィールドが引用符で囲まれているかのフラグ
+  let inQuotes = false;
+  // 1 文字ずつ走査する
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i]; // 現在の文字
+    if (inQuotes) {
+      if (ch === '"') {
+        // 次の文字も '"' なら RFC 4180 のエスケープ ('' → ") として扱う
+        if (line[i + 1] === '"') {
+          current += '"'; // エスケープされた引用符をバッファに追加
+          i += 1; // 次の '"' をスキップする
+        } else {
+          // 引用符の終了 → 引用モードを抜ける
+          inQuotes = false;
+        }
+      } else {
+        // 引用符内の通常文字はそのままバッファに追加する
+        current += ch;
+      }
+    } else {
+      if (ch === '"') {
+        // フィールド開始直後の引用符 → 引用モードへ入る
+        inQuotes = true;
+      } else if (ch === ',') {
+        // カンマ → フィールド終端。前後の空白を除いてリストに追加する
+        fields.push(current.trim());
+        // バッファをリセットして次のフィールドへ
+        current = '';
+      } else {
+        // 通常文字をバッファに追加する
+        current += ch;
+      }
+    }
+  }
+  // 最後のフィールドを追加する (末尾のカンマがなくても確実に取り込む)
+  fields.push(current.trim());
+  // 解析済みフィールド配列を返す
+  return fields;
+}
+
+// YYYY-MM-DD 形式の日付文字列をローカル時刻の Date に変換する純粋関数
+// `new Date('YYYY-MM-DD')` は UTC 0 時として解釈されるため JST 環境では前日になる問題を回避する
+function parseDateLocal(dateStr: string): Date | null {
+  // ハイフンで分割して年・月・日を取り出す
+  const parts = dateStr.split('-');
+  // 3 要素 (年・月・日) がなければ不正フォーマット
+  if (parts.length !== 3) return null;
+  // 各部分を整数に変換する
+  const year = parseInt(parts[0] ?? '', 10);
+  const month = parseInt(parts[1] ?? '', 10); // 1 始まり (後で 0 始まりに調整)
+  const day = parseInt(parts[2] ?? '', 10);
+  // いずれかが NaN なら不正フォーマット
+  if (isNaN(year) || isNaN(month) || isNaN(day)) return null;
+  // `new Date(year, month-1, day)` はローカル時刻の午前 0 時を生成する (UTC ではない)
+  const d = new Date(year, month - 1, day);
+  // 実際に有効な日付かを確認する (例: 2 月 30 日は 3 月に繰り越されるため不正と判断)
+  if (d.getFullYear() !== year || d.getMonth() + 1 !== month || d.getDate() !== day) return null;
+  // 有効な Date を返す
+  return d;
+}
+
 // importTickets の戻り値型
 export interface ImportTicketsResult {
   imported: number; // 正常に取り込めた件数
@@ -71,8 +139,8 @@ export async function importTickets(csvText: string): Promise<ImportTicketsResul
 
   // 1 行目をヘッダとして取り出す
   const headerLine = nonEmptyLines[0];
-  // カンマで分割してヘッダ列名の配列を得る (前後の空白と引用符を除去)
-  const headers = headerLine.split(',').map((h) => h.trim().replace(/^"|"$/g, ''));
+  // RFC 4180 パーサでヘッダ列名の配列を得る (引用符内のカンマにも対応)
+  const headers = parseCsvLine(headerLine ?? '');
 
   // 「件名」列が必須。見つからなければ即エラー
   const titleIndex = headers.indexOf('件名');
@@ -103,8 +171,8 @@ export async function importTickets(csvText: string): Promise<ImportTicketsResul
     // 現在の行を取り出す
     const line = dataLines[i];
 
-    // カンマで分割して各セルを取り出す (前後の空白・引用符を除去)
-    const cells = line.split(',').map((c) => c.trim().replace(/^"|"$/g, ''));
+    // RFC 4180 パーサで各セルを取り出す (引用符内のカンマにも対応)
+    const cells = parseCsvLine(line ?? '');
 
     // 件名セルを取り出す
     const title = cells[titleIndex] ?? '';
@@ -124,9 +192,10 @@ export async function importTickets(csvText: string): Promise<ImportTicketsResul
       // 期限日セルの値を取り出す
       const dueDateRaw = cells[dueDateIndex] ?? '';
       if (dueDateRaw) {
-        // YYYY-MM-DD 形式を Date オブジェクトに変換する
-        const parsed = new Date(dueDateRaw);
-        if (isNaN(parsed.getTime())) {
+        // YYYY-MM-DD 形式をローカル時刻の Date に変換する
+        // (`new Date('YYYY-MM-DD')` は UTC 午前 0 時なので JST 環境で前日になるバグを回避)
+        const parsed = parseDateLocal(dueDateRaw);
+        if (parsed === null) {
           // 変換に失敗した (不正な形式) 場合はエラーとして記録してこの行をスキップ
           errors.push({ row: rowNum, message: `期限日の形式が正しくありません: "${dueDateRaw}"（YYYY-MM-DD 形式で入力してください）` });
           // 次の行へ進む (部分成功なので continue)
