@@ -33,7 +33,8 @@ export function createNodemailerEmailSender(config: NodemailerEmailSenderConfig)
   const secure = config.port === 465;
 
   // 認証情報が両方揃っているときだけ auth ブロックを渡す (匿名 SMTP 対応)
-  const auth = config.user && config.password ? { user: config.user, pass: config.password } : undefined;
+  const auth =
+    config.user && config.password ? { user: config.user, pass: config.password } : undefined;
 
   // Nodemailer トランスポートを 1 度だけ生成して使い回す
   const transporter: Transporter = nodemailer.createTransport({
@@ -53,6 +54,8 @@ export function createNodemailerEmailSender(config: NodemailerEmailSenderConfig)
         subject: message.subject,
         text: message.text,
         html: message.html,
+        // 指定があれば Message-ID を明示する (スレッド継続の紐付けに使う)。未指定なら nodemailer が自動採番
+        messageId: message.messageId,
       });
     },
   };

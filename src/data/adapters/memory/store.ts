@@ -21,6 +21,15 @@ export interface CategoryRow {
   tenantId: string; // 所属テナント ID (マルチテナント化のキー)
 }
 
+// メモリ内で保持するメールスレッド対応表の 1 行 (Message-ID → ticket / Phase 2)
+export interface EmailThreadRefRow {
+  id: string; // 行 ID
+  messageId: string; // 正規化済み Message-ID
+  ticketId: string; // 紐づくチケット ID
+  tenantId: string; // 所属テナント ID (突き合わせスコープのキー)
+  createdAt: Date; // 記録日時 (新しい紐付けを優先するため)
+}
+
 // テスト用アダプタが使うインメモリストア。
 // `idSeq` カウンタはストアごとに独立しているので、テストコンテキスト間で状態が混ざらず
 // 連番 ID も安定して再現できる。
@@ -37,6 +46,7 @@ export interface Store {
   magicLinks: Map<string, MagicLinkToken>; // マジックリンクトークン (パスワードレス認証)
   invitations: Map<string, Invitation>; // 招待リンクトークン (メンバー招待)
   attachments: Map<string, Attachment>; // 添付ファイルのメタ情報 (画像)
+  emailThreadRefs: Map<string, EmailThreadRefRow>; // メール Message-ID → チケット 対応表 (Phase 2)
   idSeq: { value: number }; // 連番生成用のカウンタ (オブジェクトに包んで参照共有)
 }
 
@@ -55,6 +65,7 @@ export function createEmptyStore(): Store {
     magicLinks: new Map(),
     invitations: new Map(),
     attachments: new Map(),
+    emailThreadRefs: new Map(),
     idSeq: { value: 0 },
   };
 }
@@ -74,6 +85,7 @@ export function cloneStore(src: Store): Store {
     magicLinks: new Map(src.magicLinks),
     invitations: new Map(src.invitations),
     attachments: new Map(src.attachments),
+    emailThreadRefs: new Map(src.emailThreadRefs),
     idSeq: { value: src.idSeq.value },
   };
 }
@@ -92,6 +104,7 @@ export function overwriteStore(dst: Store, src: Store): void {
   dst.magicLinks = new Map(src.magicLinks);
   dst.invitations = new Map(src.invitations);
   dst.attachments = new Map(src.attachments);
+  dst.emailThreadRefs = new Map(src.emailThreadRefs);
   // 連番も元に戻す
   dst.idSeq.value = src.idSeq.value;
 }

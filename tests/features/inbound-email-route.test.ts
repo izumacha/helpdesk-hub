@@ -16,15 +16,33 @@ const TOKEN = 'abc123';
 const MEMBER_EMAIL = 'ichiro@example.com';
 const MEMBER_ID = 'u-member-1';
 
+// UnitOfWork 型 (スレッド継続のコメント追記でトランザクションを使う)
+import type { UnitOfWork } from '@/data/ports/unit-of-work';
+
 // 各テストで差し替える可変な依存 (Route import 前に値を入れる)
 let store: Store;
 let repos: Repos;
+let uow: UnitOfWork;
 
 // @/data を差し替え (getter で beforeEach の上書きを反映)
 vi.mock('@/data', () => ({
   get repos() {
     return repos;
   },
+  get uow() {
+    return uow;
+  },
+}));
+
+// next/cache の副作用 (revalidatePath) はテストでは不要
+vi.mock('next/cache', () => ({
+  revalidatePath: vi.fn(),
+  revalidateTag: vi.fn(),
+}));
+
+// SSE ブロードキャスト経路もテストでは不要 (購読者がいないだけだが明示的に無効化)
+vi.mock('@/lib/sse-subscribers', () => ({
+  broadcast: vi.fn(),
 }));
 
 // テナント (Lite) + 既知メンバー 1 人をシードする
@@ -80,6 +98,7 @@ describe('POST /api/inbound/email', () => {
     const ctx = createMemoryContext();
     store = ctx.store;
     repos = ctx.repos;
+    uow = ctx.uow;
     seed();
     vi.stubEnv('INBOUND_EMAIL_SECRET', SECRET);
   });
@@ -224,5 +243,81 @@ describe('POST /api/inbound/email', () => {
     const res = await POST(req);
     expect(res.status).toBe(413);
     expect(store.tickets.size).toBe(0);
+  });
+
+  // スレッド継続: 参照 Message-ID が既存チケットに紐づくなら、新規起票せずコメント追記する
+  it('In-Reply-To が既知 Message-ID に一致すると既存チケットへコメント追記する', async () => {
+    const { POST } = await import('@/app/api/inbound/email/route');
+    // まず通常の受信メール (Message-ID 付き) で 1 件起票する
+    const res1 = await POST(makeRequest({ ...VALID_EMAIL, messageId: '<orig-1@example.com>' }));
+    expect(res1.status).toBe(201);
+    const { ticketId } = (await res1.json()) as { ticketId: string };
+    // 起票直後はコメント 0 件
+    expect(store.comments.size).toBe(0);
+
+    // 同じ送信者が、その起票メールに返信する (In-Reply-To で元 Message-ID を参照)
+    const res2 = await POST(
+      makeRequest({
+        ...VALID_EMAIL,
+        subject: 'Re: プリンターが動きません',
+        text: 'まだ直りません',
+        messageId: '<reply-1@example.com>',
+        inReplyTo: '<orig-1@example.com>',
+      }),
+    );
+    // 200 + threaded フラグで「追記」されたことを示す
+    expect(res2.status).toBe(200);
+    const body2 = (await res2.json()) as { ticketId: string; threaded?: boolean };
+    expect(body2.threaded).toBe(true);
+    expect(body2.ticketId).toBe(ticketId);
+    // 新規チケットは増えず (1 件のまま)、コメントが 1 件追記される
+    expect(store.tickets.size).toBe(1);
+    expect(store.comments.size).toBe(1);
+    // 追記コメントは送信者本人 (既知メンバー) が作者で、本文が載る
+    const comment = Array.from(store.comments.values())[0];
+    expect(comment.ticketId).toBe(ticketId);
+    expect(comment.authorId).toBe(MEMBER_ID);
+    expect(comment.body).toBe('まだ直りません');
+  });
+
+  // スレッド継続: 同じ Message-ID の再送 (Webhook リトライ) は冪等で二重取り込みしない
+  it('同一 Message-ID の再送は冪等に処理する (duplicate)', async () => {
+    const { POST } = await import('@/app/api/inbound/email/route');
+    const req = () => makeRequest({ ...VALID_EMAIL, messageId: '<dup-1@example.com>' });
+    // 1 回目は通常起票
+    const res1 = await POST(req());
+    expect(res1.status).toBe(201);
+    const { ticketId } = (await res1.json()) as { ticketId: string };
+    // 2 回目 (再送) は新規起票せず duplicate として 200 + 同じ ticketId を返す
+    const res2 = await POST(req());
+    expect(res2.status).toBe(200);
+    const body2 = (await res2.json()) as { ticketId: string; status?: string };
+    expect(body2.status).toBe('duplicate');
+    expect(body2.ticketId).toBe(ticketId);
+    // チケットは 1 件のまま
+    expect(store.tickets.size).toBe(1);
+  });
+
+  // スレッド継続: 参照先が別テナントの Message-ID なら一致せず、新規起票にフォールバックする
+  it('別テナントの Message-ID には紐付かず新規起票する', async () => {
+    // 別テナントに Message-ID を直接登録しておく (別テナントのスレッド)
+    await repos.emailThreads.register({
+      messageId: 'foreign@example.com',
+      ticketId: 't-foreign',
+      tenantId: 'other',
+    });
+    const { POST } = await import('@/app/api/inbound/email/route');
+    // default-tenant 宛メールが、別テナントの Message-ID を In-Reply-To で参照しても紐付かない
+    const res = await POST(
+      makeRequest({
+        ...VALID_EMAIL,
+        messageId: '<new-1@example.com>',
+        inReplyTo: '<foreign@example.com>',
+      }),
+    );
+    // 新規起票 (201) になり、コメント追記ではない
+    expect(res.status).toBe(201);
+    expect(store.comments.size).toBe(0);
+    expect(store.tickets.size).toBe(1);
   });
 });

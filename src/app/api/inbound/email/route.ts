@@ -18,12 +18,20 @@
 import { NextResponse } from 'next/server';
 // 共有シークレットの定数時間比較に使う (Node ランタイム前提のルート)
 import { timingSafeEqual } from 'node:crypto';
-// データ層 (テナント / ユーザー / チケットのリポジトリ束)
-import { repos } from '@/data';
+// ページキャッシュ無効化 (スレッド継続でコメント追記したチケット詳細を再描画させる)
+import { revalidatePath } from 'next/cache';
+// データ層 (テナント / ユーザー / チケットのリポジトリ束 + トランザクション境界)
+import { repos, uow } from '@/data';
 // 新規起票時の初期ステータスを mode から決める共通ルール (Web フォーム起票と単一の源を共有)
 import { initialStatusForMode } from '@/domain/ticket-status';
-// 受信メールの正規化ヘルパー (純粋関数)
-import { parseInboundEmail } from '@/lib/inbound-email';
+// コメント通知の宛先決定 (Web フォーム経由コメントと共有するヘルパー)
+import { resolveCommentRecipients } from '@/lib/comment-recipients';
+// 未読件数を SSE で即時配信するヘルパー (コメント追記時の通知扇形)
+import { broadcastUnreadCountToMany } from '@/features/notifications/notify';
+// 受信メールの正規化ヘルパー (純粋関数) と生ヘッダ読み取り
+import { parseInboundEmail, readRawHeader } from '@/lib/inbound-email';
+// エージェント権限判定 (スレッド追記の RBAC に使用)
+import { isAgent } from '@/lib/role';
 // 公開エンドポイントの流量制限 (§9: DoS / リソース枯渇防止)
 import { enforceRateLimit, RateLimitError } from '@/lib/rate-limit';
 // 優先度から解決期限を計算する SLA ヘルパー (Web フォーム起票と同じ既定値に揃える)
@@ -60,14 +68,19 @@ function readProvidedSecret(req: Request, url: URL): string | null {
   return url.searchParams.get('secret');
 }
 
-// 受信メール 1 通分のフィールド (to / from / subject / text) を、JSON / multipart の
-// どちらのボディからでも取り出して共通形に揃える。
-async function readInboundFields(req: Request): Promise<{
-  to?: string | null;
-  from?: string | null;
-  subject?: string | null;
-  text?: string | null;
-}> {
+// 受信メール 1 通分のフィールドの共通形 (to / from / subject / text に加え、スレッド継続用ヘッダ)
+interface InboundFields {
+  to?: string | null; // 宛先 (ルーティング)
+  from?: string | null; // 送信者 (本人特定)
+  subject?: string | null; // 件名
+  text?: string | null; // テキスト本文
+  messageId?: string | null; // この受信メールの Message-ID
+  inReplyTo?: string | null; // In-Reply-To ヘッダ (直接の返信元)
+  references?: string | null; // References ヘッダ (スレッド上の Message-ID 列)
+}
+
+// 受信メール 1 通分のフィールドを、JSON / multipart のどちらのボディからでも取り出して共通形に揃える。
+async function readInboundFields(req: Request): Promise<InboundFields> {
   // Content-Type を小文字化して判定 (大文字小文字はメディアタイプ上区別しない)
   const contentType = (req.headers.get('content-type') ?? '').toLowerCase();
   // multipart/form-data (SendGrid Inbound Parse 等) は FormData として読む
@@ -97,6 +110,9 @@ async function readInboundFields(req: Request): Promise<{
     }
     // FormData の値を string | null に正規化する小ヘルパー
     const str = (v: FormDataEntryValue | null): string | null => (typeof v === 'string' ? v : null);
+    // SendGrid 等は個別の Message-ID / In-Reply-To フィールドを持たないことがあるため、
+    // 生ヘッダ (headers フィールド) からのフォールバック抽出も用意する (スレッド継続用)。
+    const rawHeaders = str(form.get('headers'));
     // 宛先 (ルーティング): envelope の RCPT を優先する (ヘッダ To より実配送先として確実)。
     // 送信者 (本人特定): ヘッダ From を優先する (人間が送った差出人。envelope from=MAIL FROM は
     // 戻り先で本人性が弱い)。いずれも DKIM/SPF 検証は将来課題で、現状は既知メンバー判定で守る。
@@ -105,6 +121,10 @@ async function readInboundFields(req: Request): Promise<{
       from: str(form.get('from')) ?? envFrom,
       subject: str(form.get('subject')),
       text: str(form.get('text')),
+      // Message-ID 系は個別フィールド優先、無ければ生ヘッダから読む
+      messageId: str(form.get('message-id')) ?? readRawHeader(rawHeaders, 'Message-ID'),
+      inReplyTo: str(form.get('in-reply-to')) ?? readRawHeader(rawHeaders, 'In-Reply-To'),
+      references: str(form.get('references')) ?? readRawHeader(rawHeaders, 'References'),
     };
   }
   // それ以外は JSON ボディとして読む (テスト・自前連携向け)
@@ -112,7 +132,16 @@ async function readInboundFields(req: Request): Promise<{
   // 文字列フィールドだけを取り出す小ヘルパー
   const pick = (k: string): string | null =>
     typeof body[k] === 'string' ? (body[k] as string) : null;
-  return { to: pick('to'), from: pick('from'), subject: pick('subject'), text: pick('text') };
+  return {
+    to: pick('to'),
+    from: pick('from'),
+    subject: pick('subject'),
+    text: pick('text'),
+    // camelCase / ヘッダ表記 (ハイフン) のどちらの JSON キーでも受ける
+    messageId: pick('messageId') ?? pick('message-id'),
+    inReplyTo: pick('inReplyTo') ?? pick('in-reply-to'),
+    references: pick('references'),
+  };
 }
 
 // POST /api/inbound/email : 受信メールを 1 件の問い合わせに変換する
@@ -143,12 +172,7 @@ export async function POST(req: Request) {
   }
 
   // 受信メールのフィールドを取り出す (JSON / multipart 両対応)
-  let fields: {
-    to?: string | null;
-    from?: string | null;
-    subject?: string | null;
-    text?: string | null;
-  };
+  let fields: InboundFields;
   try {
     fields = await readInboundFields(req);
   } catch (err) {
@@ -201,6 +225,92 @@ export async function POST(req: Request) {
     return NextResponse.json({ status: 'quarantined' }, { status: 202 });
   }
 
+  // 冪等性: この受信メールの Message-ID を既に取り込み済みなら、二重起票/二重コメントを避ける。
+  // Webhook は at-least-once 配送 (再送あり) なので、同じ Message-ID を見たら過去のチケットを返す。
+  // 注意: Message-ID が取れない (null) メールはこの重複判定が効かず、新規起票パスと同じ at-least-once
+  // 挙動 (再送で重複しうる) になる。実メールはほぼ必ず Message-ID を持つため通常は冪等に処理される。
+  if (email.messageId) {
+    const already = await repos.emailThreads.findTicketIdByMessageIds([email.messageId], tenant.id);
+    if (already) {
+      // 既に処理済み: 何もせず 200 を返す (プロバイダの再送ループを止める)
+      return NextResponse.json({ status: 'duplicate', ticketId: already }, { status: 200 });
+    }
+  }
+
+  // スレッド継続 (Phase 2 / L130): 参照 Message-ID (In-Reply-To / References) から既存チケットを
+  // 逆引きできれば、新規起票せず「そのチケットへのコメント追記」として取り込む。
+  const threadTicketId =
+    email.referenceIds.length > 0
+      ? await repos.emailThreads.findTicketIdByMessageIds(email.referenceIds, tenant.id)
+      : null;
+  if (threadTicketId) {
+    // 紐づくチケットを tenantId スコープで取得 (別テナント ID なら null)
+    const ticket = await repos.tickets.findById(threadTicketId, tenant.id);
+    if (ticket) {
+      // 送信者がエージェント/管理者か (通知扇形と RBAC の判定に使う)
+      const senderIsAgent = isAgent(sender.role);
+      // 追記の権限: エージェント、または自分が起票したチケットのみ (第三者メンバーの混線/露出を防ぐ)。
+      // 権限の無いメンバーは隔離扱い (202) にして無視する。
+      // セキュリティ注意 (§9 / §8 リスク表): 送信者の本人性はヘッダ From + 既知メンバー判定に依存し、
+      // DKIM/SPF 検証は未実装 (既存メール取り込みと同じ前提 = 将来課題)。エージェントの From を詐称した
+      // なりすまし POST は、共有シークレット (INBOUND_EMAIL_SECRET) と取り込みトークンの両方を要するため
+      // 信頼境界はプロバイダ側にあるが、本人性を強める SPF/DKIM 検証を後続で入れること。
+      if (!senderIsAgent && ticket.creatorId !== sender.id) {
+        console.warn(
+          '[POST /api/inbound/email] quarantined: sender not allowed to append to thread',
+        );
+        return NextResponse.json({ status: 'quarantined' }, { status: 202 });
+      }
+      // コメント通知の送信先を決める (Web フォーム経由コメントと共通ロジック)
+      const recipientIds = await resolveCommentRecipients(
+        ticket,
+        sender.id,
+        senderIsAgent,
+        tenant.id,
+      );
+      // 通知メッセージ (Web フォーム経由コメントと同じ文言に揃える)
+      const message = `チケット「${ticket.title}」に新しいコメントが追加されました`;
+      // コメント追記 + Message-ID 登録 + 通知作成を 1 トランザクションで行う (中途半端な状態を残さない)
+      await uow.run(async (r) => {
+        // 受信メール本文を既存チケットへのコメントとして追記する
+        await r.comments.create({
+          ticketId: ticket.id, // 紐づく既存チケット
+          authorId: sender.id, // 追記者 = 送信者 (既知メンバー)
+          body: email.body, // メール本文
+          tenantId: tenant.id, // 親チケットのテナント一致を Adapter が検証する
+        });
+        // この受信メール自身の Message-ID も対応表へ登録する (返信の連鎖を辿れるように)
+        if (email.messageId) {
+          await r.emailThreads.register({
+            messageId: email.messageId,
+            ticketId: ticket.id,
+            tenantId: tenant.id,
+          });
+        }
+        // 通知対象へ「コメントが追加された」旨を一斉送付する
+        await Promise.all(
+          recipientIds.map((id) =>
+            r.notifications.create({
+              userId: id,
+              type: 'commented',
+              message,
+              ticketId: ticket.id,
+              tenantId: tenant.id,
+            }),
+          ),
+        );
+      });
+      // 通知対象が居れば未読件数を SSE で即時配信する
+      if (recipientIds.length > 0) await broadcastUnreadCountToMany(recipientIds, tenant.id);
+      // 追記したチケット詳細ページのキャッシュを無効化して再描画させる
+      revalidatePath(`/tickets/${ticket.id}`);
+      // スレッド追記として 200 を返す (新規起票ではないことを threaded フラグで示す)
+      return NextResponse.json({ ticketId: ticket.id, threaded: true }, { status: 200 });
+    }
+    // 参照先チケットが見つからない (削除済み等) 場合は、下の新規起票へフォールスルーする
+    console.warn('[POST /api/inbound/email] referenced ticket not found; creating a new one');
+  }
+
   // 起票時刻 (SLA 期限の計算基準)
   const now = new Date();
   // 初期ステータスは Web フォーム起票と同じ共通ルールで決める (Lite='Open' / Pro=DB既定 New)
@@ -219,6 +329,20 @@ export async function POST(req: Request) {
     status: initialStatus, // Lite は 'Open'、Pro は undefined (既定 New)
     resolutionDueAt, // 解決期限 (優先度ベース)
   });
+
+  // この受信メールの Message-ID を対応表へ登録する (後続の返信をこのチケットへ紐付けるため)。
+  // ベストエフォート: 登録失敗で 500 を返すと再送 → 二重起票になりかねないので、握ってログに残す。
+  if (email.messageId) {
+    try {
+      await repos.emailThreads.register({
+        messageId: email.messageId,
+        ticketId: ticket.id,
+        tenantId: tenant.id,
+      });
+    } catch (err) {
+      console.warn('[POST /api/inbound/email] failed to register inbound message id', err);
+    }
+  }
 
   // 作成された問い合わせ ID を 201 で返す (プロバイダは本文を使わないが疎通確認に役立つ)
   return NextResponse.json({ ticketId: ticket.id }, { status: 201 });

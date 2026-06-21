@@ -4,6 +4,7 @@ import type { Repos, UnitOfWork } from '@/data/ports/unit-of-work';
 // 各エンティティ用の Prisma リポジトリ生成関数を取り込む
 import { makeAttachmentRepo } from './attachment-repository.prisma';
 import { makeCategoryRepo } from './category-repository.prisma';
+import { makeEmailThreadRepo } from './email-thread-repository.prisma';
 import { makeFaqRepo } from './faq-repository.prisma';
 import { makeInvitationRepo } from './invitation-repository.prisma';
 import { makeMagicLinkRepo } from './magic-link-repository.prisma';
@@ -34,6 +35,7 @@ export function buildPrismaRepos(db: PrismaLike): Repos {
     magicLinks: makeMagicLinkRepo(db),
     invitations: makeInvitationRepo(db),
     attachments: makeAttachmentRepo(db),
+    emailThreads: makeEmailThreadRepo(db),
   };
 }
 

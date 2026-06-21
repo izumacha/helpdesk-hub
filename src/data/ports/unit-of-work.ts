@@ -1,6 +1,7 @@
 // 各リポジトリの契約 (port) を束ねて 1 セットとして扱うための型定義
 import type { AttachmentRepository } from './attachment-repository';
 import type { CategoryRepository } from './category-repository';
+import type { EmailThreadRepository } from './email-thread-repository';
 import type { FaqRepository } from './faq-repository';
 import type { InvitationRepository } from './invitation-repository';
 import type { MagicLinkRepository } from './magic-link-repository';
@@ -24,6 +25,7 @@ export interface Repos {
   magicLinks: MagicLinkRepository; // マジックリンクトークン操作 (パスワードレス認証)
   invitations: InvitationRepository; // 招待リンクトークン操作 (メンバー招待)
   attachments: AttachmentRepository; // 添付ファイル (画像) のメタ情報操作
+  emailThreads: EmailThreadRepository; // メール Message-ID → チケット 対応表 (スレッド継続 / Phase 2)
 }
 
 // トランザクション境界を表す契約 (Unit of Work パターン)

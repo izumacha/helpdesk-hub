@@ -104,6 +104,7 @@ model Tenant {
   notifications Notification[]
   attachments   Attachment[] // 添付ファイル (テナント境界の保持に必須)
   invitations   Invitation[] // メンバー招待リンク (発行〜受諾までのワンタイムトークン)
+  emailThreadRefs EmailThreadRef[] // メールスレッド継続用の Message-ID 対応表 (Phase 2)
 }
 
 // ─────────────────────────────────────────────
@@ -241,6 +242,7 @@ model Ticket {
   faqCandidate  FaqCandidate? // 紐づく FAQ 候補 (1:1)
   notifications Notification[] // このチケットを参照する通知
   attachments   Attachment[] // 紐づく添付ファイル (画像)
+  emailThreadRefs EmailThreadRef[] // このチケットに紐づくメール Message-ID 群 (スレッド継続)
 
   // 検索性能向上のためのインデックス
   @@index([creatorId]) // 作成者で絞り込む一覧用
@@ -366,4 +368,29 @@ model Attachment {
   @@index([ticketId]) // チケット詳細での一覧取得用
   @@index([commentId]) // コメント単位での添付一覧用
   @@index([tenantId]) // テナントスコープ検索用 (クロステナント遮断テスト用)
+}
+
+// ─────────────────────────────────────────────
+// EmailThreadRef (メールスレッド継続用の Message-ID 対応表 / Phase 2)
+// ─────────────────────────────────────────────
+// docs/smb-dx-pivot-plan.md Phase 2「スレッド継続 (In-Reply-To ヘッダで紐付け)」(§4 / L130)。
+// 受信して起票したメールと、担当者が送信した返信メールの Message-ID を、紐づくチケットと一緒に
+// 記録する。後続の返信メールが In-Reply-To / References でこれらの Message-ID を参照してきたとき、
+// 新規起票せず既存チケットへコメント追記するための「Message-ID → ticket」逆引きに使う。
+// Message-ID は @@unique([tenantId, messageId]) でテナント内一意にし、別テナントの Message-ID を
+// 突き合わせてスレッドを乗っ取られない (クロステナント漏洩防止 §9) ようにする。
+model EmailThreadRef {
+  id        String   @id @default(cuid()) // 主キー
+  messageId String // メールの Message-ID (山括弧と前後空白を除いた正規化済みの値)
+  createdAt DateTime @default(now()) // 記録日時 (同一参照が複数あれば新しい紐付けを優先する)
+
+  ticketId String // 紐づくチケット ID
+  tenantId String // 所属テナント (突き合わせは必ずこのスコープ内で行う)
+
+  ticket Ticket @relation(fields: [ticketId], references: [id], onDelete: Cascade) // チケット削除で連鎖削除
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade) // テナント削除で連鎖削除
+
+  @@unique([tenantId, messageId]) // テナント内で Message-ID は一意 (スレッド乗っ取り・二重取り込み防止)
+  @@index([ticketId]) // チケット削除の連鎖や逆引き用
+  @@index([tenantId]) // テナントスコープ検索用
 }
