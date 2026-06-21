@@ -107,26 +107,26 @@
 
 ### Phase 0 — 基盤整備（2 週間）
 
-- [ ] `Tenant` モデル追加 + 全関連テーブルへの `tenantId` 付与 + マイグレーション
-- [ ] `auth.ts` の session 拡張（`tenantId` 載せる）と middleware でのスコープ強制
+- [x] `Tenant` モデル追加 + 全関連テーブルへの `tenantId` 付与 + マイグレーション
+- [x] `auth.ts` の session 拡張（`tenantId` 載せる）と middleware でのスコープ強制
 - [x] テナント作成 / 招待リンク発行画面（admin 用）
 - [x] 既存 E2E / Vitest をテナント前提に修正
 
 ### Phase 1 — Lite モード MVP（4 週間）★ 最重要
 
-- [ ] 設定: テナントごとの `mode` 切替フラグ
-- [ ] UI: 用語差し替え（`src/lib/constants.ts` を mode-aware に）
-- [ ] ドメイン: `ALLOWED_TRANSITIONS_LITE`（3 ステータス）を `src/domain/ticket-status.ts` に追加。テストも追加
-- [ ] フォーム: 必須項目を「件名 / 内容 / 期限日」だけに絞る簡易フォーム
-- [ ] 一覧: 「自分の未対応」「期限切れ」タブ + フリーワード検索のみ
+- [x] 設定: テナントごとの `mode` 切替フラグ
+- [x] UI: 用語差し替え（`src/lib/constants.ts` を mode-aware に）
+- [x] ドメイン: `ALLOWED_TRANSITIONS_LITE`（3 ステータス）を `src/domain/ticket-status.ts` に追加。テストも追加
+- [x] フォーム: 必須項目を「件名 / 内容 / 期限日」だけに絞る簡易フォーム
+- [x] 一覧: 「自分の未対応」「期限切れ」タブ + フリーワード検索のみ
 - [ ] スマホ最適化（一覧をカード型に、フォームをステップ式に）
-- [ ] 添付ファイル（画像）対応 ― S3 互換ストレージ / もしくはローカルボリューム + 後で差し替え可能な Adapter
-- [ ] マジックリンク認証（メール一通でログイン）
+- [x] 添付ファイル（画像）対応 ― S3 互換ストレージ / もしくはローカルボリューム + 後で差し替え可能な Adapter
+- [x] マジックリンク認証（メール一通でログイン）
 
 ### Phase 2 — 既存チャネルからの取り込み（4 週間）★ 差別化の本丸
 
 - [x] **メール取り込み**: 専用転送アドレス（例: `tenant-abc@inbox.helpdesk-hub.app`）に転送するとチケット化。`POST /api/inbound/email` を Webhook として実装（SendGrid Inbound Parse 形式の multipart / JSON 双方を受理）。テナントは `Tenant.inboundToken`（宛先ローカルパート）で特定、共有シークレット検証＋既知メンバー以外は隔離。純粋パーサ `src/lib/inbound-email.ts` ＋ ユニット/ルートテスト付き
-- [ ] スレッド継続（`In-Reply-To` ヘッダで紐付け）
+- [x] スレッド継続（`In-Reply-To` ヘッダで紐付け）
 - [ ] **LINE 公式アカウント連携（β）**: 友だち追加 → メッセージ送信でチケット化、担当者の返信が LINE に返る
 - [x] メール通知テンプレートの整備（HTML、日本語、件名規約）
 - [x] 「対応すると依頼者にメールで返信が届く」を既定動作に（依頼者がアプリにログインしなくても完結）

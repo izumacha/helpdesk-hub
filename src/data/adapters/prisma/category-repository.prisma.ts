@@ -25,15 +25,27 @@ export function makeCategoryRepo(db: PrismaLike): CategoryRepository {
         select: { id: true, name: true },
       });
     },
-    // カテゴリを 1 件新規作成して返す (Phase 3 業種テンプレ初期投入用)
-    // tenantId は input に含まれているため、クロステナント作成は呼び出し側の責任で防ぐ
+    // カテゴリを 1 件作成 (または既存を返す) する冪等な操作 (Phase 3 業種テンプレ初期投入用)。
+    // plain create ではなく upsert を使う理由:
+    //   テナント作成フロー (create-tenant.ts) では同一の (tenantId, name) が @@unique 制約を持つため、
+    //   ネットワーク障害や再送によるリトライで同じカテゴリを 2 回作成しようとすると P2002 が発生する。
+    //   upsert により「存在しなければ INSERT、既に存在すれば更新なし」の冪等な動作にして、
+    //   リトライに対して安全にする (§8 N+1 回避・§9 fail-safe)。
     async create(input) {
-      // Prisma の create で name + tenantId を INSERT し、id と name だけ SELECT して返す
-      const row = await db.category.create({
-        data: { name: input.name, tenantId: input.tenantId }, // 作成データを渡す
-        select: { id: true, name: true }, // port 契約の CategorySummary 型に合わせた最小選択
+      // upsert: where 節で複合一意キー (tenantId + name) を指定して重複を検出する
+      const row = await db.category.upsert({
+        where: {
+          // Prisma が @@unique([tenantId, name]) から自動生成する複合ユニーク識別子
+          tenantId_name: { tenantId: input.tenantId, name: input.name },
+        },
+        // 既存行があっても何も更新しない (insert or ignore 相当)
+        update: {},
+        // 存在しない場合は新規作成する
+        create: { name: input.name, tenantId: input.tenantId },
+        // port 契約の CategorySummary 型に合わせた最小選択
+        select: { id: true, name: true },
       });
-      // 作成した行 (id / name) を返す
+      // 作成または取得した行 (id / name) を返す
       return row;
     },
   };

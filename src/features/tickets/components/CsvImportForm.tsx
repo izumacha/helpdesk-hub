@@ -9,6 +9,9 @@ import { useState, useTransition } from 'react';
 import { importTickets } from '@/features/tickets/actions/import-tickets';
 // インポート結果の型 (成功件数 + エラー一覧)
 import type { ImportTicketsResult } from '@/features/tickets/actions/import-tickets';
+// RFC 4180 準拠の CSV パーサ と共有定数 (サーバーアクションと同一実装を共有することでプレビューと実インポートの挙動を一致させる)
+// MAX_CSV_BYTES は @/lib/csv から import して使う (import-tickets.ts と値を共有するため)
+import { parseCsvLine, MAX_CSV_BYTES } from '@/lib/csv';
 
 // CSV インポートフォームに渡す Props 型
 // categories は将来のカテゴリ選択 UI 向けに受け取るが、MVP では使用しない
@@ -25,19 +28,22 @@ interface PreviewRow {
 }
 
 // CSV テキストから先頭 5 件のデータ行をプレビュー用に解析する純粋関数
+// parseCsvLine (RFC 4180 準拠) を使うことで、実際のインポートと同じ列位置を表示する。
+// 以前は split(',') を使っていたが、引用符内カンマを含む行でプレビューとインポートの
+// 列位置がずれる問題があったため、共通の RFC 4180 パーサに切り替えた。
 function parsePreview(csvText: string): PreviewRow[] {
   // 改行コード (CRLF / LF どちらにも対応) で行に分割する
   const lines = csvText.split(/\r?\n/).filter((l) => l.trim() !== '');
   // 行が 1 行 (ヘッダのみ) か 0 行の場合はプレビューなし
   if (lines.length < 2) return [];
-  // ヘッダ行を取り出してカンマ分割する
-  const headers = (lines[0] ?? '').split(',').map((h) => h.trim().replace(/^"|"$/g, ''));
+  // ヘッダ行を RFC 4180 パーサで解析する (引用符内のカンマにも対応)
+  const headers = parseCsvLine(lines[0] ?? '');
   // データ行は最大 5 件に絞る (プレビューなので多すぎない量に制限)
   const dataLines = lines.slice(1, 6);
   // 各データ行を PreviewRow 型にマッピングして返す
   return dataLines.map((line) => {
-    // 行をカンマ分割してセル配列を得る
-    const cells = line.split(',').map((c) => c.trim().replace(/^"|"$/g, ''));
+    // RFC 4180 パーサで各セルを取り出す (引用符内のカンマにも対応)
+    const cells = parseCsvLine(line);
     // ヘッダ名から対応するセルの値を取り出すヘルパー (見つからなければ空文字)
     const get = (name: string): string => {
       const idx = headers.indexOf(name); // ヘッダのインデックスを検索
@@ -66,8 +72,8 @@ export function CsvImportForm({ categories: _categories }: CsvImportFormProps) {
   // useTransition でインポート中フラグを管理する (ボタン無効化・スピナー表示に使う)
   const [isPending, startTransition] = useTransition();
 
-  // クライアント側のファイルサイズ上限 (512KB)。サーバー側と同値に揃えて早期エラーにする
-  const MAX_FILE_BYTES = 512 * 1024;
+  // クライアント側のファイルサイズ上限は @/lib/csv の MAX_CSV_BYTES を使う。
+  // 直書きせずインポートした定数を参照することで import-tickets.ts の値と常に同一になる (§6 定数の一元管理)。
 
   // ファイル選択時のハンドラ: File を読み込んで CSV テキストとプレビューを更新する
   function handleFileChange(e: React.ChangeEvent<HTMLInputElement>) {
@@ -82,11 +88,11 @@ export function CsvImportForm({ categories: _categories }: CsvImportFormProps) {
       return;
     }
     // ファイルサイズが上限を超える場合はエラーを表示して読み込みをスキップ (DoS 防止)
-    if (file.size > MAX_FILE_BYTES) {
+    if (file.size > MAX_CSV_BYTES) {
       setCsvText(null); // CSV テキストをクリア
       setPreview([]); // プレビューをクリア
       setResult(null); // 結果をクリア
-      setError(`ファイルサイズが大きすぎます（上限 ${MAX_FILE_BYTES / 1024}KB）`); // エラー表示
+      setError(`ファイルサイズが大きすぎます（上限 ${MAX_CSV_BYTES / 1024}KB）`); // エラー表示
       return;
     }
     // FileReader で CSV ファイルをテキストとして非同期読み込みする
@@ -224,9 +230,11 @@ export function CsvImportForm({ categories: _categories }: CsvImportFormProps) {
           {/* エラー一覧 (エラーがある場合のみ表示) */}
           {result.errors.length > 0 && (
             <ul className="space-y-1 rounded-lg bg-rose-50 p-4 ring-1 ring-rose-100">
-              {result.errors.map((e: { row: number; message: string }) => (
-                /* エラー 1 件: 行番号 + エラーメッセージ */
-                <li key={e.row} className="text-sm text-rose-700">
+              {result.errors.map((e: { row: number; message: string }, idx: number) => (
+                /* エラー 1 件: 行番号 + エラーメッセージ。
+                   key に e.row を使うと同一行に複数エラーが発生したとき重複するため、
+                   代わりに配列インデックス idx を使う (エラー順序は固定なので安定する)。 */
+                <li key={idx} className="text-sm text-rose-700">
                   {/* 行番号を強調表示する */}
                   <span className="font-medium">{e.row} 行目:</span> {e.message}
                 </li>
