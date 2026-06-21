@@ -39,6 +39,7 @@ export function makeTenantRepo(store: Store): TenantRepository {
         mode: input.mode ?? 'lite',
         industry: input.industry ?? null,
         inboundToken: input.inboundToken ?? null, // メール取り込みアドレスのローカルパート (任意)
+        slackWebhookUrl: null, // 新規テナントは Slack 通知未設定 (null = 無効)
         createdAt: new Date(),
       };
       // ストアの Map に登録
@@ -56,6 +57,18 @@ export function makeTenantRepo(store: Store): TenantRepository {
       const updated = { ...t, mode };
       store.tenants.set(id, updated);
       // 防御的コピーを返す (呼び出し側で破壊されないように)
+      return { ...updated };
+    },
+
+    // Phase 4: Slack/Teams Incoming Webhook URL を更新する (null で無効化)
+    async updateSlackWebhookUrl(id, url) {
+      // 対象テナントを Map から取得 (存在しなければエラー)
+      const t = store.tenants.get(id);
+      if (!t) throw new Error('テナントが見つかりません');
+      // slackWebhookUrl だけ差し替えた新しいオブジェクトを作り Map に書き戻す
+      const updated = { ...t, slackWebhookUrl: url };
+      store.tenants.set(id, updated);
+      // 防御的コピーを返す
       return { ...updated };
     },
   };

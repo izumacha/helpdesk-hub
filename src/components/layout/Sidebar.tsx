@@ -37,7 +37,9 @@ const navItems: {
   { href: '/tickets/new', label: '新規登録' },
   { href: '/faq', label: 'FAQ候補', agentOnly: true, proOnly: true },
   { href: '/notifications', label: '通知' },
+  { href: '/audit', label: '監査ログ', adminOnly: true }, // Phase 4: 管理者向け変更履歴
   { href: '/settings', label: '設定', adminOnly: true },
+  { href: '/help', label: 'ヘルプ' }, // Phase 3: ヘルプセンター (全ロール表示)
 ];
 
 // 左サイドバー (折りたたみ + 役割別メニュー出し分け + モバイルドロワー)

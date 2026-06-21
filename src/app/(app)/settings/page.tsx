@@ -10,6 +10,10 @@ import { TENANT_MODE_LABELS } from '@/lib/constants';
 import { TenantModeForm } from '@/features/settings/components/TenantModeForm';
 // メンバー招待リンク発行フォーム (Client Component)
 import { InviteForm } from '@/features/settings/components/InviteForm';
+// Phase 4: Slack/Teams Webhook URL 設定フォーム (Client Component)
+import { SlackWebhookForm } from '@/features/settings/components/SlackWebhookForm';
+// テナント情報取得 (slackWebhookUrl の初期値を渡すため)
+import { repos } from '@/data';
 
 // /settings : テナント設定ページ (現状は Lite/Pro モードの切替のみ。管理者専用)
 export default async function SettingsPage() {
@@ -30,6 +34,8 @@ export default async function SettingsPage() {
 
   // 現在のテナントモード (lite | pro) を取得してフォームの初期値にする
   const mode = await getCurrentTenantMode(session.user.tenantId);
+  // Phase 4: テナント情報を取得して Slack Webhook URL の現在値を取得する
+  const tenant = await repos.tenants.findById(session.user.tenantId);
 
   return (
     <div className="mx-auto max-w-2xl space-y-6">
@@ -68,6 +74,22 @@ export default async function SettingsPage() {
         </div>
         {/* 招待リンク発行フォーム本体 */}
         <InviteForm />
+      </section>
+
+      {/* Phase 4: Slack / Teams 外部通知カード */}
+      <section className="space-y-4 rounded-2xl bg-white p-6 shadow-sm ring-1 ring-slate-100">
+        <div>
+          {/* セクション見出し */}
+          <h2 className="text-base font-semibold text-slate-900">Slack / Teams 通知</h2>
+          {/* 説明: どのような通知が届くかを伝える */}
+          <p className="mt-1 text-sm text-slate-500">
+            Slack または Microsoft Teams の Incoming Webhook URL を設定すると、
+            問い合わせの作成・状況変更・コメント追加のタイミングで自動通知が届きます。
+            空欄で保存すると通知が無効になります。
+          </p>
+        </div>
+        {/* Webhook URL 設定フォーム (現在の URL を初期値として渡す) */}
+        <SlackWebhookForm current={tenant?.slackWebhookUrl ?? null} />
       </section>
 
       {/* テナント (組織) 作成カード */}

@@ -1,7 +1,12 @@
 // 履歴リポジトリの契約 (port) と、メモリストア/ID 生成ヘルパーをインポート
-import type { TicketHistoryRepository } from '@/data/ports/ticket-history-repository';
+import type { TicketHistoryRepository, TicketHistoryWithRefs } from '@/data/ports/ticket-history-repository';
 import type { TicketHistory } from '@/domain/types';
 import { nextId, type Store } from './store';
+
+// 取得件数の既定値と上限 (Prisma 実装と揃える)
+const AUDIT_DEFAULT_LIMIT = 100;
+// 上限超過リクエストによる DoS を防ぐ (Prisma 実装と同一の値を維持してテスト/本番の挙動を一致させる)
+const AUDIT_MAX_LIMIT = 500;
 
 // メモリストアを使った履歴リポジトリを生成する関数
 export function makeTicketHistoryRepo(store: Store): TicketHistoryRepository {
@@ -20,6 +25,40 @@ export function makeTicketHistoryRepo(store: Store): TicketHistoryRepository {
       };
       // ストアに登録 (返り値はなし)
       store.histories.set(row.id, row);
+    },
+
+    // Phase 4: テナント全体の変更履歴を監査ログとして取得する (テスト用メモリ実装)
+    async findAllByTenant(filter) {
+      // 件数上限 (DoS 対策として AUDIT_MAX_LIMIT でクランプ。Prisma 実装と同じ上限値)
+      const limit = Math.min(filter.limit ?? AUDIT_DEFAULT_LIMIT, AUDIT_MAX_LIMIT);
+      const offset = filter.offset ?? 0;
+
+      // メモリストアからテナントスコープで絞り込む
+      // Ticket を通じて tenantId を間接的に確認する (TicketHistory に tenantId なし)
+      const rows: TicketHistoryWithRefs[] = [];
+      for (const h of store.histories.values()) {
+        // 対象チケットを取得して tenantId を確認する
+        const ticket = store.tickets.get(h.ticketId);
+        // チケットが存在しない or 別テナントならスキップ (クロステナント漏洩防止)
+        if (!ticket || ticket.tenantId !== filter.tenantId) continue;
+        // 変更者を取得する
+        const user = store.users.get(h.changedById);
+        // 変更者が存在しない場合は「不明」で代替する (データ不整合のフォールバック)
+        rows.push({
+          id: h.id, // 履歴 ID
+          ticketId: h.ticketId, // チケット ID
+          ticketTitle: ticket.title, // チケット件名
+          changedById: h.changedById, // 変更者 ID
+          changedByName: user?.name ?? '不明', // 変更者氏名 (存在しない場合は「不明」)
+          field: h.field, // 変更項目
+          oldValue: h.oldValue, // 変更前の値
+          newValue: h.newValue, // 変更後の値
+          createdAt: h.createdAt, // 変更日時
+        });
+      }
+      // 新しい順に並べてページネーションを適用する
+      rows.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+      return rows.slice(offset, offset + limit);
     },
   };
 }

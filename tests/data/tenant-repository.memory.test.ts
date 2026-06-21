@@ -28,6 +28,7 @@ function seed() {
       mode: 'lite',
       industry: null,
       inboundToken: null,
+      slackWebhookUrl: null, // Slack 通知未設定 (テスト用フィクスチャ)
       createdAt: now,
     });
   }
@@ -94,6 +95,7 @@ describe('TenantRepository.findByInboundToken (memory)', () => {
       mode: 'lite',
       industry: null,
       inboundToken: 'token-a',
+      slackWebhookUrl: null, // Slack 通知未設定 (テスト用フィクスチャ)
       createdAt: now,
     });
     store.tenants.set(TENANT_B, {
@@ -102,6 +104,7 @@ describe('TenantRepository.findByInboundToken (memory)', () => {
       mode: 'lite',
       industry: null,
       inboundToken: null,
+      slackWebhookUrl: null, // Slack 通知未設定 (テスト用フィクスチャ)
       createdAt: now,
     });
   });

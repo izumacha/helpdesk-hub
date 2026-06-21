@@ -19,6 +19,8 @@ function toTenant(row: TenantRow): Tenant {
     mode: row.mode,
     industry: row.industry,
     inboundToken: row.inboundToken, // メール取り込みアドレスのローカルパート (未発行なら null)
+    // Phase 4: Slack/Teams Incoming Webhook URL (null なら外部通知無効)
+    slackWebhookUrl: row.slackWebhookUrl,
     createdAt: row.createdAt,
   };
 }
@@ -64,6 +66,14 @@ export function makeTenantRepo(db: PrismaLike): TenantRepository {
     async updateMode(id, mode) {
       // 主キー (tenantId) で対象テナントを特定し mode 列のみ更新する
       const row = await db.tenant.update({ where: { id }, data: { mode } });
+      // 更新後の行をドメイン型に詰め替えて返す
+      return toTenant(row);
+    },
+
+    // Phase 4: Slack/Teams Incoming Webhook URL を更新する (null で無効化)
+    async updateSlackWebhookUrl(id, url) {
+      // 主キーで対象テナントを特定し slackWebhookUrl 列のみ更新する
+      const row = await db.tenant.update({ where: { id }, data: { slackWebhookUrl: url } });
       // 更新後の行をドメイン型に詰め替えて返す
       return toTenant(row);
     },

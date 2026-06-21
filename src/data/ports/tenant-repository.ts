@@ -20,4 +20,8 @@ export interface TenantRepository {
   // テナントの動作モード (lite | pro) を更新し、更新後の Tenant を返す
   // id はセッション由来の tenantId のみを渡す契約 (リクエスト入力から注入しないこと = クロステナント防止)
   updateMode(id: string, mode: TenantMode): Promise<Tenant>;
+  // Phase 4: Slack/Teams Incoming Webhook URL を更新する。
+  // null を渡すと外部通知を無効化する (設定画面の「削除」操作に対応)。
+  // id はセッション由来の tenantId のみを渡すこと (クロステナント変更防止)。
+  updateSlackWebhookUrl(id: string, url: string | null): Promise<Tenant>;
 }

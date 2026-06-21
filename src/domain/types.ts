@@ -41,6 +41,8 @@ export interface Tenant {
   mode: TenantMode; // Lite/Pro モード
   industry: string | null; // 業種テンプレ識別子 (未設定なら null)
   inboundToken: string | null; // メール取り込み用アドレスのローカルパート (未発行なら null)
+  // Phase 4: 外部通知チャネル。Slack / Teams Incoming Webhook URL (null なら通知無効)
+  slackWebhookUrl: string | null;
   createdAt: Date; // 作成日時
 }
 
