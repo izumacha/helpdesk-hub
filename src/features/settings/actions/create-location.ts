@@ -32,7 +32,9 @@ export async function createLocation(formData: FormData): Promise<CreateLocation
 
   // フォームデータから入力値を取り出す
   const name = (formData.get('name') ?? '').toString().trim();
-  const description = (formData.get('description') ?? '').toString().trim() || null;
+  const rawDescription = (formData.get('description') ?? '').toString().trim();
+  // 説明を 500 文字に切り詰める (DoS 対策 — PostgreSQL TEXT は無制限だが上限を設ける)
+  const description = rawDescription.slice(0, 500) || null;
 
   // 拠点名の必須チェック (1〜100 文字)
   if (!name) {
