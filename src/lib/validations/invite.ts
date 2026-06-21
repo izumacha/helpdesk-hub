@@ -1,5 +1,7 @@
 // Zod (スキーマ検証ライブラリ) をインポート
 import { z } from 'zod';
+// 業種テンプレートの ID 一覧 (サーバー側ホワイトリスト検証に使う)
+import { INDUSTRY_TEMPLATES } from '@/lib/industry-templates';
 
 // 招待リンクで付与できる権限は「メンバー (requester)」か「担当者 (agent)」のみ。
 // admin はリンク経由で付与しない (テナント作成フォームで初代管理者を作る運用)。
@@ -62,6 +64,11 @@ export const acceptInvitationSchema = z.object({
   password: passwordSchema,
 });
 
+// 有効な業種 ID のセット (INDUSTRY_TEMPLATES から動的に生成してホワイトリストとして使う)
+// フォームの <select> 選択肢と同じリストをサーバー側でも検証することで、直接リクエストによる
+// 任意文字列の持ち込みを防ぐ (UI で弾いても HTTP リクエストは直接送れるため)
+const VALID_INDUSTRY_IDS = new Set(INDUSTRY_TEMPLATES.map((t) => t.id));
+
 // テナント作成フォーム (運用者向け最小) の入力検証スキーマ。
 // 組織名 + 業種 (任意) + 初代管理者の氏名 / メール / パスワード。
 export const createTenantSchema = z.object({
@@ -71,11 +78,15 @@ export const createTenantSchema = z.object({
     .trim()
     .min(1, '組織名は必須です')
     .max(NAME_MAX_LENGTH, '組織名が長すぎます'),
-  // 業種テンプレ識別子 (任意。Phase 3 のカテゴリ初期投入で利用予定)
+  // 業種テンプレ識別子 (任意)。空文字は「未選択」として undefined に変換する。
+  // 空文字以外を指定する場合は INDUSTRY_TEMPLATES の ID のいずれかに限定する (ホワイトリスト)
   industry: z
     .string()
     .trim()
-    .max(NAME_MAX_LENGTH, '業種が長すぎます')
+    .refine(
+      (v: string) => v === '' || VALID_INDUSTRY_IDS.has(v),
+      '業種の指定が正しくありません。選択肢から選んでください。'
+    )
     .optional()
     .or(z.literal('').transform(() => undefined)),
   // 初代管理者の氏名

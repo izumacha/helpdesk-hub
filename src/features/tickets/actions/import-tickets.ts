@@ -18,6 +18,13 @@ import type { Priority, TicketStatus } from '@/domain/types';
 
 // 1 インポートあたりの最大行数 (これを超えたらエラー)
 const MAX_ROWS = 200;
+// CSV テキスト全体の最大バイト数 (200行 × 平均 500 文字 を余裕を持って設定)
+// Next.js Server Action のデフォルト上限 (1MB) より小さく設定して早期エラーにする
+const MAX_CSV_BYTES = 512 * 1024; // 512KB
+// チケット件名の最大文字数 (createTicketSchema と合わせる)
+const TITLE_MAX_LENGTH = 200;
+// チケット本文の最大文字数 (createTicketSchema と合わせる)
+const BODY_MAX_LENGTH = 10_000;
 
 // CSV の優先度文字列 (日本語) を Priority 型にマップする対応表
 // 一元管理することで「高」「中」「低」の定義が 1 か所に集まる
@@ -117,6 +124,12 @@ export async function importTickets(csvText: string): Promise<ImportTicketsResul
   const tenantId = session.user.tenantId;
   const creatorId = session.user.id;
 
+  // CSV テキスト全体のサイズをチェックする (DoS / 過大ペイロードの防止)
+  // Buffer.byteLength で実際のバイト数を計測する (日本語は UTF-8 で 3 bytes / 文字)
+  if (Buffer.byteLength(csvText, 'utf8') > MAX_CSV_BYTES) {
+    throw new Error(`CSV ファイルのサイズが大きすぎます（上限 ${MAX_CSV_BYTES / 1024}KB）`);
+  }
+
   // 60 秒あたり 5 回までに制限 (大量インポートの連打を防ぐ)
   enforceRateLimit(`csv-import:${session.user.id}`, { limit: 5, windowMs: 60_000 });
 
@@ -174,13 +187,29 @@ export async function importTickets(csvText: string): Promise<ImportTicketsResul
     // RFC 4180 パーサで各セルを取り出す (引用符内のカンマにも対応)
     const cells = parseCsvLine(line ?? '');
 
-    // 件名セルを取り出す
-    const title = cells[titleIndex] ?? '';
+    // 件名セルを取り出す (TITLE_MAX_LENGTH を超える分はエラーにして行をスキップ)
+    const titleRaw = cells[titleIndex] ?? '';
     // 件名が空の行はスキップする (ヘッダ後の空行などを無視する)
-    if (!title) continue;
+    if (!titleRaw) continue;
+    // 件名が長すぎる場合はエラーとして記録してこの行をスキップ (DB の制約前に弾く)
+    if (titleRaw.length > TITLE_MAX_LENGTH) {
+      errors.push({ row: rowNum, message: `件名が長すぎます（${TITLE_MAX_LENGTH}文字以内にしてください）` });
+      // 次の行へ進む (部分成功なので continue)
+      continue;
+    }
+    // 検証済みの件名を確定する
+    const title = titleRaw;
 
     // 本文セルを取り出す (未指定なら空文字)
-    const body = bodyIndex !== -1 ? (cells[bodyIndex] ?? '') : '';
+    const bodyRaw = bodyIndex !== -1 ? (cells[bodyIndex] ?? '') : '';
+    // 本文が長すぎる場合はエラーとして記録してこの行をスキップ
+    if (bodyRaw.length > BODY_MAX_LENGTH) {
+      errors.push({ row: rowNum, message: `内容が長すぎます（${BODY_MAX_LENGTH}文字以内にしてください）` });
+      // 次の行へ進む (部分成功なので continue)
+      continue;
+    }
+    // 検証済みの本文を確定する
+    const body = bodyRaw;
 
     // 優先度セルを日本語から Priority 型へ変換する (未指定または未知値は Medium にフォールバック)
     const priorityRaw = priorityIndex !== -1 ? (cells[priorityIndex] ?? '') : '';
@@ -222,9 +251,10 @@ export async function importTickets(csvText: string): Promise<ImportTicketsResul
       // 成功カウンタをインクリメント
       imported += 1;
     } catch (err) {
-      // チケット作成エラーを行番号と共に記録する (他の行は継続)
-      const message = err instanceof Error ? err.message : 'チケットの作成に失敗しました';
-      errors.push({ row: rowNum, message });
+      // 内部エラー (Prisma 例外等) をサーバーログに記録する (スキーマ情報の漏洩防止のため UI には返さない)
+      console.error(`[importTickets] 行 ${rowNum} のチケット作成に失敗:`, err);
+      // ユーザーには汎用メッセージのみ返す (Prisma のエラー詳細をフロントに漏らさない)
+      errors.push({ row: rowNum, message: 'チケットの作成に失敗しました。内容を確認してください。' });
     }
   }
 

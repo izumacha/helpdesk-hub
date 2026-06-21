@@ -66,6 +66,9 @@ export function CsvImportForm({ categories: _categories }: CsvImportFormProps) {
   // useTransition でインポート中フラグを管理する (ボタン無効化・スピナー表示に使う)
   const [isPending, startTransition] = useTransition();
 
+  // クライアント側のファイルサイズ上限 (512KB)。サーバー側と同値に揃えて早期エラーにする
+  const MAX_FILE_BYTES = 512 * 1024;
+
   // ファイル選択時のハンドラ: File を読み込んで CSV テキストとプレビューを更新する
   function handleFileChange(e: React.ChangeEvent<HTMLInputElement>) {
     // 選択されたファイルを取り出す (未選択なら undefined)
@@ -76,6 +79,14 @@ export function CsvImportForm({ categories: _categories }: CsvImportFormProps) {
       setPreview([]); // プレビューをクリア
       setResult(null); // 結果をクリア
       setError(null); // エラーをクリア
+      return;
+    }
+    // ファイルサイズが上限を超える場合はエラーを表示して読み込みをスキップ (DoS 防止)
+    if (file.size > MAX_FILE_BYTES) {
+      setCsvText(null); // CSV テキストをクリア
+      setPreview([]); // プレビューをクリア
+      setResult(null); // 結果をクリア
+      setError(`ファイルサイズが大きすぎます（上限 ${MAX_FILE_BYTES / 1024}KB）`); // エラー表示
       return;
     }
     // FileReader で CSV ファイルをテキストとして非同期読み込みする
