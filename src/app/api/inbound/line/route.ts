@@ -41,6 +41,14 @@ const LINE_RATE_LIMIT = { limit: 120, windowMs: 60_000 } as const;
 // チケットタイトルとして使うテキストの最大文字数 (長すぎる場合は末尾を省略する)
 const MAX_TITLE_LENGTH = 100;
 
+// 1 リクエストに含まれるイベントの上限 (LINE の通常配信は数件程度だが、
+// 署名付き細工リクエストで大量のイベントを送られると DB インサートが増幅するため上限を設ける)
+const MAX_EVENTS_PER_REQUEST = 20;
+
+// チケット本文として保存するテキストの最大文字数 (LINE のプラットフォーム上限は 5000 文字だが、
+// サーバー側でも明示的に制限して DB の TEXT 型フィールドへの過大な書き込みを防ぐ)
+const MAX_BODY_LENGTH = 10_000;
+
 // LINE Webhook が送ってくるテキストメッセージの型
 interface LineTextMessage {
   type: 'text'; // テキストメッセージであることを示す種別
@@ -175,6 +183,15 @@ export async function POST(req: Request) {
   // メッセージには期限指定が無いため優先度 Medium ベースで解決期限を算出する
   const resolutionDueAt = calculateResolutionDueAt('Medium', now);
 
+  // 1 リクエストに含まれるイベント数が上限を超えていれば 429 で拒否する
+  // (署名付きの細工リクエストで大量イベントを送られると DB インサートが増幅するため)
+  if (body.events.length > MAX_EVENTS_PER_REQUEST) {
+    console.warn(
+      `[POST /api/inbound/line] too many events in one request: ${body.events.length} (max ${MAX_EVENTS_PER_REQUEST})`,
+    );
+    return NextResponse.json({ error: '1 リクエストのイベント数が多すぎます' }, { status: 429 });
+  }
+
   // 1 リクエストに含まれる複数イベントを順に処理してチケットを起票する
   const ticketIds: string[] = [];
   for (const event of body.events) {
@@ -199,8 +216,15 @@ export async function POST(req: Request) {
         ? `${trimmedText.slice(0, MAX_TITLE_LENGTH)}…`
         : trimmedText;
 
+    // メッセージ本文をサーバー側でも上限に丸める (LINE の送信上限 5000 文字よりも大きい 10000 文字で守る)
+    // プラットフォーム上限だけに頼らずサーバー側でも明示的に制限して DB への過大な書き込みを防ぐ
+    const safeText =
+      textMessage.text.length > MAX_BODY_LENGTH
+        ? `${textMessage.text.slice(0, MAX_BODY_LENGTH)}…`
+        : textMessage.text;
+
     // チケット本文: LINE ユーザー ID と全メッセージテキストを含める (担当者が手動連絡できるよう)
-    const ticketBody = `[LINE 経由の問い合わせ]\nLINE ユーザー ID: ${lineUserId}\n\n${textMessage.text}`;
+    const ticketBody = `[LINE 経由の問い合わせ]\nLINE ユーザー ID: ${lineUserId}\n\n${safeText}`;
 
     // 新規チケットを起票する (Web フォーム・メール取り込みと同じ PORT 経由)
     const ticket = await repos.tickets.create({
