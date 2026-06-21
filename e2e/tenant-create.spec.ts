@@ -24,10 +24,13 @@ async function login(page: Page, email: string) {
 
 // テスト後に作成したテナント (連鎖でユーザーも) を掃除する
 test.afterAll(async () => {
-  // 作成ユーザーを先に消す (念のため)
-  await prisma.user.deleteMany({ where: { email: NEW_ADMIN_EMAIL } });
-  // 組織名で作成テナントを消す (ON DELETE CASCADE で配下も消える)
+  // テナントを先に消す。Tenant→User / Ticket は onDelete: Cascade なので、初代管理者と
+  // Phase 3 のサンプルチケットを含む配下データがまとめて連鎖削除される。
+  // (先に User を消すと、サンプルチケットが creatorId でその User を参照しており、
+  //  Ticket_creatorId_fkey 制約に違反して削除に失敗するため、必ずテナント削除を先に行う)
   await prisma.tenant.deleteMany({ where: { name: NEW_TENANT_NAME } });
+  // 念のための後始末: テナント作成が途中で失敗して孤立した管理者ユーザーが残っていれば消す
+  await prisma.user.deleteMany({ where: { email: NEW_ADMIN_EMAIL } });
   // Prisma 接続を閉じる
   await prisma.$disconnect();
 });
@@ -68,7 +71,7 @@ test.describe('テナント作成フロー', () => {
     // 管理者なのでダッシュボードへ遷移する
     await newPage.waitForURL(/\/dashboard/);
 
-    // 新組織は空なので、既存組織のチケット (例: VPN に接続できない) は見えない
+    // 新組織にはサンプルチケットのみが入るため、既存組織のチケット (例: VPN に接続できない) は見えない
     await newPage.goto('/tickets');
     await expect(newPage.getByText('VPN に接続できない')).toHaveCount(0);
 

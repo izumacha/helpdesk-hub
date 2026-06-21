@@ -4,8 +4,8 @@
  * テナント作成サーバーアクション (運用者向け・管理者専用)。
  *
  * 新しい組織 (テナント) と、その初代管理者 (admin) ユーザーを 1 件ずつ作成する。
- * セルフサーブ・サインアップやオンボーディングウィザード (業種テンプレ自動投入等) は
- * Phase 3 の領域なので、ここでは「組織 + 初代管理者を作るだけ」の最小フォームに留める。
+ * Phase 3 オンボーディングとして、業種テンプレに応じたカテゴリ投入に加え、
+ * 操作感を掴むためのサンプルチケットを自動作成する。
  *
  * セキュリティ要点:
  *  - 実行は admin のみ (assertAdminSession)。作成テナントは呼び出し元テナントと独立。
@@ -30,6 +30,26 @@ import { createTenantSchema } from '@/lib/validations/invite';
 import { generateInboundToken } from '@/lib/inbound-email';
 // 業種テンプレートの検索関数 (Phase 3 業種テンプレ自動投入)
 import { findIndustryTemplate } from '@/lib/industry-templates';
+// 優先度から解決期限を計算する SLA ヘルパー (サンプルチケットの期限算出に使う)
+import { calculateResolutionDueAt } from '@/lib/sla';
+// 新規起票時の初期ステータスを mode から決める共通ルール (サンプルチケットと揃える)
+import { initialStatusForMode } from '@/domain/ticket-status';
+
+// サンプルチケットの定義 (Phase 3 オンボーディング)。
+// 新規テナントに操作感を掴ませるために自動投入する 2 件のチケット。
+// 内容は業種に関わらず汎用的な例とし、Lite モードに合わせた平易な日本語にする。
+const SAMPLE_TICKETS = [
+  {
+    // 1 件目: システムの操作確認を促す導入チケット
+    title: 'はじめての問い合わせ（サンプル）',
+    body: 'これはサンプルのチケットです。実際の問い合わせが届いたら、件名・内容・期限を確認して「対応中」に変更してみましょう。\n\n対応が完了したら「完了」に変更することで、この問い合わせを閉じることができます。',
+  },
+  {
+    // 2 件目: メール転送機能の説明チケット
+    title: 'メールから自動で問い合わせが届きます（サンプル）',
+    body: '設定画面に表示されている転送アドレス宛にメールを転送すると、自動でここに問い合わせが届きます。\n\nGmail や Outlook の「自動転送」機能を使うと、既存のメールアドレスに届いた問い合わせをそのままこのシステムで管理できます。',
+  },
+] as const;
 
 // createTenant の戻り値型 (作成したテナント ID と初代管理者メールを返す)
 export interface CreateTenantResult {
@@ -81,8 +101,8 @@ export async function createTenant(formData: FormData): Promise<CreateTenantResu
     });
     // パスワードを bcrypt でハッシュ化する (cost 12)
     const passwordHash = await hash(adminPassword, 12);
-    // 初代管理者 (admin) を作成テナントに所属させて作る
-    await tx.users.create({
+    // 初代管理者 (admin) を作成テナントに所属させて作る。戻り値を保持して後のサンプル起票で使う
+    const adminUser = await tx.users.create({
       email: adminEmail,
       name: adminName,
       passwordHash,
@@ -105,6 +125,28 @@ export async function createTenant(formData: FormData): Promise<CreateTenantResu
         }
       }
     }
+
+    // Phase 3 オンボーディング: サンプルチケットを自動投入して操作感を体験できるようにする。
+    // 起票者には初代管理者 (adminUser) を設定する。
+    // サンプルチケットは Lite モードの既定動作に合わせて初期化する (Pro でも同じ)。
+    const initialStatus = initialStatusForMode(tenant.mode);
+    // サンプルチケットの解決期限は優先度 Medium ベースで自動計算する
+    const now = new Date();
+    const resolutionDueAt = calculateResolutionDueAt('Medium', now);
+    // サンプルチケットを 1 件ずつ直列で作成する (トランザクション内の複数クエリは直列が安全)
+    for (const sample of SAMPLE_TICKETS) {
+      await tx.tickets.create({
+        title: sample.title, // サンプルタイトル
+        body: sample.body, // サンプル本文
+        priority: 'Medium', // 既定の優先度 (Medium)
+        categoryId: null, // サンプルはカテゴリ未分類
+        creatorId: adminUser.id, // 初代管理者を起票者とする
+        tenantId: tenant.id, // 所属テナント
+        status: initialStatus, // Lite は 'Open'、Pro は DB 既定 'New'
+        resolutionDueAt, // 自動計算した解決期限
+      });
+    }
+
     // 作成結果を返す
     return { tenantId: tenant.id, adminEmail };
   });
