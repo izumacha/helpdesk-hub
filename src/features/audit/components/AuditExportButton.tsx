@@ -2,6 +2,8 @@
 
 // 監査ログの拡張型 (チケット件名・変更者名含む)
 import type { TicketHistoryWithRefs } from '@/data/ports/ticket-history-repository';
+// 変更履歴フィールドの日本語ラベルマップ (CSV のフィールド列に使う)
+import { HISTORY_FIELD_LABELS } from '@/lib/constants';
 
 // AuditExportButton が受け取る props
 interface Props {
@@ -9,24 +11,22 @@ interface Props {
   logs: TicketHistoryWithRefs[];
 }
 
-// フィールド名の日本語ラベルマップ (CSV 出力にも日本語ヘッダーを使う)
-const FIELD_LABELS: Record<string, string> = {
-  status: 'ステータス',
-  priority: '優先度',
-  assignee: '担当者',
-  escalation: 'エスカレーション',
-};
 
-// CSV セルを安全にエスケープする関数
-// ダブルクォート・カンマ・改行を含む値はダブルクォートで囲み、内部のダブルクォートを 2 重化する
+// CSV セルを安全にエスケープする関数。
+// ダブルクォート・カンマ・改行を含む値はダブルクォートで囲み、内部のダブルクォートを 2 重化する。
+// さらに CSV インジェクション対策として、スプレッドシートが数式として解釈するプレフィックス
+// (=, +, -, @) で始まる値の先頭にタブを挿入して無害化する (OWASP CSV Injection 対策)。
 function escapeCSVCell(value: string | null | undefined): string {
   // null/undefined は空文字列として出力する
   if (value == null) return '';
-  // 特殊文字が含まれる場合はクォート処理する
-  if (value.includes(',') || value.includes('"') || value.includes('\n')) {
-    return `"${value.replace(/"/g, '""')}"`;
+  // スプレッドシートの数式として解釈されるプレフィックスを無害化する
+  // (Excel / LibreOffice Calc は =, +, -, @ で始まるセルを数式として評価する)
+  const neutralised = /^[=+\-@]/.test(value) ? `\t${value}` : value;
+  // 特殊文字が含まれる場合はダブルクォートで囲む
+  if (neutralised.includes(',') || neutralised.includes('"') || neutralised.includes('\n')) {
+    return `"${neutralised.replace(/"/g, '""')}"`;
   }
-  return value;
+  return neutralised;
 }
 
 // 監査ログを CSV ファイルとしてダウンロードするボタン
@@ -52,8 +52,8 @@ export function AuditExportButton({ logs }: Props) {
       log.changedByName,
       // チケット件名
       log.ticketTitle,
-      // 変更項目の日本語ラベル
-      FIELD_LABELS[log.field] ?? log.field,
+      // 変更項目の日本語ラベル (constants.ts の HISTORY_FIELD_LABELS と同じ参照元を使う)
+      HISTORY_FIELD_LABELS[log.field as keyof typeof HISTORY_FIELD_LABELS] ?? log.field,
       // 変更前の値 (null の場合は空文字)
       log.oldValue ?? '',
       // 変更後の値 (null の場合は空文字)

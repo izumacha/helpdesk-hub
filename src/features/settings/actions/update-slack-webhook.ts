@@ -24,6 +24,29 @@ const slackWebhookSchema = z
       .nullable(),
   );
 
+// プライベート IP / ループバック / リンクローカルのホスト名を検出する関数。
+// SSRF (Server-Side Request Forgery) 対策として、内部ネットワークやクラウドメタデータ
+// エンドポイント (169.254.169.254 など) への Webhook URL 設定を防ぐ (§9 SSRF 対策)。
+// DNS ルックアップなしでリテラル IP パターンのみ判定する (DNS リバインディングは別レイヤ対策)。
+function isPrivateHost(hostname: string): boolean {
+  // 小文字に正規化する (IPv6 アドレスの大文字表記に対応)
+  const h = hostname.toLowerCase();
+  // ループバック (127.0.0.0/8 と ::1)
+  if (h === 'localhost' || /^127\./.test(h) || h === '[::1]' || h === '::1') return true;
+  // リンクローカル (IMDS 169.254.169.254 を含む 169.254.0.0/16)
+  if (/^169\.254\./.test(h)) return true;
+  // プライベート: 10.0.0.0/8
+  if (/^10\./.test(h)) return true;
+  // プライベート: 172.16.0.0/12 (172.16.x.x ～ 172.31.x.x)
+  if (/^172\.(1[6-9]|2\d|3[01])\./.test(h)) return true;
+  // プライベート: 192.168.0.0/16
+  if (/^192\.168\./.test(h)) return true;
+  // ANY-ADDRESS
+  if (h === '0.0.0.0') return true;
+  // 上記に該当しない場合はパブリックホストとみなす
+  return false;
+}
+
 // Slack / Teams の Webhook URL を更新するサーバーアクション。
 // 管理者 (admin) のみ実行可能。空文字列を渡すと通知が無効化される。
 export async function updateSlackWebhookUrl(
@@ -49,6 +72,23 @@ export async function updateSlackWebhookUrl(
   if (!parsed.success) {
     // バリデーション失敗: 最初のエラーメッセージを返す
     return { error: parsed.error.issues[0]?.message ?? '入力値が正しくありません' };
+  }
+
+  // SSRF 対策: null (通知無効化) でなければホスト名を検証する
+  // プライベート IP やループバックへの Webhook 設定はサーバー側フェッチで内部リソースを叩く可能性があるため拒否する
+  if (parsed.data !== null) {
+    let urlHostname: string;
+    try {
+      // URL をパースしてホスト名を取り出す (URL が不正な場合は catch で弾く)
+      urlHostname = new URL(parsed.data).hostname;
+    } catch {
+      // URL パース失敗 (Zod の url() を通過した後のパースなので通常ここは到達しないが防御的に処理)
+      return { error: '有効な URL を入力してください' };
+    }
+    // プライベートホストへのリクエストを拒否する
+    if (isPrivateHost(urlHostname)) {
+      return { error: '内部ネットワークへの Webhook URL は設定できません' };
+    }
   }
 
   // テナントの slackWebhookUrl を更新する (セッション由来の tenantId のみ使用してクロステナント変更を防止)

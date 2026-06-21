@@ -3,8 +3,10 @@ import type { TicketHistoryRepository, TicketHistoryWithRefs } from '@/data/port
 import type { TicketHistory } from '@/domain/types';
 import { nextId, type Store } from './store';
 
-// 取得件数の既定値 (Prisma 実装と揃える)
+// 取得件数の既定値と上限 (Prisma 実装と揃える)
 const AUDIT_DEFAULT_LIMIT = 100;
+// 上限超過リクエストによる DoS を防ぐ (Prisma 実装と同一の値を維持してテスト/本番の挙動を一致させる)
+const AUDIT_MAX_LIMIT = 500;
 
 // メモリストアを使った履歴リポジトリを生成する関数
 export function makeTicketHistoryRepo(store: Store): TicketHistoryRepository {
@@ -27,8 +29,8 @@ export function makeTicketHistoryRepo(store: Store): TicketHistoryRepository {
 
     // Phase 4: テナント全体の変更履歴を監査ログとして取得する (テスト用メモリ実装)
     async findAllByTenant(filter) {
-      // 件数上限 (DoS 対策として上限を設ける)
-      const limit = filter.limit ?? AUDIT_DEFAULT_LIMIT;
+      // 件数上限 (DoS 対策として AUDIT_MAX_LIMIT でクランプ。Prisma 実装と同じ上限値)
+      const limit = Math.min(filter.limit ?? AUDIT_DEFAULT_LIMIT, AUDIT_MAX_LIMIT);
       const offset = filter.offset ?? 0;
 
       // メモリストアからテナントスコープで絞り込む

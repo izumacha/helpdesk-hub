@@ -1,5 +1,7 @@
 // 現在のセッション取得
 import { auth } from '@/lib/auth';
+// 認証エラー時のリダイレクト
+import { redirect } from 'next/navigation';
 // リポジトリ束 (監査ログ取得に使用)
 import { repos } from '@/data';
 // 日付フォーマットヘルパー (年月日時分秒を JST で表示する)
@@ -17,8 +19,9 @@ const PAGE_LIMIT = 200;
 export default async function AuditPage() {
   // セッション取得 (middleware で未ログインは弾かれている前提)
   const session = await auth();
-  // 未ログイン or tenantId 不在なら非表示 (middleware が先に弾く想定の保険)
-  if (!session?.user?.id || !session.user.tenantId) return null;
+  // 未ログイン or tenantId 不在はログインページへリダイレクトする
+  // (middleware が先に弾く想定だが、JWT 移行期間中などセッション破損ケースの防御的処理)
+  if (!session?.user?.id || !session.user.tenantId) redirect('/login');
 
   // 管理者以外は権限なし表示を返す (RBAC はページ側で強制する)
   if (session.user.role !== 'admin') {

@@ -164,28 +164,34 @@ export async function updateTicketStatus(ticketId: string, newStatus: TicketStat
   if (notifiedCreatorId) await broadcastUnreadCount(notifiedCreatorId, tenantId);
 
   // Phase 2: ステータス変更を依頼者へメールで通知する (ベストエフォート)
-  // ticketSnapshot と oldStatus は uow.run 内で代入される let 変数。
-  // null チェックで絞り込んでから送信する (変更なし / チケット未取得のケースは skip)。
-  if (ticketSnapshot !== null && oldStatus !== null && ticketSnapshot.creatorId !== session.user.id) {
+  // ticketSnapshot / oldStatus は uow.run クロージャ内で代入される let 変数。
+  // TSC の CFA は async クロージャを跨いだ let 変数を never に絞り込んでしまうため、
+  // 宣言型で明示アサーションして const に取り出してから null チェックを行う。
+  const snapForMail = ticketSnapshot as { creatorId: string; title: string } | null;
+  const oldStatusForMail = oldStatus as TicketStatus | null;
+  // スナップショットと変更前ステータスが揃い、かつ自分以外の起票者がいる場合のみ送信する
+  if (snapForMail !== null && oldStatusForMail !== null && snapForMail.creatorId !== session.user.id) {
     // メール送信を別関数に切り出して try/catch で囲み、失敗してもチケット更新は巻き戻さない
     await sendStatusChangedEmailToRequester({
       ticketId,
-      ticketTitle: ticketSnapshot.title,
-      creatorId: ticketSnapshot.creatorId,
-      oldStatus,
+      ticketTitle: snapForMail.title,
+      creatorId: snapForMail.creatorId,
+      oldStatus: oldStatusForMail,
       newStatus,
       mode,
     });
   }
 
   // Phase 4: Slack/Teams 外部通知 (ステータス変更をチャネルに投稿する)
-  // スナップショットが取れた場合のみ送信 (変更なしや見つからないケースは skip)
-  if (ticketSnapshot !== null) {
+  // Slack 通知はチームの共有チャネル宛なので、自己更新でも全員に通知する (メール個人通知とは異なる意図)。
+  // スナップショットが取れた場合のみ送信 (変更なし / チケット未取得のケースは skip)。
+  const snapForSlack = ticketSnapshot as { creatorId: string; title: string } | null;
+  if (snapForSlack !== null) {
     // ベースURLを取得してチケットリンクを組み立てる
     const baseUrl = resolveAppBaseUrl();
     await sendOutboundNotification(tenantId, {
-      subject: `ステータスが変更されました: ${ticketSnapshot.title}`,
-      body: `「${ticketSnapshot.title}」のステータスが「${getStatusLabel(newStatus, mode)}」に変更されました。`,
+      subject: `ステータスが変更されました: ${snapForSlack.title}`,
+      body: `「${snapForSlack.title}」のステータスが「${getStatusLabel(newStatus, mode)}」に変更されました。`,
       ticketUrl: `${baseUrl}/tickets/${ticketId}`,
     });
   }
