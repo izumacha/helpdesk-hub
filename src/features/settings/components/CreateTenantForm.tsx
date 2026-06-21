@@ -6,6 +6,8 @@ import { useState, useTransition } from 'react';
 import { createTenant } from '@/features/settings/actions/create-tenant';
 // パスワード最小長の単一参照元 (サーバー検証スキーマと共有)
 import { PASSWORD_MIN_LENGTH } from '@/lib/validations/invite';
+// 業種テンプレート一覧 (ドロップダウンの選択肢として使う / 純粋データなので Client Component でも安全にインポートできる)
+import { INDUSTRY_TEMPLATES } from '@/lib/industry-templates';
 
 // 新しい組織 (テナント) と初代管理者を作成するフォーム
 export function CreateTenantForm() {
@@ -59,18 +61,27 @@ export function CreateTenantForm() {
         />
       </div>
 
-      {/* 業種 (任意) */}
+      {/* 業種 (任意): ドロップダウン選択肢は INDUSTRY_TEMPLATES から生成する (一元管理) */}
       <div className="space-y-1">
         <label htmlFor="industry" className="block text-sm font-medium text-slate-700">
           業種（任意）
         </label>
-        <input
+        {/* select 要素にすることで選択肢を限定し、自由入力による意図しない値を防ぐ */}
+        <select
           id="industry"
           name="industry"
-          type="text"
           className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm focus:border-teal-400 focus:outline-none focus:ring-1 focus:ring-teal-200"
-          placeholder="製造業 / 飲食 / 介護 など"
-        />
+        >
+          {/* 未選択を表す既定オプション (空文字を送信するとサーバー側で undefined 扱い) */}
+          <option value="">（なし）</option>
+          {/* INDUSTRY_TEMPLATES を展開して各業種を選択肢として列挙する */}
+          {INDUSTRY_TEMPLATES.map((t) => (
+            <option key={t.id} value={t.id}>
+              {/* 画面に見せる日本語ラベルを表示する */}
+              {t.label}
+            </option>
+          ))}
+        </select>
       </div>
 
       {/* 区切り見出し: 初代管理者 */}

@@ -28,6 +28,8 @@ import { assertAdminSession } from '@/lib/role';
 import { createTenantSchema } from '@/lib/validations/invite';
 // メール取り込み用の転送アドレストークンを払い出すヘルパー (Phase 2)
 import { generateInboundToken } from '@/lib/inbound-email';
+// 業種テンプレートの検索関数 (Phase 3 業種テンプレ自動投入)
+import { findIndustryTemplate } from '@/lib/industry-templates';
 
 // createTenant の戻り値型 (作成したテナント ID と初代管理者メールを返す)
 export interface CreateTenantResult {
@@ -87,6 +89,21 @@ export async function createTenant(formData: FormData): Promise<CreateTenantResu
       role: 'admin',
       tenantId: tenant.id,
     });
+    // 業種テンプレートが指定されている場合はカテゴリを初期投入する
+    // (Phase 3 業種テンプレ: 選択した業種に紐づくカテゴリを 1 件ずつ作成する)
+    if (industry) {
+      // 指定 ID のテンプレートを取得する (存在しなければ undefined)
+      const template = findIndustryTemplate(industry);
+      // テンプレートが見つかった場合のみカテゴリを一括作成する
+      if (template) {
+        // カテゴリ名のリストを並列 create に変換して実行する (順序不問なので Promise.all で並列化)
+        await Promise.all(
+          template.categories.map((name) =>
+            tx.categories.create({ name, tenantId: tenant.id })
+          )
+        );
+      }
+    }
     // 作成結果を返す
     return { tenantId: tenant.id, adminEmail };
   });

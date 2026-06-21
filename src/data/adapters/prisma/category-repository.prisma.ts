@@ -25,5 +25,16 @@ export function makeCategoryRepo(db: PrismaLike): CategoryRepository {
         select: { id: true, name: true },
       });
     },
+    // カテゴリを 1 件新規作成して返す (Phase 3 業種テンプレ初期投入用)
+    // tenantId は input に含まれているため、クロステナント作成は呼び出し側の責任で防ぐ
+    async create(input) {
+      // Prisma の create で name + tenantId を INSERT し、id と name だけ SELECT して返す
+      const row = await db.category.create({
+        data: { name: input.name, tenantId: input.tenantId }, // 作成データを渡す
+        select: { id: true, name: true }, // port 契約の CategorySummary 型に合わせた最小選択
+      });
+      // 作成した行 (id / name) を返す
+      return row;
+    },
   };
 }

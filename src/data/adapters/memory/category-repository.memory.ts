@@ -1,6 +1,6 @@
 // カテゴリリポジトリの契約 (port) と、テスト用メモリストア型をインポート
 import type { CategoryRepository } from '@/data/ports/category-repository';
-import type { Store } from './store';
+import { nextId, type Store } from './store';
 
 // メモリストアを使ったカテゴリリポジトリを生成するファクトリ関数
 export function makeCategoryRepo(store: Store): CategoryRepository {
@@ -18,6 +18,22 @@ export function makeCategoryRepo(store: Store): CategoryRepository {
       // 存在 & テナント一致のときだけ要約を返す
       if (!c || c.tenantId !== tenantId) return null;
       return { id: c.id, name: c.name };
+    },
+    // カテゴリを 1 件新規作成してストアに登録する (Phase 3 業種テンプレ初期投入用)
+    async create(input) {
+      // ストアのカウンタを使って一意 ID を生成する ('cat' プレフィックス)
+      const id = nextId(store, 'cat');
+      // 新しいカテゴリ行をインメモリストアの CategoryRow 型に合わせて組み立てる
+      const row = {
+        id, // 生成した ID
+        name: input.name, // カテゴリ名
+        tenantId: input.tenantId, // 所属テナント ID
+        createdAt: new Date(), // 作成日時 (現在時刻)
+      };
+      // ストアの Map に登録する
+      store.categories.set(id, row);
+      // port 契約の CategorySummary 型 (id / name のみ) で返す
+      return { id: row.id, name: row.name };
     },
   };
 }
