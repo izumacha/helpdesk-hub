@@ -22,6 +22,8 @@ import { initialStatusForMode } from '@/domain/ticket-status';
 import { getCurrentTenantMode } from '@/lib/tenant';
 // 'YYYY-MM-DD' を JST 終端 Date に変換するヘルパー (サーバ TZ 非依存)
 import { endOfDayJST } from '@/lib/format-date';
+// Phase 4 課金: プランごとの月間チケット上限チェック
+import { isMonthlyTicketLimitReached, getMonthlyTicketLimit } from '@/lib/plan-guard';
 
 // 422 (バリデーションエラー) を共通フォーマットで返すヘルパー
 function validationError(message: string, path: (string | number)[]) {
@@ -79,6 +81,8 @@ export async function POST(req: Request) {
       categoryId: form.get('categoryId') ?? undefined,
       priority: form.get('priority') ?? undefined,
       dueDate: form.get('dueDate') ?? undefined,
+      // Phase 4 多拠点: 拠点 ID (未選択の場合は空文字 → Zod が undefined に変換)
+      locationId: form.get('locationId') ?? undefined,
     };
     // files フィールドを全て拾い、File 型だけ抽出する (空入力で文字列 "" が混ざるのを除外)
     uploadedFiles = form.getAll('files').filter((entry): entry is File => entry instanceof File);
@@ -129,6 +133,41 @@ export async function POST(req: Request) {
     }
   }
 
+  // Phase 4 多拠点: locationId が指定された場合は自テナント内の拠点かを確認する
+  const { locationId } = parsed.data;
+  if (locationId) {
+    // テナントスコープで拠点を取得 (他テナントの ID なら null になる)
+    const location = await repos.locations.findById(locationId, tenantId);
+    // 存在しない、または他テナントなら 422
+    if (!location) {
+      return validationError('指定された拠点が存在しません', ['locationId']);
+    }
+  }
+
+  // Phase 4 課金: テナントのプランを取得して月間チケット数の上限を確認する
+  const currentTenant = await repos.tenants.findById(tenantId);
+  if (currentTenant) {
+    const plan = currentTenant.subscriptionPlan;
+    // 月間チケット上限がある場合 (Free プランのみ。Infinity なら -1 で上限なし) は件数を確認する
+    if (getMonthlyTicketLimit(plan) !== -1) {
+      // 当月の起票数をカウントする (現在月の開始日時を UTC で計算)
+      const now = new Date();
+      // 月初 00:00:00.000 (UTC) を起点にする
+      const monthStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
+      // 当月起票済み件数をカウントする (tenantId スコープ + createdAfter フィルター)
+      const monthlyCount = await repos.tickets.count({ createdAfter: monthStart }, tenantId);
+      // 上限超過なら 429 でプランアップグレードを促す
+      if (isMonthlyTicketLimitReached(plan, monthlyCount)) {
+        return NextResponse.json(
+          {
+            error: `月間の問い合わせ件数が上限 (${getMonthlyTicketLimit(plan)} 件) に達しました。プランをアップグレードしてください。`,
+          },
+          { status: 429 },
+        );
+      }
+    }
+  }
+
   // テナントの動作モードを取得し、Lite モード時の入力強制ルールを適用する
   // ── ここから先は「自テナント内で正規の値しか残っていない」前提でモード適用する
   const mode = await getCurrentTenantMode(tenantId);
@@ -154,6 +193,8 @@ export async function POST(req: Request) {
       body: ticketBody,
       priority: effectivePriority,
       categoryId: effectiveCategoryId,
+      // Phase 4 多拠点: 拠点 ID を渡す (未選択なら undefined → Prisma が null に変換)
+      locationId: locationId ?? null,
       creatorId: userId,
       tenantId,
       status: initialStatus, // Lite は 'Open'、Pro は undefined(既定 New)
@@ -176,6 +217,8 @@ export async function POST(req: Request) {
         body: ticketBody,
         priority: effectivePriority,
         categoryId: effectiveCategoryId,
+        // Phase 4 多拠点: 拠点 ID を渡す (未選択なら undefined → null)
+        locationId: locationId ?? null,
         creatorId: userId,
         tenantId,
         status: initialStatus, // Lite は 'Open'、Pro は undefined(既定 New)

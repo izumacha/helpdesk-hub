@@ -2,6 +2,7 @@
 import type {
   FaqCandidate,
   Invitation,
+  Location,
   MagicLinkToken,
   Notification,
   Tenant,
@@ -47,6 +48,7 @@ export interface Store {
   invitations: Map<string, Invitation>; // 招待リンクトークン (メンバー招待)
   attachments: Map<string, Attachment>; // 添付ファイルのメタ情報 (画像)
   emailThreadRefs: Map<string, EmailThreadRefRow>; // メール Message-ID → チケット 対応表 (Phase 2)
+  locations: Map<string, Location>; // Phase 4 多拠点: テナント内の店舗・拠点
   idSeq: { value: number }; // 連番生成用のカウンタ (オブジェクトに包んで参照共有)
 }
 
@@ -66,6 +68,7 @@ export function createEmptyStore(): Store {
     invitations: new Map(),
     attachments: new Map(),
     emailThreadRefs: new Map(),
+    locations: new Map(), // Phase 4 多拠点: テナント内の店舗・拠点
     idSeq: { value: 0 },
   };
 }
@@ -86,6 +89,7 @@ export function cloneStore(src: Store): Store {
     invitations: new Map(src.invitations),
     attachments: new Map(src.attachments),
     emailThreadRefs: new Map(src.emailThreadRefs),
+    locations: new Map(src.locations), // Phase 4 多拠点
     idSeq: { value: src.idSeq.value },
   };
 }
@@ -105,6 +109,7 @@ export function overwriteStore(dst: Store, src: Store): void {
   dst.invitations = new Map(src.invitations);
   dst.attachments = new Map(src.attachments);
   dst.emailThreadRefs = new Map(src.emailThreadRefs);
+  dst.locations = new Map(src.locations); // Phase 4 多拠点
   // 連番も元に戻す
   dst.idSeq.value = src.idSeq.value;
 }

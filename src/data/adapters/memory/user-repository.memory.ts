@@ -95,5 +95,16 @@ export function makeUserRepo(store: Store): UserRepository {
       // 結果を返す
       return out;
     },
+
+    // Phase 4 課金: テナント内のユーザー総数を返す (プランのユーザー上限チェック用)
+    async countByTenant(tenantId) {
+      // 全ユーザーの中からテナント一致のものを数える
+      let count = 0;
+      for (const u of store.users.values()) {
+        // テナントが一致するユーザーをカウントする
+        if (u.tenantId === tenantId) count++;
+      }
+      return count;
+    },
   };
 }

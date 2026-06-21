@@ -34,6 +34,10 @@ export type NotificationType = 'assigned' | 'escalated' | 'commented' | 'statusC
 // テナントの動作モード (Lite=SMB 既定 / Pro=現行フル機能)
 export type TenantMode = 'lite' | 'pro';
 
+// Phase 4 課金: サブスクリプションプラン
+// Free: 3 名・月 50 件 / Standard: 10 名・Lite フル / Pro: 30 名・Pro モード
+export type SubscriptionPlan = 'free' | 'standard' | 'pro';
+
 // テナント (組織) 本体。マルチテナントの境界を表す
 export interface Tenant {
   id: string; // テナント ID (主キー)
@@ -43,6 +47,20 @@ export interface Tenant {
   inboundToken: string | null; // メール取り込み用アドレスのローカルパート (未発行なら null)
   // Phase 4: 外部通知チャネル。Slack / Teams Incoming Webhook URL (null なら通知無効)
   slackWebhookUrl: string | null;
+  // Phase 4 課金: Stripe Billing 連携フィールド
+  subscriptionPlan: SubscriptionPlan; // 現在の課金プラン (既定: free)
+  stripeCustomerId: string | null; // Stripe Customer ID (cu_xxx)
+  stripeSubscriptionId: string | null; // Stripe Subscription ID (sub_xxx)
+  stripeSubscriptionStatus: string | null; // Stripe の subscription.status 文字列
+  createdAt: Date; // 作成日時
+}
+
+// Phase 4 多拠点: テナント内の店舗・拠点 1 件分
+export interface Location {
+  id: string; // 拠点 ID (主キー)
+  tenantId: string; // 所属テナント ID
+  name: string; // 拠点名 (例: 渋谷本店、第一工場)
+  description: string | null; // 補足説明 (任意)
   createdAt: Date; // 作成日時
 }
 
@@ -82,6 +100,7 @@ export interface Ticket {
   creatorId: string; // 起票者ユーザー ID
   assigneeId: string | null; // 担当者ユーザー ID (未アサインなら null)
   categoryId: string | null; // カテゴリ ID (未分類なら null)
+  locationId: string | null; // 拠点 ID (Phase 4 多拠点。未指定なら null)
   tenantId: string; // 所属テナント ID (マルチテナント化のキー)
 }
 

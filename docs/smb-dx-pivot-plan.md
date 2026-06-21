@@ -140,9 +140,9 @@
 
 ### Phase 4 — マネタイズと運用（継続）
 
-- [ ] サブスク課金（Stripe Billing）: Free / Standard / Pro の 3 段階
+- [x] サブスク課金（Stripe Billing）: Free / Standard / Pro の 3 段階
 - [x] 監査ログ / バックアップ自動化
-- [ ] 多店舗・多拠点対応（テナント内サブグループ）
+- [x] 多店舗・多拠点対応（テナント内サブグループ）
 - [x] Slack / Chatwork / Microsoft Teams 通知 Adapter
 
 ### スケジュール感

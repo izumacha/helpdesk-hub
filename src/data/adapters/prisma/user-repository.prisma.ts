@@ -66,5 +66,11 @@ export function makeUserRepo(db: PrismaLike): UserRepository {
       // UserSummary 形式に変換して返す
       return rows.map(toUserSummary);
     },
+
+    // Phase 4 課金: テナント内のユーザー総数を返す (プランのユーザー上限チェック用)
+    async countByTenant(tenantId) {
+      // Prisma の count でテナントスコープのユーザー数を集計する
+      return db.user.count({ where: { tenantId } });
+    },
   };
 }

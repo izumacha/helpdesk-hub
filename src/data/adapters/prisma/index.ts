@@ -7,6 +7,7 @@ import { makeCategoryRepo } from './category-repository.prisma';
 import { makeEmailThreadRepo } from './email-thread-repository.prisma';
 import { makeFaqRepo } from './faq-repository.prisma';
 import { makeInvitationRepo } from './invitation-repository.prisma';
+import { makeLocationRepo } from './location-repository.prisma';
 import { makeMagicLinkRepo } from './magic-link-repository.prisma';
 import { makeNotificationRepo } from './notification-repository.prisma';
 import { makeTenantRepo } from './tenant-repository.prisma';
@@ -36,6 +37,7 @@ export function buildPrismaRepos(db: PrismaLike): Repos {
     invitations: makeInvitationRepo(db),
     attachments: makeAttachmentRepo(db),
     emailThreads: makeEmailThreadRepo(db),
+    locations: makeLocationRepo(db), // Phase 4 多拠点
   };
 }
 

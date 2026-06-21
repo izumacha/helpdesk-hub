@@ -35,6 +35,10 @@ function buildWhere(f: TicketListFilter, tenantId: string): Prisma.TicketWhereIn
   if (f.categoryId !== undefined) where.categoryId = f.categoryId;
   // 担当者条件: null は未アサインのみ、文字列は完全一致
   if (f.assigneeId !== undefined) where.assigneeId = f.assigneeId;
+  // 拠点条件: null は拠点未設定のみ、文字列は完全一致 (Phase 4 多拠点)
+  if (f.locationId !== undefined) where.locationId = f.locationId;
+  // 作成日時フィルター: この日時以降に作成されたチケットのみ (月間件数カウント用)
+  if (f.createdAfter !== undefined) where.createdAt = { gte: f.createdAfter };
   // 期限切れフィルタ (Lite モードの「期限切れ」タブで使用)
   // - resolutionDueAt < now (期限を過ぎている)
   // - resolvedAt IS NULL (まだ解決していない)
@@ -216,6 +220,7 @@ export function makeTicketRepo(db: PrismaLike): TicketRepository {
           status: input.status ?? undefined,
           priority: input.priority,
           categoryId: input.categoryId,
+          locationId: input.locationId ?? null, // 拠点 ID (Phase 4 多拠点。未指定なら null)
           creatorId: input.creatorId,
           tenantId: input.tenantId, // テナント所属を必ず保存
           firstResponseDueAt: input.firstResponseDueAt ?? null,

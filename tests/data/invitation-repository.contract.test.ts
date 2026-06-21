@@ -29,7 +29,7 @@ function makeMemoryContext(): InvitationContractContext {
     ];
     // 各テナントを store に直接書き込む (mode は lite で十分)
     for (const [id, name] of tenantDefs) {
-      store.tenants.set(id, { id, name, mode: 'lite', industry: null, inboundToken: null, slackWebhookUrl: null, createdAt: now });
+      store.tenants.set(id, { id, name, mode: 'lite', industry: null, inboundToken: null, slackWebhookUrl: null, subscriptionPlan: 'free' as const, stripeCustomerId: null, stripeSubscriptionId: null, stripeSubscriptionStatus: null, createdAt: now });
     }
     // テスト本体が使うテナント ID を返す
     return { tenantA: TENANT_A, tenantB: TENANT_B };

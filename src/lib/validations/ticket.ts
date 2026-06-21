@@ -33,6 +33,12 @@ export const createTicketSchema = z.object({
     .transform((v) => v || undefined),
   // 優先度は Low/Medium/High のいずれか
   priority: z.enum(['Low', 'Medium', 'High']),
+  // 拠点 ID (任意): Phase 4 多拠点で拠点を選択した場合に設定する
+  // 空文字は「未選択」として undefined に正規化する
+  locationId: z
+    .string()
+    .optional()
+    .transform((v) => v || undefined),
   // 期限日 (Lite モードの簡易フォーム用、任意): YYYY-MM-DD 形式の文字列
   // - <input type="date"> から空文字で送られて来ることがあるので空は undefined に正規化
   // - 形式と実在日付の両方を検証する (例: 2026-02-31 のような不正値を弾く)

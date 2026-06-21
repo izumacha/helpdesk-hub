@@ -1,5 +1,7 @@
 // Tenant リポジトリの契約 (port)
 import type { TenantRepository } from '@/data/ports/tenant-repository';
+// 課金プラン型 (Stripe 課金プランの型チェック)
+import type { SubscriptionPlan } from '@/domain/types';
 // ドメイン型
 import type { Tenant } from '@/domain/types';
 // Prisma の Tenant 行型
@@ -21,6 +23,11 @@ function toTenant(row: TenantRow): Tenant {
     inboundToken: row.inboundToken, // メール取り込みアドレスのローカルパート (未発行なら null)
     // Phase 4: Slack/Teams Incoming Webhook URL (null なら外部通知無効)
     slackWebhookUrl: row.slackWebhookUrl,
+    // Phase 4 課金: Stripe Billing 連携フィールド
+    subscriptionPlan: row.subscriptionPlan, // 現在の課金プラン (free | standard | pro)
+    stripeCustomerId: row.stripeCustomerId, // Stripe Customer ID (null なら未登録)
+    stripeSubscriptionId: row.stripeSubscriptionId, // Stripe Subscription ID (null なら未契約)
+    stripeSubscriptionStatus: row.stripeSubscriptionStatus, // Stripe の subscription.status
     createdAt: row.createdAt,
   };
 }
@@ -74,6 +81,24 @@ export function makeTenantRepo(db: PrismaLike): TenantRepository {
     async updateSlackWebhookUrl(id, url) {
       // 主キーで対象テナントを特定し slackWebhookUrl 列のみ更新する
       const row = await db.tenant.update({ where: { id }, data: { slackWebhookUrl: url } });
+      // 更新後の行をドメイン型に詰め替えて返す
+      return toTenant(row);
+    },
+
+    // Phase 4 課金: Stripe の連携情報 (Customer ID / Subscription ID / 状態 / プラン) を一括更新
+    async updateStripeSubscription(id, data) {
+      // undefined 以外のフィールドのみ更新する (Prisma は undefined を無視する)
+      const row = await db.tenant.update({
+        where: { id },
+        data: {
+          // undefined なら Prisma が skip するため、明示的に条件分岐しない
+          stripeCustomerId: data.stripeCustomerId,
+          stripeSubscriptionId: data.stripeSubscriptionId,
+          stripeSubscriptionStatus: data.stripeSubscriptionStatus,
+          // subscriptionPlan は SubscriptionPlan 型として型チェックされた値のみ受け付ける
+          subscriptionPlan: data.subscriptionPlan as SubscriptionPlan | undefined,
+        },
+      });
       // 更新後の行をドメイン型に詰め替えて返す
       return toTenant(row);
     },
