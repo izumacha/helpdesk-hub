@@ -6,6 +6,12 @@
  * 'use server' / 'use client' を付けないことで双方向にインポート可能にする。
  */
 
+// CSV ファイルのサイズ上限 (512KB)。
+// サーバーアクション (import-tickets.ts) とクライアント UI (CsvImportForm.tsx) が
+// 同じ値を参照するようにここで一元管理する。一方だけ変えると挙動が乖離するため
+// 必ずこの定数を import して使い、各所への直書きを避ける (§6 定数の一元管理)。
+export const MAX_CSV_BYTES = 512 * 1024; // 512KB (バイト単位)
+
 /**
  * RFC 4180 準拠の CSV 行パーサ。
  *
@@ -57,6 +63,12 @@ export function parseCsvLine(line: string): string[] {
         current += ch;
       }
     }
+  }
+  // ループ終了後に引用符が閉じられていない場合は不正な CSV 行としてエラーを投げる。
+  // 閉じ忘れのまま放置すると後続のカンマがすべてフィールド内容として飲み込まれ、
+  // 列ずれが起きてチケットに誤ったデータが取り込まれるため、サイレントスキップせず明示エラーにする。
+  if (inQuotes) {
+    throw new SyntaxError('CSV の引用符が閉じられていません。行を確認してください。');
   }
   // 最後のフィールドを追加する (末尾のカンマがなくても確実に取り込む)
   fields.push(current.trim());

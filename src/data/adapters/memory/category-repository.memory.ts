@@ -19,8 +19,16 @@ export function makeCategoryRepo(store: Store): CategoryRepository {
       if (!c || c.tenantId !== tenantId) return null;
       return { id: c.id, name: c.name };
     },
-    // カテゴリを 1 件新規作成してストアに登録する (Phase 3 業種テンプレ初期投入用)
+    // カテゴリを 1 件作成 (または既存を返す) する冪等な操作 (Phase 3 業種テンプレ初期投入用)。
+    // Prisma アダプタと同様に upsert 相当の動作にする (リトライ安全性・テスト挙動の一致)。
     async create(input) {
+      // 同テナント + 同名のカテゴリが既にストア内にあれば、そのまま返す (insert or ignore 相当)
+      const existing = [...store.categories.values()].find(
+        (c) => c.tenantId === input.tenantId && c.name === input.name,
+      );
+      // 既存が見つかった場合は新規作成せず既存行の概要を返す
+      if (existing) return { id: existing.id, name: existing.name };
+      // 見つからない場合は新規作成する
       // ストアのカウンタを使って一意 ID を生成する ('cat' プレフィックス)
       const id = nextId(store, 'cat');
       // 新しいカテゴリ行をインメモリストアの CategoryRow 型に合わせて組み立てる

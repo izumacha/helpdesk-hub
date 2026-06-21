@@ -9,8 +9,9 @@ import { useState, useTransition } from 'react';
 import { importTickets } from '@/features/tickets/actions/import-tickets';
 // インポート結果の型 (成功件数 + エラー一覧)
 import type { ImportTicketsResult } from '@/features/tickets/actions/import-tickets';
-// RFC 4180 準拠の CSV パーサ (サーバーアクションと同一実装を共有することでプレビューと実インポートの挙動を一致させる)
-import { parseCsvLine } from '@/lib/csv';
+// RFC 4180 準拠の CSV パーサ と共有定数 (サーバーアクションと同一実装を共有することでプレビューと実インポートの挙動を一致させる)
+// MAX_CSV_BYTES は @/lib/csv から import して使う (import-tickets.ts と値を共有するため)
+import { parseCsvLine, MAX_CSV_BYTES } from '@/lib/csv';
 
 // CSV インポートフォームに渡す Props 型
 // categories は将来のカテゴリ選択 UI 向けに受け取るが、MVP では使用しない
@@ -71,8 +72,8 @@ export function CsvImportForm({ categories: _categories }: CsvImportFormProps) {
   // useTransition でインポート中フラグを管理する (ボタン無効化・スピナー表示に使う)
   const [isPending, startTransition] = useTransition();
 
-  // クライアント側のファイルサイズ上限 (512KB)。サーバー側と同値に揃えて早期エラーにする
-  const MAX_FILE_BYTES = 512 * 1024;
+  // クライアント側のファイルサイズ上限は @/lib/csv の MAX_CSV_BYTES を使う。
+  // 直書きせずインポートした定数を参照することで import-tickets.ts の値と常に同一になる (§6 定数の一元管理)。
 
   // ファイル選択時のハンドラ: File を読み込んで CSV テキストとプレビューを更新する
   function handleFileChange(e: React.ChangeEvent<HTMLInputElement>) {
@@ -87,11 +88,11 @@ export function CsvImportForm({ categories: _categories }: CsvImportFormProps) {
       return;
     }
     // ファイルサイズが上限を超える場合はエラーを表示して読み込みをスキップ (DoS 防止)
-    if (file.size > MAX_FILE_BYTES) {
+    if (file.size > MAX_CSV_BYTES) {
       setCsvText(null); // CSV テキストをクリア
       setPreview([]); // プレビューをクリア
       setResult(null); // 結果をクリア
-      setError(`ファイルサイズが大きすぎます（上限 ${MAX_FILE_BYTES / 1024}KB）`); // エラー表示
+      setError(`ファイルサイズが大きすぎます（上限 ${MAX_CSV_BYTES / 1024}KB）`); // エラー表示
       return;
     }
     // FileReader で CSV ファイルをテキストとして非同期読み込みする

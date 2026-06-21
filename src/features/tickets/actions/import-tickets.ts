@@ -15,16 +15,16 @@ import { isAgent } from '@/lib/role';
 import { enforceRateLimit } from '@/lib/rate-limit';
 // テナントの動作モード (lite | pro) を取得するヘルパー
 import { getCurrentTenantMode } from '@/lib/tenant';
-// RFC 4180 準拠の CSV パーサ (サーバー / クライアント共通実装)
-import { parseCsvLine } from '@/lib/csv';
+// RFC 4180 準拠の CSV パーサ と共有定数 (サーバー / クライアント共通実装)
+import { parseCsvLine, MAX_CSV_BYTES } from '@/lib/csv';
 // 優先度・ステータスのドメイン型
 import type { Priority, TicketStatus } from '@/domain/types';
+// CSV インポート完了後に他エージェントへ未読カウントを即時配信するヘルパー
+import { broadcastUnreadCountToMany } from '@/features/notifications/notify';
 
 // 1 インポートあたりの最大行数 (これを超えたらエラー)
 const MAX_ROWS = 200;
-// CSV テキスト全体の最大バイト数 (200行 × 平均 500 文字 を余裕を持って設定)
-// Next.js Server Action のデフォルト上限 (1MB) より小さく設定して早期エラーにする
-const MAX_CSV_BYTES = 512 * 1024; // 512KB
+// MAX_CSV_BYTES は @/lib/csv から import して使う (src/features/.../CsvImportForm.tsx と共有)
 // チケット件名の最大文字数 (createTicketSchema と合わせる)
 const TITLE_MAX_LENGTH = 200;
 // チケット本文の最大文字数 (createTicketSchema と合わせる)
@@ -113,6 +113,8 @@ export async function importTickets(csvText: string): Promise<ImportTicketsResul
   // 1 行目をヘッダとして取り出す
   const headerLine = nonEmptyLines[0];
   // RFC 4180 パーサでヘッダ列名の配列を得る (引用符内のカンマにも対応)
+  // ヘッダ行の引用符が閉じられていない場合はここで SyntaxError が投れ、catch されずに
+  // importTickets 全体のエラーとして呼び出し元 (CsvImportForm) に表示される (意図した動作)
   const headers = parseCsvLine(headerLine ?? '');
 
   // 「件名」列が必須。見つからなければ即エラー
@@ -145,7 +147,16 @@ export async function importTickets(csvText: string): Promise<ImportTicketsResul
     const line = dataLines[i];
 
     // RFC 4180 パーサで各セルを取り出す (引用符内のカンマにも対応)
-    const cells = parseCsvLine(line ?? '');
+    // 引用符が閉じられていない場合は parseCsvLine が SyntaxError を投げるため、
+    // ループ内で catch して行単位のエラーとして記録し、次の行の処理を続ける
+    let cells: string[];
+    try {
+      cells = parseCsvLine(line ?? '');
+    } catch {
+      // 引用符の閉じ忘れ等の CSV 書式エラー: 行全体をスキップしてエラーを積む
+      errors.push({ row: rowNum, message: 'CSV の形式が正しくありません（引用符が閉じられていない可能性があります）' });
+      continue;
+    }
 
     // 件名セルを取り出す
     const titleRaw = cells[titleIndex] ?? '';
@@ -172,8 +183,19 @@ export async function importTickets(csvText: string): Promise<ImportTicketsResul
     // 検証済みの本文を確定する
     const body = bodyRaw;
 
-    // 優先度セルを日本語から Priority 型へ変換する (未指定または未知値は Medium にフォールバック)
+    // 優先度セルを日本語から Priority 型へ変換する
     const priorityRaw = priorityIndex !== -1 ? (cells[priorityIndex] ?? '') : '';
+    // 空文字は「未指定」として Medium にフォールバック (省略を許容する)。
+    // ただし空文字でない場合に PRIORITY_MAP に存在しない値は、タイポや意図しない値の可能性が高いため
+    // エラーとして記録してスキップする (サイレントに Medium 扱いすると誤ったデータが入ってしまうため)。
+    if (priorityRaw && !(priorityRaw in PRIORITY_MAP)) {
+      errors.push({
+        row: rowNum,
+        message: `優先度の値が正しくありません: "${priorityRaw}"（高・中・低 のいずれかを指定してください）`,
+      });
+      continue;
+    }
+    // 空文字または未指定の場合は Medium にフォールバックする
     const priority: Priority = PRIORITY_MAP[priorityRaw] ?? 'Medium';
 
     // 期限日セルを Date に変換する (形式が不正なら null として解決期限なしにする)
@@ -218,10 +240,36 @@ export async function importTickets(csvText: string): Promise<ImportTicketsResul
     }
   }
 
-  // インポートでチケットが作成された場合はチケット一覧のキャッシュを無効化する
-  // (revalidatePath を呼ばないと一覧ページのデータが古いまま表示され続ける)
+  // インポートでチケットが 1 件以上作成された場合のコミット後処理
   if (imported > 0) {
+    // チケット一覧のキャッシュを無効化する (revalidatePath を呼ばないと古いデータが表示され続ける)
     revalidatePath('/tickets');
+
+    // 同テナントの他エージェント (インポート実行者を除く) に一括追加を通知する。
+    // 個別チケットごとではなく 1 通にまとめることで通知の過多を防ぐ (200 件追加でも通知は 1 通)。
+    // 注意: 現行の NotificationType に "new_ticket" 相当の型が未定義のため
+    // 利用可能な型の中で最も意味の近い 'commented' を暫定利用している。
+    // 将来的には NotificationType に 'imported' 等を追加して置き換えることを推奨する。
+    const agents = await repos.users.listAgents(tenantId); // 当該テナントの全エージェント一覧を取得
+    // インポート実行者自身への通知は不要なので除外する (自分が実施したことは知っているため)
+    const otherAgents = agents.filter((a) => a.id !== creatorId);
+    if (otherAgents.length > 0) {
+      // 各エージェントへ通知を 1 件ずつ DB に書き込む
+      for (const agent of otherAgents) {
+        await repos.notifications.create({
+          userId: agent.id, // 受信者: 各エージェント
+          type: 'commented', // 暫定: NotificationType に imported がないため commented で代替
+          message: `${imported} 件のチケットが CSV インポートで追加されました`, // 表示文言
+          ticketId: null, // バッチインポートは単一チケットに紐づかないため null
+          tenantId, // テナントスコープ
+        });
+      }
+      // 未読件数を SSE で即時配信して通知ベルに反映させる
+      await broadcastUnreadCountToMany(
+        otherAgents.map((a) => a.id), // 通知対象の agent ID 一覧
+        tenantId, // テナントスコープ
+      );
+    }
   }
 
   // 成功件数とエラー一覧を返す
