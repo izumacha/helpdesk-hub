@@ -11,4 +11,6 @@ export interface CategoryRepository {
   list(tenantId: string): Promise<CategorySummary[]>;
   // ID 指定で 1 件取得 (他テナントの ID なら null を返す)
   findById(id: string, tenantId: string): Promise<CategorySummary | null>;
+  // カテゴリを 1 件新規作成して返す (Phase 3 業種テンプレ初期投入用)
+  create(input: { name: string; tenantId: string }): Promise<CategorySummary>;
 }

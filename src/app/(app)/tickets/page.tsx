@@ -139,12 +139,24 @@ export default async function TicketsPage({ searchParams }: Props) {
             社内からの問い合わせを一元管理し、対応状況を追跡します。
           </p>
         </div>
-        <Link
-          href="/tickets/new"
-          className="rounded-lg bg-teal-700 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-teal-800"
-        >
-          ＋ 新規登録
-        </Link>
+        {/* ボタングループ: 新規登録 + CSV インポート (エージェント以上のみ CSV インポートを表示) */}
+        <div className="flex items-center gap-2">
+          <Link
+            href="/tickets/new"
+            className="rounded-lg bg-teal-700 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-teal-800"
+          >
+            ＋ 新規登録
+          </Link>
+          {/* エージェント / 管理者にのみ CSV インポートリンクを表示する */}
+          {isAgent && (
+            <Link
+              href="/tickets/import"
+              className="rounded-lg border border-teal-600 px-4 py-2 text-sm font-semibold text-teal-700 shadow-sm transition hover:bg-teal-50"
+            >
+              CSV インポート
+            </Link>
+          )}
+        </div>
       </div>
 
       {/* タブナビ (自分の未対応 / 期限切れ / すべて)。Lite/Pro どちらでも常に表示する */}

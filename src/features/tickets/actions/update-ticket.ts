@@ -30,6 +30,12 @@ import { enforceRateLimit } from '@/lib/rate-limit';
 import { escalationReasonSchema } from '@/lib/validations/ticket';
 // next-auth のセッション型
 import type { Session } from 'next-auth';
+// ステータス変更・担当者割当のメール本文を生成する純粋ヘルパー (Phase 2)
+import { renderTicketStatusChangedEmail, renderAssignedEmail, buildTicketUrl } from '@/lib/ticket-email';
+// EmailSender 実装を取得するファクトリ (環境変数で console / smtp を切り替え)
+import { getEmailSender } from '@/lib/email';
+// メールに埋め込むリンクのベース URL を解決するヘルパー
+import { resolveAppBaseUrl } from '@/lib/app-url';
 
 // セッションがログイン済みであることを保証するアサーション関数
 function assertAuthenticatedUser(session: Session | null): asserts session is Session {
@@ -67,6 +73,11 @@ export async function updateTicketStatus(ticketId: string, newStatus: TicketStat
   // (ticket は uow.run 内で取得するため、クロージャ変数として外側に宣言しておく必要がある)
   // 自己更新 (起票者=操作者) では通知を作らないため null のままにし、無駄な SSE 配信を避ける
   let notifiedCreatorId: string | null = null;
+  // メール送信に必要なチケット情報 (起票者 ID・件名) を uow.run 外で参照するために宣言
+  // null のままならメールは送らない (自己更新 or チケット未取得)
+  let ticketSnapshot: { creatorId: string; title: string } | null = null;
+  // ステータス変更前の値 (メール本文でラベルを出すために外側で保持する)
+  let oldStatus: TicketStatus | null = null;
 
   // 1 トランザクションでチケット更新と履歴記録を実行
   await uow.run(async (r) => {
@@ -76,6 +87,10 @@ export async function updateTicketStatus(ticketId: string, newStatus: TicketStat
     if (!ticket) throw new Error('チケットが見つかりません');
     // 変更前後が同じなら何もしない (冪等)
     if (ticket.status === newStatus) return;
+    // 変更前のステータスをトランザクション外のメール送信に伝えるために外側変数に保存する
+    oldStatus = ticket.status;
+    // 件名と起票者 ID もメール送信用に外側変数に保存する
+    ticketSnapshot = { creatorId: ticket.creatorId, title: ticket.title };
     // Lite テナントでは newStatus を Lite 3 値 (Open / InProgress / Closed) に強制する
     // 旧データ (Resolved / Escalated / WaitingForUser / New) からの off-ramp は許すが、
     // Lite テナント上で「新規にそれら非 Lite ステータスへ落とす」操作は仕様違反 (Pivot plan §3.1 / §5.2)
@@ -145,6 +160,28 @@ export async function updateTicketStatus(ticketId: string, newStatus: TicketStat
   // 通知を実際に書き込んだ場合のみ、起票者の未読件数を SSE でリアルタイム配信する
   // (トランザクションコミット後に呼ぶ。自己更新時は notifiedCreatorId が null なので配信しない)
   if (notifiedCreatorId) await broadcastUnreadCount(notifiedCreatorId, tenantId);
+
+  // Phase 2: ステータス変更を依頼者へメールで通知する (ベストエフォート)
+  // TypeScript の CFA は async クロージャ内の let 変数への再代入を追跡できないため、
+  // 型アサーション (as) を使って「この時点では非 null」と明示する。
+  // ticketSnapshot が null のままの場合 (変更なし / 見つからない) は early-exit している。
+  // eslint-disable-next-line @typescript-eslint/no-unnecessary-type-assertion
+  const snapForMail = ticketSnapshot as { creatorId: string; title: string } | null;
+  // oldStatus も同様に const に取り出して null チェックを行う
+  // eslint-disable-next-line @typescript-eslint/no-unnecessary-type-assertion
+  const oldStatusForMail = oldStatus as TicketStatus | null;
+  // スナップショットと変更前ステータスが両方揃い、かつ自分以外への通知の場合のみ送信する
+  if (snapForMail !== null && oldStatusForMail !== null && snapForMail.creatorId !== session.user.id) {
+    // メール送信を別関数に切り出して try/catch で囲み、失敗してもチケット更新は巻き戻さない
+    await sendStatusChangedEmailToRequester({
+      ticketId,
+      ticketTitle: snapForMail.title,
+      creatorId: snapForMail.creatorId,
+      oldStatus: oldStatusForMail,
+      newStatus,
+      mode,
+    });
+  }
 
   // チケット詳細ページのキャッシュを無効化して再描画
   revalidatePath(`/tickets/${ticketId}`);
@@ -260,6 +297,29 @@ export async function updateTicketAssignee(ticketId: string, newAssigneeId: stri
 
   // 新担当者に未読件数を SSE で即時配信 (テナントを伝搬)
   if (newAssigneeId) await broadcastUnreadCount(newAssigneeId, tenantId);
+
+  // Phase 2: 担当者割当を新担当者へメールで通知する (ベストエフォート)
+  // 担当者解除 (null) か自己割当なら送らない
+  if (newAssigneeId && newAssigneeId !== session.user.id && newUser?.email) {
+    // メール送信の失敗でチケット更新が巻き戻るのを防ぐため try/catch に包む
+    try {
+      // ベース URL を解決する (production で NEXTAUTH_URL 未設定なら throw される)
+      const baseUrl = resolveAppBaseUrl();
+      // チケット詳細ページへの導線 URL を組み立てる
+      const ticketUrl = buildTicketUrl(baseUrl, ticketId);
+      // 担当者割当メールの件名 / テキスト / HTML を純粋ヘルパーで生成する
+      const { subject, text, html } = renderAssignedEmail({
+        ticketTitle: ticket.title,
+        ticketUrl,
+      });
+      // 設定された EmailSender (console / smtp) 経由でメール送信
+      await getEmailSender().send({ to: newUser.email, subject, text, html });
+    } catch (err) {
+      // 送信失敗はサーバログに残すだけ (アプリ内通知は既に成立している)
+      console.error('[updateTicketAssignee] 担当者宛メール送信に失敗しました', err);
+    }
+  }
+
   // 詳細ページのキャッシュを無効化
   revalidatePath(`/tickets/${ticketId}`);
 }
@@ -350,3 +410,42 @@ export async function escalateTicket(ticketId: string, reason: string) {
 // 注: コメント追加処理は POST /api/tickets/[id]/comments (Route Handler) に統合した。
 // Server Action の既定 1MB ボディ上限ではスマホ写真添付 (10MB × 5 枚) を扱えないため、
 // 同じロジックを Route Handler に置いて UI / API 双方の入口を一本化している。
+
+// ステータス変更を依頼者へメールで通知する内部ヘルパー (ベストエフォート / 副作用は send のみ)。
+// 例外は呼び出し側に伝播させず、ログに残して握り潰す: メール送信の失敗でチケット更新が
+// 「保存できたのに 500 が返る」事態を避けるため。
+async function sendStatusChangedEmailToRequester(args: {
+  ticketId: string; // 対象チケット ID (URL 構築用)
+  ticketTitle: string; // チケット件名 (メール本文用)
+  creatorId: string; // 起票者ユーザー ID (メールアドレス取得用)
+  oldStatus: TicketStatus; // 変更前のステータス (ラベル変換用)
+  newStatus: TicketStatus; // 変更後のステータス (ラベル変換用)
+  mode: import('@/domain/types').TenantMode; // テナント mode (ラベル変換で Lite/Pro を切替)
+}): Promise<void> {
+  const { ticketId, ticketTitle, creatorId, oldStatus, newStatus, mode } = args;
+  try {
+    // 起票者 (依頼者) のメールアドレスをユーザーリポジトリから引く
+    const creator = await repos.users.findById(creatorId);
+    // 依頼者が見つからない / メール未設定なら送りようがないのでスキップ
+    if (!creator?.email) return;
+    // ベース URL を解決する (production で NEXTAUTH_URL 未設定なら throw → 下で握る)
+    const baseUrl = resolveAppBaseUrl();
+    // チケット詳細ページへの導線 URL を組み立てる
+    const ticketUrl = buildTicketUrl(baseUrl, ticketId);
+    // ステータスの日本語ラベルを取得する (Lite/Pro どちらのモードかに応じて切替)
+    const oldStatusLabel = getStatusLabel(oldStatus, mode);
+    const newStatusLabel = getStatusLabel(newStatus, mode);
+    // ステータス変更メールの件名 / テキスト / HTML を純粋ヘルパーで生成する
+    const { subject, text, html } = renderTicketStatusChangedEmail({
+      ticketTitle,
+      ticketUrl,
+      oldStatusLabel,
+      newStatusLabel,
+    });
+    // 設定された EmailSender (console / smtp) 経由でメール送信
+    await getEmailSender().send({ to: creator.email, subject, text, html });
+  } catch (err) {
+    // 送信失敗はサーバログに残すだけ (アプリ内通知は既に成立している)
+    console.error('[updateTicketStatus] 依頼者宛ステータス変更メール送信に失敗しました', err);
+  }
+}

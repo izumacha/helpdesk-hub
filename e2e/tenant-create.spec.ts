@@ -47,7 +47,8 @@ test.describe('テナント作成フロー', () => {
 
     // 組織名・初代管理者の情報を入力する
     await page.getByLabel('組織名').fill(NEW_TENANT_NAME);
-    await page.getByLabel(/業種/).fill('製造業');
+    // 業種は <select> 要素なので selectOption で選択する (fill は input/textarea 専用)
+    await page.getByLabel(/業種/).selectOption({ label: '製造業' });
     await page.getByLabel('お名前').fill('E2E 新管理者');
     await page.getByLabel('メールアドレス').fill(NEW_ADMIN_EMAIL);
     await page.getByLabel(/パスワード/).fill('password123');

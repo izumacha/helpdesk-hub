@@ -17,6 +17,14 @@ import { escapeHtml } from '@/lib/html-escape';
 // メール件名の接頭辞。受信箱でのフィルタ/識別を容易にするため一元管理する
 const SUBJECT_PREFIX = '[HelpDesk Hub]';
 
+// メール件名からヘッダインジェクション文字 (CR / LF) を除去するサニタイザ
+// チケットタイトルなどユーザー由来の文字列を件名に埋め込む前に必ず通す
+// 例: "foo\r\nBcc: x@y.com" → "foo Bcc: x@y.com"
+function sanitizeSubject(s: string): string {
+  // \r と \n を半角スペースに置換することで改行による SMTP ヘッダ分割を防ぐ
+  return s.replace(/[\r\n]/g, ' ');
+}
+
 // 指定した baseUrl とチケット ID から、依頼者が開くチケット詳細ページの URL を組み立てる
 // 例: buildTicketUrl('http://localhost:3000', 'abc') -> 'http://localhost:3000/tickets/abc'
 export function buildTicketUrl(baseUrl: string, ticketId: string): string {
@@ -33,8 +41,8 @@ export function renderTicketReplyEmail(input: {
   commentBody: string; // 担当者が投稿した返信本文
   agentName: string; // 返信した担当者の表示名
 }): { subject: string; text: string; html: string } {
-  // 件名: 接頭辞 + 件名規約。専門用語 (チケット等) を避け「問い合わせ」「返信」で表現する
-  const subject = `${SUBJECT_PREFIX} 問い合わせ「${input.ticketTitle}」に新しい返信があります`;
+  // 件名: 接頭辞 + 件名規約。ユーザー入力をサニタイズしてヘッダインジェクションを防ぐ
+  const subject = sanitizeSubject(`${SUBJECT_PREFIX} 問い合わせ「${input.ticketTitle}」に新しい返信があります`);
 
   // テキスト本文 (HTML 非対応クライアント向けフォールバック)
   const text = [
@@ -61,6 +69,89 @@ export function renderTicketReplyEmail(input: {
   const html = `
     <p>${escapedAgent} さんから、お問い合わせ「${escapedTitle}」に返信がありました。</p>
     <blockquote style="margin:0 0 16px;padding:12px 16px;border-left:4px solid #0f766e;background:#f1f5f9;color:#0f172a;white-space:pre-wrap;">${escapedBody}</blockquote>
+    <p><a href="${escapedUrl}" style="display:inline-block;padding:10px 16px;background:#0f766e;color:#ffffff;border-radius:6px;text-decoration:none;font-weight:600;">問い合わせを開く</a></p>
+    <p style="font-size:13px;color:#475569;">うまく開けない場合はこちらの URL をブラウザに貼り付けてください:<br><span style="word-break:break-all;">${escapedUrl}</span></p>
+    <p style="font-size:13px;color:#64748b;">このメールに心当たりがない場合は破棄してください。</p>
+  `.trim();
+
+  // 3 点セットを返す
+  return { subject, text, html };
+}
+
+// ステータス変更を依頼者に知らせるメール本文を生成する純粋関数 (副作用なし)
+// Phase 2 メール通知テンプレート整備 (docs/smb-dx-pivot-plan.md §4 Phase 2)
+export function renderTicketStatusChangedEmail(input: {
+  ticketTitle: string; // 問い合わせの件名
+  ticketUrl: string; // チケット詳細ページの URL
+  oldStatusLabel: string; // 変更前ステータスの日本語ラベル (例: 「受付中」)
+  newStatusLabel: string; // 変更後ステータスの日本語ラベル (例: 「対応中」)
+}): { subject: string; text: string; html: string } {
+  // 件名: 接頭辞 + 変更前後のステータスを明示する。ヘッダインジェクション防止のためサニタイズする
+  const subject = sanitizeSubject(`${SUBJECT_PREFIX} 問い合わせ「${input.ticketTitle}」の状況が「${input.oldStatusLabel}」から「${input.newStatusLabel}」に変わりました`);
+
+  // テキスト本文 (HTML 非対応クライアント向けフォールバック)
+  const text = [
+    `お問い合わせ「${input.ticketTitle}」の状況が変更されました。`,
+    '',
+    `変更前: ${input.oldStatusLabel}`,
+    `変更後: ${input.newStatusLabel}`,
+    '',
+    '詳細の確認は、下のリンクから行えます。',
+    `${input.ticketUrl}`,
+    '',
+    'このメールに心当たりがない場合は破棄してください。',
+  ].join('\n');
+
+  // HTML 本文に差し込む外部由来文字列を個別にエスケープする (XSS / 文面崩れ防止)
+  const escapedTitle = escapeHtml(input.ticketTitle);
+  const escapedOld = escapeHtml(input.oldStatusLabel);
+  const escapedNew = escapeHtml(input.newStatusLabel);
+  const escapedUrl = escapeHtml(input.ticketUrl);
+
+  // HTML 本文 (変更前後を並べて表示し、続きはボタンでアプリへ誘導する)
+  const html = `
+    <p>お問い合わせ「${escapedTitle}」の状況が変更されました。</p>
+    <blockquote style="margin:0 0 16px;padding:12px 16px;border-left:4px solid #0f766e;background:#f1f5f9;color:#0f172a;">
+      変更前: <strong>${escapedOld}</strong><br>
+      変更後: <strong>${escapedNew}</strong>
+    </blockquote>
+    <p><a href="${escapedUrl}" style="display:inline-block;padding:10px 16px;background:#0f766e;color:#ffffff;border-radius:6px;text-decoration:none;font-weight:600;">問い合わせを開く</a></p>
+    <p style="font-size:13px;color:#475569;">うまく開けない場合はこちらの URL をブラウザに貼り付けてください:<br><span style="word-break:break-all;">${escapedUrl}</span></p>
+    <p style="font-size:13px;color:#64748b;">このメールに心当たりがない場合は破棄してください。</p>
+  `.trim();
+
+  // 3 点セットを返す
+  return { subject, text, html };
+}
+
+// 担当者割当を担当者に知らせるメール本文を生成する純粋関数 (副作用なし)
+// Phase 2 メール通知テンプレート整備 (docs/smb-dx-pivot-plan.md §4 Phase 2)
+export function renderAssignedEmail(input: {
+  ticketTitle: string; // 問い合わせの件名
+  ticketUrl: string; // チケット詳細ページの URL
+}): { subject: string; text: string; html: string } {
+  // 件名: 接頭辞 + 担当者割当が起きたことを件名で伝える。ヘッダインジェクション防止のためサニタイズする
+  const subject = sanitizeSubject(`${SUBJECT_PREFIX} 問い合わせ「${input.ticketTitle}」の担当者に割り当てられました`);
+
+  // テキスト本文 (HTML 非対応クライアント向けフォールバック)
+  const text = [
+    `お問い合わせ「${input.ticketTitle}」の担当者に割り当てられました。`,
+    '',
+    '詳細の確認や対応は、下のリンクから行えます。',
+    `${input.ticketUrl}`,
+    '',
+    'このメールに心当たりがない場合は破棄してください。',
+  ].join('\n');
+
+  // HTML 本文に差し込む外部由来文字列を個別にエスケープする (XSS / 文面崩れ防止)
+  const escapedTitle = escapeHtml(input.ticketTitle);
+  const escapedUrl = escapeHtml(input.ticketUrl);
+
+  // HTML 本文 (割当を通知し、続きはボタンでアプリへ誘導する)
+  // blockquote は「引用」を表す要素なので、返信本文がない担当割当通知には使わない
+  const html = `
+    <p>お問い合わせ「${escapedTitle}」の担当者に割り当てられました。</p>
+    <p>チケットを確認し、対応を開始してください。</p>
     <p><a href="${escapedUrl}" style="display:inline-block;padding:10px 16px;background:#0f766e;color:#ffffff;border-radius:6px;text-decoration:none;font-weight:600;">問い合わせを開く</a></p>
     <p style="font-size:13px;color:#475569;">うまく開けない場合はこちらの URL をブラウザに貼り付けてください:<br><span style="word-break:break-all;">${escapedUrl}</span></p>
     <p style="font-size:13px;color:#64748b;">このメールに心当たりがない場合は破棄してください。</p>

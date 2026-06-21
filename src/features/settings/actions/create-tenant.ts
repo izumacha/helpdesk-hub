@@ -28,6 +28,8 @@ import { assertAdminSession } from '@/lib/role';
 import { createTenantSchema } from '@/lib/validations/invite';
 // メール取り込み用の転送アドレストークンを払い出すヘルパー (Phase 2)
 import { generateInboundToken } from '@/lib/inbound-email';
+// 業種テンプレートの検索関数 (Phase 3 業種テンプレ自動投入)
+import { findIndustryTemplate } from '@/lib/industry-templates';
 
 // createTenant の戻り値型 (作成したテナント ID と初代管理者メールを返す)
 export interface CreateTenantResult {
@@ -87,6 +89,22 @@ export async function createTenant(formData: FormData): Promise<CreateTenantResu
       role: 'admin',
       tenantId: tenant.id,
     });
+    // 業種テンプレートが指定されている場合はカテゴリを初期投入する
+    // (Phase 3 業種テンプレ: 選択した業種に紐づくカテゴリを 1 件ずつ作成する)
+    if (industry) {
+      // 指定 ID のテンプレートを取得する (存在しなければ undefined)
+      const template = findIndustryTemplate(industry);
+      // テンプレートが見つかった場合のみカテゴリを順次作成する
+      if (template) {
+        // Prisma のインタラクティブトランザクション内では 1 つの接続を直列に使うため
+        // Promise.all で並列クエリを投げると "Transaction already closed" になる場合がある。
+        // for...of + await で直列実行して安全性を保つ (カテゴリは数件なので性能上問題なし)
+        for (const name of template.categories) {
+          // カテゴリを 1 件ずつトランザクション内で作成する
+          await tx.categories.create({ name, tenantId: tenant.id });
+        }
+      }
+    }
     // 作成結果を返す
     return { tenantId: tenant.id, adminEmail };
   });

@@ -75,7 +75,9 @@ describe('createTenant', () => {
     const result = await createTenant(
       makeForm({
         tenantName: '新組織',
-        industry: '製造業',
+        // industry は INDUSTRY_TEMPLATES の ID を指定する (UI の <select> の value と対応)
+        // 日本語ラベル ('製造業') ではなく英語 ID ('manufacturing') を送る
+        industry: 'manufacturing',
         adminName: '管理 太郎',
         adminEmail: 'newadmin@example.com',
         adminPassword: 'password123',
@@ -83,10 +85,11 @@ describe('createTenant', () => {
     );
     // 作成テナントは呼び出し元テナントとは別 ID
     expect(result.tenantId).not.toBe(CALLER_TENANT);
-    // 作成テナントが store に存在し、業種も保存されている
+    // 作成テナントが store に存在し、業種 ID も保存されている
     const tenant = store.tenants.get(result.tenantId);
     expect(tenant?.name).toBe('新組織');
-    expect(tenant?.industry).toBe('製造業');
+    // DB には industry ID が保存される (UI のラベル '製造業' ではなく)
+    expect(tenant?.industry).toBe('manufacturing');
     // 初代管理者が作成テナントに admin として作られている
     const admin = [...store.users.values()].find((u) => u.email === 'newadmin@example.com');
     expect(admin?.role).toBe('admin');
