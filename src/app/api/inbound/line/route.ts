@@ -49,6 +49,11 @@ const MAX_EVENTS_PER_REQUEST = 20;
 // サーバー側でも明示的に制限して DB の TEXT 型フィールドへの過大な書き込みを防ぐ)
 const MAX_BODY_LENGTH = 10_000;
 
+// リクエストボディの最大バイト数 (256KB)。LINE の Webhook ペイロードはテキストのみで小さいため、
+// 巨大ボディはメモリ枯渇狙いの攻撃とみなして本体を読む前に 413 で弾く (§9 DoS 対策。
+// メール取り込み側の MAX_INBOUND_BODY_BYTES と同じ「読む前に上限チェック」方針)
+const MAX_REQUEST_BODY_BYTES = 256 * 1024;
+
 // LINE Webhook が送ってくるテキストメッセージの型
 interface LineTextMessage {
   type: 'text'; // テキストメッセージであることを示す種別
@@ -56,24 +61,27 @@ interface LineTextMessage {
   text: string; // メッセージ本文
 }
 
-// LINE Webhook のイベント 1 件分の型 (テキストメッセージイベントに絞って定義)
+// LINE Webhook のイベント 1 件分の型。
+// 署名検証済みでも JSON の構造は信用しないため (§9)、各フィールドは任意 (optional) として扱い、
+// 実行時に存在チェックしてから参照する。follow / unfollow / postback 等の非メッセージイベントや、
+// source / message を欠くイベントが届いても安全にスキップできるようにする。
 interface LineMessageEvent {
-  type: 'message'; // メッセージイベント
-  replyToken: string; // 返信用トークン (β では使わない)
-  source: {
-    type: 'user' | 'group' | 'room'; // 送信元の種別
+  type?: string; // イベント種別 (message / follow / unfollow / postback 等)。message 以外は無視する
+  replyToken?: string; // 返信用トークン (β では使わない)
+  source?: {
+    type?: string; // 送信元の種別 (user / group / room)
     userId?: string; // ユーザー ID (user タイプの場合のみ存在)
     groupId?: string; // グループ ID (group タイプの場合のみ存在)
     roomId?: string; // ルーム ID (room タイプの場合のみ存在)
   };
-  message: LineTextMessage | { type: string }; // メッセージの中身 (テキスト以外は type だけ参照)
-  timestamp: number; // Unix ミリ秒のイベント発生時刻
+  message?: LineTextMessage | { type?: string }; // メッセージの中身 (テキスト以外は type だけ参照)
+  timestamp?: number; // Unix ミリ秒のイベント発生時刻
 }
 
-// LINE が POST してくる Webhook ボディの型
+// LINE が POST してくる Webhook ボディの型 (パース直後は信用せず events が配列かを実行時に検証する)
 interface LineWebhookBody {
-  destination: string; // LINE チャネルのユーザー ID (受信先の特定に使えるが β では env var を使う)
-  events: LineMessageEvent[]; // 1 リクエストに複数イベントが含まれることがある
+  destination?: string; // LINE チャネルのユーザー ID (受信先の特定に使えるが β では env var を使う)
+  events?: LineMessageEvent[]; // 1 リクエストに複数イベントが含まれることがある
 }
 
 // LINE Webhook の署名を検証する関数 (LINE Developers ドキュメント準拠)
@@ -114,6 +122,15 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: 'LINE 連携の送信先が設定されていません' }, { status: 500 });
   }
 
+  // Content-Length が上限超過なら本体を読む前に 413 で弾く (巨大ボディのメモリ枯渇防止 §9)。
+  // ヘッダが無い (chunked) 場合はここでは防げないため、後段のイベント数・文字数上限と併用する
+  const contentLength = Number(req.headers.get('content-length') ?? '0');
+  if (Number.isFinite(contentLength) && contentLength > MAX_REQUEST_BODY_BYTES) {
+    // サイズ超過はサーバーログに残し、外部には詳細を出さない 413 を返す
+    console.warn(`[POST /api/inbound/line] request body too large: ${contentLength} bytes`);
+    return NextResponse.json({ error: 'リクエストが大きすぎます' }, { status: 413 });
+  }
+
   // ボディを文字列として読み込む (署名検証は JSON.parse 前の生テキストに対して行う必要がある)
   const rawBody = await req.text();
 
@@ -134,12 +151,29 @@ export async function POST(req: Request) {
   // 検証済みの生ボディを JSON としてパースする
   let body: LineWebhookBody;
   try {
-    // 署名検証済みなので JSON として安全にパースできる
+    // 署名は検証済みだが JSON の中身は信用しない (構造は下で実行時チェックする)
     body = JSON.parse(rawBody) as LineWebhookBody;
   } catch (err) {
     // パース失敗は 400 (内容を外部に出さずログに記録する)
     console.error('[POST /api/inbound/line] failed to parse webhook body', err);
     return NextResponse.json({ error: 'リクエストの形式が正しくありません' }, { status: 400 });
+  }
+
+  // 署名検証済みでも JSON の構造は信用しない (§9 入力は信用しない)。events が配列でなければ
+  // 以降の body.events.length / for-of が TypeError になるため、ここで 400 を返して握り潰さない
+  if (!Array.isArray(body.events)) {
+    console.warn('[POST /api/inbound/line] webhook body has no events array');
+    return NextResponse.json({ error: 'リクエストの形式が正しくありません' }, { status: 400 });
+  }
+
+  // イベント数が上限を超える場合は起票せず 200 で「受領のみ」する。
+  // 非 200 を返すと LINE は同じ巨大バッチを 5 分間再送し続けるため、再送を誘発しないよう 200 で破棄する。
+  // (この判定は DB 参照より前に置き、過大バッチで無駄なクエリを投げないようにする)
+  if (body.events.length > MAX_EVENTS_PER_REQUEST) {
+    console.warn(
+      `[POST /api/inbound/line] too many events in one request: ${body.events.length} (max ${MAX_EVENTS_PER_REQUEST})`,
+    );
+    return NextResponse.json({ status: 'ignored', reason: 'too_many_events' }, { status: 200 });
   }
 
   // テナント単位のレート制限を適用する (シークレット漏洩時のバーストを防ぐ)
@@ -165,15 +199,16 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: '送信先テナントが見つかりません' }, { status: 404 });
   }
 
-  // β: LINE ユーザーとテナントメンバーの紐付けが未実装のため、テナントの管理者をプロキシ起票者とする。
-  // テナントの agent/admin 一覧から先頭のユーザーをプロキシ起票者として選ぶ
+  // β: LINE ユーザーとテナントメンバーの紐付けが未実装のため、テナント内の担当者をプロキシ起票者とする。
+  // listAgents は名前昇順で agent/admin を返すため、その先頭 (名前順で最初の担当者) を起票者に使う。
   const agents = await repos.users.listAgents(targetTenantId);
   if (agents.length === 0) {
-    // エージェントがいないテナントは起票者を決められないため処理できない
+    // 担当者が 1 人もいないテナントは起票者を決められない。再送しても状況は変わらない
+    // (設定不備) ため、LINE の再送ループを避けるべく 200 で「受領のみ」して破棄する。
     console.warn('[POST /api/inbound/line] no agents found for tenant:', targetTenantId);
-    return NextResponse.json({ error: 'テナントに担当者が設定されていません' }, { status: 422 });
+    return NextResponse.json({ status: 'ignored', reason: 'no_agents' }, { status: 200 });
   }
-  // テナントの最初のエージェント/管理者をプロキシ起票者とする
+  // 名前順で最初の担当者 (agent/admin) をプロキシ起票者とする (β 制約)
   const proxyCreator = agents[0]!;
 
   // 起票時刻 (SLA 期限の計算基準)
@@ -183,27 +218,22 @@ export async function POST(req: Request) {
   // メッセージには期限指定が無いため優先度 Medium ベースで解決期限を算出する
   const resolutionDueAt = calculateResolutionDueAt('Medium', now);
 
-  // 1 リクエストに含まれるイベント数が上限を超えていれば 429 で拒否する
-  // (署名付きの細工リクエストで大量イベントを送られると DB インサートが増幅するため)
-  if (body.events.length > MAX_EVENTS_PER_REQUEST) {
-    console.warn(
-      `[POST /api/inbound/line] too many events in one request: ${body.events.length} (max ${MAX_EVENTS_PER_REQUEST})`,
-    );
-    return NextResponse.json({ error: '1 リクエストのイベント数が多すぎます' }, { status: 429 });
-  }
-
   // 1 リクエストに含まれる複数イベントを順に処理してチケットを起票する
   const ticketIds: string[] = [];
   for (const event of body.events) {
-    // メッセージイベント以外 (follow / unfollow / postback 等) はスキップする
-    if (event.type !== 'message') continue;
-    // テキストメッセージ以外 (スタンプ / 画像 / 動画 等) はスキップする
-    if (event.message.type !== 'text') continue;
+    // 配列要素が null / 非オブジェクトでも落ちないように、まず event の存在とメッセージ種別を確認する
+    if (event?.type !== 'message') continue;
+    // メッセージ本体を取り出す (欠落していてもよいよう optional 扱い)
+    const message = event.message;
+    // テキストメッセージ以外 (スタンプ / 画像 / 動画 等) や message 欠落イベントはスキップする
+    if (message?.type !== 'text') continue;
 
-    // テキストメッセージとして型を確定させる
-    const textMessage = event.message as LineTextMessage;
-    // LINE ユーザー ID を取得する (user タイプ以外は '不明' とする)
-    const lineUserId = event.source.userId ?? '不明';
+    // テキストメッセージとして型を確定させる (type==='text' を確認済み)
+    const textMessage = message as LineTextMessage;
+    // LINE ユーザー ID を取得する (source / userId が無い場合は '不明' とする)
+    const lineUserId = event.source?.userId ?? '不明';
+    // text が文字列でない (欠落・型不正) イベントは起票できないためスキップする
+    if (typeof textMessage.text !== 'string') continue;
 
     // 空白のみのメッセージはタイトルが空文字列になるため起票対象外としてスキップする
     // (LINE は空文字メッセージを送信できる場合があり、Zod min(1) を持たないこのパスでは別途ガードが必要)
@@ -226,22 +256,30 @@ export async function POST(req: Request) {
     // チケット本文: LINE ユーザー ID と全メッセージテキストを含める (担当者が手動連絡できるよう)
     const ticketBody = `[LINE 経由の問い合わせ]\nLINE ユーザー ID: ${lineUserId}\n\n${safeText}`;
 
-    // 新規チケットを起票する (Web フォーム・メール取り込みと同じ PORT 経由)
-    const ticket = await repos.tickets.create({
-      title, // LINE メッセージから生成したタイトル
-      body: ticketBody, // LINE ユーザー ID + 全文
-      priority: 'Medium', // LINE 取り込みは優先度 Medium 固定 (他チャネルと揃える)
-      categoryId: null, // カテゴリは未分類 (担当者が後で設定)
-      creatorId: proxyCreator.id, // テナント管理者をプロキシ起票者とする (β 制約)
-      tenantId: targetTenantId, // 取り込み先テナント
-      status: initialStatus, // Lite は 'Open'、Pro は DB 既定 'New'
-      resolutionDueAt, // 優先度 Medium ベースの解決期限
-    });
-
-    // 起票したチケット ID を記録する
-    ticketIds.push(ticket.id);
+    // 新規チケットを起票する (Web フォーム・メール取り込みと同じ PORT 経由)。
+    // 1 件の起票失敗で全体を 500 にすると LINE がバッチ全体を再送し、既に起票済みのチケットが
+    // 重複する (このルートはまだメッセージ ID による冪等化を持たない)。そのため起票は個別に
+    // try/catch で囲み、失敗は文脈付きでログに残して次のイベントへ進み、最後は必ず 200 を返す。
+    try {
+      const ticket = await repos.tickets.create({
+        title, // LINE メッセージから生成したタイトル
+        body: ticketBody, // LINE ユーザー ID + 全文
+        priority: 'Medium', // LINE 取り込みは優先度 Medium 固定 (他チャネルと揃える)
+        categoryId: null, // カテゴリは未分類 (担当者が後で設定)
+        creatorId: proxyCreator.id, // 名前順で最初の担当者をプロキシ起票者とする (β 制約)
+        tenantId: targetTenantId, // 取り込み先テナント
+        status: initialStatus, // Lite は 'Open'、Pro は DB 既定 'New'
+        resolutionDueAt, // 優先度 Medium ベースの解決期限
+      });
+      // 起票したチケット ID を記録する
+      ticketIds.push(ticket.id);
+    } catch (err) {
+      // 起票失敗は握り潰さずログに残す。再送による重複起票を避けるため全体は 200 で受領する
+      console.error('[POST /api/inbound/line] failed to create ticket from event', err);
+    }
   }
 
-  // LINE サーバーはレスポンスを 30 秒以内に受信しないと再送するため、必ず 200 を返す
+  // LINE サーバーはレスポンスを所定時間内に受信しないと再送するため、必ず 200 を返す。
+  // 冪等化 (LINE メッセージ ID による重複排除) はメール取り込みの Message-ID 方式に倣った将来課題。
   return NextResponse.json({ ticketIds }, { status: 200 });
 }
