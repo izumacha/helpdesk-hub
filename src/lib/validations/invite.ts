@@ -79,12 +79,16 @@ export const createTenantSchema = z.object({
     .min(1, '組織名は必須です')
     .max(NAME_MAX_LENGTH, '組織名が長すぎます'),
   // 業種テンプレ識別子 (任意)。空文字は「未選択」として undefined に変換する。
-  // 空文字以外を指定する場合は INDUSTRY_TEMPLATES の ID のいずれかに限定する (ホワイトリスト)
+  // 空文字以外を指定する場合は INDUSTRY_TEMPLATES の ID のいずれかに限定する (ホワイトリスト)。
+  // ポイント: .refine() の条件から v === '' を除外することで、空文字が左ブランチ (refine) を
+  // 通過せずに右ブランチ (.or(z.literal('').transform(...))) へ転送され、
+  // 確実に undefined に変換される。refine 内で v === '' を許可すると右ブランチが到達不能になる。
   industry: z
     .string()
     .trim()
     .refine(
-      (v: string) => v === '' || VALID_INDUSTRY_IDS.has(v),
+      // v === '' を除外: 空文字は右ブランチ (.or) で undefined に変換するため refine では弾かない
+      (v: string) => VALID_INDUSTRY_IDS.has(v),
       '業種の指定が正しくありません。選択肢から選んでください。'
     )
     .optional()

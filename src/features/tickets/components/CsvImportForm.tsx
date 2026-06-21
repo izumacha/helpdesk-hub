@@ -9,6 +9,8 @@ import { useState, useTransition } from 'react';
 import { importTickets } from '@/features/tickets/actions/import-tickets';
 // インポート結果の型 (成功件数 + エラー一覧)
 import type { ImportTicketsResult } from '@/features/tickets/actions/import-tickets';
+// RFC 4180 準拠の CSV パーサ (サーバーアクションと同一実装を共有することでプレビューと実インポートの挙動を一致させる)
+import { parseCsvLine } from '@/lib/csv';
 
 // CSV インポートフォームに渡す Props 型
 // categories は将来のカテゴリ選択 UI 向けに受け取るが、MVP では使用しない
@@ -25,19 +27,22 @@ interface PreviewRow {
 }
 
 // CSV テキストから先頭 5 件のデータ行をプレビュー用に解析する純粋関数
+// parseCsvLine (RFC 4180 準拠) を使うことで、実際のインポートと同じ列位置を表示する。
+// 以前は split(',') を使っていたが、引用符内カンマを含む行でプレビューとインポートの
+// 列位置がずれる問題があったため、共通の RFC 4180 パーサに切り替えた。
 function parsePreview(csvText: string): PreviewRow[] {
   // 改行コード (CRLF / LF どちらにも対応) で行に分割する
   const lines = csvText.split(/\r?\n/).filter((l) => l.trim() !== '');
   // 行が 1 行 (ヘッダのみ) か 0 行の場合はプレビューなし
   if (lines.length < 2) return [];
-  // ヘッダ行を取り出してカンマ分割する
-  const headers = (lines[0] ?? '').split(',').map((h) => h.trim().replace(/^"|"$/g, ''));
+  // ヘッダ行を RFC 4180 パーサで解析する (引用符内のカンマにも対応)
+  const headers = parseCsvLine(lines[0] ?? '');
   // データ行は最大 5 件に絞る (プレビューなので多すぎない量に制限)
   const dataLines = lines.slice(1, 6);
   // 各データ行を PreviewRow 型にマッピングして返す
   return dataLines.map((line) => {
-    // 行をカンマ分割してセル配列を得る
-    const cells = line.split(',').map((c) => c.trim().replace(/^"|"$/g, ''));
+    // RFC 4180 パーサで各セルを取り出す (引用符内のカンマにも対応)
+    const cells = parseCsvLine(line);
     // ヘッダ名から対応するセルの値を取り出すヘルパー (見つからなければ空文字)
     const get = (name: string): string => {
       const idx = headers.indexOf(name); // ヘッダのインデックスを検索
@@ -224,9 +229,11 @@ export function CsvImportForm({ categories: _categories }: CsvImportFormProps) {
           {/* エラー一覧 (エラーがある場合のみ表示) */}
           {result.errors.length > 0 && (
             <ul className="space-y-1 rounded-lg bg-rose-50 p-4 ring-1 ring-rose-100">
-              {result.errors.map((e: { row: number; message: string }) => (
-                /* エラー 1 件: 行番号 + エラーメッセージ */
-                <li key={e.row} className="text-sm text-rose-700">
+              {result.errors.map((e: { row: number; message: string }, idx: number) => (
+                /* エラー 1 件: 行番号 + エラーメッセージ。
+                   key に e.row を使うと同一行に複数エラーが発生したとき重複するため、
+                   代わりに配列インデックス idx を使う (エラー順序は固定なので安定する)。 */
+                <li key={idx} className="text-sm text-rose-700">
                   {/* 行番号を強調表示する */}
                   <span className="font-medium">{e.row} 行目:</span> {e.message}
                 </li>

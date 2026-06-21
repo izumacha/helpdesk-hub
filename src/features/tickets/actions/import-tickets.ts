@@ -5,6 +5,8 @@
 
 // セッション取得
 import { auth } from '@/lib/auth';
+// ページキャッシュを無効化する Next.js の関数
+import { revalidatePath } from 'next/cache';
 // リポジトリ束 (チケット作成用)
 import { repos } from '@/data';
 // エージェント権限判定 (agent または admin のとき true)
@@ -13,6 +15,8 @@ import { isAgent } from '@/lib/role';
 import { enforceRateLimit } from '@/lib/rate-limit';
 // テナントの動作モード (lite | pro) を取得するヘルパー
 import { getCurrentTenantMode } from '@/lib/tenant';
+// RFC 4180 準拠の CSV パーサ (サーバー / クライアント共通実装)
+import { parseCsvLine } from '@/lib/csv';
 // 優先度・ステータスのドメイン型
 import type { Priority, TicketStatus } from '@/domain/types';
 
@@ -33,53 +37,6 @@ const PRIORITY_MAP: Record<string, Priority> = {
   中: 'Medium', // 「中」→ Medium
   低: 'Low', // 「低」→ Low
 };
-
-// RFC 4180 準拠の CSV 行パーサ (引用符を含むフィールドでもカンマを正しく扱う)
-// 例: `"PCトラブル, ネットワーク",高` → ['PCトラブル, ネットワーク', '高']
-function parseCsvLine(line: string): string[] {
-  // 解析結果を格納する配列
-  const fields: string[] = [];
-  // 現在のフィールド文字列を蓄積するバッファ
-  let current = '';
-  // フィールドが引用符で囲まれているかのフラグ
-  let inQuotes = false;
-  // 1 文字ずつ走査する
-  for (let i = 0; i < line.length; i++) {
-    const ch = line[i]; // 現在の文字
-    if (inQuotes) {
-      if (ch === '"') {
-        // 次の文字も '"' なら RFC 4180 のエスケープ ('' → ") として扱う
-        if (line[i + 1] === '"') {
-          current += '"'; // エスケープされた引用符をバッファに追加
-          i += 1; // 次の '"' をスキップする
-        } else {
-          // 引用符の終了 → 引用モードを抜ける
-          inQuotes = false;
-        }
-      } else {
-        // 引用符内の通常文字はそのままバッファに追加する
-        current += ch;
-      }
-    } else {
-      if (ch === '"') {
-        // フィールド開始直後の引用符 → 引用モードへ入る
-        inQuotes = true;
-      } else if (ch === ',') {
-        // カンマ → フィールド終端。前後の空白を除いてリストに追加する
-        fields.push(current.trim());
-        // バッファをリセットして次のフィールドへ
-        current = '';
-      } else {
-        // 通常文字をバッファに追加する
-        current += ch;
-      }
-    }
-  }
-  // 最後のフィールドを追加する (末尾のカンマがなくても確実に取り込む)
-  fields.push(current.trim());
-  // 解析済みフィールド配列を返す
-  return fields;
-}
 
 // YYYY-MM-DD 形式の日付文字列をローカル時刻の Date に変換する純粋関数
 // `new Date('YYYY-MM-DD')` は UTC 0 時として解釈されるため JST 環境では前日になる問題を回避する
@@ -120,6 +77,12 @@ export async function importTickets(csvText: string): Promise<ImportTicketsResul
   if (!isAgent(session.user.role)) {
     throw new Error('この操作はエージェントまたは管理者のみ実行できます');
   }
+
+  // レート制限を認証直後・高コスト処理前に適用する。
+  // サイズチェックより先に行うことで、制限超過のリクエストが
+  // Buffer.byteLength や CSV パースなどの CPU コストを発生させないようにする。
+  enforceRateLimit(`csv-import:${session.user.id}`, { limit: 5, windowMs: 60_000 });
+
   // セッションから tenantId と起票者 ID を取り出す
   const tenantId = session.user.tenantId;
   const creatorId = session.user.id;
@@ -129,9 +92,6 @@ export async function importTickets(csvText: string): Promise<ImportTicketsResul
   if (Buffer.byteLength(csvText, 'utf8') > MAX_CSV_BYTES) {
     throw new Error(`CSV ファイルのサイズが大きすぎます（上限 ${MAX_CSV_BYTES / 1024}KB）`);
   }
-
-  // 60 秒あたり 5 回までに制限 (大量インポートの連打を防ぐ)
-  enforceRateLimit(`csv-import:${session.user.id}`, { limit: 5, windowMs: 60_000 });
 
   // テナントの動作モードを取得する (初期ステータスを Lite/Pro で切り替えるために必要)
   const mode = await getCurrentTenantMode(tenantId);
@@ -187,14 +147,16 @@ export async function importTickets(csvText: string): Promise<ImportTicketsResul
     // RFC 4180 パーサで各セルを取り出す (引用符内のカンマにも対応)
     const cells = parseCsvLine(line ?? '');
 
-    // 件名セルを取り出す (TITLE_MAX_LENGTH を超える分はエラーにして行をスキップ)
+    // 件名セルを取り出す
     const titleRaw = cells[titleIndex] ?? '';
-    // 件名が空の行はスキップする (ヘッダ後の空行などを無視する)
-    if (!titleRaw) continue;
+    // 件名が空の行はエラーとして記録してスキップする (静かにスキップせずユーザーに通知する)
+    if (!titleRaw) {
+      errors.push({ row: rowNum, message: '件名が空です' });
+      continue;
+    }
     // 件名が長すぎる場合はエラーとして記録してこの行をスキップ (DB の制約前に弾く)
     if (titleRaw.length > TITLE_MAX_LENGTH) {
       errors.push({ row: rowNum, message: `件名が長すぎます（${TITLE_MAX_LENGTH}文字以内にしてください）` });
-      // 次の行へ進む (部分成功なので continue)
       continue;
     }
     // 検証済みの件名を確定する
@@ -205,7 +167,6 @@ export async function importTickets(csvText: string): Promise<ImportTicketsResul
     // 本文が長すぎる場合はエラーとして記録してこの行をスキップ
     if (bodyRaw.length > BODY_MAX_LENGTH) {
       errors.push({ row: rowNum, message: `内容が長すぎます（${BODY_MAX_LENGTH}文字以内にしてください）` });
-      // 次の行へ進む (部分成功なので continue)
       continue;
     }
     // 検証済みの本文を確定する
@@ -227,7 +188,6 @@ export async function importTickets(csvText: string): Promise<ImportTicketsResul
         if (parsed === null) {
           // 変換に失敗した (不正な形式) 場合はエラーとして記録してこの行をスキップ
           errors.push({ row: rowNum, message: `期限日の形式が正しくありません: "${dueDateRaw}"（YYYY-MM-DD 形式で入力してください）` });
-          // 次の行へ進む (部分成功なので continue)
           continue;
         }
         // 変換できた値を解決期限として使う
@@ -256,6 +216,12 @@ export async function importTickets(csvText: string): Promise<ImportTicketsResul
       // ユーザーには汎用メッセージのみ返す (Prisma のエラー詳細をフロントに漏らさない)
       errors.push({ row: rowNum, message: 'チケットの作成に失敗しました。内容を確認してください。' });
     }
+  }
+
+  // インポートでチケットが作成された場合はチケット一覧のキャッシュを無効化する
+  // (revalidatePath を呼ばないと一覧ページのデータが古いまま表示され続ける)
+  if (imported > 0) {
+    revalidatePath('/tickets');
   }
 
   // 成功件数とエラー一覧を返す
