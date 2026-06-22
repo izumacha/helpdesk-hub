@@ -5,6 +5,8 @@
 // すべて満たすときだけ SAML SP 構築に必要な情報を返す (fail-closed)。
 // いずれかの条件を欠く場合は理由付きで失敗を返し、呼び出し側がエラーリダイレクトに変換する。
 
+// 現在のセッション取得
+import { auth } from '@/lib/auth';
 // データ層の Composition Root
 import { repos } from '@/data';
 // プラン別の SSO 可否ゲート (Enterprise のみ)
@@ -33,4 +35,35 @@ export async function loadEnabledSsoContext(tenantId: string): Promise<SsoContex
   if (!config.enabled) return { ok: false, reason: 'disabled' };
   // すべて満たしたので SP 構築に必要な情報を返す
   return { ok: true, tenant, config, baseUrl: resolveAppBaseUrl() };
+}
+
+// SSO 設定の作成/更新/削除 Server Action が共有する認可ゲートの結果
+export type SsoAdminGate =
+  | { ok: true; tenantId: string }
+  | { ok: false; error: string };
+
+// SSO 設定変更の前提 (ログイン済み・admin・Enterprise プラン) をまとめて検証する。
+// update/delete-sso-config の両 Server Action で重複していた認可チェックを 1 か所に集約し、
+// セキュリティ上重要な「admin かつ Enterprise」ゲートの実装ドリフトを防ぐ。
+export async function assertSsoConfigAdmin(): Promise<SsoAdminGate> {
+  // セッション取得と認証チェック
+  const session = await auth();
+  // 未ログインまたは tenantId 不在は拒否
+  if (!session?.user?.id || !session.user.tenantId) {
+    return { ok: false, error: '認証が必要です' };
+  }
+  // 管理者以外は設定変更不可 (UI 非表示に頼らずサーバー側で強制)
+  if (session.user.role !== 'admin') {
+    return { ok: false, error: 'この操作は管理者のみ実行できます' };
+  }
+  // セッション由来の tenantId のみ使う (クロステナント設定防止)
+  const tenantId = session.user.tenantId;
+  // テナントを取得してプランが SSO を許可するか確認する (Enterprise のみ)
+  const tenant = await repos.tenants.findById(tenantId);
+  if (!tenant) return { ok: false, error: 'テナント情報の取得に失敗しました' };
+  if (!isSsoAllowed(tenant.subscriptionPlan)) {
+    return { ok: false, error: 'SSO は Enterprise プランでのみ利用できます。' };
+  }
+  // すべて満たしたので tenantId を返す
+  return { ok: true, tenantId };
 }

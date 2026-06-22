@@ -155,12 +155,17 @@ async function handleSubscriptionUpsert(subscriptionObject: Record<string, unkno
     return;
   }
 
+  // Enterprise は個別見積で Stripe の自助課金外 (運用が手動設定)。万一 Enterprise テナントに
+  // 無関係な Stripe サブスク (旧 Pro 等) が残っていても、Stripe イベントでプランを降格させない。
+  // Stripe 連携情報 (customer/subscription/status) は最新化しつつ、プランは enterprise を維持する。
+  const nextPlan = existingTenant.subscriptionPlan === 'enterprise' ? 'enterprise' : plan;
+
   // テナントのサブスク情報を更新する
   await repos.tenants.updateStripeSubscription(tenantId, {
     stripeCustomerId: customerId,
     stripeSubscriptionId: subscriptionId,
     stripeSubscriptionStatus: status,
-    subscriptionPlan: plan,
+    subscriptionPlan: nextPlan,
   });
 }
 
@@ -189,11 +194,14 @@ async function handleSubscriptionDeleted(subscriptionObject: Record<string, unkn
     return;
   }
 
-  // サブスクリプション削除後は free に降格し、canceled 状態を記録する
+  // Enterprise は Stripe 管理外のため、削除イベントでも free に降格させない (手動設定を尊重)。
+  const nextPlan = existingTenant.subscriptionPlan === 'enterprise' ? 'enterprise' : 'free';
+
+  // サブスクリプション削除後は (Enterprise を除き) free に降格し、canceled 状態を記録する
   await repos.tenants.updateStripeSubscription(tenantId, {
     stripeCustomerId: customerId,
     stripeSubscriptionId: subscriptionId,
     stripeSubscriptionStatus: 'canceled', // Stripe の deleted イベントは canceled 扱いにする
-    subscriptionPlan: 'free', // free プランに降格
+    subscriptionPlan: nextPlan, // Enterprise 以外は free に降格
   });
 }

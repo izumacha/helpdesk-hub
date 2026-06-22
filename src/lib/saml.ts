@@ -20,6 +20,10 @@
 import { SAML } from '@node-saml/node-saml';
 // SSO 設定ドメイン型
 import type { TenantSsoConfig } from '@/domain/types';
+// 証明書の base64 正規化 (SSO 設定保存と共有する純粋ヘルパー)
+import { normalizeCert } from '@/lib/saml-cert';
+// HTML/XML 属性への安全な埋め込み用エスケープ (メタデータ XML 生成に再利用)
+import { escapeHtml } from '@/lib/html-escape';
 
 // 受信アサーションの許容時刻ずれ (IdP とのクロック差吸収)。5 分まで許容する
 const SAML_CLOCK_SKEW_MS = 5 * 60 * 1000;
@@ -38,17 +42,6 @@ export function buildSpUrls(baseUrl: string, tenantId: string) {
     loginUrl: `${prefix}/login`, // SSO ログイン開始 URL
     metadataUrl: `${prefix}/metadata`, // SP メタデータ URL
   };
-}
-
-// PEM 形式の証明書から base64 本体だけを取り出す (node-saml は base64 本体を期待するため正規化)。
-// 既に base64 本体だけが渡された場合はヘッダが無いのでそのまま空白除去して返す。
-function normalizeCert(cert: string): string {
-  // BEGIN/END CERTIFICATE 行を除去し、すべての空白 (改行含む) を取り除く
-  return cert
-    .replace(/-----BEGIN CERTIFICATE-----/g, '')
-    .replace(/-----END CERTIFICATE-----/g, '')
-    .replace(/\s+/g, '')
-    .trim();
 }
 
 // SSO 設定が SAML インスタンス構築に必要な値を満たしているか検証する (満たさなければ throw)。
@@ -137,8 +130,9 @@ export async function validateSamlResponse(
     pickStringAttr(profile, 'email') ??
     pickStringAttr(profile, 'mail') ??
     pickStringAttr(profile, 'http://schemas.xmlsoap.org/ws/2005/05/identity/claims/emailaddress');
-  // NameID が email 形式ならそれを優先、無ければ属性のメールを使う
-  const rawEmail = nameId.includes('@') ? nameId : (attrEmail ?? '');
+  // 明示的なメール属性があればそれを優先する。無い場合のみ NameID が email 形式かで判定する。
+  // (UPN 形式など '@' を含む非メール NameID と、別途正しい email 属性を併送する IdP に対応するため)
+  const rawEmail = attrEmail ?? (nameId.includes('@') ? nameId : '');
   // メールが取れなければ本人特定できないので拒否する (fail-closed)
   const email = rawEmail.trim().toLowerCase();
   if (!email || !email.includes('@')) {
@@ -168,8 +162,8 @@ export function buildSpMetadataXml(baseUrl: string, tenantId: string): string {
   // SP の EntityID / ACS URL を組み立てる
   const sp = buildSpUrls(baseUrl, tenantId);
   // XML 属性に値を埋め込む前に最小限のエスケープを行う (URL 由来の特殊文字対策)
-  const entityId = escapeXmlAttr(sp.entityId);
-  const acsUrl = escapeXmlAttr(sp.acsUrl);
+  const entityId = escapeHtml(sp.entityId);
+  const acsUrl = escapeHtml(sp.acsUrl);
   // SAML 2.0 の SPSSODescriptor を含むメタデータ XML を返す。
   // AuthnRequestsSigned=false (SP 署名なし) / WantAssertionsSigned=true (アサーション署名必須)。
   return `<?xml version="1.0" encoding="UTF-8"?>
@@ -179,15 +173,4 @@ export function buildSpMetadataXml(baseUrl: string, tenantId: string): string {
     <AssertionConsumerService Binding="urn:oasis:names:tc:SAML:2.0:bindings:HTTP-POST" Location="${acsUrl}" index="0" isDefault="true"/>
   </SPSSODescriptor>
 </EntityDescriptor>`;
-}
-
-// XML 属性値に安全に埋め込むための最小エスケープ (& < > " ' を実体参照へ変換)。
-function escapeXmlAttr(value: string): string {
-  // 各特殊文字を XML 実体参照に置換して返す
-  return value
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&apos;');
 }

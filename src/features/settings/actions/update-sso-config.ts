@@ -7,27 +7,17 @@
 import { revalidatePath } from 'next/cache';
 // Node の X.509 証明書パーサ (証明書の妥当性検証に使う)
 import { X509Certificate } from 'node:crypto';
-// 現在のセッション取得
-import { auth } from '@/lib/auth';
-// データリポジトリ (テナント取得・SSO 設定 upsert)
+// データリポジトリ (SSO 設定 upsert)
 import { repos } from '@/data';
-// プラン別の SSO 可否ゲート (Enterprise のみ)
-import { isSsoAllowed } from '@/lib/plan-guard';
+// SSO 設定変更の共有認可ゲート (ログイン済み・admin・Enterprise)
+import { assertSsoConfigAdmin } from '@/lib/sso-context';
+// 証明書の base64 正規化 (SAML SP コアと共有する純粋ヘルパー)
+import { normalizeCert } from '@/lib/saml-cert';
 
 // 入力長の上限 (DoS・異常入力対策。EntityID/URL は十分長め、証明書は数 KB を想定)
 const ENTITY_ID_MAX = 1024; // IdP EntityID の最大長
 const SSO_URL_MAX = 2048; // IdP SSO URL の最大長
 const CERT_MAX = 16384; // 証明書 (PEM/base64) の最大長
-
-// PEM 形式の証明書から base64 本体だけを取り出す (保存形式に正規化する)
-function normalizeCert(cert: string): string {
-  // BEGIN/END 行と空白を除去する
-  return cert
-    .replace(/-----BEGIN CERTIFICATE-----/g, '')
-    .replace(/-----END CERTIFICATE-----/g, '')
-    .replace(/\s+/g, '')
-    .trim();
-}
 
 // base64 本体を PEM にラップして X509Certificate でパースできるか検証する。
 // パースできれば正規化済み base64 を返し、できなければ null を返す。
@@ -63,25 +53,12 @@ export async function updateSsoConfig(
   _prevState: UpdateSsoConfigState,
   formData: FormData,
 ): Promise<UpdateSsoConfigState> {
-  // セッション取得と認証チェック
-  const session = await auth();
-  // 未ログインまたは tenantId 不在は拒否
-  if (!session?.user?.id || !session.user.tenantId) {
-    return { error: '認証が必要です' };
-  }
-  // 管理者以外は設定変更不可 (UI 非表示に頼らずサーバー側で強制)
-  if (session.user.role !== 'admin') {
-    return { error: 'この操作は管理者のみ実行できます' };
-  }
-  // セッション由来の tenantId のみ使う (クロステナント設定防止)
-  const tenantId = session.user.tenantId;
-
-  // テナントを取得してプランが SSO を許可するか確認する (Enterprise のみ)
-  const tenant = await repos.tenants.findById(tenantId);
-  if (!tenant) return { error: 'テナント情報の取得に失敗しました' };
-  if (!isSsoAllowed(tenant.subscriptionPlan)) {
-    return { error: 'SSO は Enterprise プランでのみ利用できます。' };
-  }
+  // 共有ゲートで「ログイン済み・admin・Enterprise」をまとめて検証する
+  const gate = await assertSsoConfigAdmin();
+  // ゲート不通過ならその理由をそのまま返す
+  if (!gate.ok) return { error: gate.error };
+  // 検証済みの tenantId (セッション由来)
+  const tenantId = gate.tenantId;
 
   // フォームから各値を取り出して前後空白を除去する
   const idpEntityId = String(formData.get('idpEntityId') ?? '').trim();
