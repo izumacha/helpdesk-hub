@@ -20,14 +20,33 @@ import type Stripe from 'stripe';
 import { repos } from '@/data';
 // Stripe クライアントと設定ヘルパー
 import { getStripeClient, getStripeWebhookSecret, stripeStatusToPlan } from '@/lib/stripe';
+// レート制限 (署名検証の前に粗すぎる連打を弾いてサーバー負荷を抑える)
+import { enforceRateLimit, RateLimitError } from '@/lib/rate-limit';
 
 // Stripe Webhook が送ってくる主要イベント種別の定数 (typo 防止のため文字列リテラルを定数化)
 const STRIPE_EVENT_SUBSCRIPTION_CREATED = 'customer.subscription.created';
 const STRIPE_EVENT_SUBSCRIPTION_UPDATED = 'customer.subscription.updated';
 const STRIPE_EVENT_SUBSCRIPTION_DELETED = 'customer.subscription.deleted';
 
+// Stripe Webhook のレート制限設定: 1 分あたり 300 件まで (Stripe の通常送信量を超えない上限)
+// Stripe の実送信量は低いため、極端に小さくすると Retry 失敗を招く可能性がある
+const STRIPE_RATE_LIMIT = { limit: 300, windowMs: 60_000 } as const;
+
 // POST /api/webhooks/stripe — Stripe Webhook エンドポイント
 export async function POST(request: Request): Promise<NextResponse> {
+  // レート制限: 署名検証の前に短絡して CPU / メモリを守る
+  // キーは固定文字列 (Stripe のグローバル IP プールが対象のため、IP ベースの分散は不要)
+  try {
+    enforceRateLimit('stripe-webhook', STRIPE_RATE_LIMIT);
+  } catch (err) {
+    // レート制限超過: 429 + Retry-After を返す (Stripe は 429 受信時に再送を遅らせる)
+    const retryAfterSec = err instanceof RateLimitError ? err.retryAfterSec : 60;
+    return NextResponse.json(
+      { error: 'リクエストが多すぎます。しばらく待ってから再試行してください。' },
+      { status: 429, headers: { 'Retry-After': String(retryAfterSec) } },
+    );
+  }
+
   // Stripe の署名検証に使うヘッダを取得する (次の行がないと署名検証に失敗する)
   const signature = request.headers.get('stripe-signature');
   if (!signature) {
@@ -125,7 +144,18 @@ async function handleSubscriptionUpsert(subscriptionObject: Record<string, unkno
   // Stripe の状態と Price ID からプランを判定する
   const plan = stripeStatusToPlan(status, priceId);
 
-  // テナントのサブスク情報を更新する (tenantId はメタデータ由来 = Stripe 署名検証済み)
+  // tenantId はチェックアウト時にメタデータに埋め込んだ値だが、
+  // ユーザーが Stripe のチェックアウトセッション生成時に任意の値を渡せる可能性があるため
+  // DB にテナントが実在することを確認してからサブスク情報を更新する。
+  // これにより、悪意あるメタデータ改ざんによるクロステナント課金昇格を防ぐ。
+  const existingTenant = await repos.tenants.findById(tenantId);
+  if (!existingTenant) {
+    // 存在しない tenantId の場合はスキップして処理を止める (Stripe は 200 を受け取り再送しない)
+    console.warn('[stripe-webhook] メタデータの tenantId に対応するテナントが見つかりません:', tenantId);
+    return;
+  }
+
+  // テナントのサブスク情報を更新する
   await repos.tenants.updateStripeSubscription(tenantId, {
     stripeCustomerId: customerId,
     stripeSubscriptionId: subscriptionId,
@@ -143,18 +173,25 @@ async function handleSubscriptionDeleted(subscriptionObject: Record<string, unkn
   const metadata = subscriptionObject['metadata'] as Record<string, string> | undefined;
   const tenantId = metadata?.['tenantId'];
 
-  // 必須フィールドが揃っていない場合はスキップ
-  if (!subscriptionId || !tenantId) {
+  // 必須フィールドが揃っていない場合はスキップ (customerId も含めて確認)
+  if (!subscriptionId || !customerId || !tenantId) {
     console.warn(
       '[stripe-webhook] 削除イベントに必須フィールドが不足しています:',
-      { subscriptionId, tenantId },
+      { subscriptionId, customerId, tenantId },
     );
+    return;
+  }
+
+  // upsert と同様にテナント実在チェックを行い、不正な tenantId による操作を防ぐ
+  const existingTenant = await repos.tenants.findById(tenantId);
+  if (!existingTenant) {
+    console.warn('[stripe-webhook] 削除イベントの tenantId に対応するテナントが見つかりません:', tenantId);
     return;
   }
 
   // サブスクリプション削除後は free に降格し、canceled 状態を記録する
   await repos.tenants.updateStripeSubscription(tenantId, {
-    stripeCustomerId: customerId ?? undefined,
+    stripeCustomerId: customerId,
     stripeSubscriptionId: subscriptionId,
     stripeSubscriptionStatus: 'canceled', // Stripe の deleted イベントは canceled 扱いにする
     subscriptionPlan: 'free', // free プランに降格

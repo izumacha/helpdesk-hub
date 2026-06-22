@@ -8,6 +8,8 @@
 import { auth } from '@/lib/auth';
 // データリポジトリ
 import { repos } from '@/data';
+// 設定ページのキャッシュを無効化するための Next.js キャッシュ関数
+import { revalidatePath } from 'next/cache';
 
 // 更新結果の戻り値型
 export interface UpdateLocationResult {
@@ -51,6 +53,8 @@ export async function updateLocation(
   try {
     // tenantId をスコープに含めて更新 (他テナントの拠点を変更できないよう保護)
     await repos.locations.update(locationId, session.user.tenantId, { name, description });
+    // 設定ページのキャッシュを無効化して更新結果がすぐ反映されるようにする
+    revalidatePath('/settings');
     // 成功を返す
     return { success: true };
   } catch (err) {

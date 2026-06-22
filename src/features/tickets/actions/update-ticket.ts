@@ -185,15 +185,23 @@ export async function updateTicketStatus(ticketId: string, newStatus: TicketStat
   // Phase 4: Slack/Teams 外部通知 (ステータス変更をチャネルに投稿する)
   // Slack 通知はチームの共有チャネル宛なので、自己更新でも全員に通知する (メール個人通知とは異なる意図)。
   // スナップショットが取れた場合のみ送信 (変更なし / チケット未取得のケースは skip)。
+  // 外部通知の失敗は DB 更新済みのチケットに影響しないよう try/catch で包み、エラーをログに留める。
   const snapForSlack = ticketSnapshot as { creatorId: string; title: string } | null;
   if (snapForSlack !== null) {
-    // ベースURLを取得してチケットリンクを組み立てる
-    const baseUrl = resolveAppBaseUrl();
-    await sendOutboundNotification(tenantId, {
-      subject: `ステータスが変更されました: ${snapForSlack.title}`,
-      body: `「${snapForSlack.title}」のステータスが「${getStatusLabel(newStatus, mode)}」に変更されました。`,
-      ticketUrl: `${baseUrl}/tickets/${ticketId}`,
-    });
+    try {
+      // ベースURLを取得してチケットリンクを組み立てる (NEXTAUTH_URL 未設定時に例外が出る可能性があるため内側に置く)
+      const baseUrl = resolveAppBaseUrl();
+      // 外部チャネル (Slack/Teams/Chatwork) に通知を送る
+      await sendOutboundNotification(tenantId, {
+        subject: `ステータスが変更されました: ${snapForSlack.title}`,
+        body: `「${snapForSlack.title}」のステータスが「${getStatusLabel(newStatus, mode)}」に変更されました。`,
+        ticketUrl: `${baseUrl}/tickets/${ticketId}`,
+      });
+    } catch (err) {
+      // 外部通知の失敗はログに記録するが、チケット更新自体は成功扱いにする
+      // (ネットワーク障害・Webhook 設定ミスでチケット操作が失敗に見えるのを防ぐ)
+      console.error('[update-ticket] 外部通知の送信に失敗しました (チケット更新は完了):', err);
+    }
   }
 
   // チケット詳細ページのキャッシュを無効化して再描画
