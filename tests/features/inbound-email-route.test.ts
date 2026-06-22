@@ -373,4 +373,37 @@ describe('POST /api/inbound/email', () => {
     expect(res.status).toBe(202);
     expect(store.tickets.size).toBe(0);
   });
+
+  // multipart (SendGrid 形式) の個別 SPF フィールド (大文字 'SPF') も enforce で隔離されること。
+  // 大文字/小文字フィールド名の取り違えは静かに壊れやすいため、multipart 経路を明示的に検証する。
+  it('enforce で multipart の SPF=fail フィールドを隔離する (202)', async () => {
+    vi.stubEnv('INBOUND_EMAIL_AUTH', 'enforce');
+    // SendGrid 互換の multipart フォームを組み立てる
+    const form = new FormData();
+    form.set('to', `${TOKEN}@inbox.helpdesk-hub.app`);
+    form.set('from', '鈴木 一郎 <ichiro@example.com>'); // 既知メンバー (本人性はここ)
+    form.set('subject', 'マルチパート SPF 失敗');
+    form.set('text', '本文');
+    form.set('SPF', 'fail'); // プロバイダ算出の SPF=fail (詐称シグナル)
+    const req = new Request('http://localhost/api/inbound/email', {
+      method: 'POST',
+      headers: { 'x-inbound-secret': SECRET },
+      body: form,
+    });
+    const { POST } = await import('@/app/api/inbound/email/route');
+    const res = await POST(req);
+    // 既知メンバーであっても SPF=fail なら隔離されて起票されない
+    expect(res.status).toBe(202);
+    expect(store.tickets.size).toBe(0);
+  });
+
+  // enforce で個別 dkim フィールドの fail を隔離する (SendGrid の dkim フィールド形式)
+  it('enforce で dkim フィールドの fail を隔離する (202)', async () => {
+    vi.stubEnv('INBOUND_EMAIL_AUTH', 'enforce');
+    const { POST } = await import('@/app/api/inbound/email/route');
+    // SendGrid の dkim フィールドは "{@domain : result}" 形式
+    const res = await POST(makeRequest({ ...VALID_EMAIL, dkim: '{@example.com : fail}' }));
+    expect(res.status).toBe(202);
+    expect(store.tickets.size).toBe(0);
+  });
 });

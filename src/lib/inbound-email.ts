@@ -236,9 +236,6 @@ export interface InboundAuthResults {
   dmarc: AuthVerdict; // DMARC (SPF/DKIM のアラインメントとドメインポリシー)
 }
 
-// 認証結果の判定に使うポリシー文字列 ('enforce' のときだけ明示 fail を隔離する。それ以外は無効)
-export type InboundAuthPolicy = string;
-
 // 認証結果評価の戻り値 ('accept'=取り込む / 'quarantine'=隔離して起票しない)
 export type InboundAuthDecision = 'accept' | 'quarantine';
 
@@ -305,7 +302,8 @@ export function extractAuthResults(fields: {
 // 取り込みが全滅しないようにするため。なりすましの強いシグナルである明示 fail のみを弾く)。
 export function evaluateInboundAuth(
   results: InboundAuthResults,
-  policy: InboundAuthPolicy,
+  // ポリシー文字列。'enforce' のときだけ明示 fail を隔離する (それ以外/未設定は検証なし)
+  policy: string,
 ): InboundAuthDecision {
   // enforce 以外 (off / 未設定など) は検証しない (後方互換 = 既存挙動を維持)
   if ((policy ?? '').trim().toLowerCase() !== 'enforce') return 'accept';
