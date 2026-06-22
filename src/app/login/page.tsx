@@ -10,6 +10,18 @@ function getInitialError(errorCode: string | undefined): string | undefined {
   if (errorCode === 'magic-link-invalid') {
     return 'ログインリンクが無効です。もう一度メール送信からやり直してください。';
   }
+  // SSO (SAML) が利用不可 (未設定・無効・プラン外など)
+  if (errorCode === 'sso-unavailable') {
+    return 'SSO ログインは現在利用できません。管理者にお問い合わせください。';
+  }
+  // SSO の応答検証に失敗 (署名不正・期限切れ・なりすまし等)
+  if (errorCode === 'sso-invalid') {
+    return 'SSO ログインに失敗しました。お手数ですが、もう一度お試しください。';
+  }
+  // SSO は成功したが、組織内に対応するメンバーが見つからない
+  if (errorCode === 'sso-no-user') {
+    return 'SSO は成功しましたが、組織にあなたのアカウントが見つかりません。管理者に招待を依頼してください。';
+  }
   return undefined;
 }
 

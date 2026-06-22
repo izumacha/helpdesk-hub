@@ -141,9 +141,11 @@
 ### Phase 4 — マネタイズと運用（継続）
 
 - [x] サブスク課金（Stripe Billing）: Free / Standard / Pro の 3 段階
-- [x] 監査ログ / バックアップ自動化
+- [x] 監査ログ / バックアップ自動化（`scripts/backup-db.sh` ＋ スケジュール CI `.github/workflows/backup.yml`。pg_dump + 世代管理。手順は `docs/backup.md`）
 - [x] 多店舗・多拠点対応（テナント内サブグループ）
 - [x] Slack / Chatwork / Microsoft Teams 通知 Adapter
+- [x] Enterprise プラン（§6.1 料金表）: 無制限 + 監査強化。`SubscriptionPlan` に `enterprise` を追加
+- [x] SSO（SAML）— Enterprise 限定（`isSsoAllowed`）。テナント単位の IdP 設定 + SP メタデータ/ACS/ログイン エンドポイント（`/api/auth/sso/<tenantId>/*`）。署名・Issuer・Audience・期限を検証（`@node-saml/node-saml`）。既存メンバーのみログイン許可（JIT 無効）
 
 ### スケジュール感
 

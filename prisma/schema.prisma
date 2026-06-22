@@ -138,6 +138,25 @@ model Tenant {
   invitations   Invitation[] // メンバー招待リンク (発行〜受諾までのワンタイムトークン)
   emailThreadRefs EmailThreadRef[] // メールスレッド継続用の Message-ID 対応表 (Phase 2)
   locations     Location[] // Phase 4 多拠点: テナント内の店舗・拠点
+  ssoConfig     TenantSsoConfig? // Phase 4 Enterprise: SAML SSO 設定 (1 テナント 1 件・未設定なら null)
+}
+
+// Phase 4 Enterprise: テナント単位の SAML シングルサインオン (SSO) 設定。
+// Enterprise プランのみが構成・利用できる (plan-guard の isSsoAllowed でサーバー側強制)。
+// アプリは SAML の Service Provider (SP) として振る舞い、ここに記録した IdP の情報で
+// 受信アサーションの署名を検証する。docs/smb-dx-pivot-plan.md §6.1 Enterprise「SSO(SAML)」。
+model TenantSsoConfig {
+  id          String   @id @default(cuid()) // 主キー (cuid)
+  tenantId    String   @unique // 所属テナント (1 テナント 1 設定。@unique で 1:1 を担保)
+  enabled     Boolean  @default(false) // SSO ログインを有効化するか (既定 false = 無効)
+  idpEntityId String // IdP の EntityID (= 受信アサーションの Issuer。一致しない応答は拒否)
+  idpSsoUrl   String // IdP の SSO エンドポイント URL (AuthnRequest のリダイレクト先)
+  idpX509Cert String // IdP の署名検証用 X.509 証明書 (PEM またはその base64 本体)
+  createdAt   DateTime @default(now()) // 作成日時
+  updatedAt   DateTime @updatedAt // 更新日時 (Prisma が自動更新)
+
+  // 所属テナント (テナント削除で連鎖削除)
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
 }
 
 // ─────────────────────────────────────────────

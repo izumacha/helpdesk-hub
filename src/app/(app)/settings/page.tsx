@@ -16,8 +16,16 @@ import { NotificationChannelsForm } from '@/features/settings/components/Notific
 import { LocationsSection } from '@/features/settings/components/LocationsSection';
 // Phase 4 課金: サブスクリプション管理セクション (Client Component)
 import { BillingSection } from '@/features/settings/components/BillingSection';
+// Phase 4 Enterprise: SAML SSO 設定セクション (Client Component)
+import { SsoConfigSection } from '@/features/settings/components/SsoConfigSection';
 // テナント情報取得 (slackWebhookUrl / 拠点一覧 / プラン情報の初期値を渡すため)
 import { repos } from '@/data';
+// Enterprise プランのみ SSO を表示するためのプランゲート
+import { isSsoAllowed } from '@/lib/plan-guard';
+// SSO の SP エンドポイント URL を組み立てるヘルパー
+import { buildSpUrls } from '@/lib/saml';
+// アプリの公開ベース URL を解決するヘルパー (SP URL の組み立てに使う)
+import { resolveAppBaseUrl } from '@/lib/app-url';
 
 // /settings : テナント設定ページ (現状は Lite/Pro モードの切替のみ。管理者専用)
 export default async function SettingsPage() {
@@ -45,6 +53,13 @@ export default async function SettingsPage() {
     // 拠点一覧 (LocationsSection の初期値として渡す)
     repos.locations.listByTenant(session.user.tenantId),
   ]);
+
+  // Phase 4 Enterprise: SSO は Enterprise プランのみ表示・設定可能。
+  // プランが許可する場合のみ SSO 設定を取得する (非対象テナントに余計なクエリを投げない)。
+  const ssoAllowed = isSsoAllowed(tenant?.subscriptionPlan ?? 'free');
+  const ssoConfig = ssoAllowed ? await repos.ssoConfigs.findByTenant(session.user.tenantId) : null;
+  // SP の各 URL を組み立てる (Enterprise のときだけ使う)
+  const spUrls = ssoAllowed ? buildSpUrls(resolveAppBaseUrl(), session.user.tenantId) : null;
 
   return (
     <div className="mx-auto max-w-2xl space-y-6">
@@ -139,6 +154,36 @@ export default async function SettingsPage() {
           hasStripeCustomer={!!tenant?.stripeCustomerId}
         />
       </section>
+
+      {/* Phase 4 Enterprise: SAML SSO 設定カード (Enterprise プランのみ表示) */}
+      {ssoAllowed && spUrls && (
+        <section className="space-y-4 rounded-2xl bg-white p-6 shadow-sm ring-1 ring-slate-100">
+          <div>
+            {/* セクション見出し */}
+            <h2 className="text-base font-semibold text-slate-900">シングルサインオン (SAML SSO)</h2>
+            {/* 説明: Enterprise 向けの SSO 設定であることを伝える */}
+            <p className="mt-1 text-sm text-slate-500">
+              社内の IdP (Okta・Microsoft Entra ID・Google Workspace など) と SAML 連携し、
+              メンバーが SSO でログインできるようにします。Enterprise プラン限定の機能です。
+              ログインできるのは、組織に既に登録済みのメンバーのみです。
+            </p>
+          </div>
+          {/* SSO 設定フォームと SP 情報 (現在の設定と SP URL を渡す) */}
+          <SsoConfigSection
+            config={
+              ssoConfig
+                ? {
+                    idpEntityId: ssoConfig.idpEntityId,
+                    idpSsoUrl: ssoConfig.idpSsoUrl,
+                    idpX509Cert: ssoConfig.idpX509Cert,
+                    enabled: ssoConfig.enabled,
+                  }
+                : null
+            }
+            sp={spUrls}
+          />
+        </section>
+      )}
 
       {/* テナント (組織) 作成カード */}
       <section className="space-y-4 rounded-2xl bg-white p-6 shadow-sm ring-1 ring-slate-100">

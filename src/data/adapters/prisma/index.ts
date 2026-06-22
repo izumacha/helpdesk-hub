@@ -10,6 +10,7 @@ import { makeInvitationRepo } from './invitation-repository.prisma';
 import { makeLocationRepo } from './location-repository.prisma';
 import { makeMagicLinkRepo } from './magic-link-repository.prisma';
 import { makeNotificationRepo } from './notification-repository.prisma';
+import { makeSsoConfigRepo } from './sso-config-repository.prisma';
 import { makeTenantRepo } from './tenant-repository.prisma';
 import { makeTicketCommentRepo } from './ticket-comment-repository.prisma';
 import { makeTicketHistoryRepo } from './ticket-history-repository.prisma';
@@ -38,6 +39,7 @@ export function buildPrismaRepos(db: PrismaLike): Repos {
     attachments: makeAttachmentRepo(db),
     emailThreads: makeEmailThreadRepo(db),
     locations: makeLocationRepo(db), // Phase 4 多拠点
+    ssoConfigs: makeSsoConfigRepo(db), // Phase 4 Enterprise: SAML SSO 設定
   };
 }
 

@@ -62,6 +62,19 @@ export interface Tenant {
   createdAt: Date; // 作成日時
 }
 
+// Phase 4 Enterprise: テナント単位の SAML SSO 設定 1 件分。
+// アプリ (SP) が IdP からの受信アサーション署名を検証するために必要な情報を保持する。
+export interface TenantSsoConfig {
+  id: string; // 設定 ID (主キー)
+  tenantId: string; // 所属テナント ID (1 テナント 1 設定)
+  enabled: boolean; // SSO ログインを有効化するか (false なら無効 = fail-closed)
+  idpEntityId: string; // IdP の EntityID (= 受信アサーションの Issuer。一致必須)
+  idpSsoUrl: string; // IdP の SSO エンドポイント URL (AuthnRequest 送信先)
+  idpX509Cert: string; // IdP の署名検証用 X.509 証明書 (PEM またはその base64 本体)
+  createdAt: Date; // 作成日時
+  updatedAt: Date; // 更新日時
+}
+
 // Phase 4 多拠点: テナント内の店舗・拠点 1 件分
 export interface Location {
   id: string; // 拠点 ID (主キー)
