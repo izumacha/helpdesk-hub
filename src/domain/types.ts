@@ -35,8 +35,9 @@ export type NotificationType = 'assigned' | 'escalated' | 'commented' | 'statusC
 export type TenantMode = 'lite' | 'pro';
 
 // Phase 4 課金: サブスクリプションプラン
-// Free: 3 名・月 50 件 / Standard: 10 名・Lite フル / Pro: 30 名・Pro モード
-export type SubscriptionPlan = 'free' | 'standard' | 'pro';
+// Free: 3 名・月 50 件 / Standard: 10 名・Lite フル / Pro: 30 名・Pro モード /
+// Enterprise: 個別見積・無制限・SSO(SAML)・監査強化 (smb-dx-pivot-plan.md §6.1)
+export type SubscriptionPlan = 'free' | 'standard' | 'pro' | 'enterprise';
 
 // テナント (組織) 本体。マルチテナントの境界を表す
 export interface Tenant {

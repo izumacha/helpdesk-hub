@@ -42,7 +42,13 @@ export async function createCheckoutSession(
     return { error: 'Free プランへの変更はサブスクリプション解約から行ってください' };
   }
 
-  // 対象プランの Stripe Price ID を取得する
+  // Enterprise は個別見積で Stripe の自助チェックアウトを経由しない (運用が手動設定)。
+  // ここで弾かないと下のフォールバックで誤って Pro の Price ID が使われてしまうため明示的に拒否する。
+  if (targetPlan === 'enterprise') {
+    return { error: 'Enterprise プランは個別見積です。お問い合わせください。' };
+  }
+
+  // 対象プランの Stripe Price ID を取得する (ここに来る時点で standard | pro に絞られている)
   const priceId = targetPlan === 'standard' ? STRIPE_PRICE_IDS.standard : STRIPE_PRICE_IDS.pro;
   // Price ID が設定されていない場合は課金機能未設定として拒否
   if (!priceId) {

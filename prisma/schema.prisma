@@ -79,6 +79,7 @@ enum SubscriptionPlan {
   free // 無料プラン (制限付き)
   standard // スタンダード: 月額 4,980 円 (Lite フル)
   pro // プロ: 月額 14,800 円 (Pro モード + 監査ログ + LINE 連携)
+  enterprise // エンタープライズ: 個別見積 (無制限 + SSO/SAML + 監査強化)。Stripe 非経由で運用が手動設定
 }
 
 // 添付ファイルの保存先種別 (将来 S3 互換ストレージへの差し替えで使い分ける)

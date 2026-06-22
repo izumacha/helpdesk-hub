@@ -65,7 +65,9 @@ export function getStripeWebhookSecret(): string {
 }
 
 // Stripe のサブスクリプション status 文字列を SubscriptionPlan にマップするヘルパー
-// Stripe Webhook の customer.subscription.updated / deleted イベントで使用する
+// Stripe Webhook の customer.subscription.updated / deleted イベントで使用する。
+// 戻り値に 'enterprise' は含めない: Enterprise は個別見積で Stripe チェックアウトを経由せず
+// 運用が手動設定するため、Stripe イベント経由でこのプランへ昇格/降格させることはない。
 export function stripeStatusToPlan(
   status: string,
   priceId: string,
