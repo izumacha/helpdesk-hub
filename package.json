@@ -18,7 +18,9 @@
     "test:e2e": "playwright test",
     "db:seed": "tsx prisma/seed.ts",
     "db:migrate": "prisma migrate dev",
-    "db:generate": "prisma generate"
+    "db:generate": "prisma generate",
+    "db:backup": "bash scripts/backup-db.sh",
+    "db:restore": "bash scripts/restore-db.sh"
   },
   "prisma": {
     "seed": "tsx prisma/seed.ts"

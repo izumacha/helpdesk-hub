@@ -1,0 +1,69 @@
+# Phase 4 運用: PostgreSQL の自動バックアップ (スケジュール実行)。
+# docs/smb-dx-pivot-plan.md §4 Phase 4「監査ログ / バックアップ自動化」に対応。
+#
+# 仕組み:
+#   - 毎日 1 回 (cron) と手動実行 (workflow_dispatch) で scripts/backup-db.sh を走らせる。
+#   - 接続先は Secret `BACKUP_DATABASE_URL`。未設定ならジョブは安全に no-op で終了する
+#     (fail-closed: 認証情報が無い状態でダンプを試みない)。
+#   - 生成したダンプは Actions の artifact として短期保持でアップロードする。
+#
+# セキュリティ上の注意:
+#   - artifact には本番データが含まれ得るため retention を短く設定し、リポジトリ/Actions の
+#     アクセス権限を絞ること。機微データを GitHub に置きたくない運用では、本ワークフローを使わず
+#     ホスト側 cron で scripts/backup-db.sh を実行する (docs/backup.md 参照)。
+#   - BACKUP_DATABASE_URL は読み取り権限のみを持つ DB ロールを推奨する。
+
+name: DB Backup
+
+on:
+  schedule:
+    # UTC 18:00 = JST 03:00 に毎日 1 回実行する (アクセスが少ない深夜帯)
+    - cron: '0 18 * * *'
+  # 手動トリガも許可する (Actions 画面の Run workflow ボタン)
+  workflow_dispatch:
+
+# 既定の GITHUB_TOKEN は読み取りのみで十分 (このジョブはリポジトリに書き込まない)
+permissions:
+  contents: read
+
+jobs:
+  backup:
+    name: pg_dump backup
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # PostgreSQL クライアント (pg_dump) を入れる。GitHub の ubuntu-latest には
+      # postgresql-client-16 を明示導入して pg_dump のバージョン差異を避ける。
+      - name: Install postgresql-client
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y postgresql-client
+
+      # Secret が設定されているときだけ実バックアップを実行する。
+      # 未設定なら no-op (このリポジトリを fork した環境でもジョブが赤くならないようにする)。
+      - name: Run backup
+        env:
+          BACKUP_DATABASE_URL: ${{ secrets.BACKUP_DATABASE_URL }}
+        run: |
+          if [ -z "${BACKUP_DATABASE_URL}" ]; then
+            echo "BACKUP_DATABASE_URL secret が未設定のためスキップします (no-op)。" >&2
+            echo "skipped=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # スクリプトに接続先を渡してバックアップを実行する。出力先はワークスペース配下。
+          DATABASE_URL="${BACKUP_DATABASE_URL}" BACKUP_DIR=./var/backups \
+            bash scripts/backup-db.sh
+          echo "skipped=false" >> "$GITHUB_OUTPUT"
+        id: backup
+
+      # ダンプを artifact としてアップロードする (Secret 設定時のみファイルが存在する)。
+      - name: Upload backup artifact
+        if: steps.backup.outputs.skipped == 'false'
+        uses: actions/upload-artifact@v4
+        with:
+          name: db-backup-${{ github.run_id }}
+          path: var/backups/*.dump
+          # 本番データを含み得るため保持を 7 日に短縮する
+          retention-days: 7
+          if-no-files-found: error

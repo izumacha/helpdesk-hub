@@ -14,6 +14,17 @@ env:
   NODE_VERSION: '20'
 
 jobs:
+  shellcheck:
+    name: Shellcheck (backup scripts)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # scripts/ 配下の Bash スクリプト (バックアップ等) を静的解析する。
+      # ubuntu-latest には shellcheck がプリインストールされている。
+      - name: Run shellcheck
+        run: shellcheck scripts/*.sh
+
   lint-typecheck-test:
     name: Lint / Typecheck / Unit tests
     runs-on: ubuntu-latest
