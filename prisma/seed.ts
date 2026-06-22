@@ -1,5 +1,5 @@
-// Prisma の生成クライアントと Role 列挙型 (役割) を取り込む
-import { PrismaClient, Role } from '../src/generated/prisma';
+// Prisma の生成クライアントと Role / SubscriptionPlan 列挙型を取り込む
+import { PrismaClient, Role, SubscriptionPlan } from '../src/generated/prisma';
 // パスワードをハッシュ化するためのライブラリ (平文で DB に保存しないため)
 import { hash } from 'bcryptjs';
 
@@ -24,12 +24,22 @@ async function main() {
   // ── Tenant ───────────────────────────────────────────
   // マルチテナント化に伴い、まずデフォルト Tenant を作る。既存マイグレーションでも
   // 同 id を投入しているので、ここでは upsert で再投入を安全に行う
+  // subscriptionPlan: デモ組織は agent3 名 + admin1 名の計 4 名の staff を投入するため、
+  // Free プラン (staff 上限 3 名) のままだと招待上限チェックに掛かり招待が発行できない。
+  // 全機能を体験できるよう pro プランで投入する (plan は課金枠で、mode=lite とは独立)。
   const tenant = await prisma.tenant.upsert({
     where: { id: 'default-tenant' },
-    update: { inboundToken: 'default' }, // 既存 default-tenant にもメール取り込みトークンを補完する
+    // 既存 default-tenant にも取り込みトークンと pro プランを補完する
+    update: { inboundToken: 'default', subscriptionPlan: SubscriptionPlan.pro },
     // inboundToken: メール取り込み (Phase 2) の専用転送アドレス用ローカルパート。
     // 開発・E2E では固定値 'default' を使い、宛先 default@<domain> で取り込みを再現できるようにする
-    create: { id: 'default-tenant', name: 'デフォルト組織', mode: 'lite', inboundToken: 'default' },
+    create: {
+      id: 'default-tenant',
+      name: 'デフォルト組織',
+      mode: 'lite',
+      inboundToken: 'default',
+      subscriptionPlan: SubscriptionPlan.pro, // staff 4 名 + 招待を許可するため pro
+    },
   });
   // 以降のシード行ですべてこの tenantId を引き継ぐ
   const tenantId = tenant.id;
