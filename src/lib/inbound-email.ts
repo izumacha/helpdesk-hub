@@ -217,6 +217,106 @@ function clamp(value: string, max: number): string {
   return value.length > max ? value.slice(0, max) : value;
 }
 
+// ──────────────────────────────────────────────────────────────────────────
+// 送信元ドメイン認証 (SPF / DKIM / DMARC) の結果を扱うヘルパー (§8 リスク表「送信元ドメイン検証」)。
+//
+// 重要: 署名・SPF/DKIM の暗号検証そのものは自前実装しない (§9「暗号は自作しない」)。
+// SendGrid Inbound Parse など受信プロバイダが MX 受信時に算出済みの結果を webhook ペイロードから
+// 「消費」して判定する。プロバイダが結果を提供しない構成では unknown となり、判定は通す
+// (既存の「既知メンバー限定 + 隔離」の守りが残るため、可用性を優先して fail-open にする)。
+// ──────────────────────────────────────────────────────────────────────────
+
+// 認証 1 項目の判定値。pass/fail 以外 (softfail/neutral/none/unknown) は「明示 fail ではない」扱い
+export type AuthVerdict = 'pass' | 'fail' | 'softfail' | 'neutral' | 'none' | 'unknown';
+
+// 受信メール 1 通分の送信元認証結果
+export interface InboundAuthResults {
+  spf: AuthVerdict; // SPF (送信元 IP がドメインの許可送信元か)
+  dkim: AuthVerdict; // DKIM (本文/ヘッダの電子署名が有効か)
+  dmarc: AuthVerdict; // DMARC (SPF/DKIM のアラインメントとドメインポリシー)
+}
+
+// 認証結果の判定に使うポリシー文字列 ('enforce' のときだけ明示 fail を隔離する。それ以外は無効)
+export type InboundAuthPolicy = string;
+
+// 認証結果評価の戻り値 ('accept'=取り込む / 'quarantine'=隔離して起票しない)
+export type InboundAuthDecision = 'accept' | 'quarantine';
+
+// 認証ヘッダ走査の最大長 (巨大 Authentication-Results での走査コスト/DoS を抑える上限 §9)
+const INBOUND_AUTH_HEADER_MAX = 8_000;
+
+// プロバイダ由来の生文字列 1 つを AuthVerdict に正規化する。
+// 例: "pass" -> 'pass' / "softfail" -> 'softfail' / "{@d : pass}" -> 'pass' / 不明 -> 'unknown'
+function normalizeVerdict(raw: string | null | undefined): AuthVerdict {
+  // 空ならプロバイダ未提供として unknown
+  if (!raw) return 'unknown';
+  // 小文字化し、走査コストを抑えるため長さをクランプする (§9)
+  const v = raw.toLowerCase().slice(0, 256);
+  // 明示 fail を最優先で拾う (なりすましの強いシグナル)。softfail を fail と誤認しないよう先に softfail を判定
+  if (v.includes('softfail')) return 'softfail';
+  if (v.includes('fail')) return 'fail';
+  if (v.includes('pass')) return 'pass';
+  if (v.includes('neutral')) return 'neutral';
+  if (v.includes('none')) return 'none';
+  // どれにも当てはまらなければ不明扱い
+  return 'unknown';
+}
+
+// 標準の Authentication-Results ヘッダから spf= / dkim= / dmarc= の各メソッド結果を取り出す。
+// 単純な正規表現 (ネストした量指定子なし) + 長さクランプで ReDoS を避ける (§9)。
+function parseAuthenticationResults(rawHeader: string | null | undefined): Partial<InboundAuthResults> {
+  // 空ヘッダなら何も取れない
+  if (!rawHeader) return {};
+  // 走査長をクランプしてから解析する
+  const capped = rawHeader.slice(0, INBOUND_AUTH_HEADER_MAX);
+  // "method=result" を方式ごとに 1 つ抜き出す内部関数 (\w+ は線形時間)
+  const pick = (method: string): AuthVerdict | undefined => {
+    // 例: "spf=pass", "dkim=fail", "dmarc=pass" の result トークンを拾う
+    const m = capped.match(new RegExp(`\\b${method}=([a-zA-Z]+)`, 'i'));
+    // 見つかれば正規化、無ければ undefined
+    return m ? normalizeVerdict(m[1]) : undefined;
+  };
+  // 各方式の結果をまとめて返す (未検出は undefined のまま)
+  return { spf: pick('spf'), dkim: pick('dkim'), dmarc: pick('dmarc') };
+}
+
+// プロバイダ Webhook のフィールドから送信元認証結果を抽出して正規化する。
+// 優先順位: プロバイダ個別フィールド (SendGrid の SPF / dkim) > 汎用 Authentication-Results ヘッダ。
+export function extractAuthResults(fields: {
+  spf?: string | null; // SendGrid Inbound Parse の "SPF" フィールド (例: "pass")
+  dkim?: string | null; // SendGrid Inbound Parse の "dkim" フィールド (例: "{@example.com : pass}")
+  authenticationResults?: string | null; // 生 "Authentication-Results" ヘッダ (汎用フォールバック)
+}): InboundAuthResults {
+  // まず汎用ヘッダから各方式を解析する (フォールバック値)
+  const fromHeader = parseAuthenticationResults(fields.authenticationResults);
+  // SPF: 個別フィールドがあれば優先、無ければヘッダ由来
+  const spf = fields.spf ? normalizeVerdict(fields.spf) : (fromHeader.spf ?? 'unknown');
+  // DKIM: 個別フィールドがあれば優先、無ければヘッダ由来
+  const dkim = fields.dkim ? normalizeVerdict(fields.dkim) : (fromHeader.dkim ?? 'unknown');
+  // DMARC: 個別フィールドは通常無いのでヘッダ由来のみ
+  const dmarc = fromHeader.dmarc ?? 'unknown';
+  // 正規化済みの 3 値を返す
+  return { spf, dkim, dmarc };
+}
+
+// 送信元認証結果とポリシーから「取り込む / 隔離する」を判定する純粋関数。
+// policy が 'enforce' のときだけ判定し、SPF / DKIM / DMARC のいずれかが明示 'fail' なら隔離する。
+// softfail / neutral / none / unknown は通す (転送由来の softfail や結果非提供プロバイダで
+// 取り込みが全滅しないようにするため。なりすましの強いシグナルである明示 fail のみを弾く)。
+export function evaluateInboundAuth(
+  results: InboundAuthResults,
+  policy: InboundAuthPolicy,
+): InboundAuthDecision {
+  // enforce 以外 (off / 未設定など) は検証しない (後方互換 = 既存挙動を維持)
+  if ((policy ?? '').trim().toLowerCase() !== 'enforce') return 'accept';
+  // いずれかの方式が明示 'fail' なら隔離する (なりすましの強いシグナル)
+  if (results.spf === 'fail' || results.dkim === 'fail' || results.dmarc === 'fail') {
+    return 'quarantine';
+  }
+  // それ以外は取り込む
+  return 'accept';
+}
+
 // プロバイダ Webhook が送ってきたフィールド群を正規化済みの受信メールに変換する。
 // 必須情報 (宛先トークン・送信者・本文) が揃わない場合は理由付きで失敗を返す (例外にせず呼び出し側で分岐)。
 export function parseInboundEmail(

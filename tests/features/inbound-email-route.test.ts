@@ -322,4 +322,55 @@ describe('POST /api/inbound/email', () => {
     expect(store.comments.size).toBe(0);
     expect(store.tickets.size).toBe(1);
   });
+
+  // ── 送信元ドメイン認証 (SPF/DKIM/DMARC) ポリシー ───────────────────────────
+  // INBOUND_EMAIL_AUTH=enforce のとき、SPF が明示 fail のメールを隔離 (202) して起票しない
+  it('enforce で SPF=fail のメールを隔離する (202)', async () => {
+    vi.stubEnv('INBOUND_EMAIL_AUTH', 'enforce');
+    const { POST } = await import('@/app/api/inbound/email/route');
+    // 既知メンバーからのメールでも、SPF=fail なら詐称を疑い隔離する
+    const res = await POST(makeRequest({ ...VALID_EMAIL, SPF: 'fail' }));
+    expect(res.status).toBe(202);
+    expect(store.tickets.size).toBe(0); // 起票されない
+  });
+
+  // enforce でも SPF=pass の既知メンバーは通常どおり起票される
+  it('enforce で SPF=pass のメールは起票する (201)', async () => {
+    vi.stubEnv('INBOUND_EMAIL_AUTH', 'enforce');
+    const { POST } = await import('@/app/api/inbound/email/route');
+    const res = await POST(makeRequest({ ...VALID_EMAIL, SPF: 'pass' }));
+    expect(res.status).toBe(201);
+    expect(store.tickets.size).toBe(1);
+  });
+
+  // enforce + 認証結果が無い (unknown) メールは誤隔離せず起票する (可用性優先 / 後方互換)
+  it('enforce でも認証結果が無ければ起票する (201)', async () => {
+    vi.stubEnv('INBOUND_EMAIL_AUTH', 'enforce');
+    const { POST } = await import('@/app/api/inbound/email/route');
+    const res = await POST(makeRequest(VALID_EMAIL));
+    expect(res.status).toBe(201);
+    expect(store.tickets.size).toBe(1);
+  });
+
+  // 既定 (off) では SPF=fail でも検証せず従来どおり起票する (後方互換)
+  it('off (既定) では SPF=fail でも起票する (201)', async () => {
+    const { POST } = await import('@/app/api/inbound/email/route');
+    const res = await POST(makeRequest({ ...VALID_EMAIL, SPF: 'fail' }));
+    expect(res.status).toBe(201);
+    expect(store.tickets.size).toBe(1);
+  });
+
+  // enforce で Authentication-Results ヘッダの dmarc=fail を隔離する
+  it('enforce で Authentication-Results の dmarc=fail を隔離する (202)', async () => {
+    vi.stubEnv('INBOUND_EMAIL_AUTH', 'enforce');
+    const { POST } = await import('@/app/api/inbound/email/route');
+    const res = await POST(
+      makeRequest({
+        ...VALID_EMAIL,
+        'authentication-results': 'mx; spf=pass; dkim=pass; dmarc=fail',
+      }),
+    );
+    expect(res.status).toBe(202);
+    expect(store.tickets.size).toBe(0);
+  });
 });

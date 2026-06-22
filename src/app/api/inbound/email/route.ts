@@ -28,8 +28,13 @@ import { initialStatusForMode } from '@/domain/ticket-status';
 import { resolveCommentRecipients } from '@/lib/comment-recipients';
 // 未読件数を SSE で即時配信するヘルパー (コメント追記時の通知扇形)
 import { broadcastUnreadCountToMany } from '@/features/notifications/notify';
-// 受信メールの正規化ヘルパー (純粋関数) と生ヘッダ読み取り
-import { parseInboundEmail, readRawHeader } from '@/lib/inbound-email';
+// 受信メールの正規化ヘルパー (純粋関数) と生ヘッダ読み取り、送信元認証 (SPF/DKIM/DMARC) の判定
+import {
+  parseInboundEmail,
+  readRawHeader,
+  extractAuthResults,
+  evaluateInboundAuth,
+} from '@/lib/inbound-email';
 // エージェント権限判定 (スレッド追記の RBAC に使用)
 import { isAgent } from '@/lib/role';
 // 公開エンドポイントの流量制限 (§9: DoS / リソース枯渇防止)
@@ -77,6 +82,9 @@ interface InboundFields {
   messageId?: string | null; // この受信メールの Message-ID
   inReplyTo?: string | null; // In-Reply-To ヘッダ (直接の返信元)
   references?: string | null; // References ヘッダ (スレッド上の Message-ID 列)
+  spf?: string | null; // 送信元認証: SPF 結果 (プロバイダ算出。SendGrid の "SPF" フィールド等)
+  dkim?: string | null; // 送信元認証: DKIM 結果 (プロバイダ算出。SendGrid の "dkim" フィールド等)
+  authenticationResults?: string | null; // 送信元認証: 生 Authentication-Results ヘッダ (汎用)
 }
 
 // 受信メール 1 通分のフィールドを、JSON / multipart のどちらのボディからでも取り出して共通形に揃える。
@@ -125,6 +133,10 @@ async function readInboundFields(req: Request): Promise<InboundFields> {
       messageId: str(form.get('message-id')) ?? readRawHeader(rawHeaders, 'Message-ID'),
       inReplyTo: str(form.get('in-reply-to')) ?? readRawHeader(rawHeaders, 'In-Reply-To'),
       references: str(form.get('references')) ?? readRawHeader(rawHeaders, 'References'),
+      // 送信元認証: SendGrid は SPF / dkim を個別フィールドで渡す。汎用は生ヘッダから読む
+      spf: str(form.get('SPF')) ?? str(form.get('spf')),
+      dkim: str(form.get('dkim')),
+      authenticationResults: readRawHeader(rawHeaders, 'Authentication-Results'),
     };
   }
   // それ以外は JSON ボディとして読む (テスト・自前連携向け)
@@ -141,6 +153,10 @@ async function readInboundFields(req: Request): Promise<InboundFields> {
     messageId: pick('messageId') ?? pick('message-id'),
     inReplyTo: pick('inReplyTo') ?? pick('in-reply-to'),
     references: pick('references'),
+    // 送信元認証: 個別キー (SPF/spf, dkim) と生ヘッダ (authentication-results) のどちらも受ける
+    spf: pick('SPF') ?? pick('spf'),
+    dkim: pick('dkim'),
+    authenticationResults: pick('authenticationResults') ?? pick('authentication-results'),
   };
 }
 
@@ -216,6 +232,26 @@ export async function POST(req: Request) {
     throw err;
   }
 
+  // 送信元ドメイン認証 (SPF/DKIM/DMARC) の検証 (§8 リスク表「送信元ドメイン検証」)。
+  // プロバイダが算出した結果を消費し、ポリシーが 'enforce' のとき明示 'fail' なら隔離する。
+  // 既定 (INBOUND_EMAIL_AUTH 未設定 = off) では従来どおり検証せず、既存メンバー判定に委ねる。
+  // From 詐称 (既知メンバーのアドレス偽装) は、結果を出すプロバイダ構成ではここで弾かれる。
+  const authPolicy = process.env.INBOUND_EMAIL_AUTH ?? '';
+  const authResults = extractAuthResults({
+    spf: fields.spf,
+    dkim: fields.dkim,
+    authenticationResults: fields.authenticationResults,
+  });
+  if (evaluateInboundAuth(authResults, authPolicy) === 'quarantine') {
+    // 隔離: 起票せず 202 を返す (プロバイダの再送ループを避ける)。判定値のみ記録し PII は出さない
+    console.warn('[POST /api/inbound/email] quarantined: sender domain authentication failed', {
+      spf: authResults.spf,
+      dkim: authResults.dkim,
+      dmarc: authResults.dmarc,
+    });
+    return NextResponse.json({ status: 'quarantined', reason: 'auth' }, { status: 202 });
+  }
+
   // 送信者がそのテナントの既知メンバーかを確認する。
   // findByEmail はテナント横断のため、必ず tenantId 一致まで検査してクロステナント起票を防ぐ。
   const sender = await repos.users.findByEmail(email.senderAddress);
@@ -251,10 +287,9 @@ export async function POST(req: Request) {
       const senderIsAgent = isAgent(sender.role);
       // 追記の権限: エージェント、または自分が起票したチケットのみ (第三者メンバーの混線/露出を防ぐ)。
       // 権限の無いメンバーは隔離扱い (202) にして無視する。
-      // セキュリティ注意 (§9 / §8 リスク表): 送信者の本人性はヘッダ From + 既知メンバー判定に依存し、
-      // DKIM/SPF 検証は未実装 (既存メール取り込みと同じ前提 = 将来課題)。エージェントの From を詐称した
-      // なりすまし POST は、共有シークレット (INBOUND_EMAIL_SECRET) と取り込みトークンの両方を要するため
-      // 信頼境界はプロバイダ側にあるが、本人性を強める SPF/DKIM 検証を後続で入れること。
+      // 本人性 (§9 / §8 リスク表): 共有シークレット + 取り込みトークン + 既知メンバー判定に加え、
+      // INBOUND_EMAIL_AUTH=enforce のときは上流で SPF/DKIM/DMARC の明示 fail を隔離済み
+      // (From 詐称の主要経路はそこで遮断される)。
       if (!senderIsAgent && ticket.creatorId !== sender.id) {
         console.warn(
           '[POST /api/inbound/email] quarantined: sender not allowed to append to thread',
