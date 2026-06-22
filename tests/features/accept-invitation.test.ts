@@ -45,7 +45,7 @@ beforeEach(() => {
     [TENANT_A, 'A 組織'],
     [TENANT_B, 'B 組織'],
   ] as const) {
-    store.tenants.set(id, { id, name, mode: 'lite', industry: null, inboundToken: null, slackWebhookUrl: null, subscriptionPlan: 'free' as const, stripeCustomerId: null, stripeSubscriptionId: null, stripeSubscriptionStatus: null, createdAt: now });
+    store.tenants.set(id, { id, name, mode: 'lite', industry: null, inboundToken: null, slackWebhookUrl: null, subscriptionPlan: 'free' as const, stripeCustomerId: null, stripeSubscriptionId: null, stripeSubscriptionStatus: null, teamsWebhookUrl: null, chatworkApiToken: null, chatworkRoomId: null, createdAt: now });
   }
 });
 

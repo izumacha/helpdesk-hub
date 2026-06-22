@@ -63,7 +63,7 @@ beforeEach(() => {
     mode: 'lite',
     industry: null,
     inboundToken: null, // メール取り込み未発行 (テスト用フィクスチャ)
-      slackWebhookUrl: null, subscriptionPlan: 'free' as const, stripeCustomerId: null, stripeSubscriptionId: null, stripeSubscriptionStatus: null, // Slack 通知未設定 (テスト用フィクスチャ)
+      slackWebhookUrl: null, subscriptionPlan: 'free' as const, stripeCustomerId: null, stripeSubscriptionId: null, stripeSubscriptionStatus: null, teamsWebhookUrl: null, chatworkApiToken: null, chatworkRoomId: null, // Slack 通知未設定 (テスト用フィクスチャ)
     createdAt: new Date(),
   });
 });

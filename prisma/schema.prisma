@@ -102,11 +102,19 @@ model Tenant {
   // Webhook (/api/inbound/email) でこの値からテナントを特定する。@unique でテナント一意。
   // 既存テナント分のバックフィル中は null を許容する (発行前は取り込み無効)。
   inboundToken String? @unique // メール取り込みアドレスのローカルパート (null=未発行)
-  // Phase 4: 外部通知チャネル (Slack / Teams Webhook URL)。
+  // Phase 4: 外部通知チャネル (Slack Incoming Webhook URL)。
   // null なら Slack 通知無効。設定時は Slack Incoming Webhook の URL を格納する。
-  // Teams にも対応可能 (URL 形式が類似しており同じ Adapter で処理できる)。
   // HMAC 検証不要の送信側なので URL 漏洩リスクに注意 (管理者のみ設定可)。
-  slackWebhookUrl String? // Slack/Teams Incoming Webhook URL (null=通知無効)
+  slackWebhookUrl String? // Slack Incoming Webhook URL (null=通知無効)
+  // Phase 4: 外部通知チャネル (Microsoft Teams Incoming Webhook URL)。
+  // Teams は Slack とペイロード形式が異なる (Adaptive Card) ため専用 Adapter で送信する。
+  // null なら Teams 通知無効。Power Automate / Workflows の Webhook URL を格納する。
+  teamsWebhookUrl String? // Teams Incoming Webhook URL (null=通知無効)
+  // Phase 4: 外部通知チャネル (Chatwork)。Chatwork は Webhook ではなく REST API を使う。
+  // chatworkApiToken と chatworkRoomId の両方が揃ったときのみ通知する (どちらか欠けたら無効)。
+  // API トークンは秘匿情報のため管理者のみ設定可・ログ出力禁止。
+  chatworkApiToken String? // Chatwork API トークン (null=通知無効)
+  chatworkRoomId   String? // 投稿先の Chatwork ルーム ID (数字文字列。null=通知無効)
 
   // Phase 4 課金: Stripe Billing 連携フィールド。
   // Stripe ダッシュボードと連携して Free/Standard/Pro のサブスクを管理する。

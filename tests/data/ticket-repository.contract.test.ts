@@ -27,7 +27,7 @@ function makeMemoryContext(): ContractContext {
       mode: 'lite',
       industry: null,
       inboundToken: null, // メール取り込み未発行 (テスト用フィクスチャ)
-      slackWebhookUrl: null, subscriptionPlan: 'free' as const, stripeCustomerId: null, stripeSubscriptionId: null, stripeSubscriptionStatus: null, // Slack 通知未設定 (テスト用フィクスチャ)
+      slackWebhookUrl: null, subscriptionPlan: 'free' as const, stripeCustomerId: null, stripeSubscriptionId: null, stripeSubscriptionStatus: null, teamsWebhookUrl: null, chatworkApiToken: null, chatworkRoomId: null, // Slack 通知未設定 (テスト用フィクスチャ)
       createdAt: now,
     });
     // 投入するユーザーのテーブル (id, role, name)
@@ -75,7 +75,7 @@ function makeMemoryContext(): ContractContext {
       mode: 'lite',
       industry: null,
       inboundToken: null, // メール取り込み未発行 (テスト用フィクスチャ)
-      slackWebhookUrl: null, subscriptionPlan: 'free' as const, stripeCustomerId: null, stripeSubscriptionId: null, stripeSubscriptionStatus: null, // Slack 通知未設定 (テスト用フィクスチャ)
+      slackWebhookUrl: null, subscriptionPlan: 'free' as const, stripeCustomerId: null, stripeSubscriptionId: null, stripeSubscriptionStatus: null, teamsWebhookUrl: null, chatworkApiToken: null, chatworkRoomId: null, // Slack 通知未設定 (テスト用フィクスチャ)
       createdAt: now,
     });
     // テナント B 専属の依頼者ユーザーを 1 名作る

@@ -20,10 +20,19 @@ export interface TenantRepository {
   // テナントの動作モード (lite | pro) を更新し、更新後の Tenant を返す
   // id はセッション由来の tenantId のみを渡す契約 (リクエスト入力から注入しないこと = クロステナント防止)
   updateMode(id: string, mode: TenantMode): Promise<Tenant>;
-  // Phase 4: Slack/Teams Incoming Webhook URL を更新する。
-  // null を渡すと外部通知を無効化する (設定画面の「削除」操作に対応)。
+  // Phase 4: 外部通知チャネル (Slack / Teams / Chatwork) の設定をまとめて更新する。
+  // 渡したフィールドだけ更新し、undefined のフィールドは現状維持する (部分更新)。
+  // null を渡すと該当チャネルの通知を無効化する (設定画面の「削除」操作に対応)。
   // id はセッション由来の tenantId のみを渡すこと (クロステナント変更防止)。
-  updateSlackWebhookUrl(id: string, url: string | null): Promise<Tenant>;
+  updateNotificationChannels(
+    id: string,
+    data: {
+      slackWebhookUrl?: string | null; // Slack Incoming Webhook URL
+      teamsWebhookUrl?: string | null; // Teams Incoming Webhook URL
+      chatworkApiToken?: string | null; // Chatwork API トークン
+      chatworkRoomId?: string | null; // Chatwork ルーム ID
+    },
+  ): Promise<Tenant>;
   // Phase 4 課金: Stripe Billing の連携情報をまとめて更新する。
   // Stripe Webhook 受信時に呼び出し、Customer ID・Subscription ID・状態・プランを一括更新。
   // id はセッション/Webhook由来のテナント ID のみを渡すこと (クロステナント更新防止)。
