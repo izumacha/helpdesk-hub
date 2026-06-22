@@ -28,7 +28,7 @@ function seed() {
       mode: 'lite',
       industry: null,
       inboundToken: null,
-      slackWebhookUrl: null, subscriptionPlan: 'free' as const, stripeCustomerId: null, stripeSubscriptionId: null, stripeSubscriptionStatus: null, // Slack 通知未設定 (テスト用フィクスチャ)
+      slackWebhookUrl: null, subscriptionPlan: 'free' as const, stripeCustomerId: null, stripeSubscriptionId: null, stripeSubscriptionStatus: null, teamsWebhookUrl: null, chatworkApiToken: null, chatworkRoomId: null, // Slack 通知未設定 (テスト用フィクスチャ)
       createdAt: now,
     });
   }
@@ -95,7 +95,7 @@ describe('TenantRepository.findByInboundToken (memory)', () => {
       mode: 'lite',
       industry: null,
       inboundToken: 'token-a',
-      slackWebhookUrl: null, subscriptionPlan: 'free' as const, stripeCustomerId: null, stripeSubscriptionId: null, stripeSubscriptionStatus: null, // Slack 通知未設定 (テスト用フィクスチャ)
+      slackWebhookUrl: null, subscriptionPlan: 'free' as const, stripeCustomerId: null, stripeSubscriptionId: null, stripeSubscriptionStatus: null, teamsWebhookUrl: null, chatworkApiToken: null, chatworkRoomId: null, // Slack 通知未設定 (テスト用フィクスチャ)
       createdAt: now,
     });
     store.tenants.set(TENANT_B, {
@@ -104,7 +104,7 @@ describe('TenantRepository.findByInboundToken (memory)', () => {
       mode: 'lite',
       industry: null,
       inboundToken: null,
-      slackWebhookUrl: null, subscriptionPlan: 'free' as const, stripeCustomerId: null, stripeSubscriptionId: null, stripeSubscriptionStatus: null, // Slack 通知未設定 (テスト用フィクスチャ)
+      slackWebhookUrl: null, subscriptionPlan: 'free' as const, stripeCustomerId: null, stripeSubscriptionId: null, stripeSubscriptionStatus: null, teamsWebhookUrl: null, chatworkApiToken: null, chatworkRoomId: null, // Slack 通知未設定 (テスト用フィクスチャ)
       createdAt: now,
     });
   });
@@ -127,5 +127,58 @@ describe('TenantRepository.findByInboundToken (memory)', () => {
     const tenant = await repos.tenants.findByInboundToken('token-a');
     expect(tenant?.id).toBe(TENANT_A);
     // (B は inboundToken=null なので決して引かれない)
+  });
+});
+
+// Phase 4: 外部通知チャネル設定の部分更新 updateNotificationChannels の単体テスト。
+// 渡したフィールドだけ更新し、undefined のフィールドは現状維持することを確認する
+// (port の「部分更新 / undefined = skip」契約を memory アダプタで担保する)。
+describe('TenantRepository.updateNotificationChannels (memory)', () => {
+  // 各テストの前にメモリ context を作り直してテナント A・B を投入する
+  beforeEach(() => {
+    const ctx = createMemoryContext();
+    store = ctx.store;
+    repos = ctx.repos;
+    seed();
+  });
+
+  // 渡したチャネルだけ更新し、他チャネルの既存値は維持される (部分更新)
+  it('指定したチャネルだけ更新し他チャネルは維持する', async () => {
+    // まず Slack と Teams を設定する
+    await repos.tenants.updateNotificationChannels(TENANT_A, {
+      slackWebhookUrl: 'https://hooks.slack.com/services/AAA',
+      teamsWebhookUrl: 'https://teams.example/webhook',
+    });
+    // 次に Slack だけ無効化する (teamsWebhookUrl は undefined = 現状維持)
+    const updated = await repos.tenants.updateNotificationChannels(TENANT_A, {
+      slackWebhookUrl: null,
+    });
+    // Slack は null に更新され、Teams は前回値を維持していること
+    expect(updated.slackWebhookUrl).toBeNull();
+    expect(updated.teamsWebhookUrl).toBe('https://teams.example/webhook');
+  });
+
+  // Chatwork トークン + ルーム ID を設定でき、再取得しても永続化されている
+  it('Chatwork トークンとルーム ID を更新できる', async () => {
+    // Chatwork の 2 値を設定する
+    await repos.tenants.updateNotificationChannels(TENANT_A, {
+      chatworkApiToken: 'tok-123',
+      chatworkRoomId: '98765',
+    });
+    // 再取得して両方が永続化されていることを確認する
+    const reloaded = await repos.tenants.findById(TENANT_A);
+    expect(reloaded?.chatworkApiToken).toBe('tok-123');
+    expect(reloaded?.chatworkRoomId).toBe('98765');
+  });
+
+  // 更新が他テナントに波及しない (テナント分離)
+  it('他テナントの通知設定には影響しない', async () => {
+    // テナント A だけ Slack を設定する
+    await repos.tenants.updateNotificationChannels(TENANT_A, {
+      slackWebhookUrl: 'https://hooks.slack.com/services/BBB',
+    });
+    // テナント B は未設定 (null) のままであること
+    const tenantB = await repos.tenants.findById(TENANT_B);
+    expect(tenantB?.slackWebhookUrl).toBeNull();
   });
 });

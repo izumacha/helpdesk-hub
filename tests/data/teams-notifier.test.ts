@@ -58,17 +58,17 @@ describe('createTeamsNotifier', () => {
     expect(payload.attachments[0].content.actions[0].url).toBe('https://app/t/1');
   });
 
-  // セキュリティ: Markdown リンク記法をエスケープしてフィッシングリンクを無効化する
-  it('Markdown リンク記法をエスケープする', async () => {
+  // セキュリティ: Markdown リンク記法を無害化してフィッシングリンクを無効化する
+  it('Markdown リンク記法を全角括弧で無害化する', async () => {
     const notifier = createTeamsNotifier(WEBHOOK_URL);
     // 悪意あるユーザーがタイトルに Markdown リンクを仕込んだケース
     await notifier.send({ subject: '[クリック](http://evil.example)', body: '通常本文' });
 
     const payload = JSON.parse(fetchMock.mock.calls[0][1].body);
     const subjectText = payload.attachments[0].content.body[0].text;
-    // [ ] ( ) がバックスラッシュでエスケープされ、生のリンク記法が残っていないこと
-    expect(subjectText).toContain('\\[');
-    expect(subjectText).toContain('\\]');
+    // 角括弧が全角化され、生のリンク記法 [label](url) が成立しないこと
+    expect(subjectText).toContain('［');
+    expect(subjectText).toContain('］');
     expect(subjectText).not.toContain('](http');
   });
 

@@ -45,8 +45,14 @@ export interface Tenant {
   mode: TenantMode; // Lite/Pro モード
   industry: string | null; // 業種テンプレ識別子 (未設定なら null)
   inboundToken: string | null; // メール取り込み用アドレスのローカルパート (未発行なら null)
-  // Phase 4: 外部通知チャネル。Slack / Teams Incoming Webhook URL (null なら通知無効)
+  // Phase 4: 外部通知チャネル。Slack Incoming Webhook URL (null なら通知無効)
   slackWebhookUrl: string | null;
+  // Phase 4: 外部通知チャネル。Microsoft Teams Incoming Webhook URL (null なら通知無効)
+  teamsWebhookUrl: string | null;
+  // Phase 4: 外部通知チャネル。Chatwork API トークン (null なら通知無効)
+  chatworkApiToken: string | null;
+  // Phase 4: 外部通知チャネル。投稿先の Chatwork ルーム ID (数字文字列。null なら通知無効)
+  chatworkRoomId: string | null;
   // Phase 4 課金: Stripe Billing 連携フィールド
   subscriptionPlan: SubscriptionPlan; // 現在の課金プラン (既定: free)
   stripeCustomerId: string | null; // Stripe Customer ID (cu_xxx)

@@ -83,7 +83,7 @@ export function createChatworkNotifier(apiToken: string, roomId: string): Outbou
         signal: AbortSignal.timeout(CHATWORK_TIMEOUT_MS),
       });
 
-      // エラー本文をサイズ制限付きで読む (大量レスポンスでメモリを消費しない)
+      // エラー本文を上限付きで切り詰める (巨大な本文をそのままエラーメッセージに含めない)
       const responseText = await response.text().then((t) => t.slice(0, MAX_RESPONSE_SIZE_BYTES));
 
       // Chatwork は成功時に HTTP 200 + JSON {"message_id":"..."} を返す。

@@ -40,6 +40,9 @@ export function makeTenantRepo(store: Store): TenantRepository {
         industry: input.industry ?? null,
         inboundToken: input.inboundToken ?? null, // メール取り込みアドレスのローカルパート (任意)
         slackWebhookUrl: null, // 新規テナントは Slack 通知未設定 (null = 無効)
+        teamsWebhookUrl: null, // 新規テナントは Teams 通知未設定 (null = 無効)
+        chatworkApiToken: null, // 新規テナントは Chatwork トークン未設定 (null = 無効)
+        chatworkRoomId: null, // 新規テナントは Chatwork ルーム未設定 (null = 無効)
         // Phase 4 課金: 新規テナントは無料プラン・Stripe 未連携で初期化
         subscriptionPlan: 'free',
         stripeCustomerId: null,
@@ -65,13 +68,23 @@ export function makeTenantRepo(store: Store): TenantRepository {
       return { ...updated };
     },
 
-    // Phase 4: Slack/Teams Incoming Webhook URL を更新する (null で無効化)
-    async updateSlackWebhookUrl(id, url) {
+    // Phase 4: 外部通知チャネル (Slack / Teams / Chatwork) の設定を部分更新する (null で無効化)
+    async updateNotificationChannels(id, data) {
       // 対象テナントを Map から取得 (存在しなければエラー)
       const t = store.tenants.get(id);
       if (!t) throw new Error('テナントが見つかりません');
-      // slackWebhookUrl だけ差し替えた新しいオブジェクトを作り Map に書き戻す
-      const updated = { ...t, slackWebhookUrl: url };
+      // 渡されたフィールドだけ差し替える (undefined なら既存値を維持する)
+      const updated: Tenant = {
+        ...t,
+        slackWebhookUrl:
+          data.slackWebhookUrl !== undefined ? data.slackWebhookUrl : t.slackWebhookUrl,
+        teamsWebhookUrl:
+          data.teamsWebhookUrl !== undefined ? data.teamsWebhookUrl : t.teamsWebhookUrl,
+        chatworkApiToken:
+          data.chatworkApiToken !== undefined ? data.chatworkApiToken : t.chatworkApiToken,
+        chatworkRoomId:
+          data.chatworkRoomId !== undefined ? data.chatworkRoomId : t.chatworkRoomId,
+      };
       store.tenants.set(id, updated);
       // 防御的コピーを返す
       return { ...updated };

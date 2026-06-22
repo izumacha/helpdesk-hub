@@ -21,8 +21,11 @@ function toTenant(row: TenantRow): Tenant {
     mode: row.mode,
     industry: row.industry,
     inboundToken: row.inboundToken, // メール取り込みアドレスのローカルパート (未発行なら null)
-    // Phase 4: Slack/Teams Incoming Webhook URL (null なら外部通知無効)
-    slackWebhookUrl: row.slackWebhookUrl,
+    // Phase 4: 外部通知チャネル設定 (null なら各チャネル無効)
+    slackWebhookUrl: row.slackWebhookUrl, // Slack Incoming Webhook URL
+    teamsWebhookUrl: row.teamsWebhookUrl, // Teams Incoming Webhook URL
+    chatworkApiToken: row.chatworkApiToken, // Chatwork API トークン
+    chatworkRoomId: row.chatworkRoomId, // Chatwork ルーム ID
     // Phase 4 課金: Stripe Billing 連携フィールド
     subscriptionPlan: row.subscriptionPlan, // 現在の課金プラン (free | standard | pro)
     stripeCustomerId: row.stripeCustomerId, // Stripe Customer ID (null なら未登録)
@@ -77,10 +80,18 @@ export function makeTenantRepo(db: PrismaLike): TenantRepository {
       return toTenant(row);
     },
 
-    // Phase 4: Slack/Teams Incoming Webhook URL を更新する (null で無効化)
-    async updateSlackWebhookUrl(id, url) {
-      // 主キーで対象テナントを特定し slackWebhookUrl 列のみ更新する
-      const row = await db.tenant.update({ where: { id }, data: { slackWebhookUrl: url } });
+    // Phase 4: 外部通知チャネル (Slack / Teams / Chatwork) の設定を部分更新する (null で無効化)
+    async updateNotificationChannels(id, data) {
+      // 主キーで対象テナントを特定する。undefined のフィールドは Prisma が skip するため現状維持
+      const row = await db.tenant.update({
+        where: { id },
+        data: {
+          slackWebhookUrl: data.slackWebhookUrl, // Slack Webhook URL (undefined ならスキップ)
+          teamsWebhookUrl: data.teamsWebhookUrl, // Teams Webhook URL (undefined ならスキップ)
+          chatworkApiToken: data.chatworkApiToken, // Chatwork トークン (undefined ならスキップ)
+          chatworkRoomId: data.chatworkRoomId, // Chatwork ルーム ID (undefined ならスキップ)
+        },
+      });
       // 更新後の行をドメイン型に詰め替えて返す
       return toTenant(row);
     },

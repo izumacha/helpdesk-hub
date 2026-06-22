@@ -10,8 +10,8 @@ import { TENANT_MODE_LABELS } from '@/lib/constants';
 import { TenantModeForm } from '@/features/settings/components/TenantModeForm';
 // メンバー招待リンク発行フォーム (Client Component)
 import { InviteForm } from '@/features/settings/components/InviteForm';
-// Phase 4: Slack/Teams Webhook URL 設定フォーム (Client Component)
-import { SlackWebhookForm } from '@/features/settings/components/SlackWebhookForm';
+// Phase 4: Slack / Teams / Chatwork 通知チャネル設定フォーム (Client Component)
+import { NotificationChannelsForm } from '@/features/settings/components/NotificationChannelsForm';
 // Phase 4 多拠点: 拠点管理セクション (Client Component)
 import { LocationsSection } from '@/features/settings/components/LocationsSection';
 // Phase 4 課金: サブスクリプション管理セクション (Client Component)
@@ -85,20 +85,25 @@ export default async function SettingsPage() {
         <InviteForm />
       </section>
 
-      {/* Phase 4: Slack / Teams 外部通知カード */}
+      {/* Phase 4: Slack / Teams / Chatwork 外部通知カード */}
       <section className="space-y-4 rounded-2xl bg-white p-6 shadow-sm ring-1 ring-slate-100">
         <div>
           {/* セクション見出し */}
-          <h2 className="text-base font-semibold text-slate-900">Slack / Teams 通知</h2>
+          <h2 className="text-base font-semibold text-slate-900">外部通知連携</h2>
           {/* 説明: どのような通知が届くかを伝える */}
           <p className="mt-1 text-sm text-slate-500">
-            Slack または Microsoft Teams の Incoming Webhook URL を設定すると、
-            問い合わせの作成・状況変更・コメント追加のタイミングで自動通知が届きます。
-            空欄で保存すると通知が無効になります。
+            Slack・Microsoft Teams・Chatwork を設定すると、 問い合わせの状況変更などの
+            タイミングで自動通知が届きます。設定したチャネルすべてに送信されます。
+            各欄を空欄で保存すると、そのチャネルの通知が無効になります。
           </p>
         </div>
-        {/* Webhook URL 設定フォーム (現在の URL を初期値として渡す) */}
-        <SlackWebhookForm current={tenant?.slackWebhookUrl ?? null} />
+        {/* 通知チャネル設定フォーム (現在の各チャネル値を初期値として渡す) */}
+        <NotificationChannelsForm
+          slackWebhookUrl={tenant?.slackWebhookUrl ?? null}
+          teamsWebhookUrl={tenant?.teamsWebhookUrl ?? null}
+          chatworkApiToken={tenant?.chatworkApiToken ?? null}
+          chatworkRoomId={tenant?.chatworkRoomId ?? null}
+        />
       </section>
 
       {/* Phase 4 多拠点: 拠点管理カード */}

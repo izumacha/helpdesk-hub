@@ -19,16 +19,17 @@ const TEAMS_TIMEOUT_MS = 5_000;
 // Adaptive Card のスキーマ URL (Teams が要求する固定値)
 const ADAPTIVE_CARD_SCHEMA = 'http://adaptivecards.io/schemas/adaptive-card.json';
 
-// ユーザー入力を Adaptive Card の TextBlock に埋め込む前にエスケープする。
-// Teams の TextBlock は既定で Markdown のサブセット (リンク [x](y)・強調 *x*・`code` 等) を解釈する。
+// ユーザー入力を Adaptive Card の TextBlock に埋め込む前に無害化する。
+// Teams の TextBlock は既定で Markdown のサブセット (リンク [x](y) 等) を解釈する。
 // チケットタイトルや本文には requester が任意文字列を入力できるため、Markdown のリンク記法で
-// フィッシングリンクが Teams チャネルに表示されるのを防ぐ。CommonMark のバックスラッシュ
-// エスケープで制御文字を無効化する (Teams の Markdown レンダラはこの記法を尊重する)。
-function escapeTeamsMarkdown(text: string): string {
-  // バックスラッシュ自身を最初にエスケープする (後続の \[ などが二重化されるのを防ぐ)
-  const escaped = text.replace(/\\/g, '\\\\');
-  // Markdown で意味を持つ文字 ( [ ] ( ) * _ ` # - ) の前にバックスラッシュを付けて無効化する
-  return escaped.replace(/([[\]()*_`#-])/g, '\\$1');
+// フィッシングリンクが表示されるのを防ぐ。バックスラッシュエスケープ (\[ 等) は Teams の
+// クライアントによっては尊重されないため、角括弧を全角に置換して確実にリンク記法を無効化する
+// (Chatwork アダプタと同じ方針。クライアントの Markdown 描画挙動に依存しない)。
+function neutralizeTeamsMarkdown(text: string): string {
+  // 半角 [ を全角 ［ に置換する (Markdown リンク/画像の開き括弧を無効化)
+  const step1 = text.replace(/\[/g, '［');
+  // 半角 ] を全角 ］ に置換する (閉じ括弧を無効化し [label](url) を成立させない)
+  return step1.replace(/\]/g, '］');
 }
 
 // Microsoft Teams Incoming Webhook を使った OutboundNotifier 実装を生成するファクトリ関数
@@ -37,9 +38,9 @@ export function createTeamsNotifier(webhookUrl: string): OutboundNotifier {
   return {
     // メッセージを Teams へ送信する
     async send(message: OutboundMessage): Promise<void> {
-      // ユーザー由来のテキストを Markdown インジェクション対策としてエスケープする
-      const safeSubject = escapeTeamsMarkdown(message.subject);
-      const safeBody = escapeTeamsMarkdown(message.body);
+      // ユーザー由来のテキストを Markdown インジェクション対策として無害化する
+      const safeSubject = neutralizeTeamsMarkdown(message.subject);
+      const safeBody = neutralizeTeamsMarkdown(message.body);
 
       // Adaptive Card の本文ブロックを組み立てる (件名を見出し・本文を通常テキストで表示)
       const cardBody: Array<Record<string, unknown>> = [
@@ -103,7 +104,7 @@ export function createTeamsNotifier(webhookUrl: string): OutboundNotifier {
         signal: AbortSignal.timeout(TEAMS_TIMEOUT_MS),
       });
 
-      // エラー時の本文をサイズ制限付きで読む (大量レスポンスでメモリを消費しない)
+      // エラー時の本文を上限付きで切り詰める (巨大な本文をそのままエラーメッセージに含めない)
       const responseText = await response.text().then((t) => t.slice(0, MAX_RESPONSE_SIZE_BYTES));
 
       // Teams は成功時に HTTP 200/202 を返す (本文は空 or "1")。
