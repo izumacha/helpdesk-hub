@@ -46,6 +46,11 @@ export function isPrivateHost(rawHostname: string): boolean {
   // プライベート IPv4 全域が ::ffff: プレフィックスで到達可能になるため一括ブロック。
   // 例: ::ffff:7f00:1 = 127.0.0.1, ::ffff:a9fe:a9fe = 169.254.169.254
   if (/^::ffff:/i.test(bare)) return true;
+  // 展開形式の IPv6-mapped IPv4 ("0:0:0:0:0:ffff:x.x.x.x") もブロックする。
+  // 圧縮形式 "::ffff:" は上のチェックで捕捉済みだが、URL パーサが展開形式を返す場合は
+  // 上のチェックをすり抜けるため、ここで別途チェックする。
+  // 例: "0:0:0:0:0:ffff:192.168.1.1" → IPv4 アドレス 192.168.1.1 に到達する
+  if (/^(?:0+:){5}ffff:/i.test(bare)) return true;
 
   // 上記に該当しない場合はパブリックホストとみなす
   return false;

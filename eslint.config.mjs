@@ -25,6 +25,15 @@ const config = [
     // 例外: Prisma アダプタ層と Prisma クライアント生成箇所 (composition root) だけは生成物の直接 import を許可する
     ignores: ['src/data/adapters/prisma/**', 'src/lib/prisma.ts'],
     rules: {
+      // _ プレフィックスの変数・引数は意図的な未使用として警告しない (TypeScript 慣習)
+      '@typescript-eslint/no-unused-vars': [
+        'warn',
+        {
+          argsIgnorePattern: '^_',       // 関数引数の _ プレフィックスを無視
+          varsIgnorePattern: '^_',       // 変数宣言の _ プレフィックスを無視
+          destructuredArrayIgnorePattern: '^_', // 分割代入の _ プレフィックスを無視
+        },
+      ],
       // 指定したモジュールへの import をエラー化するルール
       'no-restricted-imports': [
         'error',

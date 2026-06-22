@@ -60,7 +60,8 @@ function parsePreview(csvText: string): PreviewRow[] {
 }
 
 // CSV インポートフォームコンポーネント
-export function CsvImportForm({ categories: _categories }: CsvImportFormProps) {
+// MVP では categories を使わないため _ プレフィックスで受け取り ESLint 警告を抑制する
+export function CsvImportForm(_props: CsvImportFormProps) {
   // 読み込んだ CSV テキスト (null = ファイル未選択)
   const [csvText, setCsvText] = useState<string | null>(null);
   // プレビューテーブルに表示する先頭 5 行のデータ

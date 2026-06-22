@@ -8,6 +8,8 @@
 import { auth } from '@/lib/auth';
 // データリポジトリ
 import { repos } from '@/data';
+// 設定ページのキャッシュを無効化するための Next.js キャッシュ関数
+import { revalidatePath } from 'next/cache';
 
 // 削除結果の戻り値型
 export interface DeleteLocationResult {
@@ -33,6 +35,8 @@ export async function deleteLocation(locationId: string): Promise<DeleteLocation
   try {
     // tenantId をスコープに含めて削除 (他テナントの拠点を削除できないよう保護)
     await repos.locations.delete(locationId, session.user.tenantId);
+    // 設定ページのキャッシュを無効化して削除結果がすぐ反映されるようにする
+    revalidatePath('/settings');
     // 成功を返す
     return { success: true };
   } catch (err) {

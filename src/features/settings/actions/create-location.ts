@@ -8,6 +8,8 @@
 import { auth } from '@/lib/auth';
 // データリポジトリ
 import { repos } from '@/data';
+// 設定ページのキャッシュを無効化するための Next.js キャッシュ関数
+import { revalidatePath } from 'next/cache';
 
 // 作成結果の戻り値型
 export interface CreateLocationResult {
@@ -52,6 +54,8 @@ export async function createLocation(formData: FormData): Promise<CreateLocation
       name,
       description,
     });
+    // 設定ページのキャッシュを無効化して新しい拠点がすぐ反映されるようにする
+    revalidatePath('/settings');
     // 作成された拠点 ID を返す
     return { locationId: location.id };
   } catch (err) {

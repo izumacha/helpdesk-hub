@@ -46,9 +46,11 @@ export async function createCheckoutSession(
   const priceId = targetPlan === 'standard' ? STRIPE_PRICE_IDS.standard : STRIPE_PRICE_IDS.pro;
   // Price ID が設定されていない場合は課金機能未設定として拒否
   if (!priceId) {
-    return {
-      error: `Stripe Price ID が設定されていません (STRIPE_PRICE_${targetPlan.toUpperCase()} 環境変数を確認してください)`,
-    };
+    // 環境変数名はサーバーログのみに残し、クライアントには汎用メッセージを返す
+    console.error(
+      `[create-checkout-session] Stripe Price ID が未設定: STRIPE_PRICE_${targetPlan.toUpperCase()} 環境変数を確認してください`,
+    );
+    return { error: '課金機能の設定が完了していません。管理者にお問い合わせください。' };
   }
 
   // テナント情報を取得して既存の Stripe Customer ID を確認する
