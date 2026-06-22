@@ -111,6 +111,11 @@ export async function POST(req: Request, { params }: Params) {
       // 確認ページ自体はキャッシュ・参照させない (トークンを含むため)
       'Cache-Control': 'no-store',
       'Referrer-Policy': 'no-referrer',
+      // クリックジャッキング防止 (必須): この確認ページの安全性は「ユーザーの明示クリック」に
+      // 依存するため、iframe 埋め込み + UI 偽装でクリックを誘導されると CSRF 対策が無力化する。
+      // フレーム化を全面禁止して埋め込みを防ぐ (frame-ancestors=現代ブラウザ / XFO=レガシー)。
+      'X-Frame-Options': 'DENY',
+      'Content-Security-Policy': "frame-ancestors 'none'",
     },
   });
 }
