@@ -23,12 +23,10 @@ import { repos } from '@/data';
 import { loadEnabledSsoContext } from '@/lib/sso-context';
 // SAML SP 構築とアサーション検証
 import { createSamlInstance, validateSamlResponse } from '@/lib/saml';
-// マジックリンクのワンタイムトークン生成・ハッシュ・コールバック URL 構築 (セッション発行に再利用)
-import {
-  buildMagicLinkUrl,
-  generateMagicLinkToken,
-  hashMagicLinkToken,
-} from '@/lib/magic-link';
+// マジックリンクのワンタイムトークン生成・ハッシュ (セッション発行に再利用)
+import { generateMagicLinkToken, hashMagicLinkToken } from '@/lib/magic-link';
+// HTML 属性への安全な埋め込み用エスケープ (確認ページのトークン埋め込みに使う)
+import { escapeHtml } from '@/lib/html-escape';
 
 // SSO ハンドオフトークンの有効期限 (2 分)。ACS → コールバックの即時引き渡し専用なので短くする
 const SSO_HANDOFF_TTL_MS = 2 * 60 * 1000;
@@ -100,7 +98,56 @@ export async function POST(req: Request, { params }: Params) {
   // ワンタイムトークンを保存する (consume はマジックリンクのコールバックが原子的に行う)
   await repos.magicLinks.create({ email: user.email, tokenHash, expiresAt, requestedIp });
 
-  // マジックリンクのコールバック URL を組み立て、そこへ 303 リダイレクトしてセッションを発行させる
-  const callbackUrl = buildMagicLinkUrl(ctx.baseUrl, rawToken);
-  return NextResponse.redirect(callbackUrl, 303);
+  // ── ログイン CSRF / セッション固定対策 (ユーザー操作を必須化する確認ページ) ──
+  // ACS は未認証で到達でき、IdP-initiated SSO では未承諾の署名付きアサーションも受理する
+  // (InResponseTo は IdP-initiated を壊し共有キャッシュも要るため使わない)。
+  // ここで自動ログインせず「明示クリックの確認ページ」を挟むことで、攻撃者が被害者ブラウザから
+  // ACS へ自前アサーションを自動 POST させて「攻撃者アカウントでサイレントログイン」させる攻撃を防ぐ。
+  // (マジックリンクのコールバックコメントが示す標準対策と同方針。SP/IdP どちらの起点でも有効。)
+  return new NextResponse(renderSsoContinuePage(rawToken), {
+    status: 200,
+    headers: {
+      'Content-Type': 'text/html; charset=utf-8',
+      // 確認ページ自体はキャッシュ・参照させない (トークンを含むため)
+      'Cache-Control': 'no-store',
+      'Referrer-Policy': 'no-referrer',
+    },
+  });
+}
+
+// SSO 認証後に表示する「ログイン続行の確認」ページを描画する。
+// 自動送信せず、ユーザーが明示的にボタンを押したときだけマジックリンクのコールバック (GET) へ
+// 遷移してセッションを発行する。token は HTML 属性として安全にエスケープして埋め込む。
+function renderSsoContinuePage(rawToken: string): string {
+  // トークンを HTML 属性値に安全に埋め込めるようエスケープする (base64url だが防御的に処理)
+  const safeToken = escapeHtml(rawToken);
+  // 確認ページの HTML を返す。lang="ja"・セマンティックなボタン・自動送信なしを満たす。
+  return `<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex,nofollow">
+<title>SSO ログインの確認</title>
+<style>
+  body { font-family: system-ui, -apple-system, "Segoe UI", sans-serif; background: #f0fdfa; color: #0f172a; margin: 0; display: flex; min-height: 100vh; align-items: center; justify-content: center; padding: 1rem; }
+  main { background: #fff; border: 1px solid #ccfbf1; border-radius: 1rem; padding: 2rem; max-width: 28rem; box-shadow: 0 1px 3px rgba(0,0,0,.08); }
+  h1 { font-size: 1.25rem; margin: 0 0 .75rem; }
+  p { font-size: .9rem; color: #475569; line-height: 1.6; }
+  button { margin-top: 1.25rem; width: 100%; background: #0f766e; color: #fff; border: 0; border-radius: .5rem; padding: .75rem 1rem; font-size: .95rem; font-weight: 600; cursor: pointer; }
+  button:hover { background: #115e59; }
+  button:focus-visible { outline: 3px solid #5eead4; outline-offset: 2px; }
+</style>
+</head>
+<body>
+<main>
+<h1>SSO ログインの確認</h1>
+<p>シングルサインオン (SSO) の認証が完了しました。下のボタンを押すと、このアプリへのログインが完了します。心当たりがない場合はこのページを閉じてください。</p>
+<form method="get" action="/api/auth/magic-link/callback">
+<input type="hidden" name="token" value="${safeToken}">
+<button type="submit">ログインを続ける</button>
+</form>
+</main>
+</body>
+</html>`;
 }
