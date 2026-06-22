@@ -35,8 +35,9 @@ export type NotificationType = 'assigned' | 'escalated' | 'commented' | 'statusC
 export type TenantMode = 'lite' | 'pro';
 
 // Phase 4 課金: サブスクリプションプラン
-// Free: 3 名・月 50 件 / Standard: 10 名・Lite フル / Pro: 30 名・Pro モード
-export type SubscriptionPlan = 'free' | 'standard' | 'pro';
+// Free: 3 名・月 50 件 / Standard: 10 名・Lite フル / Pro: 30 名・Pro モード /
+// Enterprise: 個別見積・無制限・SSO(SAML)・監査強化 (smb-dx-pivot-plan.md §6.1)
+export type SubscriptionPlan = 'free' | 'standard' | 'pro' | 'enterprise';
 
 // テナント (組織) 本体。マルチテナントの境界を表す
 export interface Tenant {
@@ -59,6 +60,19 @@ export interface Tenant {
   stripeSubscriptionId: string | null; // Stripe Subscription ID (sub_xxx)
   stripeSubscriptionStatus: string | null; // Stripe の subscription.status 文字列
   createdAt: Date; // 作成日時
+}
+
+// Phase 4 Enterprise: テナント単位の SAML SSO 設定 1 件分。
+// アプリ (SP) が IdP からの受信アサーション署名を検証するために必要な情報を保持する。
+export interface TenantSsoConfig {
+  id: string; // 設定 ID (主キー)
+  tenantId: string; // 所属テナント ID (1 テナント 1 設定)
+  enabled: boolean; // SSO ログインを有効化するか (false なら無効 = fail-closed)
+  idpEntityId: string; // IdP の EntityID (= 受信アサーションの Issuer。一致必須)
+  idpSsoUrl: string; // IdP の SSO エンドポイント URL (AuthnRequest 送信先)
+  idpX509Cert: string; // IdP の署名検証用 X.509 証明書 (PEM またはその base64 本体)
+  createdAt: Date; // 作成日時
+  updatedAt: Date; // 更新日時
 }
 
 // Phase 4 多拠点: テナント内の店舗・拠点 1 件分

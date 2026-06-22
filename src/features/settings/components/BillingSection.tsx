@@ -52,6 +52,18 @@ const PLAN_INFO: Record<
       'メール取り込み対応',
     ],
   },
+  // エンタープライズプラン: 個別見積 (無制限 + SSO + 監査強化)。Stripe 非経由で運用が手動設定
+  enterprise: {
+    label: 'Enterprise',
+    price: '個別見積',
+    features: [
+      'メンバー無制限',
+      '月間チケット無制限',
+      'Pro モードの全機能',
+      'SSO (SAML) シングルサインオン',
+      '監査強化・SLA 契約',
+    ],
+  },
 };
 
 // 受け取る props
@@ -158,8 +170,9 @@ export function BillingSection({ currentPlan, stripeStatus, hasStripeCustomer }:
             {isPending ? '処理中…' : 'Standard にアップグレード'}
           </button>
         )}
-        {/* Pro プランへアップグレード (Free または Standard の場合に表示) */}
-        {currentPlan !== 'pro' && (
+        {/* Pro プランへアップグレード (Free または Standard の場合のみ表示)。
+            Enterprise には下位プランへの「アップグレード」を出さない (誤ダウングレード防止) */}
+        {(currentPlan === 'free' || currentPlan === 'standard') && (
           <button
             type="button"
             onClick={() => handleUpgrade('pro')}
@@ -185,6 +198,13 @@ export function BillingSection({ currentPlan, stripeStatus, hasStripeCustomer }:
       <p className="text-xs text-slate-400">
         プランのダウングレードまたは解約は「プランを管理」から行ってください。
       </p>
+      {/* Enterprise の案内 (Enterprise 以外のテナントに向けたアップセル導線) */}
+      {currentPlan !== 'enterprise' && (
+        <p className="text-xs text-slate-400">
+          無制限のメンバー・SSO (SAML)・監査強化が必要な場合は Enterprise プラン (個別見積) を
+          ご検討ください。導入のご相談はサポートまでお問い合わせください。
+        </p>
+      )}
     </div>
   );
 }

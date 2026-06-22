@@ -48,5 +48,8 @@ next-env.d.ts
 # ローカル開発時の添付ファイル保存先 (Local Storage Adapter のデフォルト)。本番では別ボリュームを使う想定
 /var/uploads/
 
+# DB バックアップの保存先 (scripts/backup-db.sh のデフォルト)。ダンプは機微データを含むため commit しない
+/var/backups/
+
 # Claude Code agent worktrees / scratch state (per-session, never commit)
 .claude/

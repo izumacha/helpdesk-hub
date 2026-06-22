@@ -9,6 +9,7 @@ import { makeInvitationRepo } from './invitation-repository.memory';
 import { makeLocationRepo } from './location-repository.memory';
 import { makeMagicLinkRepo } from './magic-link-repository.memory';
 import { makeNotificationRepo } from './notification-repository.memory';
+import { makeSsoConfigRepo } from './sso-config-repository.memory';
 import { cloneStore, createEmptyStore, overwriteStore, type Store } from './store';
 import { makeTenantRepo } from './tenant-repository.memory';
 import { makeTicketCommentRepo } from './ticket-comment-repository.memory';
@@ -37,6 +38,7 @@ export function buildMemoryRepos(store: Store): Repos {
     attachments: makeAttachmentRepo(store),
     emailThreads: makeEmailThreadRepo(store),
     locations: makeLocationRepo(store), // Phase 4 多拠点
+    ssoConfigs: makeSsoConfigRepo(store), // Phase 4 Enterprise: SAML SSO 設定
   };
 }
 
