@@ -322,4 +322,88 @@ describe('POST /api/inbound/email', () => {
     expect(store.comments.size).toBe(0);
     expect(store.tickets.size).toBe(1);
   });
+
+  // ── 送信元ドメイン認証 (SPF/DKIM/DMARC) ポリシー ───────────────────────────
+  // INBOUND_EMAIL_AUTH=enforce のとき、SPF が明示 fail のメールを隔離 (202) して起票しない
+  it('enforce で SPF=fail のメールを隔離する (202)', async () => {
+    vi.stubEnv('INBOUND_EMAIL_AUTH', 'enforce');
+    const { POST } = await import('@/app/api/inbound/email/route');
+    // 既知メンバーからのメールでも、SPF=fail なら詐称を疑い隔離する
+    const res = await POST(makeRequest({ ...VALID_EMAIL, SPF: 'fail' }));
+    expect(res.status).toBe(202);
+    expect(store.tickets.size).toBe(0); // 起票されない
+  });
+
+  // enforce でも SPF=pass の既知メンバーは通常どおり起票される
+  it('enforce で SPF=pass のメールは起票する (201)', async () => {
+    vi.stubEnv('INBOUND_EMAIL_AUTH', 'enforce');
+    const { POST } = await import('@/app/api/inbound/email/route');
+    const res = await POST(makeRequest({ ...VALID_EMAIL, SPF: 'pass' }));
+    expect(res.status).toBe(201);
+    expect(store.tickets.size).toBe(1);
+  });
+
+  // enforce + 認証結果が無い (unknown) メールは誤隔離せず起票する (可用性優先 / 後方互換)
+  it('enforce でも認証結果が無ければ起票する (201)', async () => {
+    vi.stubEnv('INBOUND_EMAIL_AUTH', 'enforce');
+    const { POST } = await import('@/app/api/inbound/email/route');
+    const res = await POST(makeRequest(VALID_EMAIL));
+    expect(res.status).toBe(201);
+    expect(store.tickets.size).toBe(1);
+  });
+
+  // 既定 (off) では SPF=fail でも検証せず従来どおり起票する (後方互換)
+  it('off (既定) では SPF=fail でも起票する (201)', async () => {
+    const { POST } = await import('@/app/api/inbound/email/route');
+    const res = await POST(makeRequest({ ...VALID_EMAIL, SPF: 'fail' }));
+    expect(res.status).toBe(201);
+    expect(store.tickets.size).toBe(1);
+  });
+
+  // enforce で Authentication-Results ヘッダの dmarc=fail を隔離する
+  it('enforce で Authentication-Results の dmarc=fail を隔離する (202)', async () => {
+    vi.stubEnv('INBOUND_EMAIL_AUTH', 'enforce');
+    const { POST } = await import('@/app/api/inbound/email/route');
+    const res = await POST(
+      makeRequest({
+        ...VALID_EMAIL,
+        'authentication-results': 'mx; spf=pass; dkim=pass; dmarc=fail',
+      }),
+    );
+    expect(res.status).toBe(202);
+    expect(store.tickets.size).toBe(0);
+  });
+
+  // multipart (SendGrid 形式) の個別 SPF フィールド (大文字 'SPF') も enforce で隔離されること。
+  // 大文字/小文字フィールド名の取り違えは静かに壊れやすいため、multipart 経路を明示的に検証する。
+  it('enforce で multipart の SPF=fail フィールドを隔離する (202)', async () => {
+    vi.stubEnv('INBOUND_EMAIL_AUTH', 'enforce');
+    // SendGrid 互換の multipart フォームを組み立てる
+    const form = new FormData();
+    form.set('to', `${TOKEN}@inbox.helpdesk-hub.app`);
+    form.set('from', '鈴木 一郎 <ichiro@example.com>'); // 既知メンバー (本人性はここ)
+    form.set('subject', 'マルチパート SPF 失敗');
+    form.set('text', '本文');
+    form.set('SPF', 'fail'); // プロバイダ算出の SPF=fail (詐称シグナル)
+    const req = new Request('http://localhost/api/inbound/email', {
+      method: 'POST',
+      headers: { 'x-inbound-secret': SECRET },
+      body: form,
+    });
+    const { POST } = await import('@/app/api/inbound/email/route');
+    const res = await POST(req);
+    // 既知メンバーであっても SPF=fail なら隔離されて起票されない
+    expect(res.status).toBe(202);
+    expect(store.tickets.size).toBe(0);
+  });
+
+  // enforce で個別 dkim フィールドの fail を隔離する (SendGrid の dkim フィールド形式)
+  it('enforce で dkim フィールドの fail を隔離する (202)', async () => {
+    vi.stubEnv('INBOUND_EMAIL_AUTH', 'enforce');
+    const { POST } = await import('@/app/api/inbound/email/route');
+    // SendGrid の dkim フィールドは "{@domain : result}" 形式
+    const res = await POST(makeRequest({ ...VALID_EMAIL, dkim: '{@example.com : fail}' }));
+    expect(res.status).toBe(202);
+    expect(store.tickets.size).toBe(0);
+  });
 });

@@ -11,9 +11,11 @@ import {
   INBOUND_MESSAGE_ID_MAX,
   INBOUND_SUBJECT_MAX,
   buildInboundAddress,
+  extractAuthResults,
   extractEmailAddress,
   extractInboundToken,
   extractMessageIds,
+  evaluateInboundAuth,
   generateInboundToken,
   localPartOf,
   normalizeMessageId,
@@ -279,5 +281,71 @@ describe('readRawHeader', () => {
   it('見つからなければ null', () => {
     expect(readRawHeader('Subject: hi', 'Message-ID')).toBeNull();
     expect(readRawHeader(null, 'Message-ID')).toBeNull();
+  });
+});
+
+describe('extractAuthResults', () => {
+  // SendGrid 個別フィールド (SPF / dkim) から結果を取り出す
+  it('SendGrid の個別フィールドから SPF / DKIM を正規化する', () => {
+    const r = extractAuthResults({ spf: 'pass', dkim: '{@example.com : pass}' });
+    expect(r.spf).toBe('pass'); // SPF=pass
+    expect(r.dkim).toBe('pass'); // dkim フィールド内の pass を拾う
+    expect(r.dmarc).toBe('unknown'); // DMARC は個別フィールドが無いので unknown
+  });
+
+  // 個別フィールドの fail / softfail を区別して正規化する
+  it('fail と softfail を区別する', () => {
+    expect(extractAuthResults({ spf: 'fail' }).spf).toBe('fail'); // 明示 fail
+    expect(extractAuthResults({ spf: 'softfail' }).spf).toBe('softfail'); // softfail は fail と別
+  });
+
+  // 汎用 Authentication-Results ヘッダから spf= / dkim= / dmarc= を抽出する
+  it('Authentication-Results ヘッダから 3 方式を抽出する', () => {
+    const header = 'mx.example.com; spf=pass smtp.mailfrom=a@x.com; dkim=fail header.d=x.com; dmarc=fail';
+    const r = extractAuthResults({ authenticationResults: header });
+    expect(r.spf).toBe('pass'); // spf=pass
+    expect(r.dkim).toBe('fail'); // dkim=fail
+    expect(r.dmarc).toBe('fail'); // dmarc=fail
+  });
+
+  // 個別フィールドが汎用ヘッダより優先される
+  it('個別フィールドが Authentication-Results より優先される', () => {
+    const r = extractAuthResults({ spf: 'fail', authenticationResults: 'spf=pass; dmarc=pass' });
+    expect(r.spf).toBe('fail'); // 個別フィールド (fail) を優先
+    expect(r.dmarc).toBe('pass'); // 個別フィールドが無い DMARC はヘッダ由来
+  });
+
+  // プロバイダが結果を提供しない場合は unknown
+  it('情報が無ければすべて unknown', () => {
+    const r = extractAuthResults({});
+    expect(r).toEqual({ spf: 'unknown', dkim: 'unknown', dmarc: 'unknown' });
+  });
+});
+
+describe('evaluateInboundAuth', () => {
+  // off / 未設定では常に accept (後方互換)
+  it('off / 未設定では常に accept', () => {
+    const fail = { spf: 'fail', dkim: 'fail', dmarc: 'fail' } as const;
+    expect(evaluateInboundAuth(fail, '')).toBe('accept'); // 未設定
+    expect(evaluateInboundAuth(fail, 'off')).toBe('accept'); // off
+  });
+
+  // enforce で明示 fail があれば quarantine
+  it('enforce では明示 fail を quarantine', () => {
+    expect(evaluateInboundAuth({ spf: 'fail', dkim: 'pass', dmarc: 'pass' }, 'enforce')).toBe('quarantine');
+    expect(evaluateInboundAuth({ spf: 'pass', dkim: 'fail', dmarc: 'pass' }, 'enforce')).toBe('quarantine');
+    expect(evaluateInboundAuth({ spf: 'pass', dkim: 'pass', dmarc: 'fail' }, 'enforce')).toBe('quarantine');
+  });
+
+  // enforce でも pass / softfail / none / unknown は accept (誤隔離・可用性低下を避ける)
+  it('enforce でも pass / softfail / unknown は accept', () => {
+    expect(evaluateInboundAuth({ spf: 'pass', dkim: 'pass', dmarc: 'pass' }, 'enforce')).toBe('accept');
+    expect(evaluateInboundAuth({ spf: 'softfail', dkim: 'none', dmarc: 'unknown' }, 'enforce')).toBe('accept');
+    expect(evaluateInboundAuth({ spf: 'unknown', dkim: 'unknown', dmarc: 'unknown' }, 'enforce')).toBe('accept');
+  });
+
+  // ポリシー文字列の大文字・前後空白を許容する
+  it('ENFORCE / 前後空白でも有効', () => {
+    expect(evaluateInboundAuth({ spf: 'fail', dkim: 'pass', dmarc: 'pass' }, '  Enforce ')).toBe('quarantine');
   });
 });
