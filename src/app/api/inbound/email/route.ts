@@ -123,7 +123,8 @@ async function readInboundFields(req: Request): Promise<InboundFields> {
     const rawHeaders = str(form.get('headers'));
     // 宛先 (ルーティング): envelope の RCPT を優先する (ヘッダ To より実配送先として確実)。
     // 送信者 (本人特定): ヘッダ From を優先する (人間が送った差出人。envelope from=MAIL FROM は
-    // 戻り先で本人性が弱い)。いずれも DKIM/SPF 検証は将来課題で、現状は既知メンバー判定で守る。
+    // 戻り先で本人性が弱い)。本人性は既知メンバー判定に加え、INBOUND_EMAIL_AUTH=enforce のとき
+    // 下流で SPF/DKIM/DMARC の明示 fail を隔離して守る (#147 で実装)。
     return {
       to: envTo ?? str(form.get('to')),
       from: str(form.get('from')) ?? envFrom,
