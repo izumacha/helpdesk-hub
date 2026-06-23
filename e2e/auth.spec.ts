@@ -130,6 +130,8 @@ test.describe('認証', () => {
   });
 
   // マジックリンクで実際に認証が完了し、保護ページへ遷移すること
+  // 新フロー: GET → HTML 確認ページ表示 → 「ログインする」ボタンクリック(POST) → 保護ページへ
+  // (メールゲートウェイのプリフェッチ対策として GET ではトークンを消費しない設計のため)
   test('マジックリンクで認証できる', async ({ page }) => {
     // テスト開始時刻を控えておき、この時刻以降に書かれた outbox エントリだけを採用する
     // (並列テストが同じファイルに append するので、古い entry や別テストの entry を拾わないため)
@@ -143,17 +145,26 @@ test.describe('認証', () => {
     await expect(page.getByText('メールを確認してください')).toBeVisible();
     // outbox から since 以降に書かれた agent1 宛 URL を取り出す
     const url = await readLastMagicLinkUrl('agent1@example.com', since);
-    // ブラウザでクリック (本来メーラーから踏む経路)
+    // ブラウザでリンクを開く (GET): メールゲートウェイ対策でトークンは消費されず HTML 確認ページが返る
     await page.goto(url);
+    // 「ログインする」ボタンが表示されること (GET は確認ページを返すのみ)
+    await expect(page.getByRole('button', { name: 'ログインする' })).toBeVisible();
+    // ボタンをクリックして POST 送信する (= ここで初めてトークンが消費され認証が完了する)
+    await page.getByRole('button', { name: 'ログインする' }).click();
     // 役割ベースで dashboard か tickets に遷移していること
     await expect(page).toHaveURL(/\/dashboard|\/tickets/);
   });
 
   // 不正なトークンでは ?error=magic-link-invalid 付きで /login に戻されること
+  // 新フロー: GET → HTML 確認ページ → ボタンクリック(POST) → 不正判定 → /login にリダイレクト
   test('不正なマジックリンクトークンはログイン画面に戻る', async ({ page }) => {
-    // でたらめなトークンで callback を叩く
+    // でたらめなトークンで callback を GET で開く → HTML 確認ページが返る (即リダイレクトしない)
     await page.goto('/api/auth/magic-link/callback?token=invalid-token-xxx');
-    // /login に戻されていること
+    // 「ログインする」ボタンが表示されること (GET では検証せず確認ページのみ返す)
+    await expect(page.getByRole('button', { name: 'ログインする' })).toBeVisible();
+    // ボタンをクリックして POST 送信する (= ここで初めてトークン検証が実行される)
+    await page.getByRole('button', { name: 'ログインする' }).click();
+    // 不正トークンなので /login に戻されていること
     await expect(page).toHaveURL(/\/login(\?|$)/);
     // エラー文言が見えること
     await expect(page.getByText('ログインリンクが無効です')).toBeVisible();
