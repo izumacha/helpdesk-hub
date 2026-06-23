@@ -117,16 +117,19 @@ export async function GET(request: Request) {
   </style>
 </head>
 <body>
-  <div class="card" role="main">
+  <!-- <main> を使うことでスクリーンリーダーがランドマークとして認識できるようにする (CLAUDE.md §7) -->
+  <main class="card">
     <p class="brand">HelpDesk Hub</p>
     <h1>ログイン確認</h1>
     <p>下のボタンをクリックするとログインが完了します。<br>心当たりがない場合はこのページを閉じてください。</p>
-    <!-- トークンを POST ボディで送ることでプリフェッチによる消費を防ぐ -->
-    <form method="POST" action="/api/auth/magic-link/callback">
+    <!-- action="" で現在の URL (このページ自身) へ POST する。絶対パスを避けることで
+         Next.js の basePath 設定やリバースプロキシのプレフィックスに依存しない。
+         トークンは POST ボディに含まれるため、GET プリフェッチではトークンが消費されない。 -->
+    <form method="POST" action="">
       <input type="hidden" name="token" value="${safeToken}" />
       <button type="submit">ログインする</button>
     </form>
-  </div>
+  </main>
 </body>
 </html>`;
 
@@ -138,6 +141,11 @@ export async function GET(request: Request) {
       'Referrer-Policy': 'no-referrer',
       // 確認ページをキャッシュさせない (トークン再利用・古い確認ページの表示を防ぐ)
       'Cache-Control': 'no-store',
+      // クリックジャッキング対策: このページを iframe に埋め込んで「ログインする」ボタンを
+      // 踏ませる Login CSRF 攻撃を防ぐ (透明 iframe で別サイトボタンに重ね合わせる手法)
+      'X-Frame-Options': 'DENY',
+      // MIME スニッフィング防止: 返却する text/html を他の MIME タイプとして誤解釈させない
+      'X-Content-Type-Options': 'nosniff',
     },
   });
 }
@@ -145,6 +153,17 @@ export async function GET(request: Request) {
 // POST ハンドラ: フォーム送信でトークンを受け取り実際に認証を行う。
 // ユーザーが明示的にボタンをクリックした場合のみ到達する。
 export async function POST(request: Request) {
+  // Origin ヘッダで同一オリジンからの送信であることを確認する (クロスオリジン CSRF 対策)。
+  // ブラウザは通常のフォーム POST で Origin を付与する。攻撃者サイトから送信した場合は
+  // Origin が異なるため弾くことができる。Origin が null (file:// など) の場合も拒否する。
+  const origin = request.headers.get('origin');
+  const requestOrigin = origin ? new URL(origin).origin : null; // URL パースで scheme+host+port を正規化
+  const serverOrigin = new URL(request.url).origin; // サーバー側の正規オリジン
+  if (!requestOrigin || requestOrigin !== serverOrigin) {
+    // オリジン不一致は CSRF の疑いがあるためエラー扱い (fail-closed)
+    redirect('/login?error=magic-link-invalid');
+  }
+
   // フォームの multipart/form-data または application/x-www-form-urlencoded からトークンを取り出す
   let token: string | undefined;
   try {
