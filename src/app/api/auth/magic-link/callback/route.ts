@@ -21,10 +21,12 @@
  * Security properties of this design:
  *   - GET prefetch safety: email gateways that GET-prefetch links for malware scanning
  *     receive an HTML page but do NOT POST the form, so the token remains unconsumed.
- *   - Login CSRF / session swapping mitigation: an attacker cannot silently sign in a
- *     victim by making them click a link; the victim must actively click the "ログインする"
- *     button in their own browser session. This is a meaningful (though not cryptographic)
- *     barrier against session-swap attacks for the SMB Lite target audience.
+ *   - Login CSRF / session swapping mitigation: the POST handler validates the request
+ *     origin using Sec-Fetch-Site (Chrome/Firefox) or Origin header (Safari) to reject
+ *     cross-origin form submissions. This prevents an attacker from tricking a victim's
+ *     browser into consuming a magic link token via a cross-origin form.
+ *     Note: Chromium sends Origin: "null" (literal string) for some localhost form
+ *     submissions; Sec-Fetch-Site is used as the primary check to avoid this ambiguity.
  */
 
 // next-auth の signIn ヘルパー (Credentials Provider にトークンを渡して認証 + リダイレクト)
@@ -153,15 +155,47 @@ export async function GET(request: Request) {
 // POST ハンドラ: フォーム送信でトークンを受け取り実際に認証を行う。
 // ユーザーが明示的にボタンをクリックした場合のみ到達する。
 export async function POST(request: Request) {
-  // Origin ヘッダで同一オリジンからの送信であることを確認する (クロスオリジン CSRF 対策)。
-  // ブラウザは通常のフォーム POST で Origin を付与する。攻撃者サイトから送信した場合は
-  // Origin が異なるため弾くことができる。Origin が null (file:// など) の場合も拒否する。
-  const origin = request.headers.get('origin');
-  const requestOrigin = origin ? new URL(origin).origin : null; // URL パースで scheme+host+port を正規化
-  const serverOrigin = new URL(request.url).origin; // サーバー側の正規オリジン
-  if (!requestOrigin || requestOrigin !== serverOrigin) {
-    // オリジン不一致は CSRF の疑いがあるためエラー扱い (fail-closed)
-    redirect('/login?error=magic-link-invalid');
+  // クロスオリジン CSRF 対策: 同一オリジンからのフォーム送信であることを検証する。
+  // 検証戦略:
+  //   1. Sec-Fetch-Site ヘッダ (Chrome 76+ / Firefox 90+): ブラウザが必ず付与し
+  //      JavaScript から偽造できない Fetch Metadata ヘッダ。'same-origin' のみ許可する。
+  //   2. Origin ヘッダ (Sec-Fetch-Site を送らない Safari 等): scheme+host+port を
+  //      正規化して比較する。ブラウザが送信する 'null' 文字列 (file:// 等) は拒否する。
+  //   3. どちらも存在しない場合: fail-closed で拒否する。
+
+  // Sec-Fetch-Site ヘッダは Chrome/Firefox が自動付与する Fetch Metadata ヘッダ
+  const secFetchSite = request.headers.get('sec-fetch-site');
+  // サーバー側の正規オリジン (scheme + host + port) を取り出す
+  const serverOrigin = new URL(request.url).origin;
+
+  if (secFetchSite !== null) {
+    // Sec-Fetch-Site が存在する場合 (Chrome/Firefox): 'same-origin' のみ許可する。
+    // 'cross-site' は別ドメインからの送信 (CSRF 攻撃)、
+    // 'same-site' は同一eTLD+1の別オリジン (許容しない)、
+    // 'none' はダイレクトナビゲーション (form POST には通常現れない) なので拒否する。
+    if (secFetchSite !== 'same-origin') {
+      // クロスオリジン送信 = CSRF の疑い → fail-closed でエラー扱い
+      redirect('/login?error=magic-link-invalid');
+    }
+  } else {
+    // Sec-Fetch-Site がない場合 (Safari 等): Origin ヘッダで同一オリジンを確認する。
+    const origin = request.headers.get('origin');
+    // 'null' 文字列はブラウザが file:// や data: URL 等から送信する特殊な Origin 値。
+    // 同一オリジンとは見なせないため除外する (null チェックとは別に文字列比較が必要)。
+    let requestOrigin: string | null = null;
+    if (origin && origin !== 'null') {
+      try {
+        // URL パースで scheme+host+port を正規化する (末尾スラッシュ等の揺れを吸収)
+        requestOrigin = new URL(origin).origin;
+      } catch {
+        // 不正な URL 文字列の場合は null 扱い → 後段で拒否する (fail-closed)
+        requestOrigin = null;
+      }
+    }
+    if (!requestOrigin || requestOrigin !== serverOrigin) {
+      // Origin 不一致または欠如は CSRF の疑いがあるためエラー扱い (fail-closed)
+      redirect('/login?error=magic-link-invalid');
+    }
   }
 
   // フォームの multipart/form-data または application/x-www-form-urlencoded からトークンを取り出す
