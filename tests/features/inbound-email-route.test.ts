@@ -45,6 +45,20 @@ vi.mock('@/lib/sse-subscribers', () => ({
   broadcast: vi.fn(),
 }));
 
+// 受領自動返信 (メンバー改善 #1) の送信を捕捉する。実ファイル (.magic-link-outbox.jsonl) へ
+// 書き込む console ドライバを避け、送信内容を配列に貯めて検証する。
+// vi.hoisted で先に配列を作り、vi.mock のファクトリから参照できるようにする (巻き上げ順序対策)。
+const { sentEmails } = vi.hoisted(() => ({
+  sentEmails: [] as Array<{ to: string; subject: string }>,
+}));
+vi.mock('@/lib/email', () => ({
+  getEmailSender: () => ({
+    send: async (message: { to: string; subject: string }) => {
+      sentEmails.push(message);
+    },
+  }),
+}));
+
 // テナント (Lite) + 既知メンバー 1 人をシードする
 function seed() {
   const now = new Date();
@@ -55,7 +69,14 @@ function seed() {
     mode: 'lite',
     industry: null,
     inboundToken: TOKEN,
-    slackWebhookUrl: null, subscriptionPlan: 'free' as const, stripeCustomerId: null, stripeSubscriptionId: null, stripeSubscriptionStatus: null, teamsWebhookUrl: null, chatworkApiToken: null, chatworkRoomId: null, // Slack 通知未設定 (テスト用フィクスチャ)
+    slackWebhookUrl: null,
+    subscriptionPlan: 'free' as const,
+    stripeCustomerId: null,
+    stripeSubscriptionId: null,
+    stripeSubscriptionStatus: null,
+    teamsWebhookUrl: null,
+    chatworkApiToken: null,
+    chatworkRoomId: null, // Slack 通知未設定 (テスト用フィクスチャ)
     createdAt: now,
   });
   // テナント所属の既知メンバー (送信者として許可される)
@@ -102,6 +123,8 @@ describe('POST /api/inbound/email', () => {
     uow = ctx.uow;
     seed();
     vi.stubEnv('INBOUND_EMAIL_SECRET', SECRET);
+    // 各テストで送信捕捉バッファを空にする (テスト間で送信が混ざらないように)
+    sentEmails.length = 0;
   });
 
   // 環境変数スタブを毎回戻す
@@ -174,7 +197,14 @@ describe('POST /api/inbound/email', () => {
       mode: 'lite',
       industry: null,
       inboundToken: 'other-token',
-      slackWebhookUrl: null, subscriptionPlan: 'free' as const, stripeCustomerId: null, stripeSubscriptionId: null, stripeSubscriptionStatus: null, teamsWebhookUrl: null, chatworkApiToken: null, chatworkRoomId: null, // Slack 通知未設定 (テスト用フィクスチャ)
+      slackWebhookUrl: null,
+      subscriptionPlan: 'free' as const,
+      stripeCustomerId: null,
+      stripeSubscriptionId: null,
+      stripeSubscriptionStatus: null,
+      teamsWebhookUrl: null,
+      chatworkApiToken: null,
+      chatworkRoomId: null, // Slack 通知未設定 (テスト用フィクスチャ)
       createdAt: now,
     });
     store.users.set('u-other', {
@@ -405,5 +435,59 @@ describe('POST /api/inbound/email', () => {
     const res = await POST(makeRequest({ ...VALID_EMAIL, dkim: '{@example.com : fail}' }));
     expect(res.status).toBe(202);
     expect(store.tickets.size).toBe(0);
+  });
+
+  // ── 受領自動返信 (メンバー改善 #1) ────────────────────────────────────────
+  // 新規起票が成功したら、送信元へ受付番号付きの受領メールを 1 通だけ返す
+  it('新規起票時に送信元へ受領自動返信を 1 通送る', async () => {
+    const { POST } = await import('@/app/api/inbound/email/route');
+    const res = await POST(makeRequest(VALID_EMAIL));
+    expect(res.status).toBe(201);
+    const { ticketId } = (await res.json()) as { ticketId: string };
+    // 送信は 1 通だけ。宛先は送信元の既知メンバー
+    expect(sentEmails).toHaveLength(1);
+    expect(sentEmails[0].to).toBe(MEMBER_EMAIL);
+    // 件名に受付番号 (短縮 ID) と件名が含まれる
+    expect(sentEmails[0].subject).toContain(`#${ticketId.slice(0, 8)}`);
+    expect(sentEmails[0].subject).toContain('プリンターが動きません');
+  });
+
+  // スレッド継続 (既存チケットへの追記) では受領自動返信を送らない (既に会話中のため)
+  it('スレッド追記では受領自動返信を送らない', async () => {
+    const { POST } = await import('@/app/api/inbound/email/route');
+    // 1 通目: 新規起票 → 受領返信 1 通
+    await POST(makeRequest({ ...VALID_EMAIL, messageId: '<orig-ack@example.com>' }));
+    expect(sentEmails).toHaveLength(1);
+    // 2 通目: 同じスレッドへの返信 (In-Reply-To) → 追記なので受領返信は増えない
+    const res2 = await POST(
+      makeRequest({
+        ...VALID_EMAIL,
+        subject: 'Re: プリンターが動きません',
+        text: 'まだ直りません',
+        messageId: '<reply-ack@example.com>',
+        inReplyTo: '<orig-ack@example.com>',
+      }),
+    );
+    expect(res2.status).toBe(200);
+    expect(sentEmails).toHaveLength(1);
+  });
+
+  // 同一 Message-ID の再送 (重複) では受領自動返信を送らない (二重送信防止)
+  it('重複再送では受領自動返信を送らない', async () => {
+    const { POST } = await import('@/app/api/inbound/email/route');
+    const req = () => makeRequest({ ...VALID_EMAIL, messageId: '<dup-ack@example.com>' });
+    await POST(req()); // 1 通目: 起票 + 受領返信
+    await POST(req()); // 2 通目: 重複なので何もしない
+    expect(sentEmails).toHaveLength(1);
+  });
+
+  // 自動配信メール (Auto-Submitted) には受領自動返信を送らない (メールループ防止)
+  it('Auto-Submitted の自動配信メールには受領自動返信を送らない', async () => {
+    const { POST } = await import('@/app/api/inbound/email/route');
+    const res = await POST(makeRequest({ ...VALID_EMAIL, 'auto-submitted': 'auto-generated' }));
+    // 起票自体は通常どおり成功するが、受領返信は送らない
+    expect(res.status).toBe(201);
+    expect(store.tickets.size).toBe(1);
+    expect(sentEmails).toHaveLength(0);
   });
 });

@@ -41,6 +41,14 @@ import { isAgent } from '@/lib/role';
 import { enforceRateLimit, RateLimitError } from '@/lib/rate-limit';
 // 優先度から解決期限を計算する SLA ヘルパー (Web フォーム起票と同じ既定値に揃える)
 import { calculateResolutionDueAt } from '@/lib/sla';
+// 受領自動返信 (メンバー改善 #1) のための送信基盤・本文生成・リンク組み立てヘルパー
+import { getEmailSender } from '@/lib/email';
+import { renderTicketReceivedEmail, buildTicketUrl } from '@/lib/ticket-email';
+import { resolveAppBaseUrl } from '@/lib/app-url';
+// 受領メールに付ける決定的 Message-ID (依頼者が受領メールに返信したら同じチケットへ追記できるようにする)
+import { buildReplyMessageId, resolveMessageIdDomain } from '@/lib/email-message-id';
+// 受付番号 (短縮 ID) の共有フォーマッタ (画面のチケット詳細ヘッダと同じ表記)
+import { formatTicketRef } from '@/lib/ticket-ref';
 
 // このルートは Node ランタイムで動かす (node:crypto / Prisma を使うため Edge では動かない)
 export const runtime = 'nodejs';
@@ -85,6 +93,8 @@ interface InboundFields {
   spf?: string | null; // 送信元認証: SPF 結果 (プロバイダ算出。SendGrid の "SPF" フィールド等)
   dkim?: string | null; // 送信元認証: DKIM 結果 (プロバイダ算出。SendGrid の "dkim" フィールド等)
   authenticationResults?: string | null; // 送信元認証: 生 Authentication-Results ヘッダ (汎用)
+  autoSubmitted?: string | null; // RFC 3834 の Auto-Submitted ヘッダ (自動応答メール判定 = ループ防止)
+  precedence?: string | null; // Precedence ヘッダ (bulk/list/junk なら自動配信・メーリングリスト判定)
 }
 
 // 受信メール 1 通分のフィールドを、JSON / multipart のどちらのボディからでも取り出して共通形に揃える。
@@ -138,6 +148,9 @@ async function readInboundFields(req: Request): Promise<InboundFields> {
       spf: str(form.get('SPF')) ?? str(form.get('spf')),
       dkim: str(form.get('dkim')),
       authenticationResults: readRawHeader(rawHeaders, 'Authentication-Results'),
+      // 自動応答判定用ヘッダ (multipart では生ヘッダから読む。ループ防止に使う)
+      autoSubmitted: readRawHeader(rawHeaders, 'Auto-Submitted'),
+      precedence: readRawHeader(rawHeaders, 'Precedence'),
     };
   }
   // それ以外は JSON ボディとして読む (テスト・自前連携向け)
@@ -158,7 +171,68 @@ async function readInboundFields(req: Request): Promise<InboundFields> {
     spf: pick('SPF') ?? pick('spf'),
     dkim: pick('dkim'),
     authenticationResults: pick('authenticationResults') ?? pick('authentication-results'),
+    // 自動応答判定用ヘッダ (camelCase / ヘッダ表記の両方を受ける)
+    autoSubmitted: pick('autoSubmitted') ?? pick('auto-submitted'),
+    precedence: pick('precedence') ?? pick('Precedence'),
   };
+}
+
+// 受信メールが「自動配信メール」かどうかを判定する (受領自動返信のループ防止 §9 fail-safe)。
+// 自動応答や配信専用 (no-reply) 宛に受領メールを返すと、相手も自動返信して無限ループ (メールストーム)
+// になりうるため、自動配信と分かるメールには受領返信を送らない。
+function isAutomatedEmail(fields: InboundFields): boolean {
+  // RFC 3834: Auto-Submitted が "no" 以外 (auto-generated / auto-replied 等) なら自動応答メール
+  const autoSubmitted = (fields.autoSubmitted ?? '').trim().toLowerCase();
+  if (autoSubmitted && autoSubmitted !== 'no') return true;
+  // Precedence が bulk / list / junk はメーリングリストや一斉配信なので自動返信しない
+  const precedence = (fields.precedence ?? '').trim().toLowerCase();
+  if (precedence === 'bulk' || precedence === 'list' || precedence === 'junk') return true;
+  // いずれにも該当しなければ通常の人手メールとみなす
+  return false;
+}
+
+// 初回メール起票の受領自動返信を 1 通送る (メンバー改善 #1)。ベストエフォート: 送信失敗で 500 を返すと
+// プロバイダ再送 → 二重起票になりかねないため、例外は握ってログに残す (副作用は send と Message-ID 登録のみ)。
+async function sendReceivedAck(args: {
+  to: string; // 送信元 (= 既知メンバー) のメールアドレス
+  ticketId: string; // 作成されたチケット ID (受付番号・URL 構築用)
+  ticketTitle: string; // チケット件名 (メール本文用)
+  tenantId: string; // テナント (Message-ID 対応表のスコープ)
+}): Promise<void> {
+  const { to, ticketId, ticketTitle, tenantId } = args;
+  try {
+    // メール内リンクのベース URL を解決 (production で NEXTAUTH_URL 未設定なら throw → 下で握る)
+    const baseUrl = resolveAppBaseUrl();
+    // チケット詳細ページへの導線 URL を組み立てる
+    const ticketUrl = buildTicketUrl(baseUrl, ticketId);
+    // 件名 / 本文 (Text / HTML) を純粋ヘルパーで構築 (受付番号は画面と同じ短縮 ID 表記)
+    const { subject, text, html } = renderTicketReceivedEmail({
+      ticketTitle,
+      ticketRef: formatTicketRef(ticketId),
+      ticketUrl,
+    });
+    // 受領メールに決定的 Message-ID を付与し、依頼者がこの受領メールに返信したら In-Reply-To 経由で
+    // 同じチケットへ追記できるよう、返信メールと同じ仕組みで対応表へ先に登録する (冪等)
+    const ackMessageId = buildReplyMessageId(ticketId, resolveMessageIdDomain());
+    await repos.emailThreads.register({
+      messageId: ackMessageId.normalized, // 山括弧なしの正規化値 (受信側の表記と一致)
+      ticketId,
+      tenantId,
+    });
+    // 設定された EmailSender (console / smtp) 経由で送信。Auto-Submitted で相手の自動返信ループを防ぐ
+    await getEmailSender().send({
+      to,
+      subject,
+      text,
+      html,
+      messageId: ackMessageId.header,
+      // RFC 3834: このメール自身が自動応答であることを示し、相手サーバの自動返信を抑止する
+      headers: { 'Auto-Submitted': 'auto-replied' },
+    });
+  } catch (err) {
+    // 送信失敗はサーバログに残すだけ (チケットは既に作成済みで、起票自体は成功扱いにする)
+    console.error('[POST /api/inbound/email] 受領自動返信メールの送信に失敗しました', err);
+  }
 }
 
 // POST /api/inbound/email : 受信メールを 1 件の問い合わせに変換する
@@ -378,6 +452,19 @@ export async function POST(req: Request) {
     } catch (err) {
       console.warn('[POST /api/inbound/email] failed to register inbound message id', err);
     }
+  }
+
+  // 初回メール起票の受領自動返信 (メンバー改善 #1): 送信元へ「受け付けました」を 1 通返す。
+  // Web フォーム起票は送信後すぐ画面に出るが、メール起票は受領確認が無いと「届いたか不明」になる穴を埋める。
+  // 自動配信メール (Auto-Submitted / Precedence: bulk 等) には返信しない (メールループ防止 §9 fail-safe)。
+  // スレッド追記・重複再送のパスは上で return 済みなので、ここに来るのは「新規起票」だけ。
+  if (!isAutomatedEmail(fields)) {
+    await sendReceivedAck({
+      to: sender.email,
+      ticketId: ticket.id,
+      ticketTitle: email.subject,
+      tenantId: tenant.id,
+    });
   }
 
   // 作成された問い合わせ ID を 201 で返す (プロバイダは本文を使わないが疎通確認に役立つ)

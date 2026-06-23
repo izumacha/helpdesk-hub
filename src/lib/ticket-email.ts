@@ -42,7 +42,9 @@ export function renderTicketReplyEmail(input: {
   agentName: string; // 返信した担当者の表示名
 }): { subject: string; text: string; html: string } {
   // 件名: 接頭辞 + 件名規約。ユーザー入力をサニタイズしてヘッダインジェクションを防ぐ
-  const subject = sanitizeSubject(`${SUBJECT_PREFIX} 問い合わせ「${input.ticketTitle}」に新しい返信があります`);
+  const subject = sanitizeSubject(
+    `${SUBJECT_PREFIX} 問い合わせ「${input.ticketTitle}」に新しい返信があります`,
+  );
 
   // テキスト本文 (HTML 非対応クライアント向けフォールバック)
   const text = [
@@ -78,6 +80,57 @@ export function renderTicketReplyEmail(input: {
   return { subject, text, html };
 }
 
+// 初回メール起票の受領自動返信メール本文を生成する純粋関数 (副作用なし)
+// メンバー改善 #1 / Phase 2「依頼者がアプリにログインしなくても完結」(docs/smb-dx-pivot-plan.md §4 Phase 2)。
+// Web フォーム起票は送信後すぐ画面に出るが、メール起票は受領確認が無いと「届いたか不明」になるため、
+// 起票成功時に「受け付けました」を 1 通だけ返して不安を解消する。
+export function renderTicketReceivedEmail(input: {
+  ticketTitle: string; // 問い合わせの件名
+  ticketRef: string; // 受付番号 (例: "#ab12cd34" / 画面の短縮 ID と同じ表記)
+  ticketUrl: string; // チケット詳細ページの URL
+}): { subject: string; text: string; html: string } {
+  // 件名: 接頭辞 + 受付番号 + 件名。受信箱で「受け付けられた」ことと対象がすぐ分かるようにする。
+  // ヘッダインジェクション防止のためサニタイズする
+  const subject = sanitizeSubject(
+    `${SUBJECT_PREFIX} お問い合わせを受け付けました（${input.ticketRef}）「${input.ticketTitle}」`,
+  );
+
+  // テキスト本文 (HTML 非対応クライアント向けフォールバック)
+  const text = [
+    'お問い合わせを受け付けました。担当者が確認のうえご連絡します。',
+    '',
+    `受付番号: ${input.ticketRef}`,
+    `件名: ${input.ticketTitle}`,
+    '',
+    '対応状況の確認や追加の連絡は、下のリンクから行えます。',
+    `${input.ticketUrl}`,
+    '',
+    'このメールにそのまま返信すると、お問い合わせへの追記として担当者に届きます。',
+    'お心当たりがない場合は破棄してください。',
+  ].join('\n');
+
+  // HTML 本文に差し込む外部由来文字列を個別にエスケープする (XSS / 文面崩れ防止)
+  const escapedTitle = escapeHtml(input.ticketTitle);
+  const escapedRef = escapeHtml(input.ticketRef);
+  const escapedUrl = escapeHtml(input.ticketUrl);
+
+  // HTML 本文 (受付番号と件名を示し、続きはボタンでアプリへ誘導する)
+  const html = `
+    <p>お問い合わせを受け付けました。担当者が確認のうえご連絡します。</p>
+    <blockquote style="margin:0 0 16px;padding:12px 16px;border-left:4px solid #0f766e;background:#f1f5f9;color:#0f172a;">
+      受付番号: <strong>${escapedRef}</strong><br>
+      件名: <strong>${escapedTitle}</strong>
+    </blockquote>
+    <p><a href="${escapedUrl}" style="display:inline-block;padding:10px 16px;background:#0f766e;color:#ffffff;border-radius:6px;text-decoration:none;font-weight:600;">問い合わせを開く</a></p>
+    <p style="font-size:13px;color:#475569;">うまく開けない場合はこちらの URL をブラウザに貼り付けてください:<br><span style="word-break:break-all;">${escapedUrl}</span></p>
+    <p style="font-size:13px;color:#475569;">このメールにそのまま返信すると、お問い合わせへの追記として担当者に届きます。</p>
+    <p style="font-size:13px;color:#64748b;">お心当たりがない場合は破棄してください。</p>
+  `.trim();
+
+  // 3 点セットを返す
+  return { subject, text, html };
+}
+
 // ステータス変更を依頼者に知らせるメール本文を生成する純粋関数 (副作用なし)
 // Phase 2 メール通知テンプレート整備 (docs/smb-dx-pivot-plan.md §4 Phase 2)
 export function renderTicketStatusChangedEmail(input: {
@@ -87,7 +140,9 @@ export function renderTicketStatusChangedEmail(input: {
   newStatusLabel: string; // 変更後ステータスの日本語ラベル (例: 「対応中」)
 }): { subject: string; text: string; html: string } {
   // 件名: 接頭辞 + 変更前後のステータスを明示する。ヘッダインジェクション防止のためサニタイズする
-  const subject = sanitizeSubject(`${SUBJECT_PREFIX} 問い合わせ「${input.ticketTitle}」の状況が「${input.oldStatusLabel}」から「${input.newStatusLabel}」に変わりました`);
+  const subject = sanitizeSubject(
+    `${SUBJECT_PREFIX} 問い合わせ「${input.ticketTitle}」の状況が「${input.oldStatusLabel}」から「${input.newStatusLabel}」に変わりました`,
+  );
 
   // テキスト本文 (HTML 非対応クライアント向けフォールバック)
   const text = [
@@ -131,7 +186,9 @@ export function renderAssignedEmail(input: {
   ticketUrl: string; // チケット詳細ページの URL
 }): { subject: string; text: string; html: string } {
   // 件名: 接頭辞 + 担当者割当が起きたことを件名で伝える。ヘッダインジェクション防止のためサニタイズする
-  const subject = sanitizeSubject(`${SUBJECT_PREFIX} 問い合わせ「${input.ticketTitle}」の担当者に割り当てられました`);
+  const subject = sanitizeSubject(
+    `${SUBJECT_PREFIX} 問い合わせ「${input.ticketTitle}」の担当者に割り当てられました`,
+  );
 
   // テキスト本文 (HTML 非対応クライアント向けフォールバック)
   const text = [
