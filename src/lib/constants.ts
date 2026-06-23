@@ -118,11 +118,13 @@ export const HISTORY_FIELD_LABELS: Record<string, string> = {
 };
 
 // 通知種別の英語キーに対応する日本語表示ラベル
+// NotificationType enum (prisma/schema.prisma) に値を追加したらここも更新する
 export const NOTIFICATION_TYPE_LABELS: Record<string, string> = {
   assigned: '担当割当',
   escalated: 'エスカレーション',
   commented: 'コメント',
   statusChanged: 'ステータス変更',
+  imported: '一括取り込み', // CSV・メール一括インポートで複数チケットが追加されたことを通知する
 };
 
 // 変更履歴の oldValue / newValue を field 種別に応じて日本語表示に変換する関数

@@ -11,6 +11,11 @@ export default defineConfig({
     environment: 'node',
     // 拾うテストファイルのパターン (tests/ 配下の *.test.ts のみ)
     include: ['tests/**/*.test.ts'],
+    // 契約テスト (DB 必須) は通常実行から除外する。
+    // `npm run test:contract` が明示的にファイルを渡すため、そちらでのみ動く。
+    // RUN_PRISMA_CONTRACT フラグなしで `npm run test` を実行するとモジュール解決エラーが
+    // 起きる (生成済み @/generated/prisma が必要) ため、ここで除外してローカル開発体験を保つ。
+    exclude: ['tests/data/*.contract.prisma.test.ts'],
   },
   // モジュール解決設定
   resolve: {

@@ -247,9 +247,6 @@ export async function importTickets(csvText: string): Promise<ImportTicketsResul
 
     // 同テナントの他エージェント (インポート実行者を除く) に一括追加を通知する。
     // 個別チケットごとではなく 1 通にまとめることで通知の過多を防ぐ (200 件追加でも通知は 1 通)。
-    // 注意: 現行の NotificationType に "new_ticket" 相当の型が未定義のため
-    // 利用可能な型の中で最も意味の近い 'commented' を暫定利用している。
-    // 将来的には NotificationType に 'imported' 等を追加して置き換えることを推奨する。
     const agents = await repos.users.listAgents(tenantId); // 当該テナントの全エージェント一覧を取得
     // インポート実行者自身への通知は不要なので除外する (自分が実施したことは知っているため)
     const otherAgents = agents.filter((a) => a.id !== creatorId);
@@ -258,7 +255,7 @@ export async function importTickets(csvText: string): Promise<ImportTicketsResul
       for (const agent of otherAgents) {
         await repos.notifications.create({
           userId: agent.id, // 受信者: 各エージェント
-          type: 'commented', // 暫定: NotificationType に imported がないため commented で代替
+          type: 'imported', // CSV 一括インポート通知 (NotificationType.imported)
           message: `${imported} 件のチケットが CSV インポートで追加されました`, // 表示文言
           ticketId: null, // バッチインポートは単一チケットに紐づかないため null
           tenantId, // テナントスコープ

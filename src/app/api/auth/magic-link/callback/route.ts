@@ -1,19 +1,32 @@
 /**
  * Magic-link callback route.
  *
- * Browser hits `GET /api/auth/magic-link/callback?token=<raw>` when the user
- * clicks the link in their email. The handler delegates token verification
- * to the `magic-link` Credentials Provider (declared in `src/lib/auth.ts`)
- * via NextAuth's `signIn()` helper.
+ * Flow:
+ *   1. User clicks the link in their email → GET /api/auth/magic-link/callback?token=<raw>
+ *   2. GET handler returns an HTML confirmation page WITHOUT consuming the token.
+ *      This prevents email security gateways (Microsoft Safe Links, Mimecast, etc.)
+ *      from consuming the token during prefetch/crawl before the user clicks.
+ *   3. User clicks "ログインする" → POST /api/auth/magic-link/callback (form submit)
+ *   4. POST handler delegates to the `magic-link` Credentials Provider in auth.ts,
+ *      which verifies the hash, checks expiry, marks the token consumed, and
+ *      calls `signIn()` to attach the session cookie.
  *
- *  - On success, NextAuth attaches the session cookie to the redirect
- *    Response and forwards the browser to `/login`. The middleware then
- *    re-routes the now-authenticated request to `/dashboard` or `/tickets`
- *    depending on the user's role (single source of role-based routing).
- *  - On failure (missing token, hash mismatch, expired, already consumed,
- *    user deleted), the user is redirected to `/login?error=magic-link-invalid`
- *    so the login page can surface a Japanese error message.
+ *  - On success, NextAuth attaches the session cookie to the redirect Response and
+ *    forwards the browser to /login. The middleware then re-routes the now-authenticated
+ *    request to /dashboard or /tickets depending on the user's role.
+ *  - On failure (missing token, hash mismatch, expired, already consumed, user deleted),
+ *    the user is redirected to /login?error=magic-link-invalid so the login page can
+ *    surface a Japanese error message.
+ *
+ * Security properties of this design:
+ *   - GET prefetch safety: email gateways that GET-prefetch links for malware scanning
+ *     receive an HTML page but do NOT POST the form, so the token remains unconsumed.
+ *   - Login CSRF / session swapping mitigation: an attacker cannot silently sign in a
+ *     victim by making them click a link; the victim must actively click the "ログインする"
+ *     button in their own browser session. This is a meaningful (though not cryptographic)
+ *     barrier against session-swap attacks for the SMB Lite target audience.
  */
+
 // next-auth の signIn ヘルパー (Credentials Provider にトークンを渡して認証 + リダイレクト)
 import { signIn } from '@/lib/auth';
 // authorize() が null を返した時の専用エラー (= 認証拒否)。
@@ -22,23 +35,11 @@ import { signIn } from '@/lib/auth';
 import { CredentialsSignin } from 'next-auth';
 // Next.js の HTTP リダイレクト (NEXT_REDIRECT を throw する形で動作する)
 import { redirect } from 'next/navigation';
+// HTML に外部由来文字列を安全に差し込むためのエスケープ関数 (XSS 対策)
+import { escapeHtml } from '@/lib/html-escape';
 
-// GET ハンドラ。Next.js App Router が自動でこの関数をルートに紐づけてくれる。
-//
-// TODO (フォローアップ / セキュリティ強化): 以下の 2 つの懸念を同一の対策で解決できる。
-//   1) GET prefetch によるトークン消費 (Microsoft Safe Links / Mimecast 等): 受信者が
-//      クリックする前にメールゲートウェイがリンクを GET prefetch してマルウェア検査し
-//      トークンが消費されてしまい、本人が踏むと "magic-link-invalid" になる
-//   2) Login CSRF / session swapping: URL トークン保有だけで認証が成立するため、攻撃者
-//      が自分のアカウントでマジックリンクを発行し、被害者をその URL に誘導すると、被害者
-//      のブラウザが攻撃者アカウントにログインしてしまう (Codex P2 指摘)
-//
-// 標準的な対策は GET を「ログインしますか？」確認ページ (state nonce + フォーム POST) に
-// 変え、ユーザー操作した POST でのみトークン消費する方式。両懸念ともこれで防げる。
-// 本 PR では UI 増分を抑えるため deferred (実装時は GET=HTML 確認ページ + POST=signIn)。
-// 現状の SMB Lite ターゲット (Google Workspace / Office 365 中心、Safe Links 強制企業は
-// 少数、login CSRF はマジックリンク開封導線という性質上 phishing 経路と区別しにくい) で
-// 受け入れる判断。
+// GET ハンドラ: トークンを消費せず HTML 確認ページを返す。
+// メールゲートウェイのプリフェッチ対策として、実際の認証は POST でのみ行う。
 export async function GET(request: Request) {
   // ?token=... を取り出す
   const url = new URL(request.url);
@@ -50,10 +51,119 @@ export async function GET(request: Request) {
     redirect('/login?error=magic-link-invalid');
   }
 
+  // base64url トークン ([A-Za-z0-9\-_] のみ) を HTML 属性値に差し込む前にエスケープする。
+  // base64url 自体は危険な文字を含まないが、防御的に escapeHtml を通す
+  const safeToken = escapeHtml(token);
+
+  // ログイン確認ページの HTML を直接返す。
+  // Next.js Page ではなく API Route で完結させることで、token を Query パラメータとして
+  // 新たな URL に持ち込まず Referrer ヘッダに漏れるリスクを最小化する。
+  const html = `<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>ログイン確認 — HelpDesk Hub</title>
+  <style>
+    /* リセット兼ベーススタイル */
+    *, *::before, *::after { box-sizing: border-box; }
+    body {
+      font-family: system-ui, -apple-system, sans-serif;
+      background: #f1f5f9;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      margin: 0;
+      color: #1e293b;
+    }
+    /* カード: 白背景の中央寄せコンテナ */
+    .card {
+      background: #ffffff;
+      border-radius: 12px;
+      box-shadow: 0 4px 24px rgba(0, 0, 0, 0.08);
+      padding: 2.5rem;
+      max-width: 380px;
+      width: 90%;
+      text-align: center;
+    }
+    /* ロゴ的な見出し */
+    .brand {
+      font-size: 0.8rem;
+      font-weight: 600;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      color: #0f766e;
+      margin: 0 0 1rem;
+    }
+    h1 { font-size: 1.25rem; font-weight: 700; margin: 0 0 0.5rem; color: #0f172a; }
+    p  { margin: 0 0 1.5rem; font-size: 0.9rem; color: #64748b; line-height: 1.6; }
+    /* ログインボタン: ブランドカラー (teal) */
+    button {
+      background: #0f766e;
+      color: #ffffff;
+      border: none;
+      border-radius: 8px;
+      padding: 0.75rem 2rem;
+      font-size: 1rem;
+      font-weight: 600;
+      cursor: pointer;
+      width: 100%;
+      transition: background 0.15s;
+    }
+    button:hover  { background: #0d6660; }
+    /* キーボードフォーカス時の可視リング (アクセシビリティ対応) */
+    button:focus-visible { outline: 3px solid #14b8a6; outline-offset: 2px; }
+  </style>
+</head>
+<body>
+  <div class="card" role="main">
+    <p class="brand">HelpDesk Hub</p>
+    <h1>ログイン確認</h1>
+    <p>下のボタンをクリックするとログインが完了します。<br>心当たりがない場合はこのページを閉じてください。</p>
+    <!-- トークンを POST ボディで送ることでプリフェッチによる消費を防ぐ -->
+    <form method="POST" action="/api/auth/magic-link/callback">
+      <input type="hidden" name="token" value="${safeToken}" />
+      <button type="submit">ログインする</button>
+    </form>
+  </div>
+</body>
+</html>`;
+
+  return new Response(html, {
+    headers: {
+      // HTML として解釈させる
+      'Content-Type': 'text/html; charset=utf-8',
+      // Referrer ヘッダにこのページの URL (≒ トークン) が後続リクエストに漏れないよう no-referrer に設定
+      'Referrer-Policy': 'no-referrer',
+      // 確認ページをキャッシュさせない (トークン再利用・古い確認ページの表示を防ぐ)
+      'Cache-Control': 'no-store',
+    },
+  });
+}
+
+// POST ハンドラ: フォーム送信でトークンを受け取り実際に認証を行う。
+// ユーザーが明示的にボタンをクリックした場合のみ到達する。
+export async function POST(request: Request) {
+  // フォームの multipart/form-data または application/x-www-form-urlencoded からトークンを取り出す
+  let token: string | undefined;
+  try {
+    // formData() は Content-Type が form 系でないとエラーになる可能性があるため try で包む
+    const formData = await request.formData();
+    token = formData.get('token')?.toString();
+  } catch {
+    // フォームとして解釈できない場合はトークン無しと同じ扱いにする
+    redirect('/login?error=magic-link-invalid');
+  }
+
+  // トークンが無ければエラー画面へ
+  if (!token) {
+    redirect('/login?error=magic-link-invalid');
+  }
+
   try {
     // signIn が成功した場合、内部で redirectTo へのリダイレクトを throw する。
-    // この throw は NEXT_REDIRECT で、middleware が tenantId 持ちセッションを見て
-    // /dashboard or /tickets へ再リダイレクトしてくれる (役割ベース)
+    // middleware が tenantId 持ちセッションを見て /dashboard or /tickets へ再リダイレクトする
     await signIn('magic-link', {
       token,
       redirectTo: '/login',
@@ -68,6 +178,6 @@ export async function GET(request: Request) {
     // NEXT_REDIRECT や他の AuthError サブクラス、その他例外はそのまま上に伝播させる
     throw error;
   }
-  // 通常はここに到達しない。型を満たすためのフォールバック
+  // 通常はここに到達しない (signIn が redirect を throw するため)
   return new Response(null, { status: 204 });
 }

@@ -28,8 +28,15 @@ export type HistoryField = 'status' | 'priority' | 'assignee' | 'escalation';
 // FAQ 候補の公開状態 (候補/公開中/却下)
 export type FaqStatus = 'Candidate' | 'Published' | 'Rejected';
 
-// ユーザー向け通知の種類 (担当割当/エスカレーション/コメント/状態変更)
-export type NotificationType = 'assigned' | 'escalated' | 'commented' | 'statusChanged';
+// ユーザー向け通知の種類 (担当割当/エスカレーション/コメント/状態変更/一括取り込み)
+// prisma/schema.prisma の NotificationType enum および src/lib/constants.ts の
+// NOTIFICATION_TYPE_LABELS と常に同期すること。値を追加したら 3 箇所すべてを更新する。
+export type NotificationType =
+  | 'assigned' // 担当割当通知
+  | 'escalated' // エスカレーション通知
+  | 'commented' // コメント追加通知
+  | 'statusChanged' // ステータス変更通知
+  | 'imported'; // CSV・メール一括取り込みで複数チケットが追加された通知
 
 // テナントの動作モード (Lite=SMB 既定 / Pro=現行フル機能)
 export type TenantMode = 'lite' | 'pro';

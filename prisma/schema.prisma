@@ -65,6 +65,7 @@ enum NotificationType {
   escalated // エスカレーション通知
   commented // コメント追加通知
   statusChanged // ステータス変更通知
+  imported // CSV・メール一括取り込みによる複数チケット追加通知
 }
 
 // テナント (組織) の動作モード。SMB 向けピボットの Lite/Pro 二層に対応
