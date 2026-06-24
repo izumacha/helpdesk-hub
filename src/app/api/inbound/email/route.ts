@@ -67,6 +67,9 @@ class BodyTooLargeError extends Error {
   constructor() {
     // Error の message プロパティを設定する
     super('リクエストが大きすぎます');
+    // this.name を明示設定する。設定しないと err.name が 'Error' になり構造化ロガーで誤分類される
+    // (RateLimitError が this.name を設定しているのと同じ理由 - src/lib/rate-limit.ts:37 参照)
+    this.name = 'BodyTooLargeError';
   }
 }
 
@@ -122,9 +125,8 @@ async function readInboundFields(req: Request): Promise<InboundFields> {
     const rawBuffer = await req.arrayBuffer();
     // バイト列の実サイズが上限を超えていれば専用エラーを投げる (POST ハンドラが 413 にマップする)
     if (rawBuffer.byteLength > MAX_INBOUND_BODY_BYTES) {
-      // サイズ超過はサーバーログに残す (外部には詳細を出さない §9)
-      console.warn('[POST /api/inbound/email] request body too large (multipart branch, actual)');
-      // BodyTooLargeError を投げると POST の catch 節が 413 を返す (汎用 Error では 400 になる)
+      // BodyTooLargeError を投げると POST の catch 節が 413 を返す (汎用 Error では 400 になる)。
+      // warn ログは catch 節で 1 度だけ出すため、ここでは二重に出さない
       throw new BodyTooLargeError();
     }
     // サイズ検査済みのバイト列を FormData にパースする。
@@ -171,8 +173,9 @@ async function readInboundFields(req: Request): Promise<InboundFields> {
       messageId: str(form.get('message-id')) ?? readRawHeader(rawHeaders, 'Message-ID'),
       inReplyTo: str(form.get('in-reply-to')) ?? readRawHeader(rawHeaders, 'In-Reply-To'),
       references: str(form.get('references')) ?? readRawHeader(rawHeaders, 'References'),
-      // 送信元認証: SendGrid は SPF / dkim を個別フィールドで渡す。汎用は生ヘッダから読む
-      spf: str(form.get('SPF')) ?? str(form.get('spf')),
+      // 送信元認証: SendGrid は SPF / dkim を個別フィールドで渡す。汎用は生ヘッダから読む。
+      // SendGrid は 'SPF'、Postmark は 'Spf'、その他は小文字 'spf' — すべて試みる
+      spf: str(form.get('SPF')) ?? str(form.get('Spf')) ?? str(form.get('spf')),
       dkim: str(form.get('dkim')),
       authenticationResults: readRawHeader(rawHeaders, 'Authentication-Results'),
       // 自動応答判定用ヘッダ (multipart では生ヘッダから読む。ループ防止に使う)
@@ -185,13 +188,19 @@ async function readInboundFields(req: Request): Promise<InboundFields> {
   const rawText = await req.text();
   // UTF-8 バイト数で上限を検査する (rawText.length は UTF-16 コードユニット数で不正確なため Buffer 経由)
   if (Buffer.byteLength(rawText, 'utf8') > MAX_INBOUND_BODY_BYTES) {
-    // サイズ超過: chunked 転送など Content-Length なしで大きなボディを送り込む攻撃への対策 (§9)
-    console.warn('[POST /api/inbound/email] request body too large (JSON branch, actual)');
-    // BodyTooLargeError を投げると POST の catch 節が 413 を返す (汎用 Error では 400 になってしまう)
+    // BodyTooLargeError を投げると POST の catch 節が 413 を返す (汎用 Error では 400 になってしまう)。
+    // warn ログは catch 節で 1 度だけ出すため、ここでは二重に出さない
     throw new BodyTooLargeError();
   }
-  // サイズ検査済みの文字列を JSON としてパースする
-  const body = JSON.parse(rawText) as Record<string, unknown>;
+  // サイズ検査済みの文字列を JSON としてパースする (unknown で受けて次行で型を絞り込む)
+  const parsed: unknown = JSON.parse(rawText);
+  // プレーンオブジェクト以外 (数値・配列・null 等) なら 400 にマップする (§9 入力検証)。
+  // ここで throw した Error は下の catch 節が 400 として返す
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+    throw new Error('JSON ボディはオブジェクトである必要があります');
+  }
+  // 型ガードを通過したので Record<string, unknown> にキャストしてよい
+  const body = parsed as Record<string, unknown>;
   // 文字列フィールドだけを取り出す小ヘルパー
   const pick = (k: string): string | null =>
     typeof body[k] === 'string' ? (body[k] as string) : null;
