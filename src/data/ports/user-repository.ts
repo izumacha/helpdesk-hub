@@ -1,6 +1,15 @@
 // ドメイン層のユーザー型をインポート
 import type { Role, User, UserSummary } from '@/domain/types';
 
+// LINE ワンタイムコードによる紐付け試行の結果。
+// - linked: 連携成功 (userId は連携されたメンバー)。同一ユーザーの再送 (冪等) もここに含む。
+// - invalid: 一致するコードが無い / 失効済み (= そのテキストはコードではなかった)。
+// - conflict: コードは有効だが、その LINE ユーザー ID が既に別メンバーへ連携済みで付け替えできない。
+export type LineLinkResult =
+  | { status: 'linked'; userId: string }
+  | { status: 'invalid' }
+  | { status: 'conflict' };
+
 // ユーザー取得系リポジトリの契約 (port)
 // 認証フローで使う findById / findByEmail は **tenantId スコープなし** (どのテナントに
 // 属するかを判定するためにこそユーザーを引くので、ここで scope を強制すると鶏卵問題になる)。
@@ -25,4 +34,26 @@ export interface UserRepository {
   // Phase 4 課金: テナント内のスタッフ (agent + admin) 数を返す (プランのシート上限チェック用)
   // requester はカウントしない — シートはヘルプデスクスタッフ分のみ消費する
   countByTenant(tenantId: string): Promise<number>;
+
+  // ── LINE メンバー紐付け (Phase 2 β 解消) ───────────────────────────────
+  // 紐付け済み LINE ユーザー ID から当該テナントのメンバーを 1 件引く (起票時に本人を起票者にするため)。
+  // クロステナント漏洩防止のため tenantId スコープ必須。未連携・別テナントなら null。
+  findByLineUserId(tenantId: string, lineUserId: string): Promise<User | null>;
+  // メンバー起点でワンタイムコード (のハッシュ) と失効時刻を自分のユーザー行に保存する。
+  // userId / tenantId はセッション由来のみを渡す契約 (他人のコードを書き換えさせない)。
+  setLineLinkCode(
+    userId: string,
+    tenantId: string,
+    input: { codeHash: string; expiresAt: Date },
+  ): Promise<void>;
+  // LINE Webhook 側で、受信コードのハッシュに一致する有効な発行行を探して lineUserId を紐付ける。
+  // 原子的に「コード消費 + lineUserId 設定」を行い、二重処理・競合を防ぐ (Invitation.consumeValidToken 方式)。
+  linkLineUserByCode(input: {
+    codeHash: string; // 受信テキストを正規化してハッシュ化した値
+    tenantId: string; // 取り込み先テナント (発行行と同一テナントのみ許可)
+    lineUserId: string; // 紐付ける LINE ユーザー ID (Webhook イベント由来)
+    now: Date; // 失効判定の基準時刻
+  }): Promise<LineLinkResult>;
+  // メンバー起点で LINE 連携を解除する (lineUserId と発行中コードをまとめてクリアする)。
+  unlinkLineUser(userId: string, tenantId: string): Promise<void>;
 }

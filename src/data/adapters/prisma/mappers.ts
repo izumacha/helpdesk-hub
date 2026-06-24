@@ -55,6 +55,9 @@ export function toUser(row: UserRow): User {
     tenantId: row.tenantId, // 所属テナント (マルチテナント化のキー)
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
+    lineUserId: row.lineUserId, // LINE 紐付け先 (未連携なら null)
+    lineLinkCodeHash: row.lineLinkCodeHash, // 発行中ワンタイムコードのハッシュ (なければ null)
+    lineLinkCodeExpiresAt: row.lineLinkCodeExpiresAt, // 上記コードの失効時刻 (なければ null)
   };
 }
 

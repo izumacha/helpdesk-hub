@@ -173,6 +173,14 @@ model User {
   createdAt    DateTime @default(now()) // 作成日時 (自動で現在時刻)
   updatedAt    DateTime @updatedAt // 更新日時 (Prisma が自動更新)
 
+  // LINE メンバー紐付け (Phase 2 β 解消 / docs/smb-dx-pivot-plan.md §4 Phase 2)
+  // 確定リンク: この LINE ユーザー ID から起票されたチケットは本人が起票者になる (自己解決 UI 開通)。
+  // 未連携は null。テナント内で 1 LINE ユーザー = 1 メンバーに保つため (tenantId, lineUserId) を一意にする
+  // (NULL は重複可なので未連携ユーザーは何人でも共存できる)。
+  lineUserId           String? // 紐付け済み LINE ユーザー ID (未連携なら null)
+  lineLinkCodeHash     String? @unique // 発行中ワンタイムコードの SHA-256 (生コードは保存しない)
+  lineLinkCodeExpiresAt DateTime? // 上記コードの失効時刻 (null なら発行中コードなし)
+
   // 所属テナント (マルチテナント化の必須キー)
   tenantId String
   tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
@@ -186,6 +194,7 @@ model User {
   notifications       Notification[] // このユーザー宛の通知
   uploadedAttachments Attachment[] // このユーザーがアップロードした添付ファイル
 
+  @@unique([tenantId, lineUserId]) // テナント内で 1 LINE ユーザー = 1 メンバー (NULL は重複可)
   @@index([tenantId]) // テナントスコープ検索用
 }
 

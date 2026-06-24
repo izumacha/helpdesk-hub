@@ -107,6 +107,14 @@ export interface User {
   tenantId: string; // 所属テナント ID (マルチテナント化のキー)
   createdAt: Date; // 登録日時
   updatedAt: Date; // 最終更新日時
+  // LINE メンバー紐付け (Phase 2 β 解消)。確定リンク先 LINE ユーザー ID (未連携なら null)。
+  // 既存のフィクスチャ・呼び出しを壊さないよう任意 (optional) とし、アダプタは常に null か値で埋める。
+  lineUserId?: string | null;
+  // 発行中ワンタイムコードの SHA-256 ハッシュ (生コードは保存しない。発行中でなければ null)。
+  // ハッシュであり秘密そのものではないが、セッションには載せない (auth.ts は id/role/tenantId のみ転写)。
+  lineLinkCodeHash?: string | null;
+  // 上記コードの失効時刻 (発行中でなければ null)
+  lineLinkCodeExpiresAt?: Date | null;
 }
 
 // チケット本体。問い合わせ 1 件に対応する中心データ

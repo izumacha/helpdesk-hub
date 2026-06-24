@@ -107,5 +107,66 @@ export function makeUserRepo(store: Store): UserRepository {
       }
       return count;
     },
+
+    // 紐付け済み LINE ユーザー ID から当該テナントのメンバーを 1 件引く (tenantId スコープ)
+    async findByLineUserId(tenantId, lineUserId) {
+      // 全ユーザーを走査し、テナント一致かつ lineUserId 一致を返す (複製して返却)
+      for (const u of store.users.values()) {
+        if (u.tenantId === tenantId && u.lineUserId === lineUserId) return { ...u };
+      }
+      return null;
+    },
+
+    // メンバー起点でワンタイムコードのハッシュと失効時刻を自分のユーザー行に保存する
+    async setLineLinkCode(userId, tenantId, input) {
+      const u = store.users.get(userId);
+      // 自テナントの自分だけを更新対象にする (他テナント・不在はスキップ)
+      if (!u || u.tenantId !== tenantId) return;
+      // コードのハッシュと失効時刻を書き込む (Map 内のオブジェクトを直接更新)
+      u.lineLinkCodeHash = input.codeHash;
+      u.lineLinkCodeExpiresAt = input.expiresAt;
+    },
+
+    // 受信コードのハッシュに一致する有効な発行行を探し、lineUserId を紐付ける
+    async linkLineUserByCode({ codeHash, tenantId, lineUserId, now }) {
+      // 1) 有効な発行行 (同一テナント・未失効) を探す
+      let candidate: User | undefined;
+      for (const u of store.users.values()) {
+        if (
+          u.tenantId === tenantId &&
+          u.lineLinkCodeHash === codeHash &&
+          u.lineLinkCodeExpiresAt != null &&
+          u.lineLinkCodeExpiresAt.getTime() >= now.getTime()
+        ) {
+          candidate = u;
+          break;
+        }
+      }
+      // 一致する有効コードが無ければ「コードではない」
+      if (!candidate) return { status: 'invalid' };
+
+      // 2) その LINE ユーザー ID が既に別メンバーへ連携済みなら付け替えない (テナント内一意)
+      for (const u of store.users.values()) {
+        if (u.tenantId === tenantId && u.lineUserId === lineUserId && u.id !== candidate.id) {
+          return { status: 'conflict' };
+        }
+      }
+
+      // 3) コード消費 + lineUserId 設定 (Map 内オブジェクトを直接更新)
+      candidate.lineUserId = lineUserId;
+      candidate.lineLinkCodeHash = null;
+      candidate.lineLinkCodeExpiresAt = null;
+      return { status: 'linked', userId: candidate.id };
+    },
+
+    // メンバー起点で LINE 連携を解除する (lineUserId と発行中コードをまとめてクリア)
+    async unlinkLineUser(userId, tenantId) {
+      const u = store.users.get(userId);
+      // 自テナントの自分だけを対象にする
+      if (!u || u.tenantId !== tenantId) return;
+      u.lineUserId = null;
+      u.lineLinkCodeHash = null;
+      u.lineLinkCodeExpiresAt = null;
+    },
   };
 }
