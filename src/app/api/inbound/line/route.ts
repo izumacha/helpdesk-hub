@@ -127,24 +127,36 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: 'LINE 連携の送信先が設定されていません' }, { status: 500 });
   }
 
-  // Content-Length が上限超過なら本体を読む前に 413 で弾く (巨大ボディのメモリ枯渇防止 §9)。
-  // ヘッダが無い (chunked) 場合はここでは防げないため、後段のイベント数・文字数上限と併用する
-  const contentLength = Number(req.headers.get('content-length') ?? '0');
-  if (Number.isFinite(contentLength) && contentLength > MAX_REQUEST_BODY_BYTES) {
-    // サイズ超過はサーバーログに残し、外部には詳細を出さない 413 を返す
-    console.warn(`[POST /api/inbound/line] request body too large: ${contentLength} bytes`);
-    return NextResponse.json({ error: 'リクエストが大きすぎます' }, { status: 413 });
-  }
-
-  // ボディを文字列として読み込む (署名検証は JSON.parse 前の生テキストに対して行う必要がある)
-  const rawBody = await req.text();
-
-  // X-Line-Signature ヘッダを取得する。trim() でプロキシが付加した空白を除去してから比較する
+  // 署名ヘッダの存在を最初に確認する。未認証リクエストにサイズ情報を漏らさないため、
+  // Content-Length チェックより前に行う (存在しなければ 401 を返して終了)。
+  // trim() でプロキシが付加した余分な空白を除去してから比較する
   // (末尾に \n 等が付くと Buffer の長さが変わり定数時間比較が失敗して正規リクエストを弾く)
   const signature = req.headers.get('x-line-signature')?.trim() ?? null;
   if (!signature) {
     // 署名ヘッダが無いリクエストは LINE サーバからのものではないと判断して拒否する
     return NextResponse.json({ error: '署名ヘッダがありません' }, { status: 401 });
+  }
+
+  // Content-Length が上限超過なら本体を読む前に 413 で弾く (巨大ボディのメモリ枯渇防止 §9)。
+  // || '-1' で null・空文字列どちらも -1 にまとめ「ヘッダ無し/不正値」として扱う。
+  // -1 は MAX_REQUEST_BODY_BYTES より小さいのでプリチェックはスルーし、後段の読み込み後チェックに委ねる。
+  const contentLength = Number(req.headers.get('content-length') || '-1');
+  if (Number.isFinite(contentLength) && contentLength > MAX_REQUEST_BODY_BYTES) {
+    // サイズ超過はサーバーログに残し、外部には詳細を出さない 413 を返す
+    console.warn(`[POST /api/inbound/line] request body too large (header): ${contentLength} bytes`);
+    return NextResponse.json({ error: 'リクエストが大きすぎます' }, { status: 413 });
+  }
+
+  // ボディを文字列として読み込む (署名検証は JSON.parse 前の生テキストに対して行う必要がある)
+  const rawBody = await req.text();
+  // chunked 転送は Content-Length を省略できる。読み込み後に UTF-8 バイト数で実サイズを検査して
+  // DoS を防ぐ (ヘッダ無しで巨大ボディを送り込む攻撃への対策 §9)。
+  // rawBody.length は UTF-16 コードユニット数でバイト数と異なるため Buffer.byteLength を使う。
+  const rawBodyBytes = Buffer.byteLength(rawBody, 'utf8');
+  if (rawBodyBytes > MAX_REQUEST_BODY_BYTES) {
+    // 実際の読み取りバイト数が上限超過: 413 で弾く
+    console.warn(`[POST /api/inbound/line] request body too large (actual): ${rawBodyBytes} bytes`);
+    return NextResponse.json({ error: 'リクエストが大きすぎます' }, { status: 413 });
   }
 
   // 署名を検証する (不正なら 401)
@@ -236,8 +248,12 @@ export async function POST(req: Request) {
 
     // テキストメッセージとして型を確定させる (type==='text' を確認済み)
     const textMessage = message as LineTextMessage;
-    // LINE ユーザー ID を取得する (source / userId が無い場合は '不明' とする)
-    const lineUserId = event.source?.userId ?? '不明';
+    // LINE ユーザー ID を取得する (source / userId が無い場合は '不明' とする)。
+    // LINE の正規形式は 'U' + 32 桁 16 進数。署名検証済みでも形式外の値をそのままチケット本文に
+    // 埋め込むと将来の出力経路 (HTML メール等) でインジェクションになりうるため §9 に従い検証する
+    const rawUserId = event.source?.userId ?? '';
+    // 形式が一致する場合のみ採用し、それ以外は '不明' に置き換える
+    const lineUserId = /^U[0-9a-f]{32}$/.test(rawUserId) ? rawUserId : '不明';
     // text が文字列でない (欠落・型不正) イベントは起票できないためスキップする
     if (typeof textMessage.text !== 'string') continue;
 

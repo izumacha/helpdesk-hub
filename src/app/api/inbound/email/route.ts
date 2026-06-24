@@ -60,6 +60,19 @@ const MAX_INBOUND_BODY_BYTES = 25 * 1024 * 1024;
 // (キーはテナント ID なのでバケット数は実在テナント数で頭打ち = メモリも有界)
 const INBOUND_RATE_LIMIT = { limit: 120, windowMs: 60_000 } as const;
 
+// ボディサイズ超過を示す専用エラー。Error のサブクラスにすることで POST ハンドラの catch 節が
+// instanceof 判定で 413 と 400 を区別できる (汎用 Error では両者を区別できず 400 になってしまう)。
+class BodyTooLargeError extends Error {
+  // スーパークラスに日本語メッセージを渡す (ログに出たときに原因が読める)
+  constructor() {
+    // Error の message プロパティを設定する
+    super('リクエストが大きすぎます');
+    // this.name を明示設定する。設定しないと err.name が 'Error' になり構造化ロガーで誤分類される
+    // (RateLimitError が this.name を設定しているのと同じ理由 - src/lib/rate-limit.ts:37 参照)
+    this.name = 'BodyTooLargeError';
+  }
+}
+
 // 2 つのシークレット文字列を定数時間で比較する (タイミング攻撃対策)。
 // 長さが違う場合は早期 false (情報量は長さのみで実用上問題なし)。
 function secretsMatch(provided: string, expected: string): boolean {
@@ -71,14 +84,14 @@ function secretsMatch(provided: string, expected: string): boolean {
   return timingSafeEqual(a, b);
 }
 
-// リクエストから提示されたシークレットを取り出す (ヘッダ優先、無ければクエリ)。
-// プロバイダによって署名手段が無いものがあるため、設定で渡せる共有シークレット方式を採る。
-function readProvidedSecret(req: Request, url: URL): string | null {
-  // 専用ヘッダを最優先で見る
-  const header = req.headers.get('x-inbound-secret');
-  if (header) return header;
-  // 次にクエリパラメータ ?secret= を見る (Webhook URL にシークレットを埋め込む運用向け)
-  return url.searchParams.get('secret');
+// リクエストから提示されたシークレットを取り出す。
+// シークレットは x-inbound-secret ヘッダのみから読む。URL クエリパラメータへのフォールバックは
+// アクセスログ・プロキシログにシークレット値が平文で記録されるリスクがあるため廃止した (§9)。
+// Webhook プロバイダ側の設定で「カスタムヘッダ」として追加する方式に統一すること。
+function readProvidedSecret(req: Request): string | null {
+  // 専用ヘッダから読む (ヘッダ以外の方法は受け付けない)。
+  // trim() でプロキシが付加した余分な空白を除去する。空白だけなら null 扱いにする
+  return req.headers.get('x-inbound-secret')?.trim() || null;
 }
 
 // 受信メール 1 通分のフィールドの共通形 (to / from / subject / text に加え、スレッド継続用ヘッダ)
@@ -106,8 +119,24 @@ async function readInboundFields(req: Request): Promise<InboundFields> {
     contentType.includes('multipart/form-data') ||
     contentType.includes('application/x-www-form-urlencoded')
   ) {
-    // ボディを FormData にパースする
-    const form = await req.formData();
+    // ボディをバイト列として読み取る。req.formData() は生バイト数を隠蔽するため、
+    // 先に arrayBuffer() で読んでサイズを確認してから FormData にパースする。
+    // chunked 転送など Content-Length なしで大きなボディを送り込む攻撃への対策 (§9)。
+    const rawBuffer = await req.arrayBuffer();
+    // バイト列の実サイズが上限を超えていれば専用エラーを投げる (POST ハンドラが 413 にマップする)
+    if (rawBuffer.byteLength > MAX_INBOUND_BODY_BYTES) {
+      // BodyTooLargeError を投げると POST の catch 節が 413 を返す (汎用 Error では 400 になる)。
+      // warn ログは catch 節で 1 度だけ出すため、ここでは二重に出さない
+      throw new BodyTooLargeError();
+    }
+    // サイズ検査済みのバイト列を FormData にパースする。
+    // req.formData() は既にボディを消費しているため、同じバイト列から新規 Request を組み立てて
+    // formData() を呼ぶ。Content-Type ヘッダ (boundary パラメータを含む) を引き継ぐ。
+    const form = await new Request('http://x', {
+      method: 'POST',
+      headers: { 'content-type': req.headers.get('content-type') ?? '' },
+      body: rawBuffer,
+    }).formData();
     // SendGrid は実際の RCPT を envelope (JSON 文字列) に入れるため、あれば優先的に使う
     const envelopeRaw = form.get('envelope');
     // envelope から宛先・送信者を補完する変数 (取れなければヘッダ値を使う)
@@ -144,8 +173,9 @@ async function readInboundFields(req: Request): Promise<InboundFields> {
       messageId: str(form.get('message-id')) ?? readRawHeader(rawHeaders, 'Message-ID'),
       inReplyTo: str(form.get('in-reply-to')) ?? readRawHeader(rawHeaders, 'In-Reply-To'),
       references: str(form.get('references')) ?? readRawHeader(rawHeaders, 'References'),
-      // 送信元認証: SendGrid は SPF / dkim を個別フィールドで渡す。汎用は生ヘッダから読む
-      spf: str(form.get('SPF')) ?? str(form.get('spf')),
+      // 送信元認証: SendGrid は SPF / dkim を個別フィールドで渡す。汎用は生ヘッダから読む。
+      // SendGrid は 'SPF'、Postmark は 'Spf'、その他は小文字 'spf' — すべて試みる
+      spf: str(form.get('SPF')) ?? str(form.get('Spf')) ?? str(form.get('spf')),
       dkim: str(form.get('dkim')),
       authenticationResults: readRawHeader(rawHeaders, 'Authentication-Results'),
       // 自動応答判定用ヘッダ (multipart では生ヘッダから読む。ループ防止に使う)
@@ -153,8 +183,28 @@ async function readInboundFields(req: Request): Promise<InboundFields> {
       precedence: readRawHeader(rawHeaders, 'Precedence'),
     };
   }
-  // それ以外は JSON ボディとして読む (テスト・自前連携向け)
-  const body = (await req.json()) as Record<string, unknown>;
+  // それ以外は JSON ボディとして読む (テスト・自前連携向け)。
+  // 注意: JSON パスでは spf / dkim フィールドを呼び出し元が自由に指定できる。INBOUND_EMAIL_SECRET を
+  // 知る者が { spf: 'pass' } を渡せば INBOUND_EMAIL_AUTH=enforce をバイパスできるが、これは設計上の
+  // 許容トレードオフ — JSON パスはシークレット保持者限定のテスト・内部連携用途であり、本番 SendGrid は
+  // multipart/form-data を使う。運用では JSON パスを本番プロバイダに開かないこと (§9)。
+  // req.json() はボディ全体をメモリに乗せてからパースするため、先に rawText として読んでサイズを検査する
+  const rawText = await req.text();
+  // UTF-8 バイト数で上限を検査する (rawText.length は UTF-16 コードユニット数で不正確なため Buffer 経由)
+  if (Buffer.byteLength(rawText, 'utf8') > MAX_INBOUND_BODY_BYTES) {
+    // BodyTooLargeError を投げると POST の catch 節が 413 を返す (汎用 Error では 400 になってしまう)。
+    // warn ログは catch 節で 1 度だけ出すため、ここでは二重に出さない
+    throw new BodyTooLargeError();
+  }
+  // サイズ検査済みの文字列を JSON としてパースする (unknown で受けて次行で型を絞り込む)
+  const parsed: unknown = JSON.parse(rawText);
+  // プレーンオブジェクト以外 (数値・配列・null 等) なら 400 にマップする (§9 入力検証)。
+  // ここで throw した Error は下の catch 節が 400 として返す
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+    throw new Error('JSON ボディはオブジェクトである必要があります');
+  }
+  // 型ガードを通過したので Record<string, unknown> にキャストしてよい
+  const body = parsed as Record<string, unknown>;
   // 文字列フィールドだけを取り出す小ヘルパー
   const pick = (k: string): string | null =>
     typeof body[k] === 'string' ? (body[k] as string) : null;
@@ -237,9 +287,6 @@ async function sendReceivedAck(args: {
 
 // POST /api/inbound/email : 受信メールを 1 件の問い合わせに変換する
 export async function POST(req: Request) {
-  // URL を解析 (クエリのシークレット取得に使う)
-  const url = new URL(req.url);
-
   // 共有シークレットを環境変数から読む。未設定なら fail-closed (無防備な取り込み口を開けない)
   const expectedSecret = process.env.INBOUND_EMAIL_SECRET?.trim();
   if (!expectedSecret) {
@@ -248,27 +295,42 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: 'メール取り込みは利用できません' }, { status: 500 });
   }
 
-  // 提示されたシークレットを取り出して定数時間比較する
-  const provided = readProvidedSecret(req, url);
+  // 提示されたシークレットを取り出して定数時間比較する (ヘッダのみ受け付ける)
+  const provided = readProvidedSecret(req);
   if (!provided || !secretsMatch(provided, expectedSecret)) {
     // 不一致は 401 (なりすまし POST を拒否)
     return NextResponse.json({ error: '認証に失敗しました' }, { status: 401 });
   }
 
   // Content-Length が上限超過なら本体を読む前に 413 で弾く (巨大ボディのメモリ枯渇防止 §9)。
-  // ヘッダが無い (chunked) 場合まではここでは防げないため、後段の長さ上限と併用する
-  const contentLength = Number(req.headers.get('content-length') ?? '0');
+  // || '-1' で null (ヘッダ無し) と空文字列 ('Content-Length: ') の両方を -1 にまとめる。
+  // ?? は null/undefined しか補填しないため、空文字列を明示的に処理するために || を使う。
+  // -1 は MAX_INBOUND_BODY_BYTES より小さいのでプリチェックはスルーし、後段の読み込み後チェックに委ねる。
+  // なお、このエンドポイントは共有シークレット認証が先に通っているため、
+  // 未認証リクエストがボディ読み込みまで到達しない (LINE ルートより攻撃面が限定的)。
+  const contentLength = Number(req.headers.get('content-length') || '-1');
   if (Number.isFinite(contentLength) && contentLength > MAX_INBOUND_BODY_BYTES) {
+    // サイズ超過はサーバーログに残し、外部には詳細を出さない 413 を返す
+    console.warn(`[POST /api/inbound/email] request body too large (header): ${contentLength} bytes`);
     return NextResponse.json({ error: 'メールが大きすぎます' }, { status: 413 });
   }
 
   // 受信メールのフィールドを取り出す (JSON / multipart 両対応)
   let fields: InboundFields;
   try {
+    // ボディを読んでフィールドを取り出す。BodyTooLargeError または汎用 Error を投げることがある
     fields = await readInboundFields(req);
   } catch (err) {
-    // ボディのパース失敗は 400 (握り潰さずログに残す)
+    // BodyTooLargeError は 413 にマップする (Content-Length ヘッダなし chunked 転送のサイズ超過)
+    if (err instanceof BodyTooLargeError) {
+      // サイズ超過はサーバーログに残す (外部には詳細を出さない §9)
+      console.warn('[POST /api/inbound/email] request body too large (actual)');
+      // 413 を返す (Content-Length 事前チェックと同じステータスに揃える)
+      return NextResponse.json({ error: 'メールが大きすぎます' }, { status: 413 });
+    }
+    // それ以外のパースエラーは 400 (握り潰さずログに残す)
     console.error('[POST /api/inbound/email] failed to read request body', err);
+    // 形式不正は 400 で返す (外部には詳細を出さない)
     return NextResponse.json({ error: 'リクエストの形式が正しくありません' }, { status: 400 });
   }
 
@@ -276,10 +338,12 @@ export async function POST(req: Request) {
   const expectedDomain = process.env.INBOUND_EMAIL_DOMAIN?.trim() || null;
   // フィールドを正規化する (宛先トークン・送信者・件名・本文)
   const parsed = parseInboundEmail(fields, { expectedDomain });
-  // 必須情報が欠けていれば 422 (起票できない理由をログに残す)
+  // 必須情報が欠けていれば 422 (起票できない理由はログのみに残し、外部へは汎用メッセージを返す §9)
   if (!parsed.ok) {
+    // 詳細理由はサーバーログに記録する (外部に返すと内部ルーティング構造が推測される)
     console.warn('[POST /api/inbound/email] unprocessable email', parsed.reason);
-    return NextResponse.json({ error: parsed.reason }, { status: 422 });
+    // 外部には汎用メッセージのみ返す (内部理由を公開しない)
+    return NextResponse.json({ error: 'メールを処理できませんでした' }, { status: 422 });
   }
   // 正規化済みの受信メール
   const email = parsed.email;
@@ -324,7 +388,8 @@ export async function POST(req: Request) {
       dkim: authResults.dkim,
       dmarc: authResults.dmarc,
     });
-    return NextResponse.json({ status: 'quarantined', reason: 'auth' }, { status: 202 });
+    // 外部レスポンスには reason を含めない (SPF/DKIM ポリシー適用状態を推測させない §9)
+    return NextResponse.json({ status: 'quarantined' }, { status: 202 });
   }
 
   // 送信者がそのテナントの既知メンバーかを確認する。
