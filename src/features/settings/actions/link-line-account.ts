@@ -33,6 +33,10 @@ import {
 // next-auth のセッション型
 import type { Session } from 'next-auth';
 
+// 解除操作のレート制限ウィンドウ (ミリ秒)。コード TTL (LINE_LINK_CODE_TTL_MS) とは独立した定数にすることで、
+// TTL の変更が解除操作のレート制限ウィンドウに意図せず波及しないようにする (コード有効期限とは別概念)。
+const UNLINK_RATE_LIMIT_WINDOW_MS = 10 * 60 * 1000; // 10 分
+
 // ログイン済み (ユーザー ID + tenantId を持つ) ことを保証するアサーション。
 // LINE 連携は admin 限定ではなく自己サービスのため、ロールは問わず認証のみを要求する。
 function assertAuthenticated(session: Session | null): asserts session is Session {
@@ -95,14 +99,19 @@ export async function unlinkLineAccount_action(): Promise<void> {
   const tenantId = session.user.tenantId;
 
   // 解除操作も連打による無意味な DB 書き込みを防ぐためレート制限をかける (§9 DoS 対策)。
-  // コード発行より緩めの 10 回 / 10 分 (正規ユーザーの誤クリック程度は許容する)
+  // コード発行より緩めの 10 回 / 10 分 (正規ユーザーの誤クリック程度は許容する)。
+  // windowMs には LINE_LINK_CODE_TTL_MS でなく専用定数 UNLINK_RATE_LIMIT_WINDOW_MS を使う
+  // (コード TTL と解除レート制限ウィンドウは別概念。一方の変更が他方に影響しないよう分離する)
   try {
-    enforceRateLimit(`line-unlink:${userId}`, { limit: 10, windowMs: LINE_LINK_CODE_TTL_MS });
+    // ユーザー単位のバケットでカウントし、超過なら RateLimitError を投げる
+    enforceRateLimit(`line-unlink:${userId}`, { limit: 10, windowMs: UNLINK_RATE_LIMIT_WINDOW_MS });
   } catch (err) {
     // 流量超過専用エラーだけをユーザー向けメッセージに変換し、それ以外は上位へ送出する
     if (err instanceof RateLimitError) {
+      // ユーザー向けの日本語エラーメッセージを返す (内部詳細は含めない §9)
       throw new Error('解除操作が多すぎます。しばらく待ってから再度お試しください。');
     }
+    // RateLimitError 以外の予期しないエラーはそのまま上位へ送出する
     throw err;
   }
 

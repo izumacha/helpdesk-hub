@@ -127,9 +127,20 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: 'LINE 連携の送信先が設定されていません' }, { status: 500 });
   }
 
+  // 署名ヘッダの存在を最初に確認する。未認証リクエストにサイズ情報を漏らさないため、
+  // Content-Length チェックより前に行う (存在しなければ 401 を返して終了)。
+  // trim() でプロキシが付加した余分な空白を除去してから比較する
+  // (末尾に \n 等が付くと Buffer の長さが変わり定数時間比較が失敗して正規リクエストを弾く)
+  const signature = req.headers.get('x-line-signature')?.trim() ?? null;
+  if (!signature) {
+    // 署名ヘッダが無いリクエストは LINE サーバからのものではないと判断して拒否する
+    return NextResponse.json({ error: '署名ヘッダがありません' }, { status: 401 });
+  }
+
   // Content-Length が上限超過なら本体を読む前に 413 で弾く (巨大ボディのメモリ枯渇防止 §9)。
-  // chunked 転送では Content-Length ヘッダが無いため、ヘッダ判定だけでは防げない。
-  const contentLength = Number(req.headers.get('content-length') ?? '-1');
+  // || '-1' で null・空文字列どちらも -1 にまとめ「ヘッダ無し/不正値」として扱う。
+  // -1 は MAX_REQUEST_BODY_BYTES より小さいのでプリチェックはスルーし、後段の読み込み後チェックに委ねる。
+  const contentLength = Number(req.headers.get('content-length') || '-1');
   if (Number.isFinite(contentLength) && contentLength > MAX_REQUEST_BODY_BYTES) {
     // サイズ超過はサーバーログに残し、外部には詳細を出さない 413 を返す
     console.warn(`[POST /api/inbound/line] request body too large (header): ${contentLength} bytes`);
@@ -138,20 +149,14 @@ export async function POST(req: Request) {
 
   // ボディを文字列として読み込む (署名検証は JSON.parse 前の生テキストに対して行う必要がある)
   const rawBody = await req.text();
-  // chunked 転送は Content-Length を省略できる。読み込み後にも実サイズを検査して
+  // chunked 転送は Content-Length を省略できる。読み込み後に UTF-8 バイト数で実サイズを検査して
   // DoS を防ぐ (ヘッダ無しで巨大ボディを送り込む攻撃への対策 §9)。
-  if (rawBody.length > MAX_REQUEST_BODY_BYTES) {
-    // 実際の読み取りサイズが上限超過: 413 で弾く
-    console.warn(`[POST /api/inbound/line] request body too large (actual): ${rawBody.length} bytes`);
+  // rawBody.length は UTF-16 コードユニット数でバイト数と異なるため Buffer.byteLength を使う。
+  const rawBodyBytes = Buffer.byteLength(rawBody, 'utf8');
+  if (rawBodyBytes > MAX_REQUEST_BODY_BYTES) {
+    // 実際の読み取りバイト数が上限超過: 413 で弾く
+    console.warn(`[POST /api/inbound/line] request body too large (actual): ${rawBodyBytes} bytes`);
     return NextResponse.json({ error: 'リクエストが大きすぎます' }, { status: 413 });
-  }
-
-  // X-Line-Signature ヘッダを取得する。trim() でプロキシが付加した空白を除去してから比較する
-  // (末尾に \n 等が付くと Buffer の長さが変わり定数時間比較が失敗して正規リクエストを弾く)
-  const signature = req.headers.get('x-line-signature')?.trim() ?? null;
-  if (!signature) {
-    // 署名ヘッダが無いリクエストは LINE サーバからのものではないと判断して拒否する
-    return NextResponse.json({ error: '署名ヘッダがありません' }, { status: 401 });
   }
 
   // 署名を検証する (不正なら 401)

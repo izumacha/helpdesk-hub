@@ -76,8 +76,9 @@ function secretsMatch(provided: string, expected: string): boolean {
 // アクセスログ・プロキシログにシークレット値が平文で記録されるリスクがあるため廃止した (§9)。
 // Webhook プロバイダ側の設定で「カスタムヘッダ」として追加する方式に統一すること。
 function readProvidedSecret(req: Request): string | null {
-  // 専用ヘッダから読む (ヘッダ以外の方法は受け付けない)
-  return req.headers.get('x-inbound-secret');
+  // 専用ヘッダから読む (ヘッダ以外の方法は受け付けない)。
+  // trim() でプロキシが付加した余分な空白を除去する。空白だけなら null 扱いにする
+  return req.headers.get('x-inbound-secret')?.trim() || null;
 }
 
 // 受信メール 1 通分のフィールドの共通形 (to / from / subject / text に加え、スレッド継続用ヘッダ)
@@ -152,8 +153,17 @@ async function readInboundFields(req: Request): Promise<InboundFields> {
       precedence: readRawHeader(rawHeaders, 'Precedence'),
     };
   }
-  // それ以外は JSON ボディとして読む (テスト・自前連携向け)
-  const body = (await req.json()) as Record<string, unknown>;
+  // それ以外は JSON ボディとして読む (テスト・自前連携向け)。
+  // req.json() はボディ全体をメモリに乗せてからパースするため、先に rawText として読んでサイズを検査する
+  const rawText = await req.text();
+  // UTF-8 バイト数で上限を検査する (rawText.length は UTF-16 コードユニット数で不正確なため Buffer 経由)
+  if (Buffer.byteLength(rawText, 'utf8') > MAX_INBOUND_BODY_BYTES) {
+    // サイズ超過: chunked 転送など Content-Length なしで大きなボディを送り込む攻撃への対策 (§9)
+    console.warn('[POST /api/inbound/email] request body too large (JSON branch, actual)');
+    throw new Error('リクエストが大きすぎます');
+  }
+  // サイズ検査済みの文字列を JSON としてパースする
+  const body = JSON.parse(rawText) as Record<string, unknown>;
   // 文字列フィールドだけを取り出す小ヘルパー
   const pick = (k: string): string | null =>
     typeof body[k] === 'string' ? (body[k] as string) : null;
@@ -252,13 +262,15 @@ export async function POST(req: Request) {
   }
 
   // Content-Length が上限超過なら本体を読む前に 413 で弾く (巨大ボディのメモリ枯渇防止 §9)。
-  // chunked 転送では Content-Length ヘッダが無いため、'-1' をデフォルトにして「ヘッダ無し」を
-  // 明示的に表す (-1 は MAX_INBOUND_BODY_BYTES より小さいのでプリチェックはスルーし、
-  // 後段の ParseInboundEmail 内の長さ上限で防衛する二段構え)。
+  // || '-1' で null (ヘッダ無し) と空文字列 ('Content-Length: ') の両方を -1 にまとめる。
+  // ?? は null/undefined しか補填しないため、空文字列を明示的に処理するために || を使う。
+  // -1 は MAX_INBOUND_BODY_BYTES より小さいのでプリチェックはスルーし、後段の読み込み後チェックに委ねる。
   // なお、このエンドポイントは共有シークレット認証が先に通っているため、
   // 未認証リクエストがボディ読み込みまで到達しない (LINE ルートより攻撃面が限定的)。
-  const contentLength = Number(req.headers.get('content-length') ?? '-1');
+  const contentLength = Number(req.headers.get('content-length') || '-1');
   if (Number.isFinite(contentLength) && contentLength > MAX_INBOUND_BODY_BYTES) {
+    // サイズ超過はサーバーログに残し、外部には詳細を出さない 413 を返す
+    console.warn(`[POST /api/inbound/email] request body too large (header): ${contentLength} bytes`);
     return NextResponse.json({ error: 'メールが大きすぎます' }, { status: 413 });
   }
 
