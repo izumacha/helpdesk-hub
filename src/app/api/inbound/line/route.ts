@@ -128,16 +128,23 @@ export async function POST(req: Request) {
   }
 
   // Content-Length が上限超過なら本体を読む前に 413 で弾く (巨大ボディのメモリ枯渇防止 §9)。
-  // ヘッダが無い (chunked) 場合はここでは防げないため、後段のイベント数・文字数上限と併用する
-  const contentLength = Number(req.headers.get('content-length') ?? '0');
+  // chunked 転送では Content-Length ヘッダが無いため、ヘッダ判定だけでは防げない。
+  const contentLength = Number(req.headers.get('content-length') ?? '-1');
   if (Number.isFinite(contentLength) && contentLength > MAX_REQUEST_BODY_BYTES) {
     // サイズ超過はサーバーログに残し、外部には詳細を出さない 413 を返す
-    console.warn(`[POST /api/inbound/line] request body too large: ${contentLength} bytes`);
+    console.warn(`[POST /api/inbound/line] request body too large (header): ${contentLength} bytes`);
     return NextResponse.json({ error: 'リクエストが大きすぎます' }, { status: 413 });
   }
 
   // ボディを文字列として読み込む (署名検証は JSON.parse 前の生テキストに対して行う必要がある)
   const rawBody = await req.text();
+  // chunked 転送は Content-Length を省略できる。読み込み後にも実サイズを検査して
+  // DoS を防ぐ (ヘッダ無しで巨大ボディを送り込む攻撃への対策 §9)。
+  if (rawBody.length > MAX_REQUEST_BODY_BYTES) {
+    // 実際の読み取りサイズが上限超過: 413 で弾く
+    console.warn(`[POST /api/inbound/line] request body too large (actual): ${rawBody.length} bytes`);
+    return NextResponse.json({ error: 'リクエストが大きすぎます' }, { status: 413 });
+  }
 
   // X-Line-Signature ヘッダを取得する。trim() でプロキシが付加した空白を除去してから比較する
   // (末尾に \n 等が付くと Buffer の長さが変わり定数時間比較が失敗して正規リクエストを弾く)

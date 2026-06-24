@@ -90,8 +90,24 @@ export async function unlinkLineAccount_action(): Promise<void> {
   const session = await auth();
   // ログイン必須
   assertAuthenticated(session);
+  // 操作対象は常にセッション由来の自分・自テナントのみ
+  const userId = session.user.id;
+  const tenantId = session.user.tenantId;
+
+  // 解除操作も連打による無意味な DB 書き込みを防ぐためレート制限をかける (§9 DoS 対策)。
+  // コード発行より緩めの 10 回 / 10 分 (正規ユーザーの誤クリック程度は許容する)
+  try {
+    enforceRateLimit(`line-unlink:${userId}`, { limit: 10, windowMs: LINE_LINK_CODE_TTL_MS });
+  } catch (err) {
+    // 流量超過専用エラーだけをユーザー向けメッセージに変換し、それ以外は上位へ送出する
+    if (err instanceof RateLimitError) {
+      throw new Error('解除操作が多すぎます。しばらく待ってから再度お試しください。');
+    }
+    throw err;
+  }
+
   // 自分の lineUserId と発行中コードをまとめてクリアする (tenantId スコープ付き)
-  await repos.users.unlinkLineUser(session.user.id, session.user.tenantId);
+  await repos.users.unlinkLineUser(userId, tenantId);
   // 連携状態カードの再描画 (未連携表示へ更新)
   revalidatePath('/settings/line');
 }

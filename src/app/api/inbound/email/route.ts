@@ -71,14 +71,13 @@ function secretsMatch(provided: string, expected: string): boolean {
   return timingSafeEqual(a, b);
 }
 
-// リクエストから提示されたシークレットを取り出す (ヘッダ優先、無ければクエリ)。
-// プロバイダによって署名手段が無いものがあるため、設定で渡せる共有シークレット方式を採る。
-function readProvidedSecret(req: Request, url: URL): string | null {
-  // 専用ヘッダを最優先で見る
-  const header = req.headers.get('x-inbound-secret');
-  if (header) return header;
-  // 次にクエリパラメータ ?secret= を見る (Webhook URL にシークレットを埋め込む運用向け)
-  return url.searchParams.get('secret');
+// リクエストから提示されたシークレットを取り出す。
+// シークレットは x-inbound-secret ヘッダのみから読む。URL クエリパラメータへのフォールバックは
+// アクセスログ・プロキシログにシークレット値が平文で記録されるリスクがあるため廃止した (§9)。
+// Webhook プロバイダ側の設定で「カスタムヘッダ」として追加する方式に統一すること。
+function readProvidedSecret(req: Request): string | null {
+  // 専用ヘッダから読む (ヘッダ以外の方法は受け付けない)
+  return req.headers.get('x-inbound-secret');
 }
 
 // 受信メール 1 通分のフィールドの共通形 (to / from / subject / text に加え、スレッド継続用ヘッダ)
@@ -237,9 +236,6 @@ async function sendReceivedAck(args: {
 
 // POST /api/inbound/email : 受信メールを 1 件の問い合わせに変換する
 export async function POST(req: Request) {
-  // URL を解析 (クエリのシークレット取得に使う)
-  const url = new URL(req.url);
-
   // 共有シークレットを環境変数から読む。未設定なら fail-closed (無防備な取り込み口を開けない)
   const expectedSecret = process.env.INBOUND_EMAIL_SECRET?.trim();
   if (!expectedSecret) {
@@ -248,8 +244,8 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: 'メール取り込みは利用できません' }, { status: 500 });
   }
 
-  // 提示されたシークレットを取り出して定数時間比較する
-  const provided = readProvidedSecret(req, url);
+  // 提示されたシークレットを取り出して定数時間比較する (ヘッダのみ受け付ける)
+  const provided = readProvidedSecret(req);
   if (!provided || !secretsMatch(provided, expectedSecret)) {
     // 不一致は 401 (なりすまし POST を拒否)
     return NextResponse.json({ error: '認証に失敗しました' }, { status: 401 });
