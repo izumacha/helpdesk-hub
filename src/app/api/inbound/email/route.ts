@@ -60,6 +60,16 @@ const MAX_INBOUND_BODY_BYTES = 25 * 1024 * 1024;
 // (キーはテナント ID なのでバケット数は実在テナント数で頭打ち = メモリも有界)
 const INBOUND_RATE_LIMIT = { limit: 120, windowMs: 60_000 } as const;
 
+// ボディサイズ超過を示す専用エラー。Error のサブクラスにすることで POST ハンドラの catch 節が
+// instanceof 判定で 413 と 400 を区別できる (汎用 Error では両者を区別できず 400 になってしまう)。
+class BodyTooLargeError extends Error {
+  // スーパークラスに日本語メッセージを渡す (ログに出たときに原因が読める)
+  constructor() {
+    // Error の message プロパティを設定する
+    super('リクエストが大きすぎます');
+  }
+}
+
 // 2 つのシークレット文字列を定数時間で比較する (タイミング攻撃対策)。
 // 長さが違う場合は早期 false (情報量は長さのみで実用上問題なし)。
 function secretsMatch(provided: string, expected: string): boolean {
@@ -106,8 +116,25 @@ async function readInboundFields(req: Request): Promise<InboundFields> {
     contentType.includes('multipart/form-data') ||
     contentType.includes('application/x-www-form-urlencoded')
   ) {
-    // ボディを FormData にパースする
-    const form = await req.formData();
+    // ボディをバイト列として読み取る。req.formData() は生バイト数を隠蔽するため、
+    // 先に arrayBuffer() で読んでサイズを確認してから FormData にパースする。
+    // chunked 転送など Content-Length なしで大きなボディを送り込む攻撃への対策 (§9)。
+    const rawBuffer = await req.arrayBuffer();
+    // バイト列の実サイズが上限を超えていれば専用エラーを投げる (POST ハンドラが 413 にマップする)
+    if (rawBuffer.byteLength > MAX_INBOUND_BODY_BYTES) {
+      // サイズ超過はサーバーログに残す (外部には詳細を出さない §9)
+      console.warn('[POST /api/inbound/email] request body too large (multipart branch, actual)');
+      // BodyTooLargeError を投げると POST の catch 節が 413 を返す (汎用 Error では 400 になる)
+      throw new BodyTooLargeError();
+    }
+    // サイズ検査済みのバイト列を FormData にパースする。
+    // req.formData() は既にボディを消費しているため、同じバイト列から新規 Request を組み立てて
+    // formData() を呼ぶ。Content-Type ヘッダ (boundary パラメータを含む) を引き継ぐ。
+    const form = await new Request('http://x', {
+      method: 'POST',
+      headers: { 'content-type': req.headers.get('content-type') ?? '' },
+      body: rawBuffer,
+    }).formData();
     // SendGrid は実際の RCPT を envelope (JSON 文字列) に入れるため、あれば優先的に使う
     const envelopeRaw = form.get('envelope');
     // envelope から宛先・送信者を補完する変数 (取れなければヘッダ値を使う)
@@ -160,7 +187,8 @@ async function readInboundFields(req: Request): Promise<InboundFields> {
   if (Buffer.byteLength(rawText, 'utf8') > MAX_INBOUND_BODY_BYTES) {
     // サイズ超過: chunked 転送など Content-Length なしで大きなボディを送り込む攻撃への対策 (§9)
     console.warn('[POST /api/inbound/email] request body too large (JSON branch, actual)');
-    throw new Error('リクエストが大きすぎます');
+    // BodyTooLargeError を投げると POST の catch 節が 413 を返す (汎用 Error では 400 になってしまう)
+    throw new BodyTooLargeError();
   }
   // サイズ検査済みの文字列を JSON としてパースする
   const body = JSON.parse(rawText) as Record<string, unknown>;
@@ -277,10 +305,19 @@ export async function POST(req: Request) {
   // 受信メールのフィールドを取り出す (JSON / multipart 両対応)
   let fields: InboundFields;
   try {
+    // ボディを読んでフィールドを取り出す。BodyTooLargeError または汎用 Error を投げることがある
     fields = await readInboundFields(req);
   } catch (err) {
-    // ボディのパース失敗は 400 (握り潰さずログに残す)
+    // BodyTooLargeError は 413 にマップする (Content-Length ヘッダなし chunked 転送のサイズ超過)
+    if (err instanceof BodyTooLargeError) {
+      // サイズ超過はサーバーログに残す (外部には詳細を出さない §9)
+      console.warn('[POST /api/inbound/email] request body too large (actual)');
+      // 413 を返す (Content-Length 事前チェックと同じステータスに揃える)
+      return NextResponse.json({ error: 'メールが大きすぎます' }, { status: 413 });
+    }
+    // それ以外のパースエラーは 400 (握り潰さずログに残す)
     console.error('[POST /api/inbound/email] failed to read request body', err);
+    // 形式不正は 400 で返す (外部には詳細を出さない)
     return NextResponse.json({ error: 'リクエストの形式が正しくありません' }, { status: 400 });
   }
 
