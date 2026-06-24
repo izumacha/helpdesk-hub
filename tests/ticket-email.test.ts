@@ -1,7 +1,11 @@
 // Vitest のテスト DSL
 import { describe, expect, it } from 'vitest';
 // テスト対象 (純粋ヘルパー)
-import { buildTicketUrl, renderTicketReplyEmail } from '@/lib/ticket-email';
+import {
+  buildTicketUrl,
+  renderTicketReplyEmail,
+  renderTicketReceivedEmail,
+} from '@/lib/ticket-email';
 
 describe('buildTicketUrl', () => {
   // baseUrl + チケット ID から詳細ページの URL を組み立てられること
@@ -74,5 +78,44 @@ describe('renderTicketReplyEmail', () => {
       agentName: 'a',
     });
     expect(html).toContain('1 行目<br>2 行目');
+  });
+});
+
+describe('renderTicketReceivedEmail', () => {
+  // 件名規約: 接頭辞 + 受付番号 + 件名 (受信箱で「受け付けられた」ことと対象がすぐ分かる)
+  it('件名に接頭辞・受付番号・件名を含む', () => {
+    const { subject } = renderTicketReceivedEmail({
+      ticketTitle: 'プリンターが動かない',
+      ticketRef: '#ab12cd34',
+      ticketUrl: 'http://localhost:3000/tickets/ab12cd34xxxx',
+    });
+    expect(subject).toBe(
+      '[HelpDesk Hub] お問い合わせを受け付けました（#ab12cd34）「プリンターが動かない」',
+    );
+  });
+
+  // テキスト本文に受付番号・件名・URL と「返信で追記できる」案内が含まれること
+  it('テキスト本文に受付番号・件名・URL・返信案内を含む', () => {
+    const { text } = renderTicketReceivedEmail({
+      ticketTitle: '複合機の不調',
+      ticketRef: '#ffffffff',
+      ticketUrl: 'http://localhost:3000/tickets/2',
+    });
+    expect(text).toContain('#ffffffff');
+    expect(text).toContain('複合機の不調');
+    expect(text).toContain('http://localhost:3000/tickets/2');
+    // このメールに返信するとお問い合わせへ追記される旨の案内
+    expect(text).toContain('返信');
+  });
+
+  // HTML 本文では外部由来文字列がエスケープされ、生のタグが混入しないこと (XSS 防止)
+  it('HTML 本文で件名の危険文字をエスケープする', () => {
+    const { html } = renderTicketReceivedEmail({
+      ticketTitle: '<script>alert(1)</script>',
+      ticketRef: '#deadbeef',
+      ticketUrl: 'http://x/tickets/3',
+    });
+    expect(html).not.toContain('<script>');
+    expect(html).toContain('&lt;script&gt;');
   });
 });

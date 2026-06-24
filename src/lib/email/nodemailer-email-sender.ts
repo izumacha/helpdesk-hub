@@ -56,6 +56,8 @@ export function createNodemailerEmailSender(config: NodemailerEmailSenderConfig)
         html: message.html,
         // 指定があれば Message-ID を明示する (スレッド継続の紐付けに使う)。未指定なら nodemailer が自動採番
         messageId: message.messageId,
+        // 任意の追加ヘッダ (例: Auto-Submitted: auto-replied) をそのまま付与する。未指定なら付けない
+        headers: message.headers,
       });
     },
   };

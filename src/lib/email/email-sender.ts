@@ -17,6 +17,9 @@ export interface EmailMessage {
   // Phase 2 スレッド継続で、依頼者がこのメールに返信したとき In-Reply-To で元チケットへ
   // 紐付けられるよう、呼び出し側が決定的な Message-ID を指定して送る。未指定なら送信側に委ねる。
   messageId?: string;
+  // 任意: 追加で付与するメールヘッダ。自動応答メール (受領自動返信) に
+  // `Auto-Submitted: auto-replied` を付け、相手サーバの自動返信ループ (メールストーム) を防ぐ等に使う。
+  headers?: Record<string, string>;
 }
 
 // 任意のトランスポート (Console / Nodemailer SMTP / 将来の SES など) を抽象化する契約

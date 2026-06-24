@@ -18,6 +18,8 @@ import {
 } from '@/lib/constants';
 // 現在ログイン中のテナントの動作モード (lite | pro) を取得するヘルパー
 import { getCurrentTenantMode } from '@/lib/tenant';
+// チケットの短縮参照番号 (受付番号) を組み立てる共有ヘルパー (メールの受領自動返信と同じ表記)
+import { formatTicketRef } from '@/lib/ticket-ref';
 // 日本時間 (Asia/Tokyo) で日付・日時を文字列化するユーティリティ
 import { formatDateJP, formatDateTimeJP } from '@/lib/format-date';
 // ステータス変更プルダウン
@@ -87,7 +89,7 @@ export default async function TicketDetailPage({ params }: Props) {
     <div className="mx-auto max-w-4xl space-y-6">
       {/* タイトル領域 (短縮 ID + 件名) */}
       <div>
-        <p className="text-sm text-gray-500">#{ticket.id.slice(0, 8)}</p>
+        <p className="text-sm text-gray-500">{formatTicketRef(ticket.id)}</p>
         <h1 className="mt-1 text-2xl font-bold text-gray-900">{ticket.title}</h1>
       </div>
 
@@ -98,7 +100,7 @@ export default async function TicketDetailPage({ params }: Props) {
           {/* 問い合わせ本文 */}
           <section className="rounded-lg bg-white p-5 shadow-sm">
             <h2 className="mb-3 text-sm font-semibold text-gray-500">問い合わせ内容</h2>
-            <p className="whitespace-pre-wrap text-sm text-gray-800">{ticket.body}</p>
+            <p className="text-sm whitespace-pre-wrap text-gray-800">{ticket.body}</p>
             {/* チケット本体に直接添付された画像のサムネ一覧 (0 件なら描画しない) */}
             {ticket.attachments.length > 0 && (
               <div className="mt-4">
@@ -128,7 +130,7 @@ export default async function TicketDetailPage({ params }: Props) {
                         {formatDateTimeJP(c.createdAt)}
                       </span>
                     </div>
-                    <p className="whitespace-pre-wrap text-sm text-gray-700">{c.body}</p>
+                    <p className="text-sm whitespace-pre-wrap text-gray-700">{c.body}</p>
                     {/* コメントに紐づく添付があれば直下にサムネを描画する */}
                     {c.attachments.length > 0 && (
                       <div className="mt-2">
