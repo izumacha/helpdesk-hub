@@ -1,6 +1,9 @@
 // 問い合わせ管理のヘルプページ
 // Phase 3「ヘルプセンター」に対応
 
+// 認証不要・静的コンテンツのため SSG で出力する (CDN キャッシュに乗り高速化)
+export const dynamic = 'force-static';
+
 export const metadata = {
   title: '問い合わせの管理 | ヘルプセンター | HelpDesk Hub',
 };

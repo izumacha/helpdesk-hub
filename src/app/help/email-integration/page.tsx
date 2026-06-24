@@ -2,6 +2,9 @@
 // Phase 2 メール取り込み機能の利用方法を説明する
 // Phase 3「ヘルプセンター」に対応
 
+// 認証不要・静的コンテンツのため SSG で出力する (CDN キャッシュに乗り高速化)
+export const dynamic = 'force-static';
+
 export const metadata = {
   title: 'メールから問い合わせを取り込む | ヘルプセンター | HelpDesk Hub',
 };

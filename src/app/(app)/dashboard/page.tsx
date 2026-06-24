@@ -343,8 +343,16 @@ async function LiteDashboard({
               )
             ))}
           </div>
-          {/* 問い合わせ一覧のサンプルチケットへのリンク (操作確認を促す) */}
+          {/* チュートリアルガイドへの誘導 (ヘルプセンターの 30 分スタートガイドを案内する) */}
           <p className="mt-3 text-xs text-slate-400">
+            詳しい手順は
+            <Link href="/help/getting-started" className="mx-1 text-teal-700 underline hover:text-teal-800">
+              30 分で運用開始するガイド
+            </Link>
+            をご覧ください。
+          </p>
+          {/* 問い合わせ一覧のサンプルチケットへのリンク (操作確認を促す) */}
+          <p className="mt-1 text-xs text-slate-400">
             問い合わせ一覧にサンプルの問い合わせが 2 件入っています。
             <Link href="/tickets" className="ml-1 text-teal-700 underline hover:text-teal-800">
               一覧を見る
