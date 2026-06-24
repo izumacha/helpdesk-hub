@@ -204,8 +204,9 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: '送信先テナントが見つかりません' }, { status: 404 });
   }
 
-  // β: LINE ユーザーとテナントメンバーの紐付けが未実装のため、テナント内の担当者をプロキシ起票者とする。
-  // listAgents は名前昇順で agent/admin を返すため、その先頭 (名前順で最初の担当者) を起票者に使う。
+  // 未紐付け LINE ユーザー (またはユーザー ID 不明) のフォールバック起票者を用意する。
+  // 紐付け済みユーザーは後段で本人を起票者にするが、未紐付けの問い合わせはテナント内の担当者を
+  // 代理の起票者にする。listAgents は名前昇順で agent/admin を返すため、その先頭を代理起票者に使う。
   const agents = await repos.users.listAgents(targetTenantId);
   if (agents.length === 0) {
     // 担当者が 1 人もいないテナントは起票者を決められない。再送しても状況は変わらない
@@ -213,7 +214,7 @@ export async function POST(req: Request) {
     console.warn('[POST /api/inbound/line] no agents found for tenant:', targetTenantId);
     return NextResponse.json({ status: 'ignored', reason: 'no_agents' }, { status: 200 });
   }
-  // 名前順で最初の担当者 (agent/admin) をプロキシ起票者とする (β 制約)
+  // 名前順で最初の担当者 (agent/admin) を未紐付けユーザー向けの代理起票者とする
   const proxyCreator = agents[0]!;
 
   // 起票時刻 (SLA 期限の計算基準)
