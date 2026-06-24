@@ -2,6 +2,9 @@
 // Phase 3「ヘルプセンター」+ Phase 7.1「30 分で運用開始シナリオ」に対応
 import Link from 'next/link';
 
+// 認証不要・静的コンテンツのため SSG で出力する (CDN キャッシュに乗り高速化)
+export const dynamic = 'force-static';
+
 export const metadata = {
   title: '30 分で運用開始する | ヘルプセンター | HelpDesk Hub',
 };

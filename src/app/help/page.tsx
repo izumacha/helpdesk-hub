@@ -2,6 +2,10 @@
 // Phase 3「ヘルプセンター（このリポジトリ内に Next.js で同梱、SSG）」に対応
 import Link from 'next/link';
 
+// このページは認証不要・更新頻度が低い静的コンテンツのため SSG (Static Site Generation) で出力する
+// 動的レンダリングが行われないようにすることで CDN キャッシュに乗り、ロードを高速化する
+export const dynamic = 'force-static';
+
 // ヘルプセンターのページメタデータ
 export const metadata = {
   title: 'ヘルプセンター | HelpDesk Hub',
