@@ -80,8 +80,8 @@ function escapeCsvCell(value: string): string {
 function applyMapping(csvText: string, mapping: ColumnMapping): string {
   // 改行コード (CRLF / LF どちらにも対応) で行に分割し、空行を除外する
   const lines = csvText.split(/\r?\n/).filter((l) => l.trim() !== '');
-  // ヘッダ行がなければ空文字を返す
-  if (lines.length < 1) return '';
+  // ヘッダ行のみ（データ行ゼロ）またはそれ以下なら空文字を返す
+  if (lines.length < 2) return '';
   // ヘッダ行を RFC 4180 パーサで解析して列名の配列を得る
   const headers = parseCsvLine(lines[0] ?? '');
   // 各システムフィールドに対応する元 CSV の列インデックスを求める (マッピング未設定は -1)
@@ -94,7 +94,14 @@ function applyMapping(csvText: string, mapping: ColumnMapping): string {
   // データ行を 1 行ずつ変換する
   for (const line of lines.slice(1)) {
     // RFC 4180 パーサで元のセル値を取り出す
-    const cells = parseCsvLine(line);
+    // 引用符が閉じられていない等のパース失敗行はスキップしてインポート処理側のエラーとして扱う
+    let cells: string[];
+    try {
+      cells = parseCsvLine(line); // 行をセル配列に分解する
+    } catch {
+      // パース失敗行はスキップする (サーバー側でも同じエラーハンドリングが入るため二重管理しない)
+      continue;
+    }
     // 各フィールドの列インデックスに対応するセルを取り出し、RFC 4180 形式でエスケープして結合する
     const row = [
       escapeCsvCell(titleIdx !== -1 ? (cells[titleIdx] ?? '') : ''), // 件名セル
@@ -186,6 +193,14 @@ export function CsvImportForm(_props: CsvImportFormProps) {
     }
     // ファイルサイズが上限を超える場合はエラーを表示して読み込みをスキップ (DoS 防止)
     if (file.size > MAX_CSV_BYTES) {
+      // エラーを表示しつつ、以前のファイルに由来する状態をすべてリセットして不整合を防ぐ
+      setCsvText(null); // 前回の生 CSV テキストをクリア
+      setCsvHeaders([]); // 前回のヘッダ一覧をクリア
+      setMapping({ 件名: '', 内容: '', 期限日: '', 優先度: '' }); // 前回のマッピングをクリア
+      setMappedCsvText(null); // 前回の変換後 CSV をクリア
+      setPreview([]); // 前回のプレビューをクリア
+      setResult(null); // 前回の結果をクリア
+      setStep('select'); // ファイル選択ステップへ戻す
       setError(`ファイルサイズが大きすぎます（上限 ${MAX_CSV_BYTES / 1024}KB）`); // エラー表示
       return;
     }
@@ -197,8 +212,6 @@ export function CsvImportForm(_props: CsvImportFormProps) {
       const text = ev.target?.result;
       // 読み込み失敗時は何もしない
       if (typeof text !== 'string') return;
-      // 生 CSV テキストをステートに保存する
-      setCsvText(text);
       // 前回の結果・エラーをクリアする (新しいファイルに切り替えたので)
       setResult(null);
       setError(null);
@@ -210,9 +223,12 @@ export function CsvImportForm(_props: CsvImportFormProps) {
         parsedHeaders = parseCsvLine(firstLine); // RFC 4180 パーサで列名を取り出す
       } catch {
         // ヘッダが解析できない場合はエラーを表示して処理を中断する
+        // setCsvText はここで呼ばない: 無効なファイルで csvText が上書きされると後続ステップで不整合が生じる
         setError('CSV のヘッダ行が正しくありません（引用符が閉じられていない可能性があります）');
         return;
       }
+      // ヘッダ解析が成功してから生 CSV テキストをステートに保存する (順序が重要)
+      setCsvText(text);
       // 解析したヘッダ列名をステートに保存する (マッピングフォームのドロップダウンに表示する)
       setCsvHeaders(parsedHeaders);
       // ヘッダ名からシステムフィールドへの自動マッピングを試みる
@@ -372,15 +388,29 @@ export function CsvImportForm(_props: CsvImportFormProps) {
                 >
                   {/* 未選択オプション: 必須フィールドは「選択してください」、任意は「使わない」 */}
                   <option value="">{required ? '（選択してください）' : '使わない'}</option>
-                  {/* CSV のヘッダ列を選択肢として列挙する */}
-                  {csvHeaders.map((h) => (
-                    <option key={h} value={h}>
+                  {/* CSV のヘッダ列を選択肢として列挙する (同名列が重複する場合も key が被らないようインデックスを使う) */}
+                  {csvHeaders.map((h, hIdx) => (
+                    <option key={`${hIdx}-${h}`} value={h}>
                       {h}
                     </option>
                   ))}
                 </select>
               </div>
             ))}
+          </div>
+
+          {/* 入力値フォーマットのヒント: ユーザーが誤った形式でインポートしてサーバーエラーになるのを防ぐ */}
+          <div className="rounded-lg bg-amber-50 p-3 ring-1 ring-amber-100 text-xs text-amber-800 space-y-0.5">
+            <p className="font-semibold">入力値の形式について</p>
+            {/* 期限日のフォーマット説明 */}
+            <p>
+              <span className="font-medium">期限日:</span> YYYY-MM-DD 形式（例: 2026-03-31）で入力してください。
+            </p>
+            {/* 優先度の選択肢説明 */}
+            <p>
+              <span className="font-medium">優先度:</span> <code>高</code>・<code>中</code>・<code>低</code>
+              のいずれかを入力してください。空欄の場合は「中」になります。
+            </p>
           </div>
 
           {/* 件名未選択時などのマッピングエラー */}
