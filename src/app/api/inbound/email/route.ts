@@ -252,8 +252,12 @@ export async function POST(req: Request) {
   }
 
   // Content-Length が上限超過なら本体を読む前に 413 で弾く (巨大ボディのメモリ枯渇防止 §9)。
-  // ヘッダが無い (chunked) 場合まではここでは防げないため、後段の長さ上限と併用する
-  const contentLength = Number(req.headers.get('content-length') ?? '0');
+  // chunked 転送では Content-Length ヘッダが無いため、'-1' をデフォルトにして「ヘッダ無し」を
+  // 明示的に表す (-1 は MAX_INBOUND_BODY_BYTES より小さいのでプリチェックはスルーし、
+  // 後段の ParseInboundEmail 内の長さ上限で防衛する二段構え)。
+  // なお、このエンドポイントは共有シークレット認証が先に通っているため、
+  // 未認証リクエストがボディ読み込みまで到達しない (LINE ルートより攻撃面が限定的)。
+  const contentLength = Number(req.headers.get('content-length') ?? '-1');
   if (Number.isFinite(contentLength) && contentLength > MAX_INBOUND_BODY_BYTES) {
     return NextResponse.json({ error: 'メールが大きすぎます' }, { status: 413 });
   }
