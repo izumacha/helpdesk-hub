@@ -73,5 +73,69 @@ export function makeUserRepo(db: PrismaLike): UserRepository {
       // agent と admin のみをカウントする (requester は上限対象外)
       return db.user.count({ where: { tenantId, role: { in: ['agent', 'admin'] } } });
     },
+
+    // 紐付け済み LINE ユーザー ID から当該テナントのメンバーを 1 件引く (tenantId スコープ必須)
+    async findByLineUserId(tenantId, lineUserId) {
+      // (tenantId, lineUserId) は複合一意なので findFirst で最大 1 件
+      const row = await db.user.findFirst({ where: { tenantId, lineUserId } });
+      return row ? toUser(row) : null;
+    },
+
+    // メンバー起点でワンタイムコードのハッシュと失効時刻を自分のユーザー行に保存する。
+    // tenantId スコープ付き updateMany で「自テナントの自分」だけを更新対象にする (他人を書き換えない)
+    async setLineLinkCode(userId, tenantId, input) {
+      await db.user.updateMany({
+        where: { id: userId, tenantId },
+        data: { lineLinkCodeHash: input.codeHash, lineLinkCodeExpiresAt: input.expiresAt },
+      });
+    },
+
+    // 受信コードのハッシュに一致する有効な発行行を探し、原子的に lineUserId を紐付ける
+    async linkLineUserByCode({ codeHash, tenantId, lineUserId, now }) {
+      // 1) 有効な発行行 (同一テナント・未失効) を探す。無ければ「コードではない」
+      const candidate = await db.user.findFirst({
+        where: { tenantId, lineLinkCodeHash: codeHash, lineLinkCodeExpiresAt: { gte: now } },
+      });
+      if (!candidate) return { status: 'invalid' };
+
+      // 2) その LINE ユーザー ID が既に誰かに連携済みかを確認する (テナント内一意制約の事前判定)
+      const existing = await db.user.findFirst({ where: { tenantId, lineUserId } });
+      if (existing && existing.id !== candidate.id) {
+        // 別メンバーへ連携済み: 付け替えはしない (一意制約の衝突を避け、conflict を返す)
+        return { status: 'conflict' };
+      }
+
+      // 3) 原子的に「コード消費 + lineUserId 設定」を行う。発行行がまだ有効な条件を where に再掲し、
+      //    並行リクエストでの二重処理を防ぐ (count===1 のときだけ成功扱い)
+      try {
+        const result = await db.user.updateMany({
+          where: {
+            id: candidate.id,
+            lineLinkCodeHash: codeHash,
+            lineLinkCodeExpiresAt: { gte: now },
+          },
+          data: { lineUserId, lineLinkCodeHash: null, lineLinkCodeExpiresAt: null },
+        });
+        // 0 件 = 並行処理に先を越された (既に消費済み)。コードとしては無効扱いにする
+        if (result.count !== 1) return { status: 'invalid' };
+        // 連携成功 (このメンバーに lineUserId が結び付いた)
+        return { status: 'linked', userId: candidate.id };
+      } catch (err) {
+        // (tenantId, lineUserId) 一意制約違反 (P2002): 事前判定をすり抜けた競合で別メンバーが先に連携。
+        // 付け替え不能として conflict を返す (それ以外の例外は想定外なので上位へ送出)。
+        if (typeof err === 'object' && err !== null && 'code' in err && err.code === 'P2002') {
+          return { status: 'conflict' };
+        }
+        throw err;
+      }
+    },
+
+    // メンバー起点で LINE 連携を解除する (lineUserId と発行中コードをまとめてクリア)
+    async unlinkLineUser(userId, tenantId) {
+      await db.user.updateMany({
+        where: { id: userId, tenantId },
+        data: { lineUserId: null, lineLinkCodeHash: null, lineLinkCodeExpiresAt: null },
+      });
+    },
   };
 }

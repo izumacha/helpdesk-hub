@@ -37,6 +37,7 @@ const navItems: {
   { href: '/tickets/new', label: '新規登録' },
   { href: '/faq', label: 'FAQ候補', agentOnly: true, proOnly: true },
   { href: '/notifications', label: '通知' },
+  { href: '/settings/line', label: 'LINE連携' }, // Phase 2: 自分の LINE を連携する自己サービス (全ロール)
   { href: '/audit', label: '監査ログ', adminOnly: true }, // Phase 4: 管理者向け変更履歴
   { href: '/settings', label: '設定', adminOnly: true },
   { href: '/help', label: 'ヘルプ' }, // Phase 3: ヘルプセンター (全ロール表示)
@@ -134,9 +135,7 @@ export function Sidebar({ role, mode }: Props) {
             collapsed の効果は md 以上だけに限定 (md:hidden) し、モバイルでは必ず表示する。
             これにより「デスクトップで折りたたみ → 画面幅を縮める → ハンバーガーで開く」のフローで
             メニューが空になる不具合を防ぐ */}
-        <nav
-          className={`flex-1 space-y-1 px-3 py-5 ${collapsed ? 'md:hidden' : ''}`}
-        >
+        <nav className={`flex-1 space-y-1 px-3 py-5 ${collapsed ? 'md:hidden' : ''}`}>
           {visibleItems.map((item) => {
             // この項目が現在のページかどうか
             const isActive = isItemActive(item.href);

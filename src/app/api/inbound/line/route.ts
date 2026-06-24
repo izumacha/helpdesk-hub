@@ -9,8 +9,11 @@
  *  - 1 テナント / 1 LINE チャネル構成を env var で決め打ち (マルチチャネルは将来課題)。
  *    LINE_CHANNEL_SECRET: Webhook 署名の検証に使うチャネルシークレット
  *    LINE_TARGET_TENANT_ID: メッセージを受け付けるテナント ID
- *  - LINE ユーザーとテナントメンバーの紐付けは未実装。テナントの最初の管理者をプロキシ起票者とする。
- *    チケット本文に LINE ユーザー ID を記録するため、担当者が手動で連絡できる。
+ *  - LINE ユーザーとテナントメンバーの紐付け: メンバーが Web 設定画面で発行したワンタイムコードを
+ *    LINE に送ると、その送信元 LINE ユーザー ID をメンバーへ紐付ける。紐付け済みなら起票者は本人になり
+ *    自己解決 UI が開通する。未紐付けの LINE ユーザーは従来どおりテナント内担当者をプロキシ起票者とする
+ *    (本文に LINE ユーザー ID を残すので担当者が手動連絡できる)。アウトバウンド LINE 返信は未実装のため、
+ *    連携完了の確認は Web 設定画面の「連携済み」表示で行う。
  *  - DKIM/SPF 相当の送信者検証は LINE 署名のみ (LINE サーバからのみ受信する保証は署名が担う)。
  *
  * セキュリティ要点 (§9):
@@ -31,6 +34,8 @@ import { initialStatusForMode } from '@/domain/ticket-status';
 import { enforceRateLimit, RateLimitError } from '@/lib/rate-limit';
 // 優先度から解決期限を計算する SLA ヘルパー (他の取り込みチャネルと同じ既定値に揃える)
 import { calculateResolutionDueAt } from '@/lib/sla';
+// LINE メンバー紐付け: 受信テキストの正規化・コード形判定・ハッシュ化 (発行は Web 設定画面側)
+import { hashLineLinkCode, looksLikeLineLinkCode, normalizeLineLinkCode } from '@/lib/line-link';
 
 // このルートは Node ランタイムで動かす (node:crypto / Prisma を使うため Edge では動かない)
 export const runtime = 'nodejs';
@@ -240,6 +245,39 @@ export async function POST(req: Request) {
     const trimmedText = textMessage.text.trim();
     if (!trimmedText) continue;
 
+    // メンバー紐付け: テキストが発行済みワンタイムコードなら、起票せず lineUserId をメンバーへ紐付ける。
+    // (lineUserId が取得できないイベントは紐付けようがないので、この処理を飛ばして通常起票へ進む)
+    if (lineUserId !== '不明') {
+      // 受信テキストを正規化 (ハイフン・空白除去 + 大文字化) してコードの形か軽く判定する
+      const normalizedCode = normalizeLineLinkCode(trimmedText);
+      if (looksLikeLineLinkCode(normalizedCode)) {
+        // 形が一致したらハッシュ化し、有効な発行行があれば原子的に紐付ける
+        const codeHash = await hashLineLinkCode(normalizedCode);
+        const link = await repos.users.linkLineUserByCode({
+          codeHash,
+          tenantId: targetTenantId,
+          lineUserId,
+          now,
+        });
+        // 連携成功 / 競合 (コードとして処理済み) のときは、このメッセージを問い合わせにしない
+        if (link.status === 'linked' || link.status === 'conflict') {
+          // 連携結果をログに残す (アウトバウンド LINE 返信は未実装。利用者は Web 設定で連携状態を確認する)
+          console.info(
+            `[POST /api/inbound/line] line link ${link.status} for tenant`,
+            targetTenantId,
+          );
+          continue;
+        }
+        // invalid (コードの形だが有効な発行行が無い) は通常の問い合わせとして下の起票へ進む
+      }
+    }
+
+    // 起票者を決める: この LINE ユーザーが紐付け済みなら本人を起票者にして自己解決 UI を開通させる。
+    // 未紐付け (または lineUserId 不明) は従来どおりプロキシ担当者を起票者にする (β フォールバック)。
+    const linkedMember =
+      lineUserId !== '不明' ? await repos.users.findByLineUserId(targetTenantId, lineUserId) : null;
+    const creatorId = linkedMember ? linkedMember.id : proxyCreator.id;
+
     // チケットタイトルはメッセージテキストの先頭 MAX_TITLE_LENGTH 文字にする
     const title =
       trimmedText.length > MAX_TITLE_LENGTH
@@ -266,7 +304,7 @@ export async function POST(req: Request) {
         body: ticketBody, // LINE ユーザー ID + 全文
         priority: 'Medium', // LINE 取り込みは優先度 Medium 固定 (他チャネルと揃える)
         categoryId: null, // カテゴリは未分類 (担当者が後で設定)
-        creatorId: proxyCreator.id, // 名前順で最初の担当者をプロキシ起票者とする (β 制約)
+        creatorId, // 紐付け済みなら本人、未紐付けならプロキシ担当者 (上で解決済み)
         tenantId: targetTenantId, // 取り込み先テナント
         status: initialStatus, // Lite は 'Open'、Pro は DB 既定 'New'
         resolutionDueAt, // 優先度 Medium ベースの解決期限
