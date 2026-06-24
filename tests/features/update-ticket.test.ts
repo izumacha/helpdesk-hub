@@ -45,6 +45,20 @@ vi.mock('@/lib/sse-subscribers', () => ({
   broadcast: vi.fn(),
 }));
 
+// ステータス変更メール (メンバー改善 #3 の回帰固定) の送信を捕捉する。
+// 実ファイル (.magic-link-outbox.jsonl) へ書き込む console ドライバを避け、送信内容を配列に貯めて検証する。
+// vi.hoisted で先に配列を作り、vi.mock のファクトリから参照できるようにする (巻き上げ順序対策)。
+const { sentEmails } = vi.hoisted(() => ({
+  sentEmails: [] as Array<{ to: string; subject: string }>,
+}));
+vi.mock('@/lib/email', () => ({
+  getEmailSender: () => ({
+    send: async (message: { to: string; subject: string }) => {
+      sentEmails.push(message);
+    },
+  }),
+}));
+
 // 共通シード: 1 テナント + 1 依頼者 + 2 エージェント + 1 カテゴリ + 1 チケット
 async function seed() {
   const now = new Date();
@@ -57,7 +71,14 @@ async function seed() {
     mode: 'pro',
     industry: null,
     inboundToken: null, // メール取り込み未発行 (テスト用フィクスチャ)
-      slackWebhookUrl: null, subscriptionPlan: 'free' as const, stripeCustomerId: null, stripeSubscriptionId: null, stripeSubscriptionStatus: null, teamsWebhookUrl: null, chatworkApiToken: null, chatworkRoomId: null, // Slack 通知未設定 (テスト用フィクスチャ)
+    slackWebhookUrl: null,
+    subscriptionPlan: 'free' as const,
+    stripeCustomerId: null,
+    stripeSubscriptionId: null,
+    stripeSubscriptionStatus: null,
+    teamsWebhookUrl: null,
+    chatworkApiToken: null,
+    chatworkRoomId: null, // Slack 通知未設定 (テスト用フィクスチャ)
     createdAt: now,
   });
   // ユーザー雛形
@@ -111,6 +132,8 @@ beforeEach(() => {
   vi.resetModules();
   // レート制限の履歴をクリア (前テストの呼び出し回数を引きずらない)
   __resetRateLimits();
+  // ステータス変更メールの捕捉バッファをクリア (テスト間で送信が混ざらないように)
+  sentEmails.length = 0;
 });
 
 // ステータス更新アクションの仕様
@@ -251,9 +274,7 @@ describe('updateTicketStatus (Lite mode)', () => {
 
     // Lite では Escalated は非 Lite ステータスなので、ターゲット制限ガードに弾かれる
     // ("Lite モードでは「Escalated」へは変更できません" メッセージで reject)
-    await expect(updateTicketStatus(ticketId, 'Escalated')).rejects.toThrow(
-      /Lite モードでは/,
-    );
+    await expect(updateTicketStatus(ticketId, 'Escalated')).rejects.toThrow(/Lite モードでは/);
 
     // ステータスは Open のまま (ロールバック)
     const t = await repos.tickets.findById(ticketId, TENANT);
@@ -359,9 +380,7 @@ describe('updateTicketStatus (Lite mode)', () => {
     const { updateTicketStatus } = await import('@/features/tickets/actions/update-ticket');
 
     // WaitingForUser は Lite 3 値に含まれないので、ターゲット制限ガードで弾かれる
-    await expect(updateTicketStatus(ticketId, 'WaitingForUser')).rejects.toThrow(
-      /Lite モードでは/,
-    );
+    await expect(updateTicketStatus(ticketId, 'WaitingForUser')).rejects.toThrow(/Lite モードでは/);
 
     // ステータスは Resolved のまま (ロールバック)
     const t = await repos.tickets.findById(ticketId, TENANT);
@@ -429,7 +448,14 @@ describe('updateTicketAssignee (provider-agnostic)', () => {
       mode: 'lite',
       industry: null,
       inboundToken: null, // メール取り込み未発行 (テスト用フィクスチャ)
-      slackWebhookUrl: null, subscriptionPlan: 'free' as const, stripeCustomerId: null, stripeSubscriptionId: null, stripeSubscriptionStatus: null, teamsWebhookUrl: null, chatworkApiToken: null, chatworkRoomId: null, // Slack 通知未設定 (テスト用フィクスチャ)
+      slackWebhookUrl: null,
+      subscriptionPlan: 'free' as const,
+      stripeCustomerId: null,
+      stripeSubscriptionId: null,
+      stripeSubscriptionStatus: null,
+      teamsWebhookUrl: null,
+      chatworkApiToken: null,
+      chatworkRoomId: null, // Slack 通知未設定 (テスト用フィクスチャ)
       createdAt: now,
     });
     // 別テナントのエージェントを store に直接投入
@@ -501,9 +527,7 @@ describe('escalateTicket (provider-agnostic)', () => {
     const { escalateTicket } = await import('@/features/tickets/actions/update-ticket');
 
     // Lite ガードによる拒否 (エラー文言で確認)
-    await expect(escalateTicket(ticketId, '緊急対応必要')).rejects.toThrow(
-      /Lite モードでは/,
-    );
+    await expect(escalateTicket(ticketId, '緊急対応必要')).rejects.toThrow(/Lite モードでは/);
 
     // 副作用がないこと: ステータス維持・理由・日時はすべて未書き込み
     const t = await repos.tickets.findById(ticketId, TENANT);
@@ -512,5 +536,76 @@ describe('escalateTicket (provider-agnostic)', () => {
     expect(t?.escalatedAt).toBeNull();
     // 通知も作られていない
     expect([...store.notifications.values()]).toHaveLength(0);
+  });
+});
+
+// メンバー改善 #3「statusChanged 通知の宛先確認」の回帰固定。
+// 解決通知などのステータス変更が依頼者へメール送信される (= 体験が完結する) ことを固定し、
+// 自己更新では送らない・エスカレーションは依頼者へメールしない (担当者通知のみ) ことも明示する。
+describe('updateTicketStatus メール通知 (メンバー改善 #3 回帰)', () => {
+  // ステータス変更時、操作者以外の起票者 (依頼者) へ状況変更メールが 1 通届く
+  it('ステータス変更を依頼者へメール送信する', async () => {
+    const { ticketId } = await seed();
+    const { updateTicketStatus } = await import('@/features/tickets/actions/update-ticket');
+
+    // 担当者 (u-agt-1) が依頼者 (u-req-1) のチケットを New → Open に変更する
+    await updateTicketStatus(ticketId, 'Open');
+
+    // 依頼者宛に 1 通だけ送られる
+    expect(sentEmails).toHaveLength(1);
+    expect(sentEmails[0].to).toBe('u-req-1@example.com');
+    // 件名はステータス変更メール (「状況が…変わりました」) で、対象の件名を含む
+    expect(sentEmails[0].subject).toContain('状況');
+    expect(sentEmails[0].subject).toContain('VPN がつながらない');
+  });
+
+  // 解決 (Resolved) への変更でも依頼者へメールが届く (「解決しました」が依頼者に伝わる)
+  it('解決ステータスへの変更も依頼者へメール送信する', async () => {
+    const { ticketId } = await seed();
+    // 事前に Open にしてから Resolved にする (New → Resolved は遷移表で許可されないため)
+    await repos.tickets.updateStatus(ticketId, 'Open', null, TENANT);
+    const { updateTicketStatus } = await import('@/features/tickets/actions/update-ticket');
+
+    await updateTicketStatus(ticketId, 'Resolved');
+
+    expect(sentEmails).toHaveLength(1);
+    expect(sentEmails[0].to).toBe('u-req-1@example.com');
+  });
+
+  // 自己更新 (操作者 = 起票者) では自分宛メールを送らない
+  it('自己更新ではメールを送らない', async () => {
+    await seed();
+    // 起票者が操作者 (u-agt-1) 自身のチケットを作る
+    const own = await repos.tickets.create({
+      title: '自分で起票した件',
+      body: 'x',
+      priority: 'Medium',
+      creatorId: 'u-agt-1',
+      categoryId: 'cat-1',
+      tenantId: TENANT,
+    });
+    const { updateTicketStatus } = await import('@/features/tickets/actions/update-ticket');
+
+    await updateTicketStatus(own.id, 'Open');
+
+    // 自己更新なのでメールは送らない (無駄な自分宛通知を避ける)
+    expect(sentEmails).toHaveLength(0);
+  });
+
+  // エスカレーションは依頼者へメールせず、担当者へのアプリ内通知のみとする (内部トリアージ操作)。
+  // 「解決通知は届く / エスカレーションは内部通知のみ」という現行の意図を回帰として固定する。
+  it('エスカレーションは依頼者へメールしない (担当者通知のみ)', async () => {
+    const { ticketId } = await seed();
+    await repos.tickets.updateStatus(ticketId, 'Open', null, TENANT);
+    const { escalateTicket } = await import('@/features/tickets/actions/update-ticket');
+
+    await escalateTicket(ticketId, '対応困難');
+
+    // 依頼者宛メールは送られない (エスカレーションは社内向け)
+    expect(sentEmails).toHaveLength(0);
+    // 担当者には escalated のアプリ内通知が届く (全 2 エージェント)
+    const notifications = [...store.notifications.values()];
+    expect(notifications).toHaveLength(2);
+    expect(notifications.every((n) => n.type === 'escalated')).toBe(true);
   });
 });
