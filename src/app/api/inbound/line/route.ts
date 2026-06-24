@@ -248,8 +248,12 @@ export async function POST(req: Request) {
 
     // テキストメッセージとして型を確定させる (type==='text' を確認済み)
     const textMessage = message as LineTextMessage;
-    // LINE ユーザー ID を取得する (source / userId が無い場合は '不明' とする)
-    const lineUserId = event.source?.userId ?? '不明';
+    // LINE ユーザー ID を取得する (source / userId が無い場合は '不明' とする)。
+    // LINE の正規形式は 'U' + 32 桁 16 進数。署名検証済みでも形式外の値をそのままチケット本文に
+    // 埋め込むと将来の出力経路 (HTML メール等) でインジェクションになりうるため §9 に従い検証する
+    const rawUserId = event.source?.userId ?? '';
+    // 形式が一致する場合のみ採用し、それ以外は '不明' に置き換える
+    const lineUserId = /^U[0-9a-f]{32}$/.test(rawUserId) ? rawUserId : '不明';
     // text が文字列でない (欠落・型不正) イベントは起票できないためスキップする
     if (typeof textMessage.text !== 'string') continue;
 

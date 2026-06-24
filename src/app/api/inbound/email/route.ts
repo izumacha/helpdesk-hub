@@ -184,6 +184,10 @@ async function readInboundFields(req: Request): Promise<InboundFields> {
     };
   }
   // それ以外は JSON ボディとして読む (テスト・自前連携向け)。
+  // 注意: JSON パスでは spf / dkim フィールドを呼び出し元が自由に指定できる。INBOUND_EMAIL_SECRET を
+  // 知る者が { spf: 'pass' } を渡せば INBOUND_EMAIL_AUTH=enforce をバイパスできるが、これは設計上の
+  // 許容トレードオフ — JSON パスはシークレット保持者限定のテスト・内部連携用途であり、本番 SendGrid は
+  // multipart/form-data を使う。運用では JSON パスを本番プロバイダに開かないこと (§9)。
   // req.json() はボディ全体をメモリに乗せてからパースするため、先に rawText として読んでサイズを検査する
   const rawText = await req.text();
   // UTF-8 バイト数で上限を検査する (rawText.length は UTF-16 コードユニット数で不正確なため Buffer 経由)
@@ -334,10 +338,12 @@ export async function POST(req: Request) {
   const expectedDomain = process.env.INBOUND_EMAIL_DOMAIN?.trim() || null;
   // フィールドを正規化する (宛先トークン・送信者・件名・本文)
   const parsed = parseInboundEmail(fields, { expectedDomain });
-  // 必須情報が欠けていれば 422 (起票できない理由をログに残す)
+  // 必須情報が欠けていれば 422 (起票できない理由はログのみに残し、外部へは汎用メッセージを返す §9)
   if (!parsed.ok) {
+    // 詳細理由はサーバーログに記録する (外部に返すと内部ルーティング構造が推測される)
     console.warn('[POST /api/inbound/email] unprocessable email', parsed.reason);
-    return NextResponse.json({ error: parsed.reason }, { status: 422 });
+    // 外部には汎用メッセージのみ返す (内部理由を公開しない)
+    return NextResponse.json({ error: 'メールを処理できませんでした' }, { status: 422 });
   }
   // 正規化済みの受信メール
   const email = parsed.email;
@@ -382,7 +388,8 @@ export async function POST(req: Request) {
       dkim: authResults.dkim,
       dmarc: authResults.dmarc,
     });
-    return NextResponse.json({ status: 'quarantined', reason: 'auth' }, { status: 202 });
+    // 外部レスポンスには reason を含めない (SPF/DKIM ポリシー適用状態を推測させない §9)
+    return NextResponse.json({ status: 'quarantined' }, { status: 202 });
   }
 
   // 送信者がそのテナントの既知メンバーかを確認する。

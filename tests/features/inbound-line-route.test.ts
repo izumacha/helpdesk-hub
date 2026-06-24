@@ -12,6 +12,11 @@ const SECRET = 'test-line-channel-secret';
 const TENANT = 'default-tenant';
 const AGENT_ID = 'u-agent-1';
 const MEMBER_ID = 'u-member-1';
+// LINE ユーザー ID のテスト用固定値。LINE の実形式 (U + 32桁小文字 hex) に合わせる。
+// ルートが userId フォーマットを検証するようになったため、形式外の値は '不明' 扱いになる
+const LINE_ID_UNLINKED = 'U00000000000000000000000000000001'; // テナントメンバーに未紐付け
+const LINE_ID_LINKED = 'U00000000000000000000000000000002'; // MEMBER_ID に紐付け済み
+const LINE_ID_NEW = 'U00000000000000000000000000000003'; // 新規連携対象
 
 let store: Store;
 let repos: Repos;
@@ -95,7 +100,8 @@ describe('POST /api/inbound/line', () => {
   // 未連携ユーザーの通常メッセージはプロキシ担当者を起票者にして起票する
   it('未連携ユーザーのメッセージはプロキシ担当者で起票する', async () => {
     const { POST } = await import('@/app/api/inbound/line/route');
-    const res = await POST(makeRequest('プリンターが動きません', 'Uunlinked'));
+    // LINE_ID_UNLINKED はテナントメンバーに紐付いていないため、プロキシ担当者が起票者になる
+    const res = await POST(makeRequest('プリンターが動きません', LINE_ID_UNLINKED));
     expect(res.status).toBe(200);
     expect(store.tickets.size).toBe(1);
     const ticket = Array.from(store.tickets.values())[0];
@@ -105,7 +111,7 @@ describe('POST /api/inbound/line', () => {
 
   // 連携済みユーザーのメッセージは本人を起票者にする (自己解決 UI 開通)
   it('連携済みユーザーのメッセージは本人を起票者にする', async () => {
-    // Uline1 を MEMBER_ID に連携済みにしておく
+    // LINE_ID_LINKED を MEMBER_ID に連携済みにしておく
     const now = new Date();
     store.users.set(MEMBER_ID, {
       id: MEMBER_ID,
@@ -116,10 +122,10 @@ describe('POST /api/inbound/line', () => {
       tenantId: TENANT,
       createdAt: now,
       updatedAt: now,
-      lineUserId: 'Uline1',
+      lineUserId: LINE_ID_LINKED, // 正規 LINE 形式 (U + 32桁 hex) の紐付け済み ID
     });
     const { POST } = await import('@/app/api/inbound/line/route');
-    const res = await POST(makeRequest('パソコンが重いです', 'Uline1'));
+    const res = await POST(makeRequest('パソコンが重いです', LINE_ID_LINKED));
     expect(res.status).toBe(200);
     const ticket = Array.from(store.tickets.values())[0];
     // 連携済みなので起票者は本人 (担当者ではない)
@@ -146,11 +152,12 @@ describe('POST /api/inbound/line', () => {
     });
     const { POST } = await import('@/app/api/inbound/line/route');
     // ユーザーがコードを (小文字・ハイフン無しで) 送ってきても正規化で一致する
-    const res = await POST(makeRequest('ab7k9qf2', 'UlineNew'));
+    const res = await POST(makeRequest('ab7k9qf2', LINE_ID_NEW));
     expect(res.status).toBe(200);
     // 連携が成立し、チケットは作られない
     expect(store.tickets.size).toBe(0);
-    expect(store.users.get(MEMBER_ID)?.lineUserId).toBe('UlineNew');
+    // 紐付け済みの lineUserId は正規形式の ID になっている
+    expect(store.users.get(MEMBER_ID)?.lineUserId).toBe(LINE_ID_NEW);
     // 発行中コードは消費済み
     expect(store.users.get(MEMBER_ID)?.lineLinkCodeHash).toBeNull();
   });
@@ -159,7 +166,7 @@ describe('POST /api/inbound/line', () => {
   it('コード形だが未発行のテキストは通常起票する', async () => {
     const { POST } = await import('@/app/api/inbound/line/route');
     // looksLike を満たす 8 文字だが発行行が無い
-    const res = await POST(makeRequest('ZZ112233', 'Uunlinked'));
+    const res = await POST(makeRequest('ZZ112233', LINE_ID_UNLINKED));
     expect(res.status).toBe(200);
     // 連携ではなく通常起票になる
     expect(store.tickets.size).toBe(1);
