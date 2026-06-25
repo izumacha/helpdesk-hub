@@ -14,8 +14,8 @@ const WEBHOOK_URL = 'https://example.webhook.office.com/webhookb2/abc';
 let fetchMock: ReturnType<typeof vi.fn>;
 
 // HTTP レスポンスのモックを作るヘルパー (ok / status / 本文を指定)
-function mockResponse(ok: boolean, status: number, body = '') {
-  return { ok, status, text: () => Promise.resolve(body) };
+function mockResponse(ok: boolean, status: number, body = '', type?: string) {
+  return { ok, status, type, text: () => Promise.resolve(body) };
 }
 
 describe('createTeamsNotifier', () => {
@@ -89,5 +89,14 @@ describe('createTeamsNotifier', () => {
     const notifier = createTeamsNotifier(WEBHOOK_URL);
     // 送信が reject されること
     await expect(notifier.send({ subject: 'x', body: 'y' })).rejects.toThrow(/Teams Webhook 送信失敗/);
+  });
+
+  // SSRF 防御: リダイレクト応答 (opaqueredirect) は追従せず例外を投げる
+  it('リダイレクト応答を拒否する', async () => {
+    // redirect: 'manual' 時のリダイレクト応答を模したモックに差し替える
+    fetchMock.mockResolvedValue(mockResponse(false, 0, '', 'opaqueredirect'));
+    const notifier = createTeamsNotifier(WEBHOOK_URL);
+    // リダイレクト先は未検証ホストへ抜ける恐れがあるため SSRF 対策で拒否される
+    await expect(notifier.send({ subject: 'x', body: 'y' })).rejects.toThrow(/SSRF/);
   });
 });

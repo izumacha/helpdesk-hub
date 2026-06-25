@@ -8,6 +8,8 @@
 
 // OutboundNotifier port の型定義
 import type { OutboundMessage, OutboundNotifier } from '@/data/ports/outbound-notifier';
+// Webhook POST 共通ユーティリティ (タイムアウト・本文上限・リダイレクト非追従の SSRF 防御)
+import { postWebhook } from '@/lib/webhook-fetch';
 
 // Teams Webhook レスポンスの最大読み取りサイズ (バイト数)。
 // Teams は成功時に "1" や空文字を返すが、エラー時の本文を読むため 1KB まで許容する
@@ -91,27 +93,24 @@ export function createTeamsNotifier(webhookUrl: string): OutboundNotifier {
       };
 
       // Teams Incoming Webhook エンドポイントへ POST する。
-      // AbortSignal.timeout で一定時間内に応答がなければ AbortError を throw する
-      const response = await fetch(webhookUrl, {
-        method: 'POST',
-        headers: {
-          // Teams Webhook は JSON ボディを要求する
-          'Content-Type': 'application/json',
-        },
+      // Teams Incoming Webhook へ POST する。
+      // 共通ヘルパーがタイムアウト・本文上限読み取り・リダイレクト非追従 (SSRF 防御) を担う。
+      const { ok, status, bodyText } = await postWebhook(webhookUrl, {
+        // Teams Webhook は JSON ボディを要求する
+        headers: { 'Content-Type': 'application/json' },
         // JSON 文字列化したペイロードを送信する
         body: JSON.stringify(payload),
         // 一定時間でタイムアウト (Teams 障害時のハングを防ぐ)
-        signal: AbortSignal.timeout(TEAMS_TIMEOUT_MS),
+        timeoutMs: TEAMS_TIMEOUT_MS,
+        // レスポンス本文の読み取り上限
+        maxResponseBytes: MAX_RESPONSE_SIZE_BYTES,
       });
-
-      // エラー時の本文を上限付きで切り詰める (巨大な本文をそのままエラーメッセージに含めない)
-      const responseText = await response.text().then((t) => t.slice(0, MAX_RESPONSE_SIZE_BYTES));
 
       // Teams は成功時に HTTP 200/202 を返す (本文は空 or "1")。
       // Slack のような "ok" 文字列判定はできないため、HTTP ステータスで成否を判定する
-      if (!response.ok) {
+      if (!ok) {
         // 内部エラーとして throw (呼び出し側が catch してログ記録 or 握りつぶす)
-        throw new Error(`Teams Webhook 送信失敗: HTTP ${response.status} - ${responseText}`);
+        throw new Error(`Teams Webhook 送信失敗: HTTP ${status} - ${bodyText}`);
       }
     },
   };
