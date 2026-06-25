@@ -88,6 +88,7 @@ function validateImportRow(
   cells: string[], // パース済みのセル配列
   indices: ColumnIndices, // 各列のインデックス
 ): { ok: true; data: ValidatedRow } | { ok: false; message: string } {
+  // 引数オブジェクトから各列インデックスを取り出す
   const { titleIndex, bodyIndex, dueDateIndex, priorityIndex } = indices;
 
   // 件名セルを取り出す
@@ -111,7 +112,8 @@ function validateImportRow(
   // 優先度セルを日本語から Priority 型へ変換する
   const priorityRaw = priorityIndex !== -1 ? (cells[priorityIndex] ?? '') : '';
   // 空文字でない場合に PRIORITY_MAP に存在しない値はタイポや意図しない値なのでエラーとする
-  if (priorityRaw && !(priorityRaw in PRIORITY_MAP)) {
+  // Object.hasOwn を使い、Object.prototype 上のキー (__proto__ 等) を誤って通過させない
+  if (priorityRaw && !Object.hasOwn(PRIORITY_MAP, priorityRaw)) {
     return {
       ok: false,
       message: `優先度の値が正しくありません: "${priorityRaw}"（高・中・低 のいずれかを指定してください）`,
