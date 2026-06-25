@@ -114,9 +114,11 @@ function validateImportRow(
   // 空文字でない場合に PRIORITY_MAP に存在しない値はタイポや意図しない値なのでエラーとする
   // Object.hasOwn を使い、Object.prototype 上のキー (__proto__ 等) を誤って通過させない
   if (priorityRaw && !Object.hasOwn(PRIORITY_MAP, priorityRaw)) {
+    // エラーメッセージにセル値を反映する際は 100 文字に切り詰め、レスポンス肥大化を防ぐ
+    const priorityDisplay = priorityRaw.length > 100 ? `${priorityRaw.slice(0, 100)}…` : priorityRaw;
     return {
       ok: false,
-      message: `優先度の値が正しくありません: "${priorityRaw}"（高・中・低 のいずれかを指定してください）`,
+      message: `優先度の値が正しくありません: "${priorityDisplay}"（高・中・低 のいずれかを指定してください）`,
     };
   }
   // 空文字または未指定の場合は Medium にフォールバックする
@@ -132,9 +134,11 @@ function validateImportRow(
       const parsed = parseDateLocal(dueDateRaw);
       if (parsed === null) {
         // 変換に失敗した (不正な形式) 場合はエラーとして記録する
+        // エラーメッセージにセル値を反映する際は 100 文字に切り詰め、レスポンス肥大化を防ぐ
+        const dueDateDisplay = dueDateRaw.length > 100 ? `${dueDateRaw.slice(0, 100)}…` : dueDateRaw;
         return {
           ok: false,
-          message: `期限日の形式が正しくありません: "${dueDateRaw}"（YYYY-MM-DD 形式で入力してください）`,
+          message: `期限日の形式が正しくありません: "${dueDateDisplay}"（YYYY-MM-DD 形式で入力してください）`,
         };
       }
       // 変換できた値を解決期限として使う
