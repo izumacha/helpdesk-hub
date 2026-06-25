@@ -65,6 +65,85 @@ export interface ImportTicketsResult {
   errors: Array<{ row: number; message: string }>; // 失敗した行の番号とエラーメッセージ
 }
 
+// CSV 1 行分のバリデーション済みデータ
+interface ValidatedRow {
+  title: string; // 検証済みの件名
+  body: string; // 検証済みの本文
+  priority: Priority; // 変換済みの優先度
+  resolutionDueAt: Date | null; // 変換済みの期限日 (null = 未指定)
+}
+
+// CSV ヘッダの列インデックス一覧
+interface ColumnIndices {
+  titleIndex: number; // 「件名」列
+  bodyIndex: number; // 「内容」列 (-1 = 未指定)
+  dueDateIndex: number; // 「期限日」列 (-1 = 未指定)
+  priorityIndex: number; // 「優先度」列 (-1 = 未指定)
+}
+
+// CSV 1 行分のセルを受け取り、バリデーション・型変換を行う純粋関数。
+// DB アクセスや副作用を持たないため、単体テストが書きやすい。
+// 成功時は { ok: true, data } を返し、失敗時は { ok: false, message } を返す。
+function validateImportRow(
+  cells: string[], // パース済みのセル配列
+  indices: ColumnIndices, // 各列のインデックス
+): { ok: true; data: ValidatedRow } | { ok: false; message: string } {
+  const { titleIndex, bodyIndex, dueDateIndex, priorityIndex } = indices;
+
+  // 件名セルを取り出す
+  const titleRaw = cells[titleIndex] ?? '';
+  // 件名が空の行はエラーとして記録してスキップする (静かにスキップせずユーザーに通知する)
+  if (!titleRaw) {
+    return { ok: false, message: '件名が空です' };
+  }
+  // 件名が長すぎる場合はエラーとして記録する (DB の制約前に弾く)
+  if (titleRaw.length > TITLE_MAX_LENGTH) {
+    return { ok: false, message: `件名が長すぎます（${TITLE_MAX_LENGTH}文字以内にしてください）` };
+  }
+
+  // 本文セルを取り出す (未指定なら空文字)
+  const bodyRaw = bodyIndex !== -1 ? (cells[bodyIndex] ?? '') : '';
+  // 本文が長すぎる場合はエラーとして記録する
+  if (bodyRaw.length > BODY_MAX_LENGTH) {
+    return { ok: false, message: `内容が長すぎます（${BODY_MAX_LENGTH}文字以内にしてください）` };
+  }
+
+  // 優先度セルを日本語から Priority 型へ変換する
+  const priorityRaw = priorityIndex !== -1 ? (cells[priorityIndex] ?? '') : '';
+  // 空文字でない場合に PRIORITY_MAP に存在しない値はタイポや意図しない値なのでエラーとする
+  if (priorityRaw && !(priorityRaw in PRIORITY_MAP)) {
+    return {
+      ok: false,
+      message: `優先度の値が正しくありません: "${priorityRaw}"（高・中・低 のいずれかを指定してください）`,
+    };
+  }
+  // 空文字または未指定の場合は Medium にフォールバックする
+  const priority: Priority = PRIORITY_MAP[priorityRaw] ?? 'Medium';
+
+  // 期限日セルを Date に変換する
+  let resolutionDueAt: Date | null = null;
+  if (dueDateIndex !== -1) {
+    // 期限日セルの値を取り出す
+    const dueDateRaw = cells[dueDateIndex] ?? '';
+    if (dueDateRaw) {
+      // YYYY-MM-DD 形式をローカル時刻の Date に変換する
+      const parsed = parseDateLocal(dueDateRaw);
+      if (parsed === null) {
+        // 変換に失敗した (不正な形式) 場合はエラーとして記録する
+        return {
+          ok: false,
+          message: `期限日の形式が正しくありません: "${dueDateRaw}"（YYYY-MM-DD 形式で入力してください）`,
+        };
+      }
+      // 変換できた値を解決期限として使う
+      resolutionDueAt = parsed;
+    }
+  }
+
+  // 全バリデーション通過: 検証済みデータを返す
+  return { ok: true, data: { title: titleRaw, body: bodyRaw, priority, resolutionDueAt } };
+}
+
 // CSV テキストを受け取ってチケットを一括作成するサーバーアクション
 export async function importTickets(csvText: string): Promise<ImportTicketsResult> {
   // セッション取得 (ログイン状態を確認)
@@ -139,6 +218,9 @@ export async function importTickets(csvText: string): Promise<ImportTicketsResul
   let imported = 0;
   const errors: Array<{ row: number; message: string }> = [];
 
+  // ヘッダ列インデックスをまとめてバリデーション関数へ渡す
+  const columnIndices: ColumnIndices = { titleIndex, bodyIndex, dueDateIndex, priorityIndex };
+
   // データ行を 1 件ずつ処理する (部分成功を許可するため、1 件エラーでも他を続ける)
   for (let i = 0; i < dataLines.length; i += 1) {
     // CSV の行番号は 1-indexed のヘッダを含めて数えるため +2 する (エラー表示用)
@@ -158,64 +240,15 @@ export async function importTickets(csvText: string): Promise<ImportTicketsResul
       continue;
     }
 
-    // 件名セルを取り出す
-    const titleRaw = cells[titleIndex] ?? '';
-    // 件名が空の行はエラーとして記録してスキップする (静かにスキップせずユーザーに通知する)
-    if (!titleRaw) {
-      errors.push({ row: rowNum, message: '件名が空です' });
+    // セルのバリデーション・型変換を純粋関数に委譲する (責務の分離)
+    const validation = validateImportRow(cells, columnIndices);
+    if (!validation.ok) {
+      // バリデーションエラーを行番号付きで記録してこの行をスキップする
+      errors.push({ row: rowNum, message: validation.message });
       continue;
     }
-    // 件名が長すぎる場合はエラーとして記録してこの行をスキップ (DB の制約前に弾く)
-    if (titleRaw.length > TITLE_MAX_LENGTH) {
-      errors.push({ row: rowNum, message: `件名が長すぎます（${TITLE_MAX_LENGTH}文字以内にしてください）` });
-      continue;
-    }
-    // 検証済みの件名を確定する
-    const title = titleRaw;
-
-    // 本文セルを取り出す (未指定なら空文字)
-    const bodyRaw = bodyIndex !== -1 ? (cells[bodyIndex] ?? '') : '';
-    // 本文が長すぎる場合はエラーとして記録してこの行をスキップ
-    if (bodyRaw.length > BODY_MAX_LENGTH) {
-      errors.push({ row: rowNum, message: `内容が長すぎます（${BODY_MAX_LENGTH}文字以内にしてください）` });
-      continue;
-    }
-    // 検証済みの本文を確定する
-    const body = bodyRaw;
-
-    // 優先度セルを日本語から Priority 型へ変換する
-    const priorityRaw = priorityIndex !== -1 ? (cells[priorityIndex] ?? '') : '';
-    // 空文字は「未指定」として Medium にフォールバック (省略を許容する)。
-    // ただし空文字でない場合に PRIORITY_MAP に存在しない値は、タイポや意図しない値の可能性が高いため
-    // エラーとして記録してスキップする (サイレントに Medium 扱いすると誤ったデータが入ってしまうため)。
-    if (priorityRaw && !(priorityRaw in PRIORITY_MAP)) {
-      errors.push({
-        row: rowNum,
-        message: `優先度の値が正しくありません: "${priorityRaw}"（高・中・低 のいずれかを指定してください）`,
-      });
-      continue;
-    }
-    // 空文字または未指定の場合は Medium にフォールバックする
-    const priority: Priority = PRIORITY_MAP[priorityRaw] ?? 'Medium';
-
-    // 期限日セルを Date に変換する (形式が不正なら null として解決期限なしにする)
-    let resolutionDueAt: Date | null = null;
-    if (dueDateIndex !== -1) {
-      // 期限日セルの値を取り出す
-      const dueDateRaw = cells[dueDateIndex] ?? '';
-      if (dueDateRaw) {
-        // YYYY-MM-DD 形式をローカル時刻の Date に変換する
-        // (`new Date('YYYY-MM-DD')` は UTC 午前 0 時なので JST 環境で前日になるバグを回避)
-        const parsed = parseDateLocal(dueDateRaw);
-        if (parsed === null) {
-          // 変換に失敗した (不正な形式) 場合はエラーとして記録してこの行をスキップ
-          errors.push({ row: rowNum, message: `期限日の形式が正しくありません: "${dueDateRaw}"（YYYY-MM-DD 形式で入力してください）` });
-          continue;
-        }
-        // 変換できた値を解決期限として使う
-        resolutionDueAt = parsed;
-      }
-    }
+    // バリデーション通過: 検証済みデータを展開する
+    const { title, body, priority, resolutionDueAt } = validation.data;
 
     // チケットを 1 件作成する (失敗してもループを続けて部分成功を許可する)
     try {
