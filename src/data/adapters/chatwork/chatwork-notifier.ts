@@ -10,6 +10,8 @@
 
 // OutboundNotifier port の型定義
 import type { OutboundMessage, OutboundNotifier } from '@/data/ports/outbound-notifier';
+// Webhook POST 共通ユーティリティ (タイムアウト・本文上限・リダイレクト非追従)
+import { postWebhook } from '@/lib/webhook-fetch';
 
 // Chatwork API のベース URL (固定。ユーザー入力を URL に混ぜないことで SSRF を防ぐ)
 const CHATWORK_API_BASE = 'https://api.chatwork.com/v2';
@@ -68,29 +70,31 @@ export function createChatworkNotifier(apiToken: string, roomId: string): Outbou
       form.set('body', body); // 投稿本文
       form.set('self_unread', '0'); // 自分の送信メッセージは既読扱いにする
 
-      // Chatwork メッセージ投稿 API へ POST する。ルーム ID は検証済みなのでパスに埋め込む
-      const response = await fetch(`${CHATWORK_API_BASE}/rooms/${roomId}/messages`, {
-        method: 'POST',
-        headers: {
-          // API トークンで認証する (Chatwork 独自ヘッダ)
-          'X-ChatWorkToken': apiToken,
-          // フォームエンコード形式を明示する
-          'Content-Type': 'application/x-www-form-urlencoded',
+      // Chatwork メッセージ投稿 API へ POST する。ルーム ID は検証済みなのでパスに埋め込む。
+      // 共通ヘルパーがタイムアウト・本文上限読み取り・リダイレクト非追従を担う。
+      const { ok, status, bodyText } = await postWebhook(
+        `${CHATWORK_API_BASE}/rooms/${roomId}/messages`,
+        {
+          headers: {
+            // API トークンで認証する (Chatwork 独自ヘッダ)
+            'X-ChatWorkToken': apiToken,
+            // フォームエンコード形式を明示する
+            'Content-Type': 'application/x-www-form-urlencoded',
+          },
+          // URLSearchParams を文字列化して送る
+          body: form.toString(),
+          // 一定時間でタイムアウト (Chatwork 障害時のハングを防ぐ)
+          timeoutMs: CHATWORK_TIMEOUT_MS,
+          // レスポンス本文の読み取り上限
+          maxResponseBytes: MAX_RESPONSE_SIZE_BYTES,
         },
-        // URLSearchParams を文字列化して送る
-        body: form.toString(),
-        // 一定時間でタイムアウト (Chatwork 障害時のハングを防ぐ)
-        signal: AbortSignal.timeout(CHATWORK_TIMEOUT_MS),
-      });
-
-      // エラー本文を上限付きで切り詰める (巨大な本文をそのままエラーメッセージに含めない)
-      const responseText = await response.text().then((t) => t.slice(0, MAX_RESPONSE_SIZE_BYTES));
+      );
 
       // Chatwork は成功時に HTTP 200 + JSON {"message_id":"..."} を返す。
       // 認証失敗 (401) やルーム不在 (404) は 4xx になるため HTTP ステータスで判定する。
       // セキュリティ: エラー本文に API トークンは含まれないが、詳細は呼び出し側ログのみに残す
-      if (!response.ok) {
-        throw new Error(`Chatwork API 送信失敗: HTTP ${response.status} - ${responseText}`);
+      if (!ok) {
+        throw new Error(`Chatwork API 送信失敗: HTTP ${status} - ${bodyText}`);
       }
     },
   };

@@ -5,6 +5,8 @@
 
 // OutboundNotifier port の型定義
 import type { OutboundMessage, OutboundNotifier } from '@/data/ports/outbound-notifier';
+// Webhook POST 共通ユーティリティ (タイムアウト・本文上限・リダイレクト非追従の SSRF 防御)
+import { postWebhook } from '@/lib/webhook-fetch';
 
 // Slack Incoming Webhook のペイロード型 (公開 API の最小限の定義)
 // ドキュメント: https://api.slack.com/messaging/webhooks
@@ -26,6 +28,9 @@ interface SlackBlock {
 // Slack Webhook レスポンスの最大ボディサイズ (バイト数)。
 // Slack は成功時 "ok" (2 バイト) を返すが、念のため 1KB まで許容する
 const MAX_RESPONSE_SIZE_BYTES = 1024;
+
+// Webhook 送信のタイムアウト (ミリ秒)。Slack 側障害でサーバーアクションがハングするのを防ぐ
+const SLACK_TIMEOUT_MS = 5_000;
 
 // ユーザー入力を Slack mrkdwn に埋め込む前にエスケープする。
 // Slack mrkdwn では < URL|ラベル > 記法がクリッカブルリンクとして解釈されるため、
@@ -91,35 +96,28 @@ export function createSlackNotifier(webhookUrl: string): OutboundNotifier {
       };
 
       // Incoming Webhook エンドポイントへ POST 送信する。
-      // AbortSignal.timeout で 5 秒以内にレスポンスが来なければ AbortError を throw する
-      // (Slack 障害時にサーバーアクションが無限にハングするのを防ぐ)
-      const response = await fetch(webhookUrl, {
-        method: 'POST',
-        headers: {
-          // Slack Incoming Webhook は Content-Type: application/json を要求する
-          'Content-Type': 'application/json',
-        },
+      // 共通ヘルパーがタイムアウト・本文上限読み取り・リダイレクト非追従 (SSRF 防御) を担う。
+      const { ok, status, bodyText } = await postWebhook(webhookUrl, {
+        // Slack Incoming Webhook は Content-Type: application/json を要求する
+        headers: { 'Content-Type': 'application/json' },
         // JSON 文字列化したペイロードを送信する
         body: JSON.stringify(payload),
-        // 5 秒でタイムアウト (Slack 障害時のハングを防ぐ)
-        signal: AbortSignal.timeout(5_000),
+        // 一定時間でタイムアウト (Slack 障害時のハングを防ぐ)
+        timeoutMs: SLACK_TIMEOUT_MS,
+        // レスポンス本文の読み取り上限
+        maxResponseBytes: MAX_RESPONSE_SIZE_BYTES,
       });
 
-      // レスポンスボディをサイズ制限付きで読む (大量のレスポンスでメモリを消費しない)
-      const responseText = await response.text().then((t) => t.slice(0, MAX_RESPONSE_SIZE_BYTES));
-
       // HTTP レベルのエラー (4xx / 5xx) をチェックする
-      if (!response.ok) {
+      if (!ok) {
         // 内部エラーとして throw (呼び出し側が catch してログ記録 or 握りつぶす)
-        throw new Error(
-          `Slack Webhook 送信失敗: HTTP ${response.status} - ${responseText}`,
-        );
+        throw new Error(`Slack Webhook 送信失敗: HTTP ${status} - ${bodyText}`);
       }
 
       // Slack は HTTP 200 でもアプリレベルエラー ("no_service", "invalid_payload" 等) を返すことがある。
       // 成功時のボディは "ok" のみなので、それ以外はエラーとして扱う
-      if (responseText.trim() !== 'ok') {
-        throw new Error(`Slack Webhook 送信失敗: ${responseText}`);
+      if (bodyText.trim() !== 'ok') {
+        throw new Error(`Slack Webhook 送信失敗: ${bodyText}`);
       }
     },
   };
