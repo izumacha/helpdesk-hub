@@ -23,6 +23,28 @@ interface ResolvedChannel {
   notifier: OutboundNotifier; // 実際の送信を行う Adapter
 }
 
+// Webhook URL を SSRF チェックして安全なら channels リストへ追加する共通ヘルパー。
+// Slack / Teams のように「ユーザーが入力した URL を保存して後で叩く」チャネルに共通して使う。
+// Chatwork のような固定ホスト宛チャネルには不要なため呼ばない。
+// 将来チャネルを追加するときも、このヘルパーを呼べば SSRF 二重防御を取り込める。
+function addWebhookChannel(
+  channels: ResolvedChannel[], // 追加先のチャネル一覧 (破壊的に追加する)
+  name: string, // ログ表示用のチャネル名
+  url: string, // ユーザーが設定した Webhook URL
+  factory: (url: string) => OutboundNotifier, // URL を受け取って Adapter を生成するファクトリ
+): void {
+  // SSRF 二重防御: 保存時 (update-notification-channels.ts) に検証済みだが、
+  // DNS リバインディング攻撃 (登録後に内部 IP へ変更) を緩和するため送信直前にも再検証する。
+  if (isUnsafeUrl(url)) {
+    // 安全でない URL が DB に残っている場合はスキップしてエラーログを残す
+    console.error(`[outbound-notify] SSRF ガード: 安全でない ${name} Webhook URL をスキップしました`);
+    // 安全でない URL にはリクエストを送らずここで終わる
+    return;
+  }
+  // URL が安全であればチャネル一覧へ追加する
+  channels.push({ name, notifier: factory(url) });
+}
+
 // 指定テナントの設定済み外部通知チャネルにメッセージを送信する。
 // - チャネルが 1 つも設定されていなければ何もしない (通知無効の正常系)
 // - 各チャネルの送信失敗はコンソールエラーに留め、呼び出し元 (Server Action) を止めない
@@ -40,27 +62,15 @@ export async function sendOutboundNotification(
   const channels: ResolvedChannel[] = [];
 
   // ── Slack ───────────────────────────────────────────────────────────────────
-  // slackWebhookUrl が設定済みかつ SSRF 安全なら Slack チャネルを追加する。
-  // SSRF 二重防御: 保存時 (update-notification-channels.ts) に検証済みだが、
-  // DNS リバインディング攻撃 (登録時はパブリック IP → 後に内部 IP に変更) を緩和するため
-  // 送信直前にもリテラル IP パターンを再検証する。
+  // slackWebhookUrl が設定済みであれば SSRF 検証のうえチャネルへ追加する
   if (tenant.slackWebhookUrl) {
-    if (isUnsafeUrl(tenant.slackWebhookUrl)) {
-      // 安全でない URL が DB に残っている場合はスキップしてエラーをログに残す
-      console.error('[outbound-notify] SSRF ガード: 安全でない Slack Webhook URL をスキップしました');
-    } else {
-      channels.push({ name: 'Slack', notifier: createSlackNotifier(tenant.slackWebhookUrl) });
-    }
+    addWebhookChannel(channels, 'Slack', tenant.slackWebhookUrl, createSlackNotifier);
   }
 
   // ── Teams ───────────────────────────────────────────────────────────────────
-  // teamsWebhookUrl が設定済みかつ SSRF 安全なら Teams チャネルを追加する (Slack と同様の二重防御)
+  // teamsWebhookUrl が設定済みであれば SSRF 検証のうえチャネルへ追加する
   if (tenant.teamsWebhookUrl) {
-    if (isUnsafeUrl(tenant.teamsWebhookUrl)) {
-      console.error('[outbound-notify] SSRF ガード: 安全でない Teams Webhook URL をスキップしました');
-    } else {
-      channels.push({ name: 'Teams', notifier: createTeamsNotifier(tenant.teamsWebhookUrl) });
-    }
+    addWebhookChannel(channels, 'Teams', tenant.teamsWebhookUrl, createTeamsNotifier);
   }
 
   // ── Chatwork ──────────────────────────────────────────────────────────────────
