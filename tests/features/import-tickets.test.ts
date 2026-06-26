@@ -118,15 +118,18 @@ async function loadAction() {
 beforeEach(() => {
   // メモリ context を新規作成してクリーンな状態にする
   const ctx = createMemoryContext();
-  store = ctx.store;
-  repos = ctx.repos;
+  store = ctx.store; // ストアを最新の空コンテキストに差し替える
+  repos = ctx.repos; // リポジトリ束を最新コンテキストに差し替える
   // セッション情報を既定に戻す
-  sessionUserId = 'u-agt-1';
-  sessionRole = 'agent';
+  sessionUserId = 'u-agt-1'; // インポート実行者のユーザー ID に戻す
+  sessionRole = 'agent'; // デフォルトロールをエージェントに戻す
+  // レート制限カウントを vi.resetModules() より前にクリアする。
+  // vi.resetModules() 後はモジュールキャッシュが破棄されるため、
+  // 静的 import の __resetRateLimits は新しいモジュールインスタンスを参照しなくなる。
+  // 先にクリアすることで、リセット直後の現行インスタンスに対して確実に作用させる。
+  __resetRateLimits();
   // vi.mock のファクトリが再適用されるよう、モジュールキャッシュを破棄する
   vi.resetModules();
-  // 前テストのレート制限カウントを引き継がないようクリアする
-  __resetRateLimits();
   // SSE ブロードキャスト呼び出しの記録をリセットする
   broadcastMock.mockClear();
   // テナント・ユーザーのフィクスチャを投入する
@@ -142,74 +145,74 @@ describe('importTickets', () => {
   describe('正常系', () => {
     // 基本的な CSV 取り込みが動作し、正しい tenantId / creatorId が付くことを確認する
     it('CSV を取り込んでチケットを作成し tenantId と creatorId が正しく設定される', async () => {
-      const importTickets = await loadAction();
-      // 3 列 2 データ行を含む CSV
+      const importTickets = await loadAction(); // モック差し替え済みの Action を動的ロード
+      // 3 列 2 データ行を含む CSV (件名・内容・優先度の全列を含む典型的なフォーマット)
       const csv = `件名,内容,優先度\n問い合わせ1,詳細1,高\n問い合わせ2,詳細2,中`;
-      const result = await importTickets(csv);
+      const result = await importTickets(csv); // Action を実行してインポートを試みる
 
       // 2 件インポート成功、エラーなし
-      expect(result.imported).toBe(2);
-      expect(result.errors).toHaveLength(0);
+      expect(result.imported).toBe(2); // 成功件数が 2 であることを確認する
+      expect(result.errors).toHaveLength(0); // エラーが発生していないことを確認する
 
       // DB に保存されたチケットを確認する
-      const tickets = [...store.tickets.values()];
-      expect(tickets).toHaveLength(2);
+      const tickets = [...store.tickets.values()]; // メモリストアから全チケットを取り出す
+      expect(tickets).toHaveLength(2); // チケットが 2 件保存されていることを確認する
       // 全チケットに正しいテナントと起票者が設定されていること (クロステナント漏洩防止の確認)
       for (const ticket of tickets) {
-        expect(ticket.tenantId).toBe(TENANT);
-        expect(ticket.creatorId).toBe('u-agt-1');
+        expect(ticket.tenantId).toBe(TENANT); // テナント ID が正しく設定されているか確認
+        expect(ticket.creatorId).toBe('u-agt-1'); // 起票者 ID がインポート実行者か確認
       }
       // 優先度が日本語から Priority 型に変換されていること
-      const titles = tickets.map((t) => t.title);
-      expect(titles).toContain('問い合わせ1');
-      expect(titles).toContain('問い合わせ2');
+      const titles = tickets.map((t) => t.title); // 全チケットの件名を配列で取り出す
+      expect(titles).toContain('問い合わせ1'); // 1 行目の件名が保存されていることを確認
+      expect(titles).toContain('問い合わせ2'); // 2 行目の件名が保存されていることを確認
     });
 
     // Excel がエクスポートする UTF-8 CSV は BOM 付きのことがある。
     // BOM (﻿) が件名列の認識を阻害しないことを確認する。
     it('BOM 付き UTF-8 CSV を正しくパースできる', async () => {
-      const importTickets = await loadAction();
-      // ﻿ (BOM) を先頭に付けた CSV
+      const importTickets = await loadAction(); // Action を動的ロードする
+      // ﻿ (BOM) を先頭に付けた CSV (Excel の「UTF-8 BOM 付き」エクスポートを模擬)
       const csv = `﻿件名\nBOM テスト`;
-      const result = await importTickets(csv);
+      const result = await importTickets(csv); // BOM 付き CSV でインポートを実行する
       // BOM が除去されて件名列が認識される
-      expect(result.imported).toBe(1);
-      expect(result.errors).toHaveLength(0);
+      expect(result.imported).toBe(1); // 1 件インポートできることを確認する
+      expect(result.errors).toHaveLength(0); // BOM によるパースエラーが発生しないことを確認する
     });
 
     // 優先度列がない場合は Medium にフォールバックされる
     it('優先度列がない行は Medium にフォールバックされる', async () => {
-      const importTickets = await loadAction();
-      const csv = `件名\nテスト件名`;
-      const result = await importTickets(csv);
-      expect(result.imported).toBe(1);
+      const importTickets = await loadAction(); // Action を動的ロードする
+      const csv = `件名\nテスト件名`; // 優先度列を持たない最小 CSV
+      const result = await importTickets(csv); // 優先度なし CSV でインポートを実行する
+      expect(result.imported).toBe(1); // 1 件インポートできることを確認する
       // フォールバック値の確認
-      const ticket = [...store.tickets.values()][0];
-      expect(ticket?.priority).toBe('Medium');
+      const ticket = [...store.tickets.values()][0]; // 保存されたチケットを 1 件取り出す
+      expect(ticket?.priority).toBe('Medium'); // 優先度が Medium にフォールバックされていることを確認する
     });
 
     // YYYY-MM-DD 形式の期限日が正しく Date 型に変換されて保存される
     it('YYYY-MM-DD 形式の期限日が保存される', async () => {
-      const importTickets = await loadAction();
-      const csv = `件名,期限日\ntest,2025-03-31`;
-      const result = await importTickets(csv);
-      expect(result.imported).toBe(1);
+      const importTickets = await loadAction(); // Action を動的ロードする
+      const csv = `件名,期限日\ntest,2025-03-31`; // YYYY-MM-DD 形式の期限日を含む CSV
+      const result = await importTickets(csv); // 期限日付き CSV でインポートを実行する
+      expect(result.imported).toBe(1); // 1 件インポートできることを確認する
       // resolutionDueAt が null でないことを確認する
-      const ticket = [...store.tickets.values()][0];
-      expect(ticket?.resolutionDueAt).not.toBeNull();
+      const ticket = [...store.tickets.values()][0]; // 保存されたチケットを取り出す
+      expect(ticket?.resolutionDueAt).not.toBeNull(); // 期限日が保存されていることを確認する
     });
 
     // CSV インジェクション（=数式で始まる件名）はインポート時に加工しない。
     // 対策はエクスポート時 (AuditExportButton.tsx の escapeCSVCell) で行う設計方針のため、
     // DB には生の値が保存される (インポート時に ' を付加すると DB が汚染されるため)。
     it('数式形式の件名はそのまま保存される (エクスポート時に CSV インジェクション対策)', async () => {
-      const importTickets = await loadAction();
-      const csv = `件名\n=SUM(A1:A10)`;
-      const result = await importTickets(csv);
-      expect(result.imported).toBe(1);
+      const importTickets = await loadAction(); // Action を動的ロードする
+      const csv = `件名\n=SUM(A1:A10)`; // Excel の数式インジェクション攻撃パターン
+      const result = await importTickets(csv); // 数式形式の件名を含む CSV でインポートを実行する
+      expect(result.imported).toBe(1); // 1 件インポートできることを確認する
       // DB に保存された値が加工されていないことを確認する
-      const ticket = [...store.tickets.values()][0];
-      expect(ticket?.title).toBe('=SUM(A1:A10)');
+      const ticket = [...store.tickets.values()][0]; // 保存されたチケットを取り出す
+      expect(ticket?.title).toBe('=SUM(A1:A10)'); // 件名が ' などを付加されていない生の値で保存されていることを確認する
     });
   });
 
@@ -217,17 +220,18 @@ describe('importTickets', () => {
   describe('RBAC (権限管理)', () => {
     // 依頼者 (requester) はエージェント専用操作のため拒否される
     it('requester は拒否される', async () => {
-      sessionRole = 'requester';
-      const importTickets = await loadAction();
+      sessionRole = 'requester'; // セッションロールを依頼者に切り替える
+      const importTickets = await loadAction(); // 依頼者セッションで Action をロードする
+      // 依頼者がインポートを試みた場合にエラーが投げられることを確認する
       await expect(importTickets('件名\nテスト')).rejects.toThrow(/エージェント|管理者/);
     });
 
     // admin はエージェント以上の権限を持つため実行できる
     it('admin は実行できる', async () => {
-      sessionRole = 'admin';
-      const importTickets = await loadAction();
-      const result = await importTickets('件名\ntest');
-      expect(result.imported).toBe(1);
+      sessionRole = 'admin'; // セッションロールを管理者に切り替える
+      const importTickets = await loadAction(); // 管理者セッションで Action をロードする
+      const result = await importTickets('件名\ntest'); // インポートを実行する
+      expect(result.imported).toBe(1); // 管理者は 1 件インポートできることを確認する
     });
   });
 
@@ -235,13 +239,15 @@ describe('importTickets', () => {
   describe('CSV バリデーション', () => {
     // 空行のみの CSV は処理できないため全体エラー
     it('空 CSV は全体エラーになる', async () => {
-      const importTickets = await loadAction();
+      const importTickets = await loadAction(); // Action を動的ロードする
+      // 空白のみで構成された CSV を渡すと全体エラーが投げられることを確認する
       await expect(importTickets('   \n  ')).rejects.toThrow(/CSV が空/);
     });
 
     // 「件名」ヘッダ列がない CSV はチケット作成できない
     it('「件名」列がない CSV は全体エラーになる', async () => {
-      const importTickets = await loadAction();
+      const importTickets = await loadAction(); // Action を動的ロードする
+      // 「件名」列を持たない CSV を渡すと全体エラーが投げられることを確認する
       await expect(importTickets('タイトル,内容\ntest,body')).rejects.toThrow(/件名/);
     });
 
@@ -249,44 +255,46 @@ describe('importTickets', () => {
     // 注意: 完全に空白の行は action 内の nonEmptyLines フィルタで除去されるため
     //       エラーは記録されない。件名セルが空になるのは「カンマはあるが先頭セルが空」の行。
     it('件名が空の行はスキップされエラー件数に記録される', async () => {
-      const importTickets = await loadAction();
+      const importTickets = await loadAction(); // Action を動的ロードする
       // 件名列が空 (,内容あり) の行 → 件名バリデーション失敗 → エラーに記録
       // その後ろに正常行を置いて部分成功を確認する
       const csv = `件名,内容\n,本文あり\n正常件名,正常本文`;
-      const result = await importTickets(csv);
+      const result = await importTickets(csv); // 件名空行を含む CSV でインポートを実行する
       // 正常行だけ取り込まれる
-      expect(result.imported).toBe(1);
+      expect(result.imported).toBe(1); // 正常行 1 件だけが取り込まれることを確認する
       // 件名が空の行がエラーとして記録される
-      expect(result.errors).toHaveLength(1);
-      expect(result.errors[0]?.message).toMatch(/件名が空/);
+      expect(result.errors).toHaveLength(1); // エラーが 1 件記録されていることを確認する
+      expect(result.errors[0]?.message).toMatch(/件名が空/); // エラーメッセージが「件名が空」を含むことを確認する
     });
 
     // 未知の優先度文字列はその行だけエラーになる
     it('無効な優先度はその行だけエラーになる', async () => {
-      const importTickets = await loadAction();
-      const csv = `件名,優先度\ntest,超高`;
-      const result = await importTickets(csv);
+      const importTickets = await loadAction(); // Action を動的ロードする
+      const csv = `件名,優先度\ntest,超高`; // 「高・中・低」以外の無効な優先度文字列を含む CSV
+      const result = await importTickets(csv); // 無効優先度 CSV でインポートを実行する
       // 取り込みは 0 件でエラーが 1 件
-      expect(result.imported).toBe(0);
-      expect(result.errors).toHaveLength(1);
-      expect(result.errors[0]?.message).toMatch(/優先度/);
+      expect(result.imported).toBe(0); // 1 件も取り込まれないことを確認する
+      expect(result.errors).toHaveLength(1); // エラーが 1 件記録されていることを確認する
+      expect(result.errors[0]?.message).toMatch(/優先度/); // エラーメッセージが「優先度」を含むことを確認する
     });
 
     // YYYY-MM-DD 以外の日付形式はその行だけエラーになる
     it('無効な期限日形式はその行だけエラーになる', async () => {
-      const importTickets = await loadAction();
-      const csv = `件名,期限日\ntest,2024/01/01`;
-      const result = await importTickets(csv);
-      expect(result.imported).toBe(0);
-      expect(result.errors[0]?.message).toMatch(/期限日/);
+      const importTickets = await loadAction(); // Action を動的ロードする
+      const csv = `件名,期限日\ntest,2024/01/01`; // スラッシュ区切り (YYYY/MM/DD) は不正な形式
+      const result = await importTickets(csv); // 不正な日付形式を含む CSV でインポートを実行する
+      expect(result.imported).toBe(0); // 1 件も取り込まれないことを確認する
+      expect(result.errors).toHaveLength(1); // エラーが 1 件記録されていることを確認する
+      expect(result.errors[0]?.message).toMatch(/期限日/); // エラーメッセージが「期限日」を含むことを確認する
     });
 
     // MAX_ROWS (200 件) を超えるデータ行数は全体エラー (DoS 防止)
     it('200 行超過は全体エラーになる', async () => {
-      const importTickets = await loadAction();
-      // 201 件のデータ行を生成する
+      const importTickets = await loadAction(); // Action を動的ロードする
+      // 201 件のデータ行を生成する (200 件上限を 1 件超える量)
       const rows = Array.from({ length: 201 }, (_, i) => `件名${i}`).join('\n');
-      const csv = `件名\n${rows}`;
+      const csv = `件名\n${rows}`; // ヘッダ行 + 201 データ行を結合した CSV
+      // 行数超過で全体エラーが投げられることを確認する
       await expect(importTickets(csv)).rejects.toThrow(/200 行/);
     });
   });
@@ -295,33 +303,33 @@ describe('importTickets', () => {
   describe('通知・SSE ブロードキャスト', () => {
     // インポート後に他エージェントへ通知が作られ SSE ブロードキャストが呼ばれること
     it('インポート後に他エージェントへ通知が作成されブロードキャストが呼ばれる', async () => {
-      const importTickets = await loadAction();
-      const csv = `件名\nテスト件名`;
-      await importTickets(csv);
+      const importTickets = await loadAction(); // Action を動的ロードする
+      const csv = `件名\nテスト件名`; // 1 件のチケットを含む CSV
+      await importTickets(csv); // インポートを実行して通知の副作用を発生させる
 
       // 通知レコードを確認する
-      const notifications = [...store.notifications.values()];
+      const notifications = [...store.notifications.values()]; // メモリストアから全通知を取り出す
       // 他エージェント (u-agt-2) の通知が 'imported' 種別で作成されている
       expect(notifications.some((n) => n.userId === 'u-agt-2' && n.type === 'imported')).toBe(true);
       // インポート実行者自身 (u-agt-1) への通知はない (自分の操作を自分に通知する必要はない)
       expect(notifications.some((n) => n.userId === 'u-agt-1')).toBe(false);
-      // 依頼者 (u-req-1) への通知もない (エージェント向け通知のため)
+      // 依頼者 (u-req-1) への通知もない (エージェント向け通知のため listAgents が返さない)
       expect(notifications.some((n) => n.userId === 'u-req-1')).toBe(false);
-      // SSE ブロードキャストが他エージェントの ID 一覧で呼ばれている
+      // SSE ブロードキャストが他エージェントの ID 一覧で呼ばれていることを確認する
       expect(broadcastMock).toHaveBeenCalledWith(['u-agt-2'], TENANT);
     });
 
     // 0 件インポート (ヘッダのみ) のときは通知・ブロードキャストが発生しない
     it('0 件インポートのとき通知・ブロードキャストは発生しない', async () => {
-      const importTickets = await loadAction();
+      const importTickets = await loadAction(); // Action を動的ロードする
       // ヘッダ行のみで実データなし → imported: 0
-      const csv = `件名`;
-      const result = await importTickets(csv);
-      expect(result.imported).toBe(0);
+      const csv = `件名`; // データ行がなくヘッダのみの CSV
+      const result = await importTickets(csv); // ヘッダのみ CSV でインポートを実行する
+      expect(result.imported).toBe(0); // 0 件しか取り込まれないことを確認する
       // 通知レコードは 0 件
-      expect([...store.notifications.values()]).toHaveLength(0);
+      expect([...store.notifications.values()]).toHaveLength(0); // 通知が一切作成されていないことを確認する
       // SSE ブロードキャストも呼ばれない
-      expect(broadcastMock).not.toHaveBeenCalled();
+      expect(broadcastMock).not.toHaveBeenCalled(); // ブロードキャストが発生しないことを確認する
     });
   });
 });
