@@ -106,6 +106,8 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
         token.id = user.id;
         token.role = (user as { role: Role }).role;
         token.tenantId = (user as { tenantId: string }).tenantId;
+        // 初回ログイン時のリフレッシュ時刻を記録する (最初からカウントを開始する)
+        token.roleRefreshedAt = Date.now();
       }
       // 旧 JWT (Tenant 化前に発行されたもの) は tenantId を持たないので、
       // DB から引いて補完する。これがないとデプロイ直後のログイン中ユーザーが
@@ -121,6 +123,27 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
           // (next-auth v5 は jwt callback での throw を session 失効として扱う)
           throw new Error('ユーザーが存在しません。再度ログインしてください。');
         }
+      }
+      // ロールの定期リフレッシュ: JWT はデフォルト 30 日有効なため、管理者がロールを変更しても
+      // 古いロールが最大 30 日残ってしまう。30 分ごとに DB を再確認して最新のロールを反映させる。
+      // (§9「認可はサーバー側で強制する」準拠。UI 非表示だけでなくロール実体を最新に保つ)
+      const ROLE_REFRESH_INTERVAL_MS = 30 * 60 * 1000; // 30 分 (ミリ秒)
+      // 前回リフレッシュ時刻が未記録 (旧 JWT) または 30 分以上経過していれば DB を再確認する。
+      // JWT 型が Record<string,unknown> を継承するため、number 型として明示的にキャストする
+      const lastRefreshed = (token.roleRefreshedAt as number | undefined) ?? 0;
+      const needsRefresh = lastRefreshed === 0 || Date.now() - lastRefreshed > ROLE_REFRESH_INTERVAL_MS;
+      if (needsRefresh && token.id) {
+        // DB からユーザーを取得して最新のロール・テナントを反映する
+        const fresh = await repos.users.findById(token.id as string);
+        if (!fresh) {
+          // ユーザーが削除されていたらセッションを失効させる
+          throw new Error('ユーザーが存在しません。再度ログインしてください。');
+        }
+        // 最新のロール・テナントを JWT に上書きする
+        token.role = fresh.role as Role;
+        token.tenantId = fresh.tenantId;
+        // リフレッシュ時刻を更新して次の 30 分をカウントし直す
+        token.roleRefreshedAt = Date.now();
       }
       // 更新したトークンを返す
       return token;

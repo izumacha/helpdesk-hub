@@ -445,7 +445,9 @@ export async function POST(req: Request) {
       );
       // 通知メッセージ (Web フォーム経由コメントと同じ文言に揃える)
       const message = `チケット「${ticket.title}」に新しいコメントが追加されました`;
-      // コメント追記 + Message-ID 登録 + 通知作成を 1 トランザクションで行う (中途半端な状態を残さない)
+      // コメント追記 + Message-ID 登録をトランザクションで行う。
+      // 通知は「最善努力 (best-effort)」なので、トランザクション外で処理する。
+      // 通知作成の失敗でコメント本体がロールバックされるのは本末転倒なためここで分離する (§9 fail-safe)。
       await uow.run(async (r) => {
         // 受信メール本文を既存チケットへのコメントとして追記する
         await r.comments.create({
@@ -462,19 +464,28 @@ export async function POST(req: Request) {
             tenantId: tenant.id,
           });
         }
-        // 通知対象へ「コメントが追加された」旨を一斉送付する
-        await Promise.all(
-          recipientIds.map((id) =>
-            r.notifications.create({
-              userId: id,
-              type: 'commented',
-              message,
-              ticketId: ticket.id,
-              tenantId: tenant.id,
-            }),
-          ),
-        );
       });
+      // トランザクション完了後にベストエフォートで通知を作成する。
+      // 失敗してもコメント自体は既にコミット済みなので、ログだけ残して続行する。
+      if (recipientIds.length > 0) {
+        try {
+          // 各受信者へ「コメントが追加された」旨の通知を作成する
+          await Promise.all(
+            recipientIds.map((id) =>
+              repos.notifications.create({
+                userId: id,
+                type: 'commented',
+                message,
+                ticketId: ticket.id,
+                tenantId: tenant.id,
+              }),
+            ),
+          );
+        } catch (err) {
+          // 通知作成の失敗はコメント追記を妨げないためログのみ (握り潰し非推奨だが明示的に許容)
+          console.warn('[POST /api/inbound/email] failed to create comment notifications', err);
+        }
+      }
       // 通知対象が居れば未読件数を SSE で即時配信する
       if (recipientIds.length > 0) await broadcastUnreadCountToMany(recipientIds, tenant.id);
       // 追記したチケット詳細ページのキャッシュを無効化して再描画させる

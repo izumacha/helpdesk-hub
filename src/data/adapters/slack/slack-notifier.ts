@@ -6,7 +6,12 @@
 // OutboundNotifier port の型定義
 import type { OutboundMessage, OutboundNotifier } from '@/data/ports/outbound-notifier';
 // Webhook POST 共通ユーティリティ (タイムアウト・本文上限・リダイレクト非追従の SSRF 防御)
-import { postWebhook } from '@/lib/webhook-fetch';
+// および共通定数 (タイムアウト・レスポンス上限サイズ) をまとめて import する
+import {
+  postWebhook,
+  DEFAULT_WEBHOOK_MAX_RESPONSE_BYTES,
+  DEFAULT_WEBHOOK_TIMEOUT_MS,
+} from '@/lib/webhook-fetch';
 
 // Slack Incoming Webhook のペイロード型 (公開 API の最小限の定義)
 // ドキュメント: https://api.slack.com/messaging/webhooks
@@ -24,13 +29,6 @@ interface SlackBlock {
   // テキスト要素 (Section ブロックに使う)
   text?: { type: string; text: string };
 }
-
-// Slack Webhook レスポンスの最大ボディサイズ (バイト数)。
-// Slack は成功時 "ok" (2 バイト) を返すが、念のため 1KB まで許容する
-const MAX_RESPONSE_SIZE_BYTES = 1024;
-
-// Webhook 送信のタイムアウト (ミリ秒)。Slack 側障害でサーバーアクションがハングするのを防ぐ
-const SLACK_TIMEOUT_MS = 5_000;
 
 // ユーザー入力を Slack mrkdwn に埋め込む前にエスケープする。
 // Slack mrkdwn では < URL|ラベル > 記法がクリッカブルリンクとして解釈されるため、
@@ -102,10 +100,9 @@ export function createSlackNotifier(webhookUrl: string): OutboundNotifier {
         headers: { 'Content-Type': 'application/json' },
         // JSON 文字列化したペイロードを送信する
         body: JSON.stringify(payload),
-        // 一定時間でタイムアウト (Slack 障害時のハングを防ぐ)
-        timeoutMs: SLACK_TIMEOUT_MS,
-        // レスポンス本文の読み取り上限
-        maxResponseBytes: MAX_RESPONSE_SIZE_BYTES,
+        // タイムアウトとレスポンス上限は webhook-fetch.ts の共通定数を使う (§6 定数の一元管理)
+        timeoutMs: DEFAULT_WEBHOOK_TIMEOUT_MS,
+        maxResponseBytes: DEFAULT_WEBHOOK_MAX_RESPONSE_BYTES,
       });
 
       // HTTP レベルのエラー (4xx / 5xx) をチェックする

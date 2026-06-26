@@ -38,9 +38,12 @@ type Params = { params: Promise<{ tenantId: string }> };
 export async function POST(req: Request, { params }: Params) {
   // URL の tenantId を取り出す
   const { tenantId } = await params;
-  // 失敗時のエラーリダイレクト (理由コードをログイン画面に渡す)。303 でブラウザを GET 遷移させる
+  // 失敗時のエラーリダイレクト (理由コードをログイン画面に渡す)。303 でブラウザを GET 遷移させる。
+  // req.url をそのままベース URL に使うと、Host ヘッダを細工した攻撃者が任意ホストへ
+  // オープンリダイレクトできる。固定の NEXTAUTH_URL を優先し、未設定時のみ req.url に落ちる (§9)。
+  const baseUrl = process.env.NEXTAUTH_URL?.replace(/\/$/, '') ?? new URL(req.url).origin;
   const errorRedirect = (code: string) =>
-    NextResponse.redirect(new URL(`/login?error=${code}`, req.url), 303);
+    NextResponse.redirect(new URL(`/login?error=${code}`, baseUrl), 303);
 
   // SSO が利用可能か検証する (不可ならログイン画面へ)
   const ctx = await loadEnabledSsoContext(tenantId);
