@@ -27,5 +27,6 @@ declare module 'next-auth/jwt' {
     id?: string; // ユーザー ID
     role?: Role; // 権限
     tenantId?: string; // 所属テナント ID (旧 JWT には無いので optional)
+    roleRefreshedAt?: number; // ロール最終リフレッシュ時刻 (Unix ms)。定期 DB 再確認に使う
   }
 }

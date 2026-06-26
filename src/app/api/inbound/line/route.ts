@@ -36,6 +36,8 @@ import { enforceRateLimit, RateLimitError } from '@/lib/rate-limit';
 import { calculateResolutionDueAt } from '@/lib/sla';
 // LINE メンバー紐付け: 受信テキストの正規化・コード形判定・ハッシュ化 (発行は Web 設定画面側)
 import { hashLineLinkCode, looksLikeLineLinkCode, normalizeLineLinkCode } from '@/lib/line-link';
+// 未読カウントを SSE で即時配信するヘルパー (新規起票後に担当者のバッジをリアルタイム更新する)
+import { broadcastUnreadCountToMany } from '@/features/notifications/notify';
 
 // このルートは Node ランタイムで動かす (node:crypto / Prisma を使うため Edge では動かない)
 export const runtime = 'nodejs';
@@ -302,11 +304,13 @@ export async function POST(req: Request) {
         : trimmedText;
 
     // メッセージ本文をサーバー側でも上限に丸める (LINE の送信上限 5000 文字よりも大きい 10000 文字で守る)
-    // プラットフォーム上限だけに頼らずサーバー側でも明示的に制限して DB への過大な書き込みを防ぐ
+    // プラットフォーム上限だけに頼らずサーバー側でも明示的に制限して DB への過大な書き込みを防ぐ。
+    // trimmedText を使うことで先頭・末尾の空白を除いてから切り詰める (textMessage.text のままだと
+    // 空白だけのメッセージが上の空白チェックをすり抜けた場合にチケット本文が空白だらけになる)。
     const safeText =
-      textMessage.text.length > MAX_BODY_LENGTH
-        ? `${textMessage.text.slice(0, MAX_BODY_LENGTH)}…`
-        : textMessage.text;
+      trimmedText.length > MAX_BODY_LENGTH
+        ? `${trimmedText.slice(0, MAX_BODY_LENGTH)}…`
+        : trimmedText;
 
     // チケット本文: LINE ユーザー ID と全メッセージテキストを含める (担当者が手動連絡できるよう)
     const ticketBody = `[LINE 経由の問い合わせ]\nLINE ユーザー ID: ${lineUserId}\n\n${safeText}`;
@@ -328,6 +332,53 @@ export async function POST(req: Request) {
       });
       // 起票したチケット ID を記録する
       ticketIds.push(ticket.id);
+      // 起票成功後に担当者全員へ「新しい問い合わせが届きました」通知を送る (ベストエフォート)。
+      // 失敗してもチケット起票自体は確定済みのため、ログを残して次のイベントへ進む (§9 fail-safe)。
+      try {
+        // 通知対象: 起票者がプロキシ担当者 (未紐付け) の場合は全担当者、本人起票なら起票者以外の担当者
+        const notifyTargets = linkedMember
+          ? agents.filter((a) => a.id !== creatorId) // 本人起票: 他担当者のみ
+          : agents; // プロキシ起票: 全担当者に通知
+        if (notifyTargets.length > 0) {
+          // 各担当者へ通知を作成する。allSettled で 1 件失敗しても他を止めない
+          const notifyResults = await Promise.allSettled(
+            notifyTargets.map((a) =>
+              repos.notifications.create({
+                userId: a.id, // 通知受信者: 各担当者
+                type: 'imported', // LINE からの取り込みによる新規起票通知 (inbound チャネルは 'imported' を使う)
+                message: `LINE から新しい問い合わせが届きました：${title}`, // 通知文言
+                ticketId: ticket.id, // 紐付けチケット
+                tenantId: targetTenantId, // テナントスコープ
+              }),
+            ),
+          );
+          // 通知作成に成功した担当者 ID だけを SSE 配信対象にする (失敗分は DB レコードが無いためスキップ)
+          const succeededIds = notifyTargets
+            .filter((_, i) => notifyResults[i]?.status === 'fulfilled')
+            .map((a) => a.id);
+          const failedCount = notifyTargets.length - succeededIds.length;
+          if (failedCount > 0) {
+            // 失敗件数だけログに残す
+            console.warn(
+              `[POST /api/inbound/line] ${failedCount} notification(s) failed to create for ticket`,
+              ticket.id,
+            );
+          }
+          // 未読カウントを SSE で即時配信して通知ベルに反映させる (成功分のみ)
+          if (succeededIds.length > 0) {
+            await broadcastUnreadCountToMany(
+              succeededIds, // 通知作成に成功した担当者 ID 一覧
+              targetTenantId, // テナントスコープ
+            ).catch((broadcastErr) => {
+              // SSE 配信失敗はバッジ更新が遅れるだけ。ログのみ残して続行する
+              console.warn('[POST /api/inbound/line] failed to broadcast unread count', broadcastErr);
+            });
+          }
+        }
+      } catch (notifyErr) {
+        // 通知失敗はログのみ (チケット起票は完了しているため応答は成功扱いのまま)
+        console.warn('[POST /api/inbound/line] failed to notify agents for ticket', ticket.id, notifyErr);
+      }
     } catch (err) {
       // 起票失敗は握り潰さずログに残す。再送による重複起票を避けるため全体は 200 で受領する
       console.error('[POST /api/inbound/line] failed to create ticket from event', err);

@@ -9,14 +9,12 @@
 // OutboundNotifier port の型定義
 import type { OutboundMessage, OutboundNotifier } from '@/data/ports/outbound-notifier';
 // Webhook POST 共通ユーティリティ (タイムアウト・本文上限・リダイレクト非追従の SSRF 防御)
-import { postWebhook } from '@/lib/webhook-fetch';
-
-// Teams Webhook レスポンスの最大読み取りサイズ (バイト数)。
-// Teams は成功時に "1" や空文字を返すが、エラー時の本文を読むため 1KB まで許容する
-const MAX_RESPONSE_SIZE_BYTES = 1024;
-
-// Webhook 送信のタイムアウト (ミリ秒)。Teams 側障害でサーバーアクションがハングするのを防ぐ
-const TEAMS_TIMEOUT_MS = 5_000;
+// および共通定数 (タイムアウト・レスポンス上限サイズ) をまとめて import する
+import {
+  postWebhook,
+  DEFAULT_WEBHOOK_MAX_RESPONSE_BYTES,
+  DEFAULT_WEBHOOK_TIMEOUT_MS,
+} from '@/lib/webhook-fetch';
 
 // Adaptive Card のスキーマ URL (Teams が要求する固定値)
 const ADAPTIVE_CARD_SCHEMA = 'http://adaptivecards.io/schemas/adaptive-card.json';
@@ -100,10 +98,9 @@ export function createTeamsNotifier(webhookUrl: string): OutboundNotifier {
         headers: { 'Content-Type': 'application/json' },
         // JSON 文字列化したペイロードを送信する
         body: JSON.stringify(payload),
-        // 一定時間でタイムアウト (Teams 障害時のハングを防ぐ)
-        timeoutMs: TEAMS_TIMEOUT_MS,
-        // レスポンス本文の読み取り上限
-        maxResponseBytes: MAX_RESPONSE_SIZE_BYTES,
+        // タイムアウトとレスポンス上限は webhook-fetch.ts の共通定数を使う (§6 定数の一元管理)
+        timeoutMs: DEFAULT_WEBHOOK_TIMEOUT_MS,
+        maxResponseBytes: DEFAULT_WEBHOOK_MAX_RESPONSE_BYTES,
       });
 
       // Teams は成功時に HTTP 200/202 を返す (本文は空 or "1")。

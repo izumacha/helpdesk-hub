@@ -445,7 +445,9 @@ export async function POST(req: Request) {
       );
       // 通知メッセージ (Web フォーム経由コメントと同じ文言に揃える)
       const message = `チケット「${ticket.title}」に新しいコメントが追加されました`;
-      // コメント追記 + Message-ID 登録 + 通知作成を 1 トランザクションで行う (中途半端な状態を残さない)
+      // コメント追記 + Message-ID 登録をトランザクションで行う。
+      // 通知は「最善努力 (best-effort)」なので、トランザクション外で処理する。
+      // 通知作成の失敗でコメント本体がロールバックされるのは本末転倒なためここで分離する (§9 fail-safe)。
       await uow.run(async (r) => {
         // 受信メール本文を既存チケットへのコメントとして追記する
         await r.comments.create({
@@ -462,10 +464,15 @@ export async function POST(req: Request) {
             tenantId: tenant.id,
           });
         }
-        // 通知対象へ「コメントが追加された」旨を一斉送付する
-        await Promise.all(
+      });
+      // トランザクション完了後にベストエフォートで通知を作成する。
+      // 失敗してもコメント自体は既にコミット済みなので、ログだけ残して続行する。
+      // allSettled を使い 1 件の失敗で他の受信者への通知が止まらないようにする。
+      if (recipientIds.length > 0) {
+        // 各受信者へ「コメントが追加された」旨の通知を作成する (部分失敗を許容)
+        const notifyResults = await Promise.allSettled(
           recipientIds.map((id) =>
-            r.notifications.create({
+            repos.notifications.create({
               userId: id,
               type: 'commented',
               message,
@@ -474,9 +481,24 @@ export async function POST(req: Request) {
             }),
           ),
         );
-      });
-      // 通知対象が居れば未読件数を SSE で即時配信する
-      if (recipientIds.length > 0) await broadcastUnreadCountToMany(recipientIds, tenant.id);
+        // 通知作成に成功した受信者だけを SSE 配信対象にする (失敗分は DB レコードが無いためスキップ)
+        const succeededIds = recipientIds.filter((_, i) => notifyResults[i]?.status === 'fulfilled');
+        const failedCount = recipientIds.length - succeededIds.length;
+        if (failedCount > 0) {
+          // 失敗件数だけログに残す (受信者 ID は個人情報のため省略)
+          console.warn(
+            `[POST /api/inbound/email] ${failedCount} notification(s) failed to create for ticket`,
+            ticket.id,
+          );
+        }
+        // 通知作成に成功した受信者にだけ未読件数を SSE で即時配信する
+        if (succeededIds.length > 0) {
+          await broadcastUnreadCountToMany(succeededIds, tenant.id).catch((err) => {
+            // SSE 配信失敗はバッジ更新が遅れるだけ。ログのみ残して続行する
+            console.warn('[POST /api/inbound/email] failed to broadcast unread count', err);
+          });
+        }
+      }
       // 追記したチケット詳細ページのキャッシュを無効化して再描画させる
       revalidatePath(`/tickets/${ticket.id}`);
       // スレッド追記として 200 を返す (新規起票ではないことを threaded フラグで示す)

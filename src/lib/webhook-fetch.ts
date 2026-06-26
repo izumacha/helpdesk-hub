@@ -10,6 +10,16 @@
 // リダイレクト先は再検証されないまま追従されてしまう。Incoming Webhook は正常時に
 // リダイレクトを返さないため、リダイレクト応答は一律エラー扱いにしてこの抜け道を塞ぐ。
 
+// Webhook レスポンスの最大読み取りサイズ (バイト数)。
+// Slack は "ok" (2 バイト)、Teams は "1" 程度、Chatwork は JSON を返すがエラー確認用に 1KB で十分。
+// 各 Adapter がそれぞれ定義すると不揃いになるため、ここで一元管理する (§6 定数の一元管理)。
+export const DEFAULT_WEBHOOK_MAX_RESPONSE_BYTES = 1024;
+
+// Webhook 送信のデフォルトタイムアウト (ミリ秒)。
+// 相手方障害でサーバーアクションが無限にハングするのを防ぐ共通値。
+// Adapter がより短い/長いタイムアウトを必要とする場合は個別に上書きできる。
+export const DEFAULT_WEBHOOK_TIMEOUT_MS = 5_000;
+
 // Webhook POST の共通オプション
 export interface WebhookPostOptions {
   // 送信ヘッダ (Content-Type や認証トークンなど)

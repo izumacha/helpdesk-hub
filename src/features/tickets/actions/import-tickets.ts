@@ -146,8 +146,13 @@ function validateImportRow(
     }
   }
 
-  // 全バリデーション通過: 検証済みデータを返す
-  return { ok: true, data: { title: titleRaw, body: bodyRaw, priority, resolutionDueAt } };
+  // 全バリデーション通過: バリデーション済みのデータをそのまま返す。
+  // CSV インジェクション対策は書き出し (エクスポート) 時に行う (AuditExportButton 等)。
+  // インポート時に ' を付加すると DB に汚染データが保存され、チケット件名が '=formula のように表示される。
+  return {
+    ok: true,
+    data: { title: titleRaw, body: bodyRaw, priority, resolutionDueAt },
+  };
 }
 
 // CSV テキストを受け取ってチケットを一括作成するサーバーアクション
@@ -185,8 +190,12 @@ export async function importTickets(csvText: string): Promise<ImportTicketsResul
   const initialStatus: TicketStatus = mode === 'lite' ? 'Open' : 'New';
 
   // --- CSV パース開始 ---
+  // Excel がエクスポートする UTF-8 CSV は先頭にバイトオーダーマーク (BOM: ﻿) を付けることがある。
+  // そのままにすると 1 列目の先頭に \uFEFF が残り、headers.indexOf('件名') が -1 になって起票が全滅する。
+  // split の前に除去しておく (正規表現の ^ は文字列先頭にのみマッチするため安全)。
+  const normalizedCsv = csvText.replace(/^\uFEFF/, '');
   // 改行コード (CRLF / LF どちらにも対応) で行に分割する
-  const allLines = csvText.split(/\r?\n/);
+  const allLines = normalizedCsv.split(/\r?\n/);
   // 空行を除外した行の配列を作る
   const nonEmptyLines = allLines.filter((line) => line.trim() !== '');
 

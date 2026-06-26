@@ -11,16 +11,15 @@
 // OutboundNotifier port の型定義
 import type { OutboundMessage, OutboundNotifier } from '@/data/ports/outbound-notifier';
 // Webhook POST 共通ユーティリティ (タイムアウト・本文上限・リダイレクト非追従)
-import { postWebhook } from '@/lib/webhook-fetch';
+// および共通定数 (タイムアウト・レスポンス上限サイズ) をまとめて import する
+import {
+  postWebhook,
+  DEFAULT_WEBHOOK_MAX_RESPONSE_BYTES,
+  DEFAULT_WEBHOOK_TIMEOUT_MS,
+} from '@/lib/webhook-fetch';
 
 // Chatwork API のベース URL (固定。ユーザー入力を URL に混ぜないことで SSRF を防ぐ)
 const CHATWORK_API_BASE = 'https://api.chatwork.com/v2';
-
-// Chatwork API レスポンスの最大読み取りサイズ (バイト数)。エラー本文の確認用に 1KB 許容する
-const MAX_RESPONSE_SIZE_BYTES = 1024;
-
-// 送信のタイムアウト (ミリ秒)。Chatwork 側障害でサーバーアクションがハングするのを防ぐ
-const CHATWORK_TIMEOUT_MS = 5_000;
 
 // ルーム ID が数字のみで構成されているかを検証する正規表現。
 // ルーム ID は URL パスに埋め込むため、数字以外 (パス区切りやクエリ) の混入を拒否してパス
@@ -83,10 +82,9 @@ export function createChatworkNotifier(apiToken: string, roomId: string): Outbou
           },
           // URLSearchParams を文字列化して送る
           body: form.toString(),
-          // 一定時間でタイムアウト (Chatwork 障害時のハングを防ぐ)
-          timeoutMs: CHATWORK_TIMEOUT_MS,
-          // レスポンス本文の読み取り上限
-          maxResponseBytes: MAX_RESPONSE_SIZE_BYTES,
+          // タイムアウトとレスポンス上限は webhook-fetch.ts の共通定数を使う (§6 定数の一元管理)
+          timeoutMs: DEFAULT_WEBHOOK_TIMEOUT_MS,
+          maxResponseBytes: DEFAULT_WEBHOOK_MAX_RESPONSE_BYTES,
         },
       );
 

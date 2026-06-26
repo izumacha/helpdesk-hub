@@ -6,7 +6,12 @@
 // OutboundNotifier port の型定義
 import type { OutboundMessage, OutboundNotifier } from '@/data/ports/outbound-notifier';
 // Webhook POST 共通ユーティリティ (タイムアウト・本文上限・リダイレクト非追従の SSRF 防御)
-import { postWebhook } from '@/lib/webhook-fetch';
+// および共通定数 (タイムアウト・レスポンス上限サイズ) をまとめて import する
+import {
+  postWebhook,
+  DEFAULT_WEBHOOK_MAX_RESPONSE_BYTES,
+  DEFAULT_WEBHOOK_TIMEOUT_MS,
+} from '@/lib/webhook-fetch';
 
 // Slack Incoming Webhook のペイロード型 (公開 API の最小限の定義)
 // ドキュメント: https://api.slack.com/messaging/webhooks
@@ -25,17 +30,12 @@ interface SlackBlock {
   text?: { type: string; text: string };
 }
 
-// Slack Webhook レスポンスの最大ボディサイズ (バイト数)。
-// Slack は成功時 "ok" (2 バイト) を返すが、念のため 1KB まで許容する
-const MAX_RESPONSE_SIZE_BYTES = 1024;
-
-// Webhook 送信のタイムアウト (ミリ秒)。Slack 側障害でサーバーアクションがハングするのを防ぐ
-const SLACK_TIMEOUT_MS = 5_000;
-
 // ユーザー入力を Slack mrkdwn に埋め込む前にエスケープする。
 // Slack mrkdwn では < URL|ラベル > 記法がクリッカブルリンクとして解釈されるため、
-// ユーザー由来の < と > を HTML エンティティに変換してインジェクションを防ぐ。
+// ユーザー由来の < と > を HTML エンティティに変換してフィッシングリンクを防ぐ。
 // エスケープ順序: & を先に変換しないと &lt; の & が再変換されて二重エンコードになる。
+// 注意: * _ ` ~ による装飾インジェクション (太字・斜体等) は、ユーザー入力を含む TextBlock を
+// plain_text 型で送信することで別途防ぐ (下の blocks 組み立て参照)。
 function escapeMrkdwn(text: string): string {
   // & → &amp; (必ず最初に変換する)
   const step1 = text.replace(/&/g, '&amp;');
@@ -59,20 +59,23 @@ export function createSlackNotifier(webhookUrl: string): OutboundNotifier {
 
       // Slack Block Kit でリッチなメッセージを構築する。
       // フォールバック用 text と blocks の両方を送り、クライアントが blocks 非対応でも読める。
+      // ユーザー入力を含む件名・本文は plain_text 型で送信して mrkdwn 装飾 (* _ ` ~) を無効化する。
+      // header ブロックは Slack ネイティブの太字見出しであり plain_text のみ受け付けるため
+      // *bold* のような装飾インジェクションが発生しない。
       const blocks: SlackBlock[] = [
         {
-          // 件名をボールドヘッダーとして表示 (mrkdwn で *...* を使う; 中身はエスケープ済み)
-          type: 'section',
-          text: { type: 'mrkdwn', text: `*${safeSubject}*` },
+          // 件名を header ブロック (Slack ネイティブの太字見出し / plain_text のみ) で表示する
+          type: 'header',
+          text: { type: 'plain_text', text: safeSubject },
         },
         {
           // 区切り線で件名と本文を分ける
           type: 'divider',
         },
         {
-          // 本文をプレーンテキストで表示 (エスケープ済みのためリンクは埋め込まれない)
+          // 本文を plain_text で表示する (mrkdwn 解釈を無効化して装飾インジェクションを防ぐ)
           type: 'section',
-          text: { type: 'mrkdwn', text: safeBody },
+          text: { type: 'plain_text', text: safeBody },
         },
       ];
 
@@ -102,10 +105,9 @@ export function createSlackNotifier(webhookUrl: string): OutboundNotifier {
         headers: { 'Content-Type': 'application/json' },
         // JSON 文字列化したペイロードを送信する
         body: JSON.stringify(payload),
-        // 一定時間でタイムアウト (Slack 障害時のハングを防ぐ)
-        timeoutMs: SLACK_TIMEOUT_MS,
-        // レスポンス本文の読み取り上限
-        maxResponseBytes: MAX_RESPONSE_SIZE_BYTES,
+        // タイムアウトとレスポンス上限は webhook-fetch.ts の共通定数を使う (§6 定数の一元管理)
+        timeoutMs: DEFAULT_WEBHOOK_TIMEOUT_MS,
+        maxResponseBytes: DEFAULT_WEBHOOK_MAX_RESPONSE_BYTES,
       });
 
       // HTTP レベルのエラー (4xx / 5xx) をチェックする
