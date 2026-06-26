@@ -111,18 +111,23 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
       }
       // 旧 JWT (Tenant 化前に発行されたもの) は tenantId を持たないので、
       // DB から引いて補完する。これがないとデプロイ直後のログイン中ユーザーが
-      // session.user.tenantId = undefined になり Server Action が落ちる
+      // session.user.tenantId = undefined になり Server Action が落ちる。
+      // 同時にロールも最新化し roleRefreshedAt をリセットすることで、直後の role refresh
+      // チェックでの二重 DB 呼び出しを避ける (DB アクセスは 1 回のみで済む)。
       if (!token.tenantId && token.id) {
         // ユーザーを ID で検索 (port 経由)
         const fresh = await repos.users.findById(token.id as string);
-        if (fresh) {
-          // 見つかれば tenantId を補完
-          token.tenantId = fresh.tenantId;
-        } else {
+        if (!fresh) {
           // User が DB から削除済みなら、JWT を無効化して再ログインを促す
           // (next-auth v5 は jwt callback での throw を session 失効として扱う)
           throw new Error('ユーザーが存在しません。再度ログインしてください。');
         }
+        // tenantId を補完し、同時にロールも最新化してリフレッシュタイマーをリセットする
+        token.tenantId = fresh.tenantId;
+        token.role = fresh.role as Role;
+        token.roleRefreshedAt = Date.now();
+        // 最新データで補完済みなため、以降の role refresh チェックは不要
+        return token;
       }
       // ロールの定期リフレッシュ: JWT はデフォルト 30 日有効なため、管理者がロールを変更しても
       // 古いロールが最大 30 日残ってしまう。30 分ごとに DB を再確認して最新のロールを反映させる。

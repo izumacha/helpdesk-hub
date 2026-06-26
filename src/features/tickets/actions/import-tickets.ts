@@ -73,16 +73,6 @@ interface ValidatedRow {
   resolutionDueAt: Date | null; // 変換済みの期限日 (null = 未指定)
 }
 
-// CSV インジェクション対策: セル値がスプレッドシートの数式として解釈される文字で始まる場合、
-// 先頭にシングルクォートを付加する。Excel / Google Sheets は先頭が = + - @ \t \r の値を
-// 数式として実行しようとするため、インポートした CSV を再度スプレッドシートで開いた際に
-// 意図しない数式が実行されたり、外部サーバへデータが送信されたりする危険がある (OWASP CSV Injection)。
-// シングルクォートをプレフィックスにする手法はスプレッドシートが広く認識するベストプラクティス。
-function sanitizeCsvCell(value: string): string {
-  // 数式起動文字 (= + - @ タブ 改行) で始まる場合のみシングルクォートを先頭に挿入する
-  return /^[=+\-@\t\r]/.test(value) ? `'${value}` : value;
-}
-
 // CSV ヘッダの列インデックス一覧
 interface ColumnIndices {
   titleIndex: number; // 「件名」列
@@ -156,11 +146,12 @@ function validateImportRow(
     }
   }
 
-  // 全バリデーション通過: 件名・本文を CSV インジェクション対策としてサニタイズしてから返す。
-  // （数式起動文字で始まるセルにシングルクォートを付加する。優先度・期限日は数値/日付型なので不要）
+  // 全バリデーション通過: バリデーション済みのデータをそのまま返す。
+  // CSV インジェクション対策は書き出し (エクスポート) 時に行う (AuditExportButton 等)。
+  // インポート時に ' を付加すると DB に汚染データが保存され、チケット件名が '=formula のように表示される。
   return {
     ok: true,
-    data: { title: sanitizeCsvCell(titleRaw), body: sanitizeCsvCell(bodyRaw), priority, resolutionDueAt },
+    data: { title: titleRaw, body: bodyRaw, priority, resolutionDueAt },
   };
 }
 

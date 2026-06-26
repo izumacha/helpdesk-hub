@@ -340,8 +340,8 @@ export async function POST(req: Request) {
           ? agents.filter((a) => a.id !== creatorId) // 本人起票: 他担当者のみ
           : agents; // プロキシ起票: 全担当者に通知
         if (notifyTargets.length > 0) {
-          // 各担当者へ通知を作成する
-          await Promise.all(
+          // 各担当者へ通知を作成する。allSettled で 1 件失敗しても他を止めない
+          const notifyResults = await Promise.allSettled(
             notifyTargets.map((a) =>
               repos.notifications.create({
                 userId: a.id, // 通知受信者: 各担当者
@@ -352,11 +352,25 @@ export async function POST(req: Request) {
               }),
             ),
           );
-          // 未読カウントを SSE で即時配信して通知ベルに反映させる
-          await broadcastUnreadCountToMany(
-            notifyTargets.map((a) => a.id), // 配信先の担当者 ID 一覧
-            targetTenantId, // テナントスコープ
-          );
+          // 通知作成に成功した担当者 ID だけを SSE 配信対象にする (失敗分は DB レコードが無いためスキップ)
+          const succeededIds = notifyTargets
+            .filter((_, i) => notifyResults[i]?.status === 'fulfilled')
+            .map((a) => a.id);
+          const failedCount = notifyTargets.length - succeededIds.length;
+          if (failedCount > 0) {
+            // 失敗件数だけログに残す
+            console.warn(
+              `[POST /api/inbound/line] ${failedCount} notification(s) failed to create for ticket`,
+              ticket.id,
+            );
+          }
+          // 未読カウントを SSE で即時配信して通知ベルに反映させる (成功分のみ)
+          if (succeededIds.length > 0) {
+            await broadcastUnreadCountToMany(
+              succeededIds, // 通知作成に成功した担当者 ID 一覧
+              targetTenantId, // テナントスコープ
+            );
+          }
         }
       } catch (notifyErr) {
         // 通知失敗はログのみ (チケット起票は完了しているため応答は成功扱いのまま)

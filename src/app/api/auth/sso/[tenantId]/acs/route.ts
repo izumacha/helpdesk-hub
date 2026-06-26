@@ -19,6 +19,8 @@ export const dynamic = 'force-dynamic';
 import { NextResponse } from 'next/server';
 // データ層 (ユーザー検索・トークン発行)
 import { repos } from '@/data';
+// 信頼できるアプリケーションベース URL の解決 (NEXTAUTH_URL 優先・req.url の Host ヘッダに依存しない)
+import { resolveAppBaseUrl } from '@/lib/app-url';
 // SSO 有効性チェック
 import { loadEnabledSsoContext } from '@/lib/sso-context';
 // SAML SP 構築とアサーション検証
@@ -39,9 +41,9 @@ export async function POST(req: Request, { params }: Params) {
   // URL の tenantId を取り出す
   const { tenantId } = await params;
   // 失敗時のエラーリダイレクト (理由コードをログイン画面に渡す)。303 でブラウザを GET 遷移させる。
-  // req.url をそのままベース URL に使うと、Host ヘッダを細工した攻撃者が任意ホストへ
-  // オープンリダイレクトできる。固定の NEXTAUTH_URL を優先し、未設定時のみ req.url に落ちる (§9)。
-  const baseUrl = process.env.NEXTAUTH_URL?.replace(/\/$/, '') ?? new URL(req.url).origin;
+  // resolveAppBaseUrl() は NEXTAUTH_URL を優先し、未設定の本番では例外を投げる (fail-closed)。
+  // req.url の Host ヘッダはユーザー制御可能なため、オープンリダイレクト防止のため使わない (§9)。
+  const baseUrl = resolveAppBaseUrl();
   const errorRedirect = (code: string) =>
     NextResponse.redirect(new URL(`/login?error=${code}`, baseUrl), 303);
 
