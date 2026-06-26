@@ -32,8 +32,10 @@ interface SlackBlock {
 
 // ユーザー入力を Slack mrkdwn に埋め込む前にエスケープする。
 // Slack mrkdwn では < URL|ラベル > 記法がクリッカブルリンクとして解釈されるため、
-// ユーザー由来の < と > を HTML エンティティに変換してインジェクションを防ぐ。
+// ユーザー由来の < と > を HTML エンティティに変換してフィッシングリンクを防ぐ。
 // エスケープ順序: & を先に変換しないと &lt; の & が再変換されて二重エンコードになる。
+// 注意: * _ ` ~ による装飾インジェクション (太字・斜体等) は、ユーザー入力を含む TextBlock を
+// plain_text 型で送信することで別途防ぐ (下の blocks 組み立て参照)。
 function escapeMrkdwn(text: string): string {
   // & → &amp; (必ず最初に変換する)
   const step1 = text.replace(/&/g, '&amp;');
@@ -57,20 +59,23 @@ export function createSlackNotifier(webhookUrl: string): OutboundNotifier {
 
       // Slack Block Kit でリッチなメッセージを構築する。
       // フォールバック用 text と blocks の両方を送り、クライアントが blocks 非対応でも読める。
+      // ユーザー入力を含む件名・本文は plain_text 型で送信して mrkdwn 装飾 (* _ ` ~) を無効化する。
+      // header ブロックは Slack ネイティブの太字見出しであり plain_text のみ受け付けるため
+      // *bold* のような装飾インジェクションが発生しない。
       const blocks: SlackBlock[] = [
         {
-          // 件名をボールドヘッダーとして表示 (mrkdwn で *...* を使う; 中身はエスケープ済み)
-          type: 'section',
-          text: { type: 'mrkdwn', text: `*${safeSubject}*` },
+          // 件名を header ブロック (Slack ネイティブの太字見出し / plain_text のみ) で表示する
+          type: 'header',
+          text: { type: 'plain_text', text: safeSubject },
         },
         {
           // 区切り線で件名と本文を分ける
           type: 'divider',
         },
         {
-          // 本文をプレーンテキストで表示 (エスケープ済みのためリンクは埋め込まれない)
+          // 本文を plain_text で表示する (mrkdwn 解釈を無効化して装飾インジェクションを防ぐ)
           type: 'section',
-          text: { type: 'mrkdwn', text: safeBody },
+          text: { type: 'plain_text', text: safeBody },
         },
       ];
 

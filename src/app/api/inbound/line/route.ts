@@ -369,7 +369,10 @@ export async function POST(req: Request) {
             await broadcastUnreadCountToMany(
               succeededIds, // 通知作成に成功した担当者 ID 一覧
               targetTenantId, // テナントスコープ
-            );
+            ).catch((broadcastErr) => {
+              // SSE 配信失敗はバッジ更新が遅れるだけ。ログのみ残して続行する
+              console.warn('[POST /api/inbound/line] failed to broadcast unread count', broadcastErr);
+            });
           }
         }
       } catch (notifyErr) {

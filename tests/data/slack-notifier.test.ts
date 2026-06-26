@@ -44,10 +44,15 @@ describe('createSlackNotifier', () => {
 
     // 送信ボディを JSON としてパースして Block Kit 構造を検証する
     const payload = JSON.parse(init.body);
+    // 件名は header ブロック (plain_text) で表示される — mrkdwn の *...* ではなくなった
+    const subjectBlock = payload.blocks[0];
+    expect(subjectBlock.type).toBe('header');
+    expect(subjectBlock.text.type).toBe('plain_text');
+    expect(subjectBlock.text.text).toBe('件名');
+    // 本文は section の plain_text ブロックで表示される
     const texts = payload.blocks.map((b: { text?: { text: string } }) => b.text?.text);
-    expect(texts).toContain('*件名*');
     expect(texts).toContain('本文');
-    // ticketUrl があれば mrkdwn のリンク記法が含まれる
+    // ticketUrl があれば mrkdwn のリンク記法が含まれる (system-generated URL は plain_text 対象外)
     expect(texts.some((t: string | undefined) => t?.includes('https://app/t/1'))).toBe(true);
   });
 

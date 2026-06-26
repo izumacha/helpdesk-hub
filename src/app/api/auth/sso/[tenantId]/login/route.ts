@@ -16,17 +16,22 @@ import { NextResponse } from 'next/server';
 import { loadEnabledSsoContext } from '@/lib/sso-context';
 // SAML SP インスタンス生成とログイン URL 生成
 import { createSamlInstance, getSsoLoginUrl } from '@/lib/saml';
+// 信頼できるアプリケーションベース URL の解決 (NEXTAUTH_URL 優先・req.url の Host ヘッダに依存しない)
+import { resolveAppBaseUrl } from '@/lib/app-url';
 
 // 動的セグメント (tenantId) の型 (Next.js 15 では params は Promise)
 type Params = { params: Promise<{ tenantId: string }> };
 
 // GET ハンドラ: SSO ログインを開始する
-export async function GET(req: Request, { params }: Params) {
+export async function GET(_req: Request, { params }: Params) {
   // URL の tenantId を取り出す
   const { tenantId } = await params;
+  // NEXTAUTH_URL を優先してベース URL を取得する。req.url の Host ヘッダはユーザー制御可能なため
+  // オープンリダイレクト防止のため使わない (§9 / acs/route.ts と同方針)。
+  const baseUrl = resolveAppBaseUrl();
   // 失敗時に共通で使うエラーリダイレクト (ログイン画面へ理由付きで戻す)
   const errorRedirect = () =>
-    NextResponse.redirect(new URL('/login?error=sso-unavailable', req.url), 303);
+    NextResponse.redirect(new URL('/login?error=sso-unavailable', baseUrl), 303);
 
   // SSO が利用可能か検証する (不可ならログイン画面へ)
   const ctx = await loadEnabledSsoContext(tenantId);

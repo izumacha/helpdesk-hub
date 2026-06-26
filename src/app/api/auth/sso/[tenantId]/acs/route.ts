@@ -44,7 +44,9 @@ export async function POST(req: Request, { params }: Params) {
   // resolveAppBaseUrl() は NEXTAUTH_URL を優先し、未設定の本番では例外を投げる (fail-closed)。
   // req.url の Host ヘッダはユーザー制御可能なため、オープンリダイレクト防止のため使わない (§9)。
   const baseUrl = resolveAppBaseUrl();
-  const errorRedirect = (code: string) =>
+  // code を union 型に制限して将来の呼び出し元が外部入力をそのまま渡す誤用を型レベルで防ぐ
+  type SsoErrorCode = 'sso-unavailable' | 'sso-invalid' | 'sso-no-user';
+  const errorRedirect = (code: SsoErrorCode) =>
     NextResponse.redirect(new URL(`/login?error=${code}`, baseUrl), 303);
 
   // SSO が利用可能か検証する (不可ならログイン画面へ)
