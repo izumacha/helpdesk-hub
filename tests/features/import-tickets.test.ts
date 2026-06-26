@@ -297,6 +297,15 @@ describe('importTickets', () => {
       // 行数超過で全体エラーが投げられることを確認する
       await expect(importTickets(csv)).rejects.toThrow(/200 行/);
     });
+
+    // MAX_CSV_BYTES (512KB) を超える CSV は全体エラー (DoS / 過大ペイロード防止)
+    it('512KB 超過の CSV は全体エラーになる', async () => {
+      const importTickets = await loadAction(); // Action を動的ロードする
+      // 512KB を超えるダミー文字列を生成する (1 バイト文字で 512 * 1024 + 1 バイト)
+      const bigCsv = '件名\n' + 'a'.repeat(512 * 1024); // ヘッダ行 + 512KB 超の本文行
+      // ペイロード超過で全体エラーが投げられることを確認する
+      await expect(importTickets(bigCsv)).rejects.toThrow(/サイズが大きすぎ/);
+    });
   });
 
   // ── 通知・SSE ブロードキャスト ────────────────────
