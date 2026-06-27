@@ -17,13 +17,13 @@ import { formatDateJP } from '@/lib/format-date';
 // 検索フィルタフォーム (Client Component)
 import { TicketFilters } from '@/features/tickets/components/TicketFilters';
 // 「自分の未対応 / 期限切れ / すべて」タブナビ (Client Component)
-import { TicketTabs, type TicketTabId } from '@/features/tickets/components/TicketTabs';
-// タブ ('mine' / 'overdue') の絞り込み条件を一元管理する純粋関数 (ダッシュボードと共有)
-import { applyTabFilter } from '@/features/tickets/tab-filter';
-// チケット状態・優先度の列挙型 (正準のドメイン型・URL クエリの型ガード用)
-import type { TicketStatus, Priority } from '@/domain/types';
-// データ層が公開しているチケット一覧フィルタ型 (port 経由クエリの引数)
-import type { TicketListFilter } from '@/data/ports/ticket-repository';
+import { TicketTabs } from '@/features/tickets/components/TicketTabs';
+// フィルタ組み立て共有モジュール (エクスポート API と同一ロジックを使う)
+// - buildTicketListFilter: URL クエリパラメータから TicketListFilter を組み立てる
+// - parseTabParam       : クエリの tab 文字列を TicketTabId に正規化する
+import { buildTicketListFilter, parseTabParam } from '@/features/tickets/build-filter';
+// CSV エクスポートボタン (Client Component — Suspense でラップして使う)
+import { CsvExportButton } from '@/features/tickets/components/CsvExportButton';
 
 // 1 ページあたりの表示件数
 const PAGE_SIZE = 20;
@@ -58,13 +58,6 @@ interface Props {
   }>;
 }
 
-// クエリの tab 文字列を TicketTabId に正規化する (不正値は 'all')
-function parseTabParam(raw: string | undefined): TicketTabId {
-  // 'mine' か 'overdue' に完全一致する場合のみ採用、それ以外は既定の 'all'
-  if (raw === 'mine' || raw === 'overdue') return raw;
-  return 'all';
-}
-
 // /tickets : チケット一覧ページ (検索/フィルタ + ページング)
 export default async function TicketsPage({ searchParams }: Props) {
   // searchParams は Promise なので await して取り出す
@@ -81,34 +74,26 @@ export default async function TicketsPage({ searchParams }: Props) {
   // 要求ページ番号と DB の skip 件数を計算
   const requestedPage = parsePageParam(sp.page);
   const skip = (requestedPage - 1) * PAGE_SIZE;
-  // タブ ID を正規化 ('all' / 'mine' / 'overdue' のいずれか)
+  // タブ ID を正規化 ('all' / 'mine' / 'overdue' のいずれか) — UI 表示・ページング URL 生成に使う
   const tab = parseTabParam(sp.tab);
+  // 現在時刻 (overdue タブの判定と、エクスポート API が同一基準を使えるよう変数化)
+  const now = new Date();
 
-  // データ層に渡す TicketListFilter を組み立てる (検索/絞り込みの基本条件)
-  const baseFilter: TicketListFilter = {
-    // RBAC: 依頼者は自分のチケットのみ (エージェントは creatorId 未指定 = 全件)
-    creatorId: isAgent ? undefined : session.user.id,
-    // フリーワード検索 (タイトル/本文の部分一致、大文字小文字無視)
-    text: sp.q ? { contains: sp.q, caseInsensitive: true } : undefined,
-    // ステータス絞り込み (列挙値として正しい場合のみ適用)
-    status: sp.status && isValidStatus(sp.status) ? sp.status : undefined,
-    // 優先度絞り込み
-    priority: sp.priority && isValidPriority(sp.priority) ? sp.priority : undefined,
-    // カテゴリ絞り込み (空文字は無指定として扱う)
-    categoryId: sp.categoryId || undefined,
-    // 担当者絞り込み (URL クエリの 'unassigned' をここで null に正規化)
-    assigneeId: normalizeAssigneeId(sp.assigneeId),
-    // 拠点絞り込み (空文字は無指定として扱う。Phase 4 多拠点)
-    locationId: sp.locationId || undefined,
-  };
-
-  // タブ別の追加条件 ('mine' / 'overdue') を共通ヘルパーで適用する
-  // (タブの意味はダッシュボードと共有する applyTabFilter に集約し、二重定義を避ける)
-  const filter = applyTabFilter(baseFilter, tab, {
-    isAgent,
-    userId: session.user.id,
-    now: new Date(),
-  });
+  // データ層に渡す TicketListFilter を組み立てる。
+  // build-filter.ts の buildTicketListFilter を使うことで、
+  // GET /api/tickets/export と同一の絞り込みロジックを共有する (DRY 原則)。
+  const filter = buildTicketListFilter(
+    {
+      q: sp.q,
+      status: sp.status,
+      priority: sp.priority,
+      categoryId: sp.categoryId,
+      assigneeId: sp.assigneeId,
+      locationId: sp.locationId,
+      tab: sp.tab,
+    },
+    { isAgent, userId: session.user.id, now },
+  );
 
   // セッションから tenantId を取り出して以降の port 呼び出しに伝搬する
   const tenantId = session.user.tenantId;
@@ -145,8 +130,8 @@ export default async function TicketsPage({ searchParams }: Props) {
             社内からの問い合わせを一元管理し、対応状況を追跡します。
           </p>
         </div>
-        {/* ボタングループ: 新規登録 + CSV インポート (エージェント以上のみ CSV インポートを表示) */}
-        <div className="flex items-center gap-2">
+        {/* ボタングループ: 新規登録 + CSV インポート + CSV エクスポート */}
+        <div className="flex flex-wrap items-center gap-2">
           <Link
             href="/tickets/new"
             className="rounded-lg bg-teal-700 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-teal-800"
@@ -162,6 +147,11 @@ export default async function TicketsPage({ searchParams }: Props) {
               CSV インポート
             </Link>
           )}
+          {/* CSV エクスポート: 全プランで利用可能 (issue-backlog #27 / smb-dx-pivot-plan §7.2) */}
+          {/* useSearchParams() を使うため Suspense でラップする必要がある */}
+          <Suspense fallback={null}>
+            <CsvExportButton />
+          </Suspense>
         </div>
       </div>
 
@@ -360,33 +350,7 @@ function Pagination({
   );
 }
 
-// クエリ文字列のステータスが TicketStatus に含まれるかを判定 (型ガード)
-function isValidStatus(s: string): s is TicketStatus {
-  return [
-    'New',
-    'Open',
-    'WaitingForUser',
-    'InProgress',
-    'Escalated',
-    'Resolved',
-    'Closed',
-  ].includes(s);
-}
-
-// クエリ文字列の優先度が Priority に含まれるかを判定 (型ガード)
-function isValidPriority(p: string): p is Priority {
-  return ['Low', 'Medium', 'High'].includes(p);
-}
-
-// URL クエリの assigneeId を Port が期待する形 (`undefined` / `null` / 文字列) に正規化する
-// - 空文字 / 未指定 → undefined (フィルタなし)
-// - 'unassigned' → null (未アサインのみ)
-// - その他 → 文字列のまま (担当者 ID で完全一致)
-function normalizeAssigneeId(raw: string | undefined): string | null | undefined {
-  // 値が無ければフィルタなし
-  if (!raw) return undefined;
-  // 'unassigned' は未アサイン (null) を意味する
-  if (raw === 'unassigned') return null;
-  // それ以外はユーザー ID とみなしてそのまま返す
-  return raw;
-}
+// ─────────────────────────────────────────────
+// 注: isValidStatus / isValidPriority / normalizeAssigneeId / parseTabParam は
+// src/features/tickets/build-filter.ts に集約済み。このファイルでは重複定義しない (DRY 原則)。
+// ─────────────────────────────────────────────

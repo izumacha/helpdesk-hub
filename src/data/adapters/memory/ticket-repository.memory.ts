@@ -11,6 +11,7 @@ import type {
 import type {
   AssigneeWorkloadRow,
   DashboardStats,
+  QualityMetrics,
   TicketDetail,
   TicketListFilter,
   TicketRepository,
@@ -305,6 +306,62 @@ export function makeTicketRepo(store: Store): TicketRepository {
         escalationReason: args.reason,
         updatedAt: new Date(),
       });
+    },
+
+    // 品質メトリクスを算出して返す (tenantId スコープ。since 指定時はその日時以降作成分のみ)
+    async qualityMetrics({ tenantId, since }) {
+      // テナントスコープ + since 条件でチケットを絞り込む
+      const allTickets = [...store.tickets.values()].filter(
+        (t) => t.tenantId === tenantId && (!since || t.createdAt >= since),
+      );
+
+      // 初回応答済みチケット (firstRespondedAt が設定されているもの) を抽出する
+      const responded = allTickets.filter((t) => t.firstRespondedAt != null);
+      // 初回応答時間 (ms) の平均を計算する (対象なしは null)
+      const avgFirstResponseMs =
+        responded.length > 0
+          ? responded.reduce(
+              (sum, t) => sum + (t.firstRespondedAt!.getTime() - t.createdAt.getTime()),
+              0,
+            ) / responded.length
+          : null;
+
+      // 解決済みチケット (resolvedAt が設定されているもの) を抽出する
+      const resolved = allTickets.filter((t) => t.resolvedAt != null);
+      // 解決時間 (ms) の平均を計算する (対象なしは null)
+      const avgResolutionMs =
+        resolved.length > 0
+          ? resolved.reduce(
+              (sum, t) => sum + (t.resolvedAt!.getTime() - t.createdAt.getTime()),
+              0,
+            ) / resolved.length
+          : null;
+
+      // 対象チケットの ID セットを作っておく (履歴検索の絞り込みに使う)
+      const ticketIds = new Set(allTickets.map((t) => t.id));
+      // 再オープン履歴を持つチケット ID を収集する
+      // (field='status', newValue='Open', oldValue='Resolved' or 'Closed' の履歴が 1 件以上存在するもの)
+      const reopenedIds = new Set(
+        [...store.histories.values()]
+          .filter(
+            (h) =>
+              ticketIds.has(h.ticketId) &&
+              h.field === 'status' &&
+              h.newValue === 'Open' &&
+              (h.oldValue === 'Resolved' || h.oldValue === 'Closed'),
+          )
+          .map((h) => h.ticketId),
+      );
+      // 再オープン率 = 再オープン済みチケット数 / 全対象チケット数 (対象なしは null)
+      const reopenRate = allTickets.length > 0 ? reopenedIds.size / allTickets.length : null;
+
+      // QualityMetrics 型に準拠して返す
+      return {
+        avgFirstResponseMs,
+        avgResolutionMs,
+        reopenRate,
+        resolvedCount: resolved.length,
+      } satisfies QualityMetrics;
     },
   };
 }

@@ -78,15 +78,20 @@ export default async function DashboardPage() {
   }
 
   // 以降は Pro モードの従来ダッシュボード (情シス向けのフル集計)
-  // ダッシュボード用 3 指標を 1 メソッドで取得 (内部は groupBy で 3 クエリに集約、tenantId スコープ)
+  // ダッシュボード用 3 指標 + 品質メトリクスを並列取得する
   // - byStatus: 7 状態それぞれの件数 (依頼者なら自身のチケットに限定)
   // - slaOverdue / workload: 当該テナント内全件対象 (表示は呼び出し側で role 制御)
-  const stats = await repos.tickets.dashboardStats({
-    creatorId: isAgent ? undefined : session.user.id,
-    now,
-    excludeStatusesForWorkload: ['Resolved', 'Closed'],
-    tenantId,
-  });
+  // - qualityMetrics: 平均初回応答時間・平均解決時間・再オープン率 (エージェント向け)
+  const [stats, metrics] = await Promise.all([
+    repos.tickets.dashboardStats({
+      creatorId: isAgent ? undefined : session.user.id,
+      now,
+      excludeStatusesForWorkload: ['Resolved', 'Closed'],
+      tenantId,
+    }),
+    // 品質メトリクスはエージェントのみに表示するが、取得は常に行う (条件分岐より並列化優先)
+    repos.tickets.qualityMetrics({ tenantId }),
+  ]);
 
   // SLA 超過件数 (依頼者には表示しないので 0 にしておく)
   const slaOverdueCount = isAgent ? stats.slaOverdue : 0;
@@ -224,8 +229,80 @@ export default async function DashboardPage() {
           </div>
         </section>
       )}
+
+      {/* 品質メトリクス (エージェントのみ。issue-backlog #25) */}
+      {isAgent && (
+        <section>
+          <h2 className="mb-4 text-xs font-semibold tracking-wider text-slate-500 uppercase">
+            対応品質
+          </h2>
+          {/* 解決済み件数が 0 のときはデータ不足を明示し、誤解を招かないようにする */}
+          {metrics.resolvedCount === 0 ? (
+            <p className="text-sm text-slate-400">解決済みのチケットが蓄積されると指標が表示されます。</p>
+          ) : (
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+              {/* 平均初回応答時間 */}
+              <div className="rounded-2xl bg-white p-5 shadow-sm ring-1 ring-slate-100">
+                <p className="text-2xl font-bold text-slate-900">
+                  {metrics.avgFirstResponseMs != null
+                    ? formatDurationMs(metrics.avgFirstResponseMs)
+                    : '—'}
+                </p>
+                <p className="mt-1 text-xs text-slate-500">平均初回応答時間</p>
+              </div>
+              {/* 平均解決時間 */}
+              <div className="rounded-2xl bg-white p-5 shadow-sm ring-1 ring-slate-100">
+                <p className="text-2xl font-bold text-slate-900">
+                  {metrics.avgResolutionMs != null
+                    ? formatDurationMs(metrics.avgResolutionMs)
+                    : '—'}
+                </p>
+                <p className="mt-1 text-xs text-slate-500">平均解決時間</p>
+              </div>
+              {/* 再オープン率 */}
+              <div className="rounded-2xl bg-white p-5 shadow-sm ring-1 ring-slate-100">
+                <p className="text-2xl font-bold text-slate-900">
+                  {metrics.reopenRate != null
+                    ? `${Math.round(metrics.reopenRate * 100)} %`
+                    : '—'}
+                </p>
+                <p className="mt-1 text-xs text-slate-500">
+                  再オープン率{' '}
+                  <span className="text-slate-400">({metrics.resolvedCount} 件対象)</span>
+                </p>
+              </div>
+            </div>
+          )}
+        </section>
+      )}
     </div>
   );
+}
+
+/**
+ * ミリ秒を「X 日 Y 時間」または「Y 時間 Z 分」という日本語の所要時間文字列に変換する。
+ * ダッシュボードの品質メトリクスカードに使用する (issue-backlog #25)。
+ * 0 ms は「0 分」と表示し、null 渡しは呼び出し元で処理する。
+ */
+function formatDurationMs(ms: number): string {
+  // 負値は丸めて 0 扱いにする (データ異常の保護)
+  const totalMs = Math.max(0, ms);
+  // ミリ秒 → 分に変換する
+  const totalMinutes = Math.round(totalMs / 60_000);
+  // 1 日以上の場合は「X 日 Y 時間」形式で返す
+  if (totalMinutes >= 60 * 24) {
+    const days = Math.floor(totalMinutes / (60 * 24)); // 日数
+    const hours = Math.floor((totalMinutes % (60 * 24)) / 60); // 余り時間
+    return hours > 0 ? `${days} 日 ${hours} 時間` : `${days} 日`;
+  }
+  // 1 時間以上の場合は「X 時間 Y 分」形式で返す
+  if (totalMinutes >= 60) {
+    const hours = Math.floor(totalMinutes / 60); // 時間
+    const minutes = totalMinutes % 60; // 余り分
+    return minutes > 0 ? `${hours} 時間 ${minutes} 分` : `${hours} 時間`;
+  }
+  // 1 時間未満は「X 分」形式で返す
+  return `${totalMinutes} 分`;
 }
 
 // Lite モード用の簡易ダッシュボード (自分の未対応 / 期限切れ の 2 枚タイル + チュートリアル)

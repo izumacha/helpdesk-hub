@@ -85,6 +85,27 @@ export interface MarkEscalatedInput {
   at: Date; // エスカレーション実行日時
 }
 
+/**
+ * 品質メトリクス (issue-backlog #25: 平均初回応答時間・平均解決時間・再オープン率)
+ *
+ * Pro モードのダッシュボードに表示し、対応品質の傾向を把握するために使う。
+ * 集計対象チケットが 0 件の場合はデータ不足として各値を null で返す (0 との混同を避ける)。
+ */
+export interface QualityMetrics {
+  /** 平均初回応答時間 (ミリ秒)。firstRespondedAt が設定されたチケットの平均値。集計対象なしなら null */
+  avgFirstResponseMs: number | null;
+  /** 平均解決時間 (ミリ秒)。resolvedAt が設定されたチケットの平均値。集計対象なしなら null */
+  avgResolutionMs: number | null;
+  /**
+   * 再オープン率 (0.0〜1.0)。
+   * 全チケットのうち「Resolved または Closed から Open に戻った履歴」を持つ割合。
+   * 集計対象なしなら null
+   */
+  reopenRate: number | null;
+  /** avgFirstResponseMs / avgResolutionMs の計算に使った解決済みチケット件数 */
+  resolvedCount: number;
+}
+
 // チケットリポジトリの契約 (port)
 // 全メソッドの ID 系引数は tenantId 必須化済。テナント越境参照/更新を Adapter 層で遮断する
 export interface TicketRepository {
@@ -119,6 +140,16 @@ export interface TicketRepository {
     excludeStatusesForWorkload: TicketStatus[]; // ワークロード集計で除外する状態
     tenantId: string; // テナントスコープ (必須)
   }): Promise<DashboardStats>; // 上記 3 指標をまとめて返す
+
+  /**
+   * 品質メトリクスを算出して返す (issue-backlog #25)。
+   * - avgFirstResponseMs : 初回応答があったチケットの平均初回応答時間 (ms)
+   * - avgResolutionMs    : 解決済みチケットの平均解決時間 (ms)
+   * - reopenRate         : 全チケット中「再オープンした」チケットの割合 (0.0〜1.0)
+   * @param args.tenantId テナントスコープ (必須)
+   * @param args.since    この日時以降に作成されたチケットのみ対象 (省略時は全期間)
+   */
+  qualityMetrics(args: { tenantId: string; since?: Date }): Promise<QualityMetrics>;
 
   create(input: CreateTicketInput): Promise<TicketWithRefs>; // 新規作成 (input.tenantId 必須)
   // 状態更新 (tenantId スコープ。他テナントの ID なら 0 件更新で no-op)
