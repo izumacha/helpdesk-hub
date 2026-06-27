@@ -281,7 +281,11 @@ export default async function DashboardPage() {
                 </p>
                 <p className="mt-1 text-xs text-slate-500">
                   再オープン率{' '}
-                  <span className="text-slate-400">(全 {metrics.totalCount} 件中)</span>
+                  {/* 分母ラベルは再オープン率が実際に計算されたときだけ表示する。
+                      null (データ不足) の場合は「—」と並べて件数を出すと誤解を招くため非表示にする */}
+                  {metrics.reopenRate != null && (
+                    <span className="text-slate-400">(全 {metrics.totalCount} 件中)</span>
+                  )}
                 </p>
               </div>
             </div>
