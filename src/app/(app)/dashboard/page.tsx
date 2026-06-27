@@ -83,14 +83,20 @@ export default async function DashboardPage() {
   // - slaOverdue / workload: 当該テナント内全件対象 (表示は呼び出し側で role 制御)
   // - qualityMetrics: 平均初回応答時間・平均解決時間・再オープン率 (エージェント向け)
   const [stats, metrics] = await Promise.all([
+    // チケット集計 (byStatus / slaOverdue / workload) を取得する
     repos.tickets.dashboardStats({
+      // 依頼者は自分が起票したチケットのみ集計する (RBAC)
       creatorId: isAgent ? undefined : session.user.id,
+      // SLA 期限判定の基準時刻
       now,
+      // ワークロード集計で完了済みを除外するステータス一覧
       excludeStatusesForWorkload: ['Resolved', 'Closed'],
+      // テナントスコープ (クロステナント漏洩防止)
       tenantId,
     }),
-    // 品質メトリクスはエージェントのみに表示するが、取得は常に行う (条件分岐より並列化優先)
-    repos.tickets.qualityMetrics({ tenantId }),
+    // 品質メトリクスはエージェントにのみ表示する重い全件集計クエリ。
+    // 依頼者には不要なため取得も省略し、DB 負荷を抑える (§8 パフォーマンス)。
+    isAgent ? repos.tickets.qualityMetrics({ tenantId }) : Promise.resolve(null),
   ]);
 
   // SLA 超過件数 (依頼者には表示しないので 0 にしておく)
@@ -230,8 +236,9 @@ export default async function DashboardPage() {
         </section>
       )}
 
-      {/* 品質メトリクス (エージェントのみ。issue-backlog #25) */}
-      {isAgent && (
+      {/* 品質メトリクス (エージェントのみ。issue-backlog #25)
+          metrics は isAgent=false のとき null なので null チェックを必ず通す */}
+      {isAgent && metrics && (
         <section>
           <h2 className="mb-4 text-xs font-semibold tracking-wider text-slate-500 uppercase">
             対応品質
@@ -285,7 +292,7 @@ export default async function DashboardPage() {
 /**
  * ミリ秒を「X 日 Y 時間」または「Y 時間 Z 分」という日本語の所要時間文字列に変換する。
  * ダッシュボードの品質メトリクスカードに使用する (issue-backlog #25)。
- * 0 ms は「0 分」と表示し、null 渡しは呼び出し元で処理する。
+ * 30 秒未満 (四捨五入で 0 分) は「< 1 分」と表示し、null 渡しは呼び出し元で処理する。
  */
 function formatDurationMs(ms: number): string {
   // NaN は Math.max(0, NaN) === NaN になるため、先に有限数かどうかを確認する。
@@ -307,6 +314,9 @@ function formatDurationMs(ms: number): string {
     const minutes = totalMinutes % 60; // 余り分
     return minutes > 0 ? `${hours} 時間 ${minutes} 分` : `${hours} 時間`;
   }
+  // 1 分未満 (30 秒未満で四捨五入が 0 になる場合) は「< 1 分」と表示する。
+  // 「0 分」は平均が 0 の場合と見分けがつかず、速い応答チームに誤解を与えるため使わない。
+  if (totalMinutes === 0) return '< 1 分';
   // 1 時間未満は「X 分」形式で返す
   return `${totalMinutes} 分`;
 }

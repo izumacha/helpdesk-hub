@@ -124,6 +124,11 @@ export async function GET(req: Request) {
   // URL のクエリパラメータを取り出す
   const { searchParams } = new URL(req.url);
 
+  // 現在時刻を一度だけ生成する。
+  // フィルタ組み立て (overdue 判定) とファイル名の日付 (JST) の両方に使い回す。
+  // 2 回 new Date() すると真夜中をまたいだ瞬間に日付が食い違うリスクを排除する。
+  const now = new Date();
+
   // フィルタを組み立てる (一覧ページと同一の buildTicketListFilter を使い二重定義を避ける)
   const filter = buildTicketListFilter(
     {
@@ -142,27 +147,32 @@ export async function GET(req: Request) {
       // タブ絞り込み ('mine' / 'overdue' / 'all')
       tab: searchParams.get('tab') ?? undefined,
     },
-    { isAgent, userId, now: new Date() },
+    // overdue タブの期限判定に now を渡す (上で一度だけ生成した値を使い回す)
+    { isAgent, userId, now },
   );
 
-  // 絞り込み条件に一致するチケットを最大 MAX_EXPORT_ROWS 件取得する
-  // (件数無制限の取得は DoS / リソース枯渇になるため上限を設ける §8 / §9)
-  const tickets = await repos.tickets.list({
-    filter,
-    page: { skip: 0, take: MAX_EXPORT_ROWS },
-    sort: { field: 'createdAt', direction: 'desc' },
-    tenantId,
-  });
-
-  // テナントの動作モード (lite | pro) を取得して日本語ラベル切り替えに使う
-  const mode = await getCurrentTenantMode(tenantId);
+  // チケット一覧取得とテナントモード取得は互いに依存しないため並列実行する
+  // (§8 パフォーマンス: 直列では 2 往復かかるところを 1 往復で完了する)
+  const [tickets, mode] = await Promise.all([
+    // 絞り込み条件に一致するチケットを最大 MAX_EXPORT_ROWS 件取得する
+    // (件数無制限の取得は DoS / リソース枯渇になるため上限を設ける §8 / §9)
+    repos.tickets.list({
+      filter,
+      page: { skip: 0, take: MAX_EXPORT_ROWS },
+      sort: { field: 'createdAt', direction: 'desc' },
+      tenantId,
+    }),
+    // テナントの動作モード (lite | pro) を取得して日本語ラベル切り替えに使う
+    getCurrentTenantMode(tenantId),
+  ]);
 
   // チケット一覧を CSV 文字列に変換する
   const csv = ticketsToCsv(tickets, mode);
 
   // ファイル名に今日の JST 日付を含める (ダウンロードフォルダで日付識別できる)
-  // サーバーサイドで生成するためブラウザの日付設定に依存しない
-  const today = new Date()
+  // サーバーサイドで生成するためブラウザの日付設定に依存しない。
+  // 上で一度だけ生成した now を再利用してリクエスト内の日付を一貫させる。
+  const today = now
     .toLocaleDateString('ja-JP', {
       timeZone: 'Asia/Tokyo',
       year: 'numeric',
