@@ -48,13 +48,16 @@ const TUTORIAL_TICKET_THRESHOLD = 10;
 export default async function DashboardPage() {
   // セッション取得
   const session = await auth();
-  // 未ログインなら何も描画しない (middleware 通過後の保険)
-  if (!session?.user?.id) return null;
+  // 未ログイン、または tenantId が取得できない場合は何も描画しない。
+  // tenantId 欠落のまま進むと Prisma が undefined を「条件なし」として扱い、
+  // 全テナントのデータが見える可能性があるため早期に弾く (§9 セキュリティ / クロステナント漏洩防止)
+  if (!session?.user?.id || !session.user.tenantId) return null;
 
   // ロール判定
   const isAgent = checkIsAgent(session.user.role);
-  // セッションから tenantId を取り出して以降の port 呼び出しに伝搬する
-  const tenantId = session.user.tenantId;
+  // セッションから tenantId を取り出して以降の port 呼び出しに伝搬する。
+  // 上の null チェックを通過しているため tenantId は string として確定している
+  const tenantId: string = session.user.tenantId;
   // SLA / 期限 判定基準時刻 (現在時刻)
   const now = new Date();
   // テナントの動作モード (lite | pro) を取得し、表示内容を切り替える
@@ -78,15 +81,26 @@ export default async function DashboardPage() {
   }
 
   // 以降は Pro モードの従来ダッシュボード (情シス向けのフル集計)
-  // ダッシュボード用 3 指標を 1 メソッドで取得 (内部は groupBy で 3 クエリに集約、tenantId スコープ)
+  // ダッシュボード用 3 指標 + 品質メトリクスを並列取得する
   // - byStatus: 7 状態それぞれの件数 (依頼者なら自身のチケットに限定)
   // - slaOverdue / workload: 当該テナント内全件対象 (表示は呼び出し側で role 制御)
-  const stats = await repos.tickets.dashboardStats({
-    creatorId: isAgent ? undefined : session.user.id,
-    now,
-    excludeStatusesForWorkload: ['Resolved', 'Closed'],
-    tenantId,
-  });
+  // - qualityMetrics: 平均初回応答時間・平均解決時間・再オープン率 (エージェント向け)
+  const [stats, metrics] = await Promise.all([
+    // チケット集計 (byStatus / slaOverdue / workload) を取得する
+    repos.tickets.dashboardStats({
+      // 依頼者は自分が起票したチケットのみ集計する (RBAC)
+      creatorId: isAgent ? undefined : session.user.id,
+      // SLA 期限判定の基準時刻
+      now,
+      // ワークロード集計で完了済みを除外するステータス一覧
+      excludeStatusesForWorkload: ['Resolved', 'Closed'],
+      // テナントスコープ (クロステナント漏洩防止)
+      tenantId,
+    }),
+    // 品質メトリクスはエージェントにのみ表示する重い全件集計クエリ。
+    // 依頼者には不要なため取得も省略し、DB 負荷を抑える (§8 パフォーマンス)。
+    isAgent ? repos.tickets.qualityMetrics({ tenantId }) : Promise.resolve(null),
+  ]);
 
   // SLA 超過件数 (依頼者には表示しないので 0 にしておく)
   const slaOverdueCount = isAgent ? stats.slaOverdue : 0;
@@ -224,8 +238,94 @@ export default async function DashboardPage() {
           </div>
         </section>
       )}
+
+      {/* 品質メトリクス (エージェントのみ。issue-backlog #25)
+          metrics は isAgent=false のとき null なので null チェックを必ず通す */}
+      {isAgent && metrics && (
+        <section>
+          <h2 className="mb-4 text-xs font-semibold tracking-wider text-slate-500 uppercase">
+            対応品質
+          </h2>
+          {/* 3 指標がすべて null のときはデータ不足を明示する
+              各指標はそれぞれ独立した分母を持つため、個別の null チェックで表示を制御する */}
+          {metrics.avgFirstResponseMs == null &&
+          metrics.avgResolutionMs == null &&
+          metrics.reopenRate == null ? (
+            <p className="text-sm text-slate-400">対応済みのチケットが蓄積されると指標が表示されます。</p>
+          ) : (
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+              {/* 平均初回応答時間 (分母: 初回応答済みチケット数) */}
+              <div className="rounded-2xl bg-white p-5 shadow-sm ring-1 ring-slate-100">
+                <p className="text-2xl font-bold text-slate-900">
+                  {metrics.avgFirstResponseMs != null
+                    ? formatDurationMs(metrics.avgFirstResponseMs)
+                    : '—'}
+                </p>
+                <p className="mt-1 text-xs text-slate-500">平均初回応答時間</p>
+              </div>
+              {/* 平均解決時間 (分母: resolvedCount = 解決済みチケット数) */}
+              <div className="rounded-2xl bg-white p-5 shadow-sm ring-1 ring-slate-100">
+                <p className="text-2xl font-bold text-slate-900">
+                  {metrics.avgResolutionMs != null
+                    ? formatDurationMs(metrics.avgResolutionMs)
+                    : '—'}
+                </p>
+                <p className="mt-1 text-xs text-slate-500">平均解決時間</p>
+              </div>
+              {/* 再オープン率 (分母: totalCount = 全チケット数。resolvedCount ではない) */}
+              <div className="rounded-2xl bg-white p-5 shadow-sm ring-1 ring-slate-100">
+                <p className="text-2xl font-bold text-slate-900">
+                  {metrics.reopenRate != null
+                    ? `${Math.round(metrics.reopenRate * 100)} %`
+                    : '—'}
+                </p>
+                <p className="mt-1 text-xs text-slate-500">
+                  再オープン率{' '}
+                  {/* 分母ラベルは再オープン率が実際に計算されたときだけ表示する。
+                      null (データ不足) の場合は「—」と並べて件数を出すと誤解を招くため非表示にする */}
+                  {metrics.reopenRate != null && (
+                    <span className="text-slate-400">(全 {metrics.totalCount} 件中)</span>
+                  )}
+                </p>
+              </div>
+            </div>
+          )}
+        </section>
+      )}
     </div>
   );
+}
+
+/**
+ * ミリ秒を「X 日 Y 時間」または「Y 時間 Z 分」という日本語の所要時間文字列に変換する。
+ * ダッシュボードの品質メトリクスカードに使用する (issue-backlog #25)。
+ * 30 秒未満 (四捨五入で 0 分) は「< 1 分」と表示し、null 渡しは呼び出し元で処理する。
+ */
+function formatDurationMs(ms: number): string {
+  // NaN は Math.max(0, NaN) === NaN になるため、先に有限数かどうかを確認する。
+  // DB から Decimal オブジェクトが返り Number() 変換後に NaN になるケースへの保護。
+  if (!Number.isFinite(ms)) return '—';
+  // 負値は丸めて 0 扱いにする (データ異常の保護)
+  const totalMs = Math.max(0, ms);
+  // ミリ秒 → 分に変換する
+  const totalMinutes = Math.round(totalMs / 60_000);
+  // 1 日以上の場合は「X 日 Y 時間」形式で返す
+  if (totalMinutes >= 60 * 24) {
+    const days = Math.floor(totalMinutes / (60 * 24)); // 日数
+    const hours = Math.floor((totalMinutes % (60 * 24)) / 60); // 余り時間
+    return hours > 0 ? `${days} 日 ${hours} 時間` : `${days} 日`;
+  }
+  // 1 時間以上の場合は「X 時間 Y 分」形式で返す
+  if (totalMinutes >= 60) {
+    const hours = Math.floor(totalMinutes / 60); // 時間
+    const minutes = totalMinutes % 60; // 余り分
+    return minutes > 0 ? `${hours} 時間 ${minutes} 分` : `${hours} 時間`;
+  }
+  // 1 分未満 (30 秒未満で四捨五入が 0 になる場合) は「< 1 分」と表示する。
+  // 「0 分」は平均が 0 の場合と見分けがつかず、速い応答チームに誤解を与えるため使わない。
+  if (totalMinutes === 0) return '< 1 分';
+  // 1 時間未満は「X 分」形式で返す
+  return `${totalMinutes} 分`;
 }
 
 // Lite モード用の簡易ダッシュボード (自分の未対応 / 期限切れ の 2 枚タイル + チュートリアル)

@@ -4,30 +4,14 @@
 import type { TicketHistoryWithRefs } from '@/data/ports/ticket-history-repository';
 // 変更履歴フィールドの日本語ラベルマップ (CSV のフィールド列に使う)
 import { HISTORY_FIELD_LABELS } from '@/lib/constants';
+// BOM 付き CSV 文字列生成 + CSV インジェクション対応済みエスケープ (lib/csv.ts に一元化)
+// ローカルコピーを持たず常に共通実装を参照することでエスケープロジックの乖離を防ぐ (§6 DRY)
+import { buildCsvString } from '@/lib/csv';
 
 // AuditExportButton が受け取る props
 interface Props {
   // サーバー側で取得済みのログ一覧 (CSVに変換して書き出す)
   logs: TicketHistoryWithRefs[];
-}
-
-
-// CSV セルを安全にエスケープする関数。
-// ダブルクォート・カンマ・改行を含む値はダブルクォートで囲み、内部のダブルクォートを 2 重化する。
-// さらに CSV インジェクション対策として、スプレッドシートが数式として解釈するプレフィックス
-// (=, +, -, @) で始まる値の先頭にタブを挿入して無害化する (OWASP CSV Injection 対策)。
-function escapeCSVCell(value: string | null | undefined): string {
-  // null/undefined は空文字列として出力する
-  if (value == null) return '';
-  // スプレッドシートの数式として解釈されるプレフィックスを無害化する
-  // (Excel / LibreOffice Calc は =, +, -, @ で始まるセルを数式として評価する)
-  const neutralised = /^[=+\-@]/.test(value) ? `\t${value}` : value;
-  // 特殊文字が含まれる場合はダブルクォートで囲む
-  // \r のみ (CR-only) の改行も Excel が行区切りとして解釈するため \n と同様に処理する
-  if (neutralised.includes(',') || neutralised.includes('"') || neutralised.includes('\n') || neutralised.includes('\r')) {
-    return `"${neutralised.replace(/"/g, '""')}"`;
-  }
-  return neutralised;
 }
 
 // 監査ログを CSV ファイルとしてダウンロードするボタン
@@ -61,17 +45,12 @@ export function AuditExportButton({ logs }: Props) {
       log.newValue ?? '',
     ]);
 
-    // ヘッダーとデータ行をまとめて CSV 文字列に変換する
-    const csvContent = [
-      // ヘッダー行
-      headers.map(escapeCSVCell).join(','),
-      // データ行 (各フィールドをエスケープして結合)
-      ...rows.map((row) => row.map(escapeCSVCell).join(',')),
-    ].join('\n');
-
-    // BOM 付き UTF-8 で出力する (Excel での文字化けを防ぐため BOM を先頭に付与)
-    const bom = '﻿';
-    const blob = new Blob([bom + csvContent], { type: 'text/csv;charset=utf-8;' });
+    // BOM 付き UTF-8 の CSV 文字列を生成する。
+    // buildCsvString が BOM・エスケープ・改行をまとめて処理する (DRY)。
+    // \t を含むセル (OWASP 無害化後) も RFC 4180 準拠でダブルクォート囲みされる。
+    const csv = buildCsvString(headers, rows);
+    // Blob に変換してブラウザにダウンロードさせる準備をする
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
     // ブラウザにダウンロードさせるための一時 URL を生成する
     const url = URL.createObjectURL(blob);
 
