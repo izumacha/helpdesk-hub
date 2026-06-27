@@ -48,13 +48,16 @@ const TUTORIAL_TICKET_THRESHOLD = 10;
 export default async function DashboardPage() {
   // セッション取得
   const session = await auth();
-  // 未ログインなら何も描画しない (middleware 通過後の保険)
-  if (!session?.user?.id) return null;
+  // 未ログイン、または tenantId が取得できない場合は何も描画しない。
+  // tenantId 欠落のまま進むと Prisma が undefined を「条件なし」として扱い、
+  // 全テナントのデータが見える可能性があるため早期に弾く (§9 セキュリティ / クロステナント漏洩防止)
+  if (!session?.user?.id || !session.user.tenantId) return null;
 
   // ロール判定
   const isAgent = checkIsAgent(session.user.role);
-  // セッションから tenantId を取り出して以降の port 呼び出しに伝搬する
-  const tenantId = session.user.tenantId;
+  // セッションから tenantId を取り出して以降の port 呼び出しに伝搬する。
+  // 上の null チェックを通過しているため tenantId は string として確定している
+  const tenantId: string = session.user.tenantId;
   // SLA / 期限 判定基準時刻 (現在時刻)
   const now = new Date();
   // テナントの動作モード (lite | pro) を取得し、表示内容を切り替える
