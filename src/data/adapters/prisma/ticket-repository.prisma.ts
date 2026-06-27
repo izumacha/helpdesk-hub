@@ -269,55 +269,53 @@ export function makeTicketRepo(db: PrismaLike): TicketRepository {
       // (Prisma は tagged template の型安全性を保持するため引数型に null を使う)
       const sinceValue: Date | null = since ?? null;
 
-      // ── クエリ 1: 平均初回応答時間 ──
-      // firstRespondedAt - createdAt の平均をミリ秒で返す。
-      // firstRespondedAt が null のチケット (未応答) は除外する。
-      // EXTRACT(EPOCH ...) は秒単位なので × 1000 でミリ秒に変換する。
-      const responseRows = await db.$queryRaw<[{ avg_ms: number | null }]>`
-        SELECT AVG(
-          EXTRACT(EPOCH FROM ("firstRespondedAt" - "createdAt")) * 1000
-        ) AS avg_ms
-        FROM "Ticket"
-        WHERE "tenantId" = ${tenantId}
-          AND "firstRespondedAt" IS NOT NULL
-          AND (${sinceValue}::timestamptz IS NULL OR "createdAt" >= ${sinceValue}::timestamptz)
-      `;
-
-      // ── クエリ 2: 平均解決時間 ──
-      // resolvedAt - createdAt の平均をミリ秒で返す。
-      // resolvedAt が null のチケット (未解決) は除外する。
-      const resolutionRows = await db.$queryRaw<
-        [{ avg_ms: number | null; cnt: bigint }]
-      >`
-        SELECT
-          AVG(EXTRACT(EPOCH FROM ("resolvedAt" - "createdAt")) * 1000) AS avg_ms,
-          COUNT(*) AS cnt
-        FROM "Ticket"
-        WHERE "tenantId" = ${tenantId}
-          AND "resolvedAt" IS NOT NULL
-          AND (${sinceValue}::timestamptz IS NULL OR "createdAt" >= ${sinceValue}::timestamptz)
-      `;
-
-      // ── クエリ 3: 再オープン率 ──
-      // 全チケット数のうち、「Resolved または Closed → Open への遷移履歴」を持つ
-      // チケットの割合を返す。
-      // TicketHistory.field = 'status' かつ newValue = 'Open' かつ
-      // oldValue IN ('Resolved', 'Closed') の行を持つ ticket を「再オープン済み」とみなす。
-      const reopenRows = await db.$queryRaw<
-        [{ total: bigint; reopened: bigint }]
-      >`
-        SELECT
-          COUNT(DISTINCT t.id) AS total,
-          COUNT(DISTINCT th."ticketId") AS reopened
-        FROM "Ticket" t
-        LEFT JOIN "TicketHistory" th
-          ON th."ticketId" = t.id
-          AND th.field = 'status'
-          AND th."newValue" = 'Open'
-          AND th."oldValue" IN ('Resolved', 'Closed')
-        WHERE t."tenantId" = ${tenantId}
-          AND (${sinceValue}::timestamptz IS NULL OR t."createdAt" >= ${sinceValue}::timestamptz)
-      `;
+      // 3 本の SQL クエリを並列実行する (直列だと合計レイテンシが 3 倍になるため)。
+      // クエリ間に依存がないため Promise.all で安全に並列化できる。
+      const [responseRows, resolutionRows, reopenRows] = await Promise.all([
+        // ── クエリ 1: 平均初回応答時間 ──
+        // firstRespondedAt - createdAt の平均をミリ秒で返す。
+        // firstRespondedAt が null のチケット (未応答) は除外する。
+        // EXTRACT(EPOCH ...) は秒単位なので × 1000 でミリ秒に変換する。
+        db.$queryRaw<[{ avg_ms: number | null }]>`
+          SELECT AVG(
+            EXTRACT(EPOCH FROM ("firstRespondedAt" - "createdAt")) * 1000
+          ) AS avg_ms
+          FROM "Ticket"
+          WHERE "tenantId" = ${tenantId}
+            AND "firstRespondedAt" IS NOT NULL
+            AND (${sinceValue}::timestamptz IS NULL OR "createdAt" >= ${sinceValue}::timestamptz)
+        `,
+        // ── クエリ 2: 平均解決時間 ──
+        // resolvedAt - createdAt の平均をミリ秒で返す。
+        // resolvedAt が null のチケット (未解決) は除外する。
+        db.$queryRaw<[{ avg_ms: number | null; cnt: bigint }]>`
+          SELECT
+            AVG(EXTRACT(EPOCH FROM ("resolvedAt" - "createdAt")) * 1000) AS avg_ms,
+            COUNT(*) AS cnt
+          FROM "Ticket"
+          WHERE "tenantId" = ${tenantId}
+            AND "resolvedAt" IS NOT NULL
+            AND (${sinceValue}::timestamptz IS NULL OR "createdAt" >= ${sinceValue}::timestamptz)
+        `,
+        // ── クエリ 3: 再オープン率 ──
+        // 全チケット数のうち、「Resolved または Closed → Open への遷移履歴」を持つ
+        // チケットの割合を返す。
+        // TicketHistory.field = 'status' かつ newValue = 'Open' かつ
+        // oldValue IN ('Resolved', 'Closed') の行を持つ ticket を「再オープン済み」とみなす。
+        db.$queryRaw<[{ total: bigint; reopened: bigint }]>`
+          SELECT
+            COUNT(DISTINCT t.id) AS total,
+            COUNT(DISTINCT th."ticketId") AS reopened
+          FROM "Ticket" t
+          LEFT JOIN "TicketHistory" th
+            ON th."ticketId" = t.id
+            AND th.field = 'status'
+            AND th."newValue" = 'Open'
+            AND th."oldValue" IN ('Resolved', 'Closed')
+          WHERE t."tenantId" = ${tenantId}
+            AND (${sinceValue}::timestamptz IS NULL OR t."createdAt" >= ${sinceValue}::timestamptz)
+        `,
+      ]);
 
       // 平均初回応答時間: Prisma は $queryRaw の数値を Decimal や number で返すことがある
       // Number() で確実に JS の number に変換し、NaN は null に正規化する
@@ -348,6 +346,8 @@ export function makeTicketRepo(db: PrismaLike): TicketRepository {
         avgResolutionMs,
         reopenRate,
         resolvedCount,
+        // 再オープン率の分母は全チケット件数 (resolvedCount ではない)
+        totalCount: total,
       } satisfies QualityMetrics;
     },
   };

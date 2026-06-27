@@ -33,29 +33,36 @@ export interface TicketFilterContext {
   now: Date; // 現在時刻 (overdue タブの期限判定に使う)
 }
 
+// `as const satisfies` で TicketStatus / Priority の全値を列挙する。
+// 型システムが「domain/types.ts の union 型と一致しているか」を検査するため、
+// domain/types.ts に値を追加してここを更新し忘れると TypeScript エラーになる (ドリフト防止)。
+const VALID_STATUSES = [
+  'New',
+  'Open',
+  'WaitingForUser',
+  'InProgress',
+  'Escalated',
+  'Resolved',
+  'Closed',
+] as const satisfies TicketStatus[];
+
+const VALID_PRIORITIES = ['Low', 'Medium', 'High'] as const satisfies Priority[];
+
 /**
  * クエリ文字列のステータスが TicketStatus 列挙に含まれるかを判定する型ガード。
  * URL は信頼できない入力のため、必ずこの関数で検証してから使う。
  */
 export function isValidStatus(s: string): s is TicketStatus {
-  // 有効な TicketStatus の全一覧。変更時は src/domain/types.ts と同期させること
-  return [
-    'New',
-    'Open',
-    'WaitingForUser',
-    'InProgress',
-    'Escalated',
-    'Resolved',
-    'Closed',
-  ].includes(s);
+  // VALID_STATUSES は satisfies TicketStatus[] で型検査済み
+  return (VALID_STATUSES as readonly string[]).includes(s);
 }
 
 /**
  * クエリ文字列の優先度が Priority 列挙に含まれるかを判定する型ガード。
  */
 export function isValidPriority(p: string): p is Priority {
-  // 有効な Priority の全一覧。変更時は src/domain/types.ts と同期させること
-  return ['Low', 'Medium', 'High'].includes(p);
+  // VALID_PRIORITIES は satisfies Priority[] で型検査済み
+  return (VALID_PRIORITIES as readonly string[]).includes(p);
 }
 
 /**

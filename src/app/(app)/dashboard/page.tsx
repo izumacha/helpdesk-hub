@@ -236,12 +236,15 @@ export default async function DashboardPage() {
           <h2 className="mb-4 text-xs font-semibold tracking-wider text-slate-500 uppercase">
             対応品質
           </h2>
-          {/* 解決済み件数が 0 のときはデータ不足を明示し、誤解を招かないようにする */}
-          {metrics.resolvedCount === 0 ? (
-            <p className="text-sm text-slate-400">解決済みのチケットが蓄積されると指標が表示されます。</p>
+          {/* 3 指標がすべて null のときはデータ不足を明示する
+              各指標はそれぞれ独立した分母を持つため、個別の null チェックで表示を制御する */}
+          {metrics.avgFirstResponseMs == null &&
+          metrics.avgResolutionMs == null &&
+          metrics.reopenRate == null ? (
+            <p className="text-sm text-slate-400">対応済みのチケットが蓄積されると指標が表示されます。</p>
           ) : (
             <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
-              {/* 平均初回応答時間 */}
+              {/* 平均初回応答時間 (分母: 初回応答済みチケット数) */}
               <div className="rounded-2xl bg-white p-5 shadow-sm ring-1 ring-slate-100">
                 <p className="text-2xl font-bold text-slate-900">
                   {metrics.avgFirstResponseMs != null
@@ -250,7 +253,7 @@ export default async function DashboardPage() {
                 </p>
                 <p className="mt-1 text-xs text-slate-500">平均初回応答時間</p>
               </div>
-              {/* 平均解決時間 */}
+              {/* 平均解決時間 (分母: resolvedCount = 解決済みチケット数) */}
               <div className="rounded-2xl bg-white p-5 shadow-sm ring-1 ring-slate-100">
                 <p className="text-2xl font-bold text-slate-900">
                   {metrics.avgResolutionMs != null
@@ -259,7 +262,7 @@ export default async function DashboardPage() {
                 </p>
                 <p className="mt-1 text-xs text-slate-500">平均解決時間</p>
               </div>
-              {/* 再オープン率 */}
+              {/* 再オープン率 (分母: totalCount = 全チケット数。resolvedCount ではない) */}
               <div className="rounded-2xl bg-white p-5 shadow-sm ring-1 ring-slate-100">
                 <p className="text-2xl font-bold text-slate-900">
                   {metrics.reopenRate != null
@@ -268,7 +271,7 @@ export default async function DashboardPage() {
                 </p>
                 <p className="mt-1 text-xs text-slate-500">
                   再オープン率{' '}
-                  <span className="text-slate-400">({metrics.resolvedCount} 件対象)</span>
+                  <span className="text-slate-400">(全 {metrics.totalCount} 件中)</span>
                 </p>
               </div>
             </div>
@@ -285,6 +288,9 @@ export default async function DashboardPage() {
  * 0 ms は「0 分」と表示し、null 渡しは呼び出し元で処理する。
  */
 function formatDurationMs(ms: number): string {
+  // NaN は Math.max(0, NaN) === NaN になるため、先に有限数かどうかを確認する。
+  // DB から Decimal オブジェクトが返り Number() 変換後に NaN になるケースへの保護。
+  if (!Number.isFinite(ms)) return '—';
   // 負値は丸めて 0 扱いにする (データ異常の保護)
   const totalMs = Math.max(0, ms);
   // ミリ秒 → 分に変換する

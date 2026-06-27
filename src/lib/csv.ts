@@ -31,6 +31,9 @@ export function parseCsvLine(line: string): string[] {
   let current = '';
   // フィールドが引用符で囲まれているかのフラグ
   let inQuotes = false;
+  // 現在のフィールドが引用符で始まったかを記録するフラグ
+  // RFC 4180 §2.7: 引用フィールドの空白は保持すべき値の一部。trim() してはいけない
+  let wasQuoted = false;
   // 1 文字ずつ走査する
   for (let i = 0; i < line.length; i++) {
     const ch = line[i]; // 現在の文字
@@ -54,11 +57,16 @@ export function parseCsvLine(line: string): string[] {
         // バッファに文字が既にある場合 (例: `5"` の `"`) はリテラル文字として扱い、
         // 誤ってコンマを飲み込むクォートモードには入らない。
         inQuotes = true;
+        // このフィールドは引用符付きであることを記録する (trim スキップのため)
+        wasQuoted = true;
       } else if (ch === ',') {
-        // カンマ → フィールド終端。前後の空白を除いてリストに追加する
-        fields.push(current.trim());
+        // カンマ → フィールド終端。
+        // 引用フィールドは空白を保持する (RFC 4180 §2.7)。非引用フィールドのみ trim する。
+        fields.push(wasQuoted ? current : current.trim());
         // バッファをリセットして次のフィールドへ
         current = '';
+        // 次のフィールドのために wasQuoted をリセットする
+        wasQuoted = false;
       } else {
         // 通常文字 (フィールド途中の `"` も含む) をバッファに追加する
         current += ch;
@@ -72,7 +80,8 @@ export function parseCsvLine(line: string): string[] {
     throw new SyntaxError('CSV の引用符が閉じられていません。行を確認してください。');
   }
   // 最後のフィールドを追加する (末尾のカンマがなくても確実に取り込む)
-  fields.push(current.trim());
+  // 引用フィールドは空白を保持する (RFC 4180 §2.7)
+  fields.push(wasQuoted ? current : current.trim());
   // 解析済みフィールド配列を返す
   return fields;
 }
@@ -96,11 +105,14 @@ export function escapeCSVCell(value: string | null | undefined): string {
   const neutralised = /^[=+\-@]/.test(value) ? `\t${value}` : value;
   // 特殊文字 (カンマ・ダブルクォート・改行) が含まれる場合はダブルクォートで囲む
   // \r のみ (CR-only) の改行も Excel が行区切りとして解釈するため \n と同様に処理する
+  // \t (タブ) は OWASP 対策として先頭に付与した場合、RFC 4180 の TEXTDATA 範囲外のため
+  // 引用符で囲んで RFC 準拠にする
   if (
     neutralised.includes(',') ||
     neutralised.includes('"') ||
     neutralised.includes('\n') ||
-    neutralised.includes('\r')
+    neutralised.includes('\r') ||
+    neutralised.includes('\t')
   ) {
     return `"${neutralised.replace(/"/g, '""')}"`;
   }

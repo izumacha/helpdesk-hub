@@ -4,6 +4,8 @@ import { auth } from '@/lib/auth';
 import { repos } from '@/data';
 // エージェント判定ヘルパー
 import { isAgent as checkIsAgent } from '@/lib/role';
+// レート制限 (CSV エクスポートは DB 全件取得を伴う重い操作のため §9 DoS 防止として必須)
+import { enforceRateLimit, RateLimitError } from '@/lib/rate-limit';
 // テナントの動作モード (lite | pro) を取得するヘルパー
 import { getCurrentTenantMode } from '@/lib/tenant';
 // フィルタ組み立て共有関数 (一覧ページと同一ロジックを使う)
@@ -14,10 +16,9 @@ import { buildCsvString } from '@/lib/csv';
 import { getStatusLabel, PRIORITY_LABELS } from '@/lib/constants';
 // JST 日時フォーマット
 import { formatDateTimeJP, formatDateJP } from '@/lib/format-date';
-// TicketWithRefs 型 (一覧取得の戻り値)
-import type { TicketWithRefs } from '@/domain/types';
-// テナントモード型
-import type { TenantMode } from '@/generated/prisma';
+// TicketWithRefs 型 (一覧取得の戻り値) と TenantMode 型 (mode-aware ラベル用)
+// @/generated/prisma ではなく正準 @/domain/types から import する (lint ルール: no-restricted-imports)
+import type { TicketWithRefs, TenantMode } from '@/domain/types';
 
 // 1 リクエストで出力できるチケットの最大件数。
 // 件数無制限の取得は DB 負荷・レスポンスサイズ・処理時間が無制限になるため
@@ -57,8 +58,8 @@ function ticketsToCsv(tickets: TicketWithRefs[], mode: TenantMode): string {
     t.category?.name ?? '',
     // 担当者名 (未アサインなら空文字)
     t.assignee?.name ?? '',
-    // 起票者名
-    t.creator.name,
+    // 起票者名 (まれに関連ユーザーが取れない場合を考慮してオプショナルチェーンを使う)
+    t.creator?.name ?? '',
     // 解決期限: 設定されていれば JST の年月日形式、未設定なら空文字
     t.resolutionDueAt ? formatDateJP(t.resolutionDueAt) : '',
     // 起票日時: JST の年月日 時分秒形式
@@ -98,6 +99,27 @@ export async function GET(req: Request) {
   const tenantId = session.user.tenantId;
   // ロール判定: 担当者かどうかで RBAC フィルタが変わる
   const isAgent = checkIsAgent(session.user.role);
+
+  // CSV エクスポートは DB 全件取得を伴う重い操作のためレート制限を適用する
+  // (ユーザー単位で 60 秒あたり 5 回まで。DoS / リソース枯渇防止 §8 / §9)
+  try {
+    enforceRateLimit(`csv-export:${userId}`, { limit: 5, windowMs: 60_000 });
+  } catch (err) {
+    // 流量超過の場合のみ 429 を返す。それ以外は想定外エラーとして上位へ投げる
+    if (err instanceof RateLimitError) {
+      return new Response(
+        JSON.stringify({ error: 'エクスポートのリクエストが多すぎます。しばらくしてから再試行してください。' }),
+        {
+          status: 429,
+          headers: {
+            'Content-Type': 'application/json',
+            'Retry-After': '60',
+          },
+        },
+      );
+    }
+    throw err;
+  }
 
   // URL のクエリパラメータを取り出す
   const { searchParams } = new URL(req.url);
@@ -151,16 +173,20 @@ export async function GET(req: Request) {
   const filename = `tickets-${today}.csv`;
 
   // CSV ファイルとしてダウンロードするレスポンスを返す
-  return new Response(csv, {
-    status: 200,
-    headers: {
-      // UTF-8 の CSV であることを明示する
-      'Content-Type': 'text/csv; charset=utf-8',
-      // ブラウザにファイルとして保存させる (attachment) + ファイル名を指定する
-      // RFC 5987 の filename* は省略 (ASCII ファイル名のため不要)
-      'Content-Disposition': `attachment; filename="${filename}"`,
-      // キャッシュさせない (毎回最新データを取得させる)
-      'Cache-Control': 'no-cache, no-store, must-revalidate',
-    },
-  });
+  const responseHeaders: HeadersInit = {
+    // UTF-8 の CSV であることを明示する
+    'Content-Type': 'text/csv; charset=utf-8',
+    // ブラウザにファイルとして保存させる (attachment) + ファイル名を指定する
+    // RFC 5987 の filename* は省略 (ASCII ファイル名のため不要)
+    'Content-Disposition': `attachment; filename="${filename}"`,
+    // キャッシュさせない (毎回最新データを取得させる)
+    'Cache-Control': 'no-cache, no-store, must-revalidate',
+  };
+  // 取得件数が上限に達した場合は打ち切りを呼び出し元に通知する
+  // (サイレント打ち切りは監査目的で「全件取得済み」と誤認させるリスクがある)
+  if (tickets.length === MAX_EXPORT_ROWS) {
+    responseHeaders['X-Truncated'] = 'true';
+    responseHeaders['X-Total-Limit'] = String(MAX_EXPORT_ROWS);
+  }
+  return new Response(csv, { status: 200, headers: responseHeaders });
 }

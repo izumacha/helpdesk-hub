@@ -69,7 +69,8 @@ function matchesFilter(t: Ticket, filter: TicketListFilter, tenantId: string): b
   if (filter.overdue) {
     if (!t.resolutionDueAt) return false;
     if (t.resolutionDueAt >= filter.overdue.now) return false;
-    if (t.resolvedAt !== null) return false;
+    // != null は null と undefined の両方を弾く (型が将来 Date | null | undefined に広がっても安全)
+    if (t.resolvedAt != null) return false;
     if (t.status === 'Resolved' || t.status === 'Closed') return false;
   }
   // テキスト検索フィルター (title または body の部分一致)
@@ -222,7 +223,7 @@ export function makeTicketRepo(store: Store): TicketRepository {
         if (
           t.resolutionDueAt &&
           t.resolutionDueAt < now &&
-          t.resolvedAt === null &&
+          t.resolvedAt == null &&
           t.status !== 'Resolved' &&
           t.status !== 'Closed'
         ) {
@@ -361,6 +362,8 @@ export function makeTicketRepo(store: Store): TicketRepository {
         avgResolutionMs,
         reopenRate,
         resolvedCount: resolved.length,
+        // 再オープン率の分母は解決済み件数ではなく全対象チケット件数
+        totalCount: allTickets.length,
       } satisfies QualityMetrics;
     },
   };

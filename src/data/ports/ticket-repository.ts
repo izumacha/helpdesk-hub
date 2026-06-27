@@ -102,8 +102,10 @@ export interface QualityMetrics {
    * 集計対象なしなら null
    */
   reopenRate: number | null;
-  /** avgFirstResponseMs / avgResolutionMs の計算に使った解決済みチケット件数 */
+  /** avgResolutionMs の計算に使った解決済みチケット件数 */
   resolvedCount: number;
+  /** reopenRate の計算に使った全チケット件数 (分母)。再オープン率ラベルに表示する */
+  totalCount: number;
 }
 
 // チケットリポジトリの契約 (port)
