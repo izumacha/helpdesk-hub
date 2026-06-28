@@ -31,9 +31,18 @@ export function CsvExportButton() {
       const exportUrl = `/api/tickets/export?${searchParams.toString()}`;
       // fetch で CSV データを取得する (auth cookie はブラウザが自動付与する)
       const res = await fetch(exportUrl);
-      // エラーレスポンスの場合は例外を投げる
+      // エラーレスポンスの場合は例外を投げる。
+      // HTTP ステータスコードは内部情報のため alert に表示しない。
+      // サーバーログの追跡には X-Request-ID 等を使い、ユーザーには汎用メッセージを見せる (§9)。
       if (!res.ok) {
-        throw new Error(`エクスポートに失敗しました (HTTP ${res.status})`);
+        // レート制限 (429) やサーバーエラー (5xx) のケースを区別したメッセージをコンソールに記録する
+        console.error(`[CsvExportButton] HTTP エラー: ${res.status}`);
+        // alert には汎用メッセージのみ表示しステータスコードを漏洩させない
+        throw new Error(
+          res.status === 429
+            ? 'しばらくしてから再度お試しください（エクスポートの上限に達しました）。'
+            : 'CSV エクスポートに失敗しました。しばらくしてから再度お試しください。',
+        );
       }
       // レスポンスを Blob として取得する
       const blob = await res.blob();
