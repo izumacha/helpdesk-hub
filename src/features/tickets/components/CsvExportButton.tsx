@@ -51,8 +51,9 @@ export function CsvExportButton() {
       // 一時 URL を解放してメモリリークを防ぐ
       URL.revokeObjectURL(url);
     } catch (err) {
-      // エラーメッセージをユーザーに表示する (詳細は内部ログに留める)
-      // スタックトレースは漏らさない (§9 セキュリティ)
+      // ブラウザのデベロッパーツールでエラー詳細を確認できるようにする (エラーを握り潰さない: CLAUDE.md §6)
+      console.error('[CsvExportButton] CSV エクスポートに失敗:', err);
+      // ユーザーには安全なメッセージのみ表示する (スタックトレース等の内部詳細は漏らさない: §9)
       const message =
         err instanceof Error ? err.message : 'CSV エクスポートに失敗しました。再度お試しください。';
       alert(message);

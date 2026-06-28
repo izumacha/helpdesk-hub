@@ -19,6 +19,8 @@ import { getCurrentTenantMode } from '@/lib/tenant';
 import { parseCsvLine, MAX_CSV_BYTES } from '@/lib/csv';
 // 優先度・ステータスのドメイン型
 import type { Priority, TicketStatus } from '@/domain/types';
+// モードに応じた初期ステータスを返す共通関数（メール取り込み・LINE 取り込みと同一ロジックを共有し DRY を維持する）
+import { initialStatusForMode } from '@/domain/ticket-status';
 // CSV インポート完了後に他エージェントへ未読カウントを即時配信するヘルパー
 import { broadcastUnreadCountToMany } from '@/features/notifications/notify';
 
@@ -186,8 +188,11 @@ export async function importTickets(csvText: string): Promise<ImportTicketsResul
   // テナントの動作モードを取得する (初期ステータスを Lite/Pro で切り替えるために必要)
   const mode = await getCurrentTenantMode(tenantId);
 
-  // Lite モードの初期ステータスは「Open」(未対応)、Pro モードは「New」(新規)
-  const initialStatus: TicketStatus = mode === 'lite' ? 'Open' : 'New';
+  // Lite: 'Open'(未対応)、Pro: undefined → DB 既定値 'New'(新規) を使う。
+  // メール取り込み・LINE 取り込みと同じ initialStatusForMode を呼ぶことで、
+  // モード別初期ステータスの定義が ticket-status.ts に一元化される (DRY 原則)。
+  // ?? 'New' は Pro モードで undefined が返ったときに型を TicketStatus に確定するため必要。
+  const initialStatus: TicketStatus = initialStatusForMode(mode) ?? 'New';
 
   // --- CSV パース開始 ---
   // Excel がエクスポートする UTF-8 CSV は先頭にバイトオーダーマーク (BOM: ﻿) を付けることがある。
@@ -249,8 +254,13 @@ export async function importTickets(csvText: string): Promise<ImportTicketsResul
     let cells: string[];
     try {
       cells = parseCsvLine(line ?? '');
-    } catch {
-      // 引用符の閉じ忘れ等の CSV 書式エラー: 行全体をスキップしてエラーを積む
+    } catch (err) {
+      // parseCsvLine が SyntaxError を投げる（引用符の閉じ忘れ等）のは想定内だが、
+      // 予期しない例外（TypeError 等）はサーバーログに記録して握り潰さない (CLAUDE.md §6)。
+      if (!(err instanceof SyntaxError)) {
+        console.error(`[importTickets] 行 ${rowNum} の CSV パースで予期しないエラー:`, err);
+      }
+      // いずれの例外でも行全体をスキップしてエラーを積み、残り行の処理を続ける
       errors.push({ row: rowNum, message: 'CSV の形式が正しくありません（引用符が閉じられていない可能性があります）' });
       continue;
     }
@@ -290,8 +300,10 @@ export async function importTickets(csvText: string): Promise<ImportTicketsResul
 
   // インポートでチケットが 1 件以上作成された場合のコミット後処理
   if (imported > 0) {
-    // チケット一覧のキャッシュを無効化する (revalidatePath を呼ばないと古いデータが表示され続ける)
+    // チケット一覧と管理ダッシュボードのキャッシュを無効化する
+    // /dashboard も対象にしないと、インポート後もカウントが旧値のまま最大 60 秒間表示され続ける
     revalidatePath('/tickets');
+    revalidatePath('/dashboard');
 
     // 同テナントの他エージェント (インポート実行者を除く) に一括追加を通知する。
     // 個別チケットごとではなく 1 通にまとめることで通知の過多を防ぐ (200 件追加でも通知は 1 通)。
@@ -299,21 +311,30 @@ export async function importTickets(csvText: string): Promise<ImportTicketsResul
     // インポート実行者自身への通知は不要なので除外する (自分が実施したことは知っているため)
     const otherAgents = agents.filter((a) => a.id !== creatorId);
     if (otherAgents.length > 0) {
-      // 各エージェントへ通知を 1 件ずつ DB に書き込む
-      for (const agent of otherAgents) {
-        await repos.notifications.create({
-          userId: agent.id, // 受信者: 各エージェント
-          type: 'imported', // CSV 一括インポート通知 (NotificationType.imported)
-          message: `${imported} 件のチケットが CSV インポートで追加されました`, // 表示文言
-          ticketId: null, // バッチインポートは単一チケットに紐づかないため null
-          tenantId, // テナントスコープ
-        });
-      }
-      // 未読件数を SSE で即時配信して通知ベルに反映させる
-      await broadcastUnreadCountToMany(
-        otherAgents.map((a) => a.id), // 通知対象の agent ID 一覧
-        tenantId, // テナントスコープ
+      // 各エージェントへの通知を並列で DB に書き込む (直列 await だとエージェント数ぶん往復が増えるため)
+      await Promise.all(
+        otherAgents.map((agent) =>
+          repos.notifications.create({
+            userId: agent.id, // 受信者: 各エージェント
+            type: 'imported', // CSV 一括インポート通知 (NotificationType.imported)
+            message: `${imported} 件のチケットが CSV インポートで追加されました`, // 表示文言
+            ticketId: null, // バッチインポートは単一チケットに紐づかないため null
+            tenantId, // テナントスコープ
+          }),
+        ),
       );
+      // 未読件数を SSE で即時配信して通知ベルに反映させる。
+      // broadcast は通知 DB 書き込みより後に行う必要があるため、上の Promise.all を待ってから実行する。
+      // ここで例外が発生してもチケット作成は完了済みなので、ユーザーに失敗として返さず警告ログに留める。
+      try {
+        await broadcastUnreadCountToMany(
+          otherAgents.map((a) => a.id), // 通知対象の agent ID 一覧
+          tenantId, // テナントスコープ
+        );
+      } catch (err) {
+        // SSE broadcast の失敗はチケット作成の成否に影響しない。通知ベルの更新が遅れるだけなのでログのみ。
+        console.warn('[importTickets] SSE broadcast に失敗しました（チケット作成は成功）:', err);
+      }
     }
   }
 

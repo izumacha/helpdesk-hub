@@ -107,10 +107,10 @@ export default async function DashboardPage() {
   // 担当者別ワークロード (依頼者には表示しないので空配列)
   const workload = isAgent ? stats.workload : [];
 
-  // 表示用に担当者 ID 一覧を抽出 (未割当行は除外)
-  const assigneeIds = workload
-    .filter((w) => w.assigneeId !== null)
-    .map((w) => w.assigneeId as string);
+  // 表示用に担当者 ID 一覧を抽出 (未割当行は除外)。
+  // TypeScript は .filter() 後の null 除外を自動的に型に反映しないため、
+  // flatMap で「null なら空配列、string なら 1 要素配列」に変換して型安全に string[] を得る。
+  const assigneeIds = workload.flatMap((w) => (w.assigneeId !== null ? [w.assigneeId] : []));
 
   // 担当者名を解決するため、当該テナント内のユーザー情報をまとめて取得 (port 経由)
   const assigneeNames =
