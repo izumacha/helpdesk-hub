@@ -20,8 +20,7 @@ import { TicketFilters } from '@/features/tickets/components/TicketFilters';
 import { TicketTabs } from '@/features/tickets/components/TicketTabs';
 // フィルタ組み立て共有モジュール (エクスポート API と同一ロジックを使う)
 // - buildTicketListFilter: URL クエリパラメータから TicketListFilter を組み立てる
-// - parseTabParam       : クエリの tab 文字列を TicketTabId に正規化する
-import { buildTicketListFilter, parseTabParam } from '@/features/tickets/build-filter';
+import { buildTicketListFilter } from '@/features/tickets/build-filter';
 // CSV エクスポートボタン (Client Component — Suspense でラップして使う)
 import { CsvExportButton } from '@/features/tickets/components/CsvExportButton';
 
@@ -74,8 +73,6 @@ export default async function TicketsPage({ searchParams }: Props) {
   // 要求ページ番号と DB の skip 件数を計算
   const requestedPage = parsePageParam(sp.page);
   const skip = (requestedPage - 1) * PAGE_SIZE;
-  // タブ ID を正規化 ('all' / 'mine' / 'overdue' のいずれか) — UI 表示・ページング URL 生成に使う
-  const tab = parseTabParam(sp.tab);
   // 現在時刻 (overdue タブの判定と、エクスポート API が同一基準を使えるよう変数化)
   const now = new Date();
 
