@@ -37,9 +37,14 @@ export function CsvExportButton() {
       if (!res.ok) {
         // レート制限 (429) やサーバーエラー (5xx) のケースを区別したメッセージをコンソールに記録する
         console.error(`[CsvExportButton] HTTP エラー: ${res.status}`);
-        // alert には汎用メッセージのみ表示しステータスコードを漏洩させない
+        // alert には汎用メッセージのみ表示しステータスコードを漏洩させない。
+        // 401 はセッション切れを意味するため「再ログインを促す」メッセージを返す。
+        // 429 はレート制限なので「しばらく待つよう促す」メッセージを返す。
+        // それ以外のエラー (5xx 等) は汎用メッセージを返す。
         throw new Error(
-          res.status === 429
+          res.status === 401
+            ? 'セッションが切れました。ページを再読み込みしてからログインし直してください。'
+            : res.status === 429
             ? 'しばらくしてから再度お試しください（エクスポートの上限に達しました）。'
             : 'CSV エクスポートに失敗しました。しばらくしてから再度お試しください。',
         );
@@ -62,9 +67,17 @@ export function CsvExportButton() {
     } catch (err) {
       // ブラウザのデベロッパーツールでエラー詳細を確認できるようにする (エラーを握り潰さない: CLAUDE.md §6)
       console.error('[CsvExportButton] CSV エクスポートに失敗:', err);
-      // ユーザーには安全なメッセージのみ表示する (スタックトレース等の内部詳細は漏らさない: §9)
+      // ユーザーには安全なメッセージのみ表示する (スタックトレース等の内部詳細は漏らさない: §9)。
+      // TypeError はオフラインやネットワーク切断で fetch() が失敗したケース。
+      // ブラウザが生成する英語メッセージ ("Failed to fetch" 等) は日本語 UI に表示しない。
+      // throw new Error(...) で作成した制御済みメッセージ (HTTP エラー・429 等) は instanceof TypeError にならないため
+      // そのまま err.message を使う。TypeError のみ日本語の接続エラーメッセージに差し替える。
       const message =
-        err instanceof Error ? err.message : 'CSV エクスポートに失敗しました。再度お試しください。';
+        err instanceof TypeError
+          ? 'ネットワークエラーが発生しました。接続を確認してから再度お試しください。'
+          : err instanceof Error
+          ? err.message
+          : 'CSV エクスポートに失敗しました。再度お試しください。';
       alert(message);
     } finally {
       // 成功・失敗どちらでもローディング状態を解除する

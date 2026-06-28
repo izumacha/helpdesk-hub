@@ -260,8 +260,15 @@ export async function importTickets(csvText: string): Promise<ImportTicketsResul
       if (!(err instanceof SyntaxError)) {
         console.error(`[importTickets] 行 ${rowNum} の CSV パースで予期しないエラー:`, err);
       }
-      // いずれの例外でも行全体をスキップしてエラーを積み、残り行の処理を続ける
-      errors.push({ row: rowNum, message: 'CSV の形式が正しくありません（引用符が閉じられていない可能性があります）' });
+      // SyntaxError は書式エラー用メッセージ、予期しない例外は汎用メッセージを積む
+      // (TypeError 等に「引用符が閉じられていない」は誤誘導になるため分岐する)
+      errors.push({
+        row: rowNum,
+        message:
+          err instanceof SyntaxError
+            ? 'CSV の形式が正しくありません（引用符が閉じられていない可能性があります）'
+            : 'CSV の読み取りに失敗しました。ファイルの内容を確認してください。',
+      });
       continue;
     }
 
@@ -311,8 +318,11 @@ export async function importTickets(csvText: string): Promise<ImportTicketsResul
     // インポート実行者自身への通知は不要なので除外する (自分が実施したことは知っているため)
     const otherAgents = agents.filter((a) => a.id !== creatorId);
     if (otherAgents.length > 0) {
-      // 各エージェントへの通知を並列で DB に書き込む (直列 await だとエージェント数ぶん往復が増えるため)
-      await Promise.all(
+      // 各エージェントへの通知を並列で DB に書き込む。
+      // Promise.allSettled を使い、1 件の書き込み失敗が他エージェントへの通知配信や
+      // SSE broadcast をブロックしないようにする。チケット作成は完了済みなので
+      // 通知書き込みの一部失敗はエラーとして呼び出し元に返さずログに留める。
+      const notifyResults = await Promise.allSettled(
         otherAgents.map((agent) =>
           repos.notifications.create({
             userId: agent.id, // 受信者: 各エージェント
@@ -323,6 +333,16 @@ export async function importTickets(csvText: string): Promise<ImportTicketsResul
           }),
         ),
       );
+      // 失敗した通知件数をサーバーログに記録する（チケット作成の成否には影響しない）
+      const failedCount = notifyResults.filter((r) => r.status === 'rejected').length;
+      if (failedCount > 0) {
+        // 失敗内容の詳細もログに残す (CLAUDE.md §6: エラーを握り潰さない)
+        notifyResults.forEach((r, i) => {
+          if (r.status === 'rejected') {
+            console.warn(`[importTickets] エージェント ${otherAgents[i].id} への通知書き込みに失敗:`, r.reason);
+          }
+        });
+      }
       // 未読件数を SSE で即時配信して通知ベルに反映させる。
       // broadcast は通知 DB 書き込みより後に行う必要があるため、上の Promise.all を待ってから実行する。
       // ここで例外が発生してもチケット作成は完了済みなので、ユーザーに失敗として返さず警告ログに留める。
