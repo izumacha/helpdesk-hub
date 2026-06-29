@@ -336,6 +336,8 @@ export async function importTickets(csvText: string): Promise<ImportTicketsResul
       // 失敗した通知件数をサーバーログに記録する（チケット作成の成否には影響しない）
       const failedCount = notifyResults.filter((r) => r.status === 'rejected').length;
       if (failedCount > 0) {
+        // 失敗件数をサマリーとして出力する (何件失敗したか数が把握できるようにする)
+        console.warn(`[importTickets] ${failedCount} 件の通知書き込みに失敗しました`);
         // 失敗内容の詳細もログに残す (CLAUDE.md §6: エラーを握り潰さない)
         notifyResults.forEach((r, i) => {
           if (r.status === 'rejected') {

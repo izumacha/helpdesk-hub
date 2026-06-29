@@ -15,6 +15,11 @@ import { useState } from 'react';
  * Suspense 境界内に配置しないと Next.js でビルドエラーになる。
  * 呼び出し側 (tickets/page.tsx) で <Suspense> でラップすること。
  */
+
+// Firefox では link.click() 直後に revokeObjectURL() を呼ぶとダウンロードが
+// キャンセルされることがある。ブラウザがダウンロードを開始するまでの待機時間 (ミリ秒)。
+const REVOKE_URL_DELAY_MS = 100;
+
 export function CsvExportButton() {
   // ブラウザの現在の URL クエリパラメータを取得する (Suspense 必須)
   const searchParams = useSearchParams();
@@ -49,21 +54,48 @@ export function CsvExportButton() {
             : 'CSV エクスポートに失敗しました。しばらくしてから再度お試しください。',
         );
       }
+      // サーバーが MAX_EXPORT_ROWS でレスポンスを打ち切った場合に X-Truncated: true を返す。
+      // headers はボディ消費後も参照可能だが、意図を明確にするためボディ取得前に読み取る。
+      const truncated = res.headers.get('X-Truncated') === 'true';
+      // 上限件数をレスポンスヘッダーから取得し、数値として検証する。
+      // ヘッダー値を直接 alert に埋め込むと MitM でテキスト偽装が可能になるため (§9 情報漏洩対策)、
+      // 整数以外の値は信頼せず既定値にフォールバックする。
+      const rawLimit = res.headers.get('X-Total-Limit');
+      const limitNum = rawLimit ? parseInt(rawLimit, 10) : NaN;
+      // 数値でない場合はフォールバック値を使い、意図しない文字列が alert に表示されないようにする
+      const totalLimit = Number.isFinite(limitNum) ? limitNum.toLocaleString('ja-JP') : '10,000';
       // レスポンスを Blob として取得する
       const blob = await res.blob();
-      // Blob から一時 URL を生成してダウンロードを開始する
+      // Blob から一時 URL を生成する
       const url = URL.createObjectURL(blob);
-      const link = document.createElement('a');
-      link.href = url;
-      // ファイル名はサーバーの Content-Disposition ヘッダーから取得するのが理想だが、
-      // クロスオリジン制限があるためクライアント側でも日付付きファイル名を設定する
-      link.download = `tickets-${new Date().toISOString().slice(0, 10)}.csv`;
-      // DOM に一時追加してクリックしてダウンロードを起動し、すぐに削除する
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-      // 一時 URL を解放してメモリリークを防ぐ
-      URL.revokeObjectURL(url);
+      // DOM 操作前にタイマーを登録することで、DOM 操作で例外が発生しても URL が確実に解放される。
+      // catch ブロックで clearTimeout + 即時 revokeObjectURL を呼ぶことで二重解放を防ぐ。
+      const revokeTimer = setTimeout(() => URL.revokeObjectURL(url), REVOKE_URL_DELAY_MS);
+      try {
+        // <a> タグを動的に生成してダウンロードリンクとして設定する
+        const link = document.createElement('a');
+        link.href = url;
+        // ファイル名はサーバーの Content-Disposition ヘッダーから取得するのが理想だが、
+        // クロスオリジン制限があるためクライアント側でも日付付きファイル名を設定する
+        link.download = `tickets-${new Date().toISOString().slice(0, 10)}.csv`;
+        // DOM に一時追加してクリックしてダウンロードを起動し、すぐに削除する
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+      } catch (domErr) {
+        // DOM 操作に失敗した場合はタイマーをキャンセルして URL を即座に解放する
+        clearTimeout(revokeTimer);
+        URL.revokeObjectURL(url);
+        // 呼び出し元の catch ブロックへ伝播させてエラーをユーザーに通知する
+        throw domErr;
+      }
+      // エクスポートが上限件数で打ち切られていた場合はユーザーに警告を表示する。
+      // ダウンロード完了後に通知することで、データ不足に気づかないままレポートを作る事故を防ぐ。
+      if (truncated) {
+        alert(
+          `チケット数が上限 (${totalLimit} 件) を超えているため、CSV には最初の ${totalLimit} 件のみ含まれています。絞り込み条件を変更して再度エクスポートしてください。`,
+        );
+      }
     } catch (err) {
       // ブラウザのデベロッパーツールでエラー詳細を確認できるようにする (エラーを握り潰さない: CLAUDE.md §6)
       console.error('[CsvExportButton] CSV エクスポートに失敗:', err);
