@@ -5,7 +5,9 @@ import Link from 'next/link';
 // 現在 URL のクエリパラメータを読み取るフック (アクティブタブ判定用)
 import { useSearchParams } from 'next/navigation';
 
-// タブ識別子のリテラル型は共有型定義から取得する (サーバー側 tab-filter.ts が 'use client' に依存しないよう切り出し済み)
+// 共有型ファイルから import してこのモジュール内で型として使えるようにする
+import type { TicketTabId } from '@/features/tickets/types';
+// 後方互換のため TicketTabs.tsx からも re-export する (他ファイルが TicketTabs から import しても動くようにする)
 export type { TicketTabId } from '@/features/tickets/types';
 
 // タブ 1 つ分の表示メタ
