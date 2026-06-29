@@ -12,8 +12,8 @@ import type { TicketStatus, Priority } from '@/domain/types';
 import type { TicketListFilter } from '@/data/ports/ticket-repository';
 // タブ絞り込みを共通ヘルパーに委譲する (mine / overdue タブは一覧とダッシュボードで共有)
 import { applyTabFilter } from '@/features/tickets/tab-filter';
-// 一覧タブ型 ('all' / 'mine' / 'overdue')
-import type { TicketTabId } from '@/features/tickets/components/TicketTabs';
+// 一覧タブ型 — クライアントコンポーネントではなく共有型ファイルから import する (依存境界の明確化)
+import type { TicketTabId } from '@/features/tickets/types';
 
 // buildTicketListFilter に渡すURL由来の生文字列パラメータ
 export interface TicketFilterParams {

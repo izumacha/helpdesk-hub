@@ -1,5 +1,5 @@
-// 一覧タブ ('all' / 'mine' / 'overdue') の識別子型を再利用する (型のみ import なので client 境界の影響なし)
-import type { TicketTabId } from './components/TicketTabs';
+// 一覧タブ識別子型 — クライアントコンポーネントではなく共有型ファイルから import する (依存境界の明確化)
+import type { TicketTabId } from '@/features/tickets/types';
 // データ層が公開しているチケット一覧フィルタ型 (タブ条件を差し込む対象)
 import type { TicketListFilter } from '@/data/ports/ticket-repository';
 

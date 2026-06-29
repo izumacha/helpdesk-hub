@@ -5,11 +5,8 @@ import Link from 'next/link';
 // 現在 URL のクエリパラメータを読み取るフック (アクティブタブ判定用)
 import { useSearchParams } from 'next/navigation';
 
-// タブ識別子のリテラル型 (一覧ページの ?tab=... と対応)
-// - 'all'     : 既定 (絞り込みなし、全件)
-// - 'mine'    : 自分の未対応 (担当者または起票者として Open / InProgress)
-// - 'overdue' : 期限切れ (resolutionDueAt < now かつ未解決)
-export type TicketTabId = 'all' | 'mine' | 'overdue';
+// タブ識別子のリテラル型は共有型定義から取得する (サーバー側 tab-filter.ts が 'use client' に依存しないよう切り出し済み)
+export type { TicketTabId } from '@/features/tickets/types';
 
 // タブ 1 つ分の表示メタ
 interface TabDef {

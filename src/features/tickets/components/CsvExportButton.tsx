@@ -62,8 +62,10 @@ export function CsvExportButton() {
       document.body.appendChild(link);
       link.click();
       document.body.removeChild(link);
-      // 一時 URL を解放してメモリリークを防ぐ
-      URL.revokeObjectURL(url);
+      // Firefox では link.click() の直後に revokeObjectURL() を呼ぶとダウンロードが
+      // キャンセルされることがある (ブラウザが URL を読み込む前に無効化されるため)。
+      // 100ms 遅延させてブラウザがダウンロードを開始する時間を確保する。
+      setTimeout(() => URL.revokeObjectURL(url), 100);
     } catch (err) {
       // ブラウザのデベロッパーツールでエラー詳細を確認できるようにする (エラーを握り潰さない: CLAUDE.md §6)
       console.error('[CsvExportButton] CSV エクスポートに失敗:', err);
