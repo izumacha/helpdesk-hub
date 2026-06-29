@@ -57,9 +57,13 @@ export function CsvExportButton() {
       // サーバーが MAX_EXPORT_ROWS でレスポンスを打ち切った場合に X-Truncated: true を返す。
       // headers はボディ消費後も参照可能だが、意図を明確にするためボディ取得前に読み取る。
       const truncated = res.headers.get('X-Truncated') === 'true';
-      // 上限件数を表示用に取得する。サーバーが空文字や未送信の場合は既定値を使う。
-      // ?? は null/undefined のみ捕捉し空文字は通過するため、|| を使う。
-      const totalLimit = res.headers.get('X-Total-Limit') || '10,000';
+      // 上限件数をレスポンスヘッダーから取得し、数値として検証する。
+      // ヘッダー値を直接 alert に埋め込むと MitM でテキスト偽装が可能になるため (§9 情報漏洩対策)、
+      // 整数以外の値は信頼せず既定値にフォールバックする。
+      const rawLimit = res.headers.get('X-Total-Limit');
+      const limitNum = rawLimit ? parseInt(rawLimit, 10) : NaN;
+      // 数値でない場合はフォールバック値を使い、意図しない文字列が alert に表示されないようにする
+      const totalLimit = Number.isFinite(limitNum) ? limitNum.toLocaleString('ja-JP') : '10,000';
       // レスポンスを Blob として取得する
       const blob = await res.blob();
       // Blob から一時 URL を生成する
