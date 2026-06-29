@@ -64,8 +64,10 @@ export function AuditExportButton({ logs }: Props) {
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
-    // 一時 URL を解放してメモリリークを防ぐ
-    URL.revokeObjectURL(url);
+    // Firefox では link.click() 直後に revokeObjectURL() を呼ぶとダウンロードが
+    // キャンセルされることがある (ブラウザが URL を読み込む前に無効化されるため)。
+    // 100ms 遅延させてブラウザがダウンロードを開始する時間を確保する (CsvExportButton と同様の対策)。
+    setTimeout(() => URL.revokeObjectURL(url), 100);
   }
 
   return (
