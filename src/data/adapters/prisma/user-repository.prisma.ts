@@ -67,6 +67,16 @@ export function makeUserRepo(db: PrismaLike): UserRepository {
       return rows.map(toUserSummary);
     },
 
+    // 当該テナント内の agent / admin の id + email を一括取得 (一斉メール送信用。N+1 回避)
+    async listAgentEmails(tenantId) {
+      const rows = await db.user.findMany({
+        where: { tenantId, role: { in: ['agent', 'admin'] } }, // テナント + ロールで絞る
+        select: { id: true, email: true }, // 必要列のみ
+      });
+      // { id, email } の配列をそのまま返す (追加の変換は不要)
+      return rows;
+    },
+
     // Phase 4 課金: テナント内のスタッフ (agent + admin) 数を返す (プランのシート上限チェック用)
     // requester (エンドユーザー) はシートを消費しない — ヘルプデスク製品の標準的な課金モデル
     async countByTenant(tenantId) {

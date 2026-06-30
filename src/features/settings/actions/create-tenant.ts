@@ -109,19 +109,51 @@ export async function createTenant(formData: FormData): Promise<CreateTenantResu
       role: 'admin',
       tenantId: tenant.id,
     });
-    // 業種テンプレートが指定されている場合はカテゴリを初期投入する
-    // (Phase 3 業種テンプレ: 選択した業種に紐づくカテゴリを 1 件ずつ作成する)
+    // この後のサンプル起票・FAQ シードチケットで使う基準時刻 (1 回だけ取得して使い回す)
+    const now = new Date();
+    // 業種テンプレートが指定されている場合はカテゴリ + よくある質問を初期投入する
+    // (Phase 3 業種テンプレ: 選択した業種に紐づくカテゴリ・FAQ を作成する)
     if (industry) {
       // 指定 ID のテンプレートを取得する (存在しなければ undefined)
       const template = findIndustryTemplate(industry);
-      // テンプレートが見つかった場合のみカテゴリを順次作成する
+      // テンプレートが見つかった場合のみカテゴリ・FAQ を順次作成する
       if (template) {
         // Prisma のインタラクティブトランザクション内では 1 つの接続を直列に使うため
         // Promise.all で並列クエリを投げると "Transaction already closed" になる場合がある。
-        // for...of + await で直列実行して安全性を保つ (カテゴリは数件なので性能上問題なし)
+        // for...of + await で直列実行して安全性を保つ (カテゴリ・FAQ は数件なので性能上問題なし)
         for (const name of template.categories) {
           // カテゴリを 1 件ずつトランザクション内で作成する
           await tx.categories.create({ name, tenantId: tenant.id });
+        }
+
+        // 「よくある質問」は FaqCandidate.ticketId が必須 (1 チケット 1 候補) のため、
+        // テンプレートの Q&A ごとに「解決済み」のシードチケットを 1 件作ってから FAQ 候補を作成し、
+        // 公開 (Published) 状態へ更新する。サンプルチケット (SAMPLE_TICKETS) と同じ起票ロジックを使う。
+        for (const faq of template.faqs) {
+          // FAQ の元になるシードチケットを解決済み (Closed) で作成する
+          // 注意: tickets.create は resolvedAt を常に null で作成する (設定するには別途
+          // updateStatus が必要)。resolutionDueAt を指定すると、resolvedAt が null のまま
+          // 期限だけ過去の時刻になり、getSlaState() が「期限切れ」と誤判定してしまう
+          // (status は Closed なのに SLA バッジだけ overdue になる矛盾)。
+          // 解決済みシードチケットに本来 SLA 期限は不要なため、resolutionDueAt は指定しない。
+          const faqTicket = await tx.tickets.create({
+            title: faq.question, // 質問文をそのままタイトルに使う
+            body: faq.answer, // 回答文を本文として残す (チケット詳細からも参照できる)
+            priority: 'Medium', // 既定の優先度
+            categoryId: null, // FAQ シードはカテゴリ未分類
+            creatorId: adminUser.id, // 初代管理者を起票者とする
+            tenantId: tenant.id, // 所属テナント
+            status: 'Closed', // 「よくある質問」は解決済みチケットから化けるという業務フローに合わせる
+          });
+          // FAQ 候補を作成 (既定は Candidate) してから即座に Published へ更新する
+          const faqCandidate = await tx.faq.create({
+            ticketId: faqTicket.id,
+            createdById: adminUser.id,
+            question: faq.question,
+            answer: faq.answer,
+            tenantId: tenant.id,
+          });
+          await tx.faq.updateStatus(faqCandidate.id, 'Published', tenant.id);
         }
       }
     }
@@ -130,8 +162,7 @@ export async function createTenant(formData: FormData): Promise<CreateTenantResu
     // 起票者には初代管理者 (adminUser) を設定する。
     // サンプルチケットは Lite モードの既定動作に合わせて初期化する (Pro でも同じ)。
     const initialStatus = initialStatusForMode(tenant.mode);
-    // サンプルチケットの解決期限は優先度 Medium ベースで自動計算する
-    const now = new Date();
+    // サンプルチケットの解決期限は優先度 Medium ベースで自動計算する (now は上で取得済みのものを再利用)
     const resolutionDueAt = calculateResolutionDueAt('Medium', now);
     // サンプルチケットを 1 件ずつ直列で作成する (トランザクション内の複数クエリは直列が安全)
     for (const sample of SAMPLE_TICKETS) {

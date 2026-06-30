@@ -63,7 +63,14 @@ beforeEach(() => {
     mode: 'lite',
     industry: null,
     inboundToken: null, // メール取り込み未発行 (テスト用フィクスチャ)
-      slackWebhookUrl: null, subscriptionPlan: 'free' as const, stripeCustomerId: null, stripeSubscriptionId: null, stripeSubscriptionStatus: null, teamsWebhookUrl: null, chatworkApiToken: null, chatworkRoomId: null, // Slack 通知未設定 (テスト用フィクスチャ)
+    slackWebhookUrl: null,
+    subscriptionPlan: 'free' as const,
+    stripeCustomerId: null,
+    stripeSubscriptionId: null,
+    stripeSubscriptionStatus: null,
+    teamsWebhookUrl: null,
+    chatworkApiToken: null,
+    chatworkRoomId: null, // Slack 通知未設定 (テスト用フィクスチャ)
     createdAt: new Date(),
   });
 });
@@ -95,6 +102,39 @@ describe('createTenant', () => {
     const admin = [...store.users.values()].find((u) => u.email === 'newadmin@example.com');
     expect(admin?.role).toBe('admin');
     expect(admin?.tenantId).toBe(result.tenantId);
+  });
+
+  // 業種テンプレートの「よくある質問」が公開済み FAQ として初期投入されること (Phase 3)
+  it('業種テンプレートの FAQ を公開済みとして投入する', async () => {
+    const createTenant = await loadAction();
+    const result = await createTenant(
+      makeForm({
+        tenantName: '新組織',
+        industry: 'manufacturing',
+        adminName: '管理 太郎',
+        adminEmail: 'faqadmin@example.com',
+        adminPassword: 'password123',
+      }),
+    );
+
+    // manufacturing テンプレートの FAQ 2 件が作成テナントに投入されている
+    const faqs = [...store.faq.values()].filter((f) => f.tenantId === result.tenantId);
+    expect(faqs).toHaveLength(2);
+    // すべて公開 (Published) 状態になっている (Candidate のまま放置されない)
+    expect(faqs.every((f) => f.status === 'Published')).toBe(true);
+    // それぞれの FAQ に紐づく元チケットが解決済み (Closed) で存在する
+    for (const faq of faqs) {
+      const ticket = store.tickets.get(faq.ticketId);
+      expect(ticket?.status).toBe('Closed');
+      expect(ticket?.tenantId).toBe(result.tenantId);
+      // resolutionDueAt を設定しないこと (tickets.create は resolvedAt を常に null で作るため、
+      // 期限だけ設定すると getSlaState() が Closed なのに「期限切れ」と誤判定してしまう回帰防止)
+      expect(ticket?.resolutionDueAt).toBeNull();
+    }
+    // 質問文の内容も期待どおり (テンプレートの内容と一致)
+    expect(faqs.map((f) => f.question)).toContain(
+      '現場の PC が起動しません。どうすればいいですか？',
+    );
   });
 
   // admin 以外は拒否されること (RBAC)

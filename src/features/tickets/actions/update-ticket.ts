@@ -30,8 +30,13 @@ import { enforceRateLimit } from '@/lib/rate-limit';
 import { escalationReasonSchema } from '@/lib/validations/ticket';
 // next-auth のセッション型
 import type { Session } from 'next-auth';
-// ステータス変更・担当者割当のメール本文を生成する純粋ヘルパー (Phase 2)
-import { renderTicketStatusChangedEmail, renderAssignedEmail, buildTicketUrl } from '@/lib/ticket-email';
+// ステータス変更・担当者割当・エスカレーションのメール本文を生成する純粋ヘルパー (Phase 2)
+import {
+  renderTicketStatusChangedEmail,
+  renderAssignedEmail,
+  renderEscalatedEmail,
+  buildTicketUrl,
+} from '@/lib/ticket-email';
 // EmailSender 実装を取得するファクトリ (環境変数で console / smtp を切り替え)
 import { getEmailSender } from '@/lib/email';
 // メールに埋め込むリンクのベース URL を解決するヘルパー
@@ -170,7 +175,11 @@ export async function updateTicketStatus(ticketId: string, newStatus: TicketStat
   const snapForMail = ticketSnapshot as { creatorId: string; title: string } | null;
   const oldStatusForMail = oldStatus as TicketStatus | null;
   // スナップショットと変更前ステータスが揃い、かつ自分以外の起票者がいる場合のみ送信する
-  if (snapForMail !== null && oldStatusForMail !== null && snapForMail.creatorId !== session.user.id) {
+  if (
+    snapForMail !== null &&
+    oldStatusForMail !== null &&
+    snapForMail.creatorId !== session.user.id
+  ) {
     // メール送信を別関数に切り出して try/catch で囲み、失敗してもチケット更新は巻き戻さない
     await sendStatusChangedEmailToRequester({
       ticketId,
@@ -387,8 +396,10 @@ export async function escalateTicket(ticketId: string, reason: string) {
     throw new Error(`現在のステータス「${ticket.status}」からエスカレーションできません`);
   }
 
-  // ここから先は Pro 経路確定。通知対象の全エージェント ID をテナントスコープで取得
-  const agentIds = await repos.users.listAgentIds(tenantId);
+  // ここから先は Pro 経路確定。通知対象の全エージェント (id + email) をテナントスコープで取得。
+  // email も併せて取るのは、後段のエスカレーションメール一斉送信で N+1 (id ごとの findById) を避けるため。
+  const agents = await repos.users.listAgentEmails(tenantId);
+  const agentIds = agents.map((a) => a.id);
 
   // エスカレーション発生時刻
   const now = new Date();
@@ -424,6 +435,35 @@ export async function escalateTicket(ticketId: string, reason: string) {
 
   // 全エージェントへ未読件数を一斉配信 (テナントを伝搬)
   await broadcastUnreadCountToMany(agentIds, tenantId);
+
+  // Phase 2「メール通知テンプレートの整備」(docs/smb-dx-pivot-plan.md §4 Phase 2):
+  // エスカレーションを操作者以外の全エージェントへメールで知らせる (ベストエフォート)。
+  // エスカレーションは全エージェントへの一斉通知という性質上、1 通の失敗が他へ波及しないよう
+  // allSettled で並行送信し、失敗は件数だけログに残す。
+  try {
+    // ベース URL を解決してチケットリンクを組み立てる (NEXTAUTH_URL 未設定時は例外 → 下の catch で握る)
+    const baseUrl = resolveAppBaseUrl();
+    const ticketUrl = buildTicketUrl(baseUrl, ticketId);
+    // 件名 / 本文 (Text / HTML) を純粋ヘルパーで構築
+    const { subject, text, html } = renderEscalatedEmail({
+      ticketTitle: title,
+      ticketUrl,
+      reason: trimmedReason,
+    });
+    // 操作者本人 (エスカレーションを実行したエージェント) は自分の操作を知っているため除く
+    const recipients = agents.filter((a) => a.id !== session.user.id);
+    const results = await Promise.allSettled(
+      recipients.map((a) => getEmailSender().send({ to: a.email, subject, text, html })),
+    );
+    const failedCount = results.filter((r) => r.status === 'rejected').length;
+    if (failedCount > 0) {
+      console.warn(`[escalateTicket] ${failedCount} 件のエージェント宛メール送信に失敗しました`);
+    }
+  } catch (err) {
+    // URL 解決失敗等、本文組み立て自体に失敗した場合もログのみに留める (アプリ内通知は既に成立している)
+    console.error('[escalateTicket] エージェント宛メール送信に失敗しました', err);
+  }
+
   // 詳細ページを再描画
   revalidatePath(`/tickets/${ticketId}`);
 }
