@@ -31,6 +31,9 @@ export interface UserRepository {
   listAgents(tenantId: string): Promise<UserSummary[]>; // 当該テナント内の agent/admin 一覧
   listAgentIds(tenantId: string): Promise<string[]>; // 当該テナント内の agent/admin の ID だけ
   findSummariesByIds(ids: string[], tenantId: string): Promise<UserSummary[]>; // テナント内 ID 配列から概要
+  // エスカレーション一斉メール等、メール送信先として全エージェントの email が必要な場面向け。
+  // listAgentIds + findById の N+1 を避けるため専用メソッドとして用意する。
+  listAgentEmails(tenantId: string): Promise<Array<{ id: string; email: string }>>;
   // Phase 4 課金: テナント内のスタッフ (agent + admin) 数を返す (プランのシート上限チェック用)
   // requester はカウントしない — シートはヘルプデスクスタッフ分のみ消費する
   countByTenant(tenantId: string): Promise<number>;

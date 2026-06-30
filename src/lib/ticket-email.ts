@@ -217,3 +217,45 @@ export function renderAssignedEmail(input: {
   // 3 点セットを返す
   return { subject, text, html };
 }
+
+// エスカレーションをエージェント (担当者) に知らせるメール本文を生成する純粋関数 (副作用なし)
+// Phase 2 メール通知テンプレート整備 (docs/smb-dx-pivot-plan.md §4 Phase 2)。Pro モード限定機能。
+export function renderEscalatedEmail(input: {
+  ticketTitle: string; // 問い合わせの件名
+  ticketUrl: string; // チケット詳細ページの URL
+  reason: string; // エスカレーション理由
+}): { subject: string; text: string; html: string } {
+  // 件名: 接頭辞 + エスカレーションが起きたことを件名で伝える。ヘッダインジェクション防止のためサニタイズする
+  const subject = sanitizeSubject(
+    `${SUBJECT_PREFIX} 問い合わせ「${input.ticketTitle}」がエスカレーションされました`,
+  );
+
+  // テキスト本文 (HTML 非対応クライアント向けフォールバック)
+  const text = [
+    `お問い合わせ「${input.ticketTitle}」がエスカレーション (上位対応へ引き上げ) されました。`,
+    '',
+    `理由: ${input.reason}`,
+    '',
+    '詳細の確認や対応は、下のリンクから行えます。',
+    `${input.ticketUrl}`,
+    '',
+    'このメールに心当たりがない場合は破棄してください。',
+  ].join('\n');
+
+  // HTML 本文に差し込む外部由来文字列を個別にエスケープする (XSS / 文面崩れ防止)
+  const escapedEscalatedTitle = escapeHtml(input.ticketTitle);
+  const escapedReason = escapeHtml(input.reason);
+  const escapedEscalatedUrl = escapeHtml(input.ticketUrl);
+
+  // HTML 本文 (理由を引用ブロックで見せ、続きはボタンでアプリへ誘導する)
+  const html = `
+    <p>お問い合わせ「${escapedEscalatedTitle}」がエスカレーション (上位対応へ引き上げ) されました。</p>
+    <blockquote style="margin:0 0 16px;padding:12px 16px;border-left:4px solid #b91c1c;background:#fef2f2;color:#0f172a;white-space:pre-wrap;">理由: ${escapedReason}</blockquote>
+    <p><a href="${escapedEscalatedUrl}" style="display:inline-block;padding:10px 16px;background:#0f766e;color:#ffffff;border-radius:6px;text-decoration:none;font-weight:600;">問い合わせを開く</a></p>
+    <p style="font-size:13px;color:#475569;">うまく開けない場合はこちらの URL をブラウザに貼り付けてください:<br><span style="word-break:break-all;">${escapedEscalatedUrl}</span></p>
+    <p style="font-size:13px;color:#64748b;">このメールに心当たりがない場合は破棄してください。</p>
+  `.trim();
+
+  // 3 点セットを返す
+  return { subject, text, html };
+}

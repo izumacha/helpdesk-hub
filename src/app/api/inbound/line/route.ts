@@ -12,7 +12,9 @@
  *  - LINE ユーザーとテナントメンバーの紐付け: メンバーが Web 設定画面で発行したワンタイムコードを
  *    LINE に送ると、その送信元 LINE ユーザー ID をメンバーへ紐付ける。紐付け済みなら起票者は本人になり
  *    自己解決 UI が開通する。未紐付けの LINE ユーザーは従来どおりテナント内担当者をプロキシ起票者とする
- *    (本文に LINE ユーザー ID を残すので担当者が手動連絡できる)。アウトバウンド LINE 返信は未実装のため、
+ *    (本文に LINE ユーザー ID を残すので担当者が手動連絡できる)。アウトバウンド LINE 返信は
+ *    `src/lib/line-push.ts` (Messaging API push) で実装済み: 紐付け済みメンバーが起票したチケットに
+ *    担当者が返信すると、その内容が LINE へ push される (`src/app/api/tickets/[id]/comments/route.ts`)。
  *    連携完了の確認は Web 設定画面の「連携済み」表示で行う。
  *  - DKIM/SPF 相当の送信者検証は LINE 署名のみ (LINE サーバからのみ受信する保証は署名が担う)。
  *
@@ -35,7 +37,13 @@ import { enforceRateLimit, RateLimitError } from '@/lib/rate-limit';
 // 優先度から解決期限を計算する SLA ヘルパー (他の取り込みチャネルと同じ既定値に揃える)
 import { calculateResolutionDueAt } from '@/lib/sla';
 // LINE メンバー紐付け: 受信テキストの正規化・コード形判定・ハッシュ化 (発行は Web 設定画面側)
-import { hashLineLinkCode, looksLikeLineLinkCode, normalizeLineLinkCode } from '@/lib/line-link';
+// LINE ユーザー ID の正規形式 (line-push.ts と共有する単一の源)
+import {
+  hashLineLinkCode,
+  LINE_USER_ID_PATTERN,
+  looksLikeLineLinkCode,
+  normalizeLineLinkCode,
+} from '@/lib/line-link';
 // 未読カウントを SSE で即時配信するヘルパー (新規起票後に担当者のバッジをリアルタイム更新する)
 import { broadcastUnreadCountToMany } from '@/features/notifications/notify';
 
@@ -145,7 +153,9 @@ export async function POST(req: Request) {
   const contentLength = Number(req.headers.get('content-length') || '-1');
   if (Number.isFinite(contentLength) && contentLength > MAX_REQUEST_BODY_BYTES) {
     // サイズ超過はサーバーログに残し、外部には詳細を出さない 413 を返す
-    console.warn(`[POST /api/inbound/line] request body too large (header): ${contentLength} bytes`);
+    console.warn(
+      `[POST /api/inbound/line] request body too large (header): ${contentLength} bytes`,
+    );
     return NextResponse.json({ error: 'リクエストが大きすぎます' }, { status: 413 });
   }
 
@@ -255,7 +265,7 @@ export async function POST(req: Request) {
     // 埋め込むと将来の出力経路 (HTML メール等) でインジェクションになりうるため §9 に従い検証する
     const rawUserId = event.source?.userId ?? '';
     // 形式が一致する場合のみ採用し、それ以外は '不明' に置き換える
-    const lineUserId = /^U[0-9a-f]{32}$/.test(rawUserId) ? rawUserId : '不明';
+    const lineUserId = LINE_USER_ID_PATTERN.test(rawUserId) ? rawUserId : '不明';
     // text が文字列でない (欠落・型不正) イベントは起票できないためスキップする
     if (typeof textMessage.text !== 'string') continue;
 
@@ -280,7 +290,7 @@ export async function POST(req: Request) {
         });
         // 連携成功 / 競合 (コードとして処理済み) のときは、このメッセージを問い合わせにしない
         if (link.status === 'linked' || link.status === 'conflict') {
-          // 連携結果をログに残す (アウトバウンド LINE 返信は未実装。利用者は Web 設定で連携状態を確認する)
+          // 連携結果をログに残す (利用者は Web 設定画面の「連携済み」表示で連携状態を確認する)
           console.info(
             `[POST /api/inbound/line] line link ${link.status} for tenant`,
             targetTenantId,
@@ -371,13 +381,20 @@ export async function POST(req: Request) {
               targetTenantId, // テナントスコープ
             ).catch((broadcastErr) => {
               // SSE 配信失敗はバッジ更新が遅れるだけ。ログのみ残して続行する
-              console.warn('[POST /api/inbound/line] failed to broadcast unread count', broadcastErr);
+              console.warn(
+                '[POST /api/inbound/line] failed to broadcast unread count',
+                broadcastErr,
+              );
             });
           }
         }
       } catch (notifyErr) {
         // 通知失敗はログのみ (チケット起票は完了しているため応答は成功扱いのまま)
-        console.warn('[POST /api/inbound/line] failed to notify agents for ticket', ticket.id, notifyErr);
+        console.warn(
+          '[POST /api/inbound/line] failed to notify agents for ticket',
+          ticket.id,
+          notifyErr,
+        );
       }
     } catch (err) {
       // 起票失敗は握り潰さずログに残す。再送による重複起票を避けるため全体は 200 で受領する

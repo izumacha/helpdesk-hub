@@ -594,15 +594,21 @@ describe('updateTicketStatus メール通知 (メンバー改善 #3 回帰)', ()
 
   // エスカレーションは依頼者へメールせず、担当者へのアプリ内通知のみとする (内部トリアージ操作)。
   // 「解決通知は届く / エスカレーションは内部通知のみ」という現行の意図を回帰として固定する。
-  it('エスカレーションは依頼者へメールしない (担当者通知のみ)', async () => {
+  it('エスカレーションは依頼者へメールしない (担当者へのメール通知のみ)', async () => {
     const { ticketId } = await seed();
     await repos.tickets.updateStatus(ticketId, 'Open', null, TENANT);
     const { escalateTicket } = await import('@/features/tickets/actions/update-ticket');
 
+    // 操作者は u-agt-1 (デフォルトの sessionUserId)
     await escalateTicket(ticketId, '対応困難');
 
-    // 依頼者宛メールは送られない (エスカレーションは社内向け)
-    expect(sentEmails).toHaveLength(0);
+    // 依頼者 (u-req-1) 宛メールは送られない (エスカレーションは社内向け)
+    expect(sentEmails.some((m) => m.to === 'u-req-1@example.com')).toBe(false);
+    // 操作者本人 (u-agt-1) は自分の操作を知っているため自分宛には送らない。
+    // 他の担当者 (u-agt-2) には Phase 2 メール通知テンプレートとしてエスカレーションメールが 1 通届く
+    expect(sentEmails).toHaveLength(1);
+    expect(sentEmails[0].to).toBe('u-agt-2@example.com');
+    expect(sentEmails[0].subject).toContain('エスカレーション');
     // 担当者には escalated のアプリ内通知が届く (全 2 エージェント)
     const notifications = [...store.notifications.values()];
     expect(notifications).toHaveLength(2);

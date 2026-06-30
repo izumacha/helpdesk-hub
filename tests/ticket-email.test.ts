@@ -5,6 +5,7 @@ import {
   buildTicketUrl,
   renderTicketReplyEmail,
   renderTicketReceivedEmail,
+  renderEscalatedEmail,
 } from '@/lib/ticket-email';
 
 describe('buildTicketUrl', () => {
@@ -117,5 +118,43 @@ describe('renderTicketReceivedEmail', () => {
     });
     expect(html).not.toContain('<script>');
     expect(html).toContain('&lt;script&gt;');
+  });
+});
+
+describe('renderEscalatedEmail', () => {
+  // 件名規約: 接頭辞 + 「問い合わせ「<件名>」がエスカレーションされました」
+  it('件名に接頭辞とチケット件名を含む', () => {
+    const { subject } = renderEscalatedEmail({
+      ticketTitle: 'VPN がつながらない',
+      ticketUrl: 'http://localhost:3000/tickets/1',
+      reason: '対応困難',
+    });
+    expect(subject).toBe(
+      '[HelpDesk Hub] 問い合わせ「VPN がつながらない」がエスカレーションされました',
+    );
+  });
+
+  // テキスト本文に件名・理由・URL がそのまま含まれること
+  it('テキスト本文に件名・理由・URL を含む', () => {
+    const { text } = renderEscalatedEmail({
+      ticketTitle: '複合機の不調',
+      ticketUrl: 'http://localhost:3000/tickets/2',
+      reason: '専門知識が必要なため',
+    });
+    expect(text).toContain('複合機の不調');
+    expect(text).toContain('専門知識が必要なため');
+    expect(text).toContain('http://localhost:3000/tickets/2');
+  });
+
+  // HTML 本文では外部由来文字列 (件名・理由) がエスケープされ、生のタグが混入しないこと (XSS 防止)
+  it('HTML 本文で件名・理由の危険文字をエスケープする', () => {
+    const { html } = renderEscalatedEmail({
+      ticketTitle: '<script>alert(1)</script>',
+      ticketUrl: 'http://x/tickets/3',
+      reason: 'a & b <b>太字</b>',
+    });
+    expect(html).not.toContain('<script>');
+    expect(html).toContain('&lt;script&gt;');
+    expect(html).toContain('a &amp; b &lt;b&gt;');
   });
 });

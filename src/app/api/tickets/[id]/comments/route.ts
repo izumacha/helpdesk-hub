@@ -18,6 +18,8 @@ import { getEmailSender } from '@/lib/email';
 import { resolveAppBaseUrl } from '@/lib/app-url';
 // 依頼者宛「返信が届きました」メールの URL 構築 / 本文組み立て (純粋ヘルパー)
 import { buildTicketUrl, renderTicketReplyEmail } from '@/lib/ticket-email';
+// 依頼者宛「返信が届きました」LINE push の本文組み立て / 送信 (Phase 2 アウトバウンド LINE 返信)
+import { buildTicketReplyLineMessage, pushLineMessage } from '@/lib/line-push';
 // 返信メールに付与する決定的 Message-ID の生成 (スレッド継続の起点)
 import { buildReplyMessageId, resolveMessageIdDomain } from '@/lib/email-message-id';
 // エージェント権限判定 (agent または admin のとき true)
@@ -193,12 +195,13 @@ export async function POST(req: Request, { params }: Params) {
   // 通知対象が 1 名以上いれば未読件数を一斉配信
   if (recipientIds.length > 0) await broadcastUnreadCountToMany(recipientIds, tenantId);
 
-  // Phase 2「対応すると依頼者にメールで返信が届く」(docs/smb-dx-pivot-plan.md §4 Phase 2):
-  // 担当者がコメント (返信) した場合は、依頼者がアプリにログインしなくても内容を確認できるよう
-  // 依頼者宛にメールを送る。コメント保存はコミット済みなので、メール送信はベストエフォートとし
-  // 失敗してもレスポンスは 201 のままにする (アプリ内通知 / SSE は既に成立している)。
+  // Phase 2「対応すると依頼者にメールで返信が届く」「担当者の返信が LINE に返る」
+  // (docs/smb-dx-pivot-plan.md §4 Phase 2): 担当者がコメント (返信) した場合は、依頼者が
+  // アプリにログインしなくても内容を確認できるよう、メール / LINE (連携済みの場合) で届ける。
+  // コメント保存はコミット済みなので両方ともベストエフォートとし、失敗してもレスポンスは
+  // 201 のままにする (アプリ内通知 / SSE は既に成立している)。
   if (authorIsAgent) {
-    await sendReplyEmailToRequester({
+    await notifyRequesterOfReply({
       ticket,
       authorId,
       authorName: session.user.name ?? '担当者',
@@ -215,10 +218,10 @@ export async function POST(req: Request, { params }: Params) {
   return NextResponse.json({ ok: true }, { status: 201 });
 }
 
-// 担当者の返信を依頼者へメールで届ける内部ヘルパー (ベストエフォート / 副作用は send のみ)。
-// 例外は呼び出し側に伝播させず、ログに残して握り潰す: メール送信の失敗で「コメントは保存できたのに
-// 500 が返る」事態 (= フロントが二重投稿しかねない) を避けるため。
-async function sendReplyEmailToRequester(args: {
+// 担当者の返信を依頼者へメール / LINE で届ける内部ヘルパー (ベストエフォート)。
+// 依頼者の連絡先 (メールアドレス・lineUserId) を 1 度だけ引いて、設定済みのチャネルへ
+// 並行して送る。一方が失敗しても他方の送信を妨げないよう、各チャネルは個別に try/catch する。
+async function notifyRequesterOfReply(args: {
   ticket: { creatorId: string; title: string };
   authorId: string;
   authorName: string;
@@ -227,15 +230,36 @@ async function sendReplyEmailToRequester(args: {
   tenantId: string;
 }): Promise<void> {
   const { ticket, authorId, authorName, commentBody, ticketId, tenantId } = args;
-  // 自分が起票したチケットに自分で返信した場合は自分宛メールを送らない
+  // 自分が起票したチケットに自分で返信した場合は自分宛通知を送らない
   if (ticket.creatorId === authorId) return;
 
-  try {
-    // 依頼者 (起票者) のメールアドレスを引く (認証用なのでテナント横断 lookup)
-    const creator = await repos.users.findById(ticket.creatorId);
-    // 依頼者が見つからない / メール未設定なら送りようがないのでスキップ
-    if (!creator?.email) return;
+  // 依頼者 (起票者) の連絡先をまとめて引く (認証用なのでテナント横断 lookup)。
+  // 依頼者自体が見つからなければメール / LINE どちらも送りようがないので早期 return する。
+  const creator = await repos.users.findById(ticket.creatorId);
+  if (!creator) return;
 
+  await Promise.all([
+    sendReplyEmailToRequester({ creator, ticket, authorName, commentBody, ticketId, tenantId }),
+    sendReplyLineToRequester({ creator, ticket, authorName, commentBody, ticketId }),
+  ]);
+}
+
+// 担当者の返信を依頼者へメールで届ける内部ヘルパー (ベストエフォート / 副作用は send のみ)。
+// 例外は呼び出し側に伝播させず、ログに残して握り潰す: メール送信の失敗で「コメントは保存できたのに
+// 500 が返る」事態 (= フロントが二重投稿しかねない) を避けるため。
+async function sendReplyEmailToRequester(args: {
+  creator: { email: string | null };
+  ticket: { title: string };
+  authorName: string;
+  commentBody: string;
+  ticketId: string;
+  tenantId: string;
+}): Promise<void> {
+  const { creator, ticket, authorName, commentBody, ticketId, tenantId } = args;
+  // メール未設定なら送りようがないのでスキップ
+  if (!creator.email) return;
+
+  try {
     // メール内リンクのベース URL を解決 (production で NEXTAUTH_URL 未設定なら throw → 下で握る)
     const baseUrl = resolveAppBaseUrl();
     // チケット詳細ページへの導線 URL を組み立てる
@@ -268,5 +292,38 @@ async function sendReplyEmailToRequester(args: {
   } catch (err) {
     // 送信失敗はサーバログに残すだけ (依頼者への通知はアプリ内にも残っている)
     console.error('[POST /api/tickets/[id]/comments] 依頼者宛メール送信に失敗しました', err);
+  }
+}
+
+// 担当者の返信を依頼者へ LINE で届ける内部ヘルパー (ベストエフォート / 副作用は push のみ)。
+// LINE_CHANNEL_ACCESS_TOKEN 未設定、または依頼者が LINE 未連携 (lineUserId なし) の環境では
+// pushLineMessage 側 / ここでの早期 return により何もしない (機能オプトインの正常系)。
+async function sendReplyLineToRequester(args: {
+  creator: { lineUserId?: string | null };
+  ticket: { title: string };
+  authorName: string;
+  commentBody: string;
+  ticketId: string;
+}): Promise<void> {
+  const { creator, ticket, authorName, commentBody, ticketId } = args;
+  // LINE 未連携なら送りようがないのでスキップ
+  if (!creator.lineUserId) return;
+
+  try {
+    // メール内リンクと同じベース URL 解決ロジックを再利用する (single source)
+    const baseUrl = resolveAppBaseUrl();
+    const ticketUrl = buildTicketUrl(baseUrl, ticketId);
+    // LINE 用テキスト本文を純粋ヘルパーで構築
+    const text = buildTicketReplyLineMessage({
+      ticketTitle: ticket.title,
+      ticketUrl,
+      commentBody,
+      agentName: authorName,
+    });
+    // Messaging API へ push する (アクセストークン未設定時は内部で何もしない)
+    await pushLineMessage(creator.lineUserId, text);
+  } catch (err) {
+    // 送信失敗はサーバログに残すだけ (依頼者への通知はアプリ内にも残っている)
+    console.error('[POST /api/tickets/[id]/comments] 依頼者宛 LINE 送信に失敗しました', err);
   }
 }

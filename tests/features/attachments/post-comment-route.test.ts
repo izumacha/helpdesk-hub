@@ -25,6 +25,8 @@ const TENANT_B = 'tenant-b';
 const REQUESTER = 'u-req-1';
 const REQUESTER2 = 'u-req-2';
 const AGENT = 'u-agt-1';
+// LINE 連携済みを装うための正規形式ユーザー ID ('U' + 32 桁 16 進数)。依頼者の lineUserId として使う
+const REQUESTER_LINE_USER_ID = `U${'a'.repeat(32)}`;
 
 // 可変な依存
 let store: Store;
@@ -72,7 +74,22 @@ async function seed() {
   const now = new Date();
   // テナント A・B を投入 (Lite モード)
   for (const t of [TENANT, TENANT_B]) {
-    store.tenants.set(t, { id: t, name: t, mode: 'lite', industry: null, inboundToken: null, slackWebhookUrl: null, subscriptionPlan: 'free' as const, stripeCustomerId: null, stripeSubscriptionId: null, stripeSubscriptionStatus: null, teamsWebhookUrl: null, chatworkApiToken: null, chatworkRoomId: null, createdAt: now });
+    store.tenants.set(t, {
+      id: t,
+      name: t,
+      mode: 'lite',
+      industry: null,
+      inboundToken: null,
+      slackWebhookUrl: null,
+      subscriptionPlan: 'free' as const,
+      stripeCustomerId: null,
+      stripeSubscriptionId: null,
+      stripeSubscriptionStatus: null,
+      teamsWebhookUrl: null,
+      chatworkApiToken: null,
+      chatworkRoomId: null,
+      createdAt: now,
+    });
   }
   // テナント A のユーザー: requester ×2 + agent ×1
   const users: Array<[string, 'requester' | 'agent', string]> = [
@@ -391,5 +408,45 @@ describe('POST /api/tickets/[id]/comments', () => {
     const notifications = [...store.notifications.values()];
     // 依頼者 1 名にだけ届く (投稿者 = AGENT は除外)
     expect(notifications.map((n) => n.userId)).toEqual([REQUESTER]);
+  });
+
+  // Phase 2「担当者の返信が LINE に返る」: LINE 連携済み (lineUserId 設定済み) の依頼者には、
+  // メールに加えて LINE Messaging API への push も行われる。
+  it('pushes a LINE message to a linked requester when an agent replies', async () => {
+    const { ticketId } = await seed();
+    // 依頼者を LINE 連携済みにする
+    const requester = store.users.get(REQUESTER)!;
+    store.users.set(REQUESTER, { ...requester, lineUserId: REQUESTER_LINE_USER_ID });
+
+    // LINE push を有効化し、fetch をモックして実際の外部送信は行わない
+    vi.stubEnv('LINE_CHANNEL_ACCESS_TOKEN', 'test-access-token');
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue({
+        ok: true,
+        status: 200,
+        type: 'basic',
+        text: () => Promise.resolve('{}'),
+      });
+    vi.stubGlobal('fetch', fetchMock);
+
+    try {
+      mockSession = buildSession(AGENT, 'agent', TENANT);
+      const { POST } = await import('@/app/api/tickets/[id]/comments/route');
+      const res = await POST(buildRequest('対応しました', []), makeParams(ticketId));
+      expect(res.status).toBe(201);
+
+      // LINE Messaging API へ 1 回 push されている
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      const [url, init] = fetchMock.mock.calls[0];
+      expect(url).toBe('https://api.line.me/v2/bot/message/push');
+      const body = JSON.parse(init.body);
+      expect(body.to).toBe(REQUESTER_LINE_USER_ID);
+      expect(body.messages[0].text).toContain('対応しました');
+    } finally {
+      // 他テストへ影響しないよう env / fetch のスタブを必ず元に戻す
+      vi.unstubAllEnvs();
+      vi.unstubAllGlobals();
+    }
   });
 });

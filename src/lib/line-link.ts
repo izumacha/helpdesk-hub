@@ -11,6 +11,10 @@
 // 生コードのハッシュ化はマジックリンクと共通の SHA-256 実装を再利用する (Web Crypto)
 export { hashMagicLinkToken as hashLineLinkCode } from '@/lib/magic-link';
 
+// LINE ユーザー ID の正規形式 ('U' + 32 桁 16 進数)。受信 Webhook (起票・紐付け) と
+// 送信 Push (line-push.ts) の双方で同じ形式チェックに使うので 1 か所にまとめる (§6 DRY)。
+export const LINE_USER_ID_PATTERN = /^U[0-9a-f]{32}$/;
+
 // コードに使う文字種: Crockford Base32 (数字 + 大文字英字から紛らわしい I/L/O/U を除いた 32 文字)。
 // 見間違い (0/O, 1/I/L 等) を避け、トーク画面で読み上げ・転記しやすくする。
 const CODE_ALPHABET = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
