@@ -234,8 +234,17 @@ async function notifyRequesterOfReply(args: {
   if (ticket.creatorId === authorId) return;
 
   // 依頼者 (起票者) の連絡先をまとめて引く (認証用なのでテナント横断 lookup)。
+  // この呼び出し自体は元の sendReplyEmailToRequester でも try/catch の内側にあった DB アクセスで、
+  // 一過性の DB 障害でも「コメントは保存できたのに 500 が返る」事態 (フロントの二重投稿誘発) を
+  // 避けるためここでも例外を握りつぶす (ベストエフォート通知全体の契約を維持する)。
+  let creator: { email: string | null; lineUserId?: string | null } | null;
+  try {
+    creator = await repos.users.findById(ticket.creatorId);
+  } catch (err) {
+    console.error('[POST /api/tickets/[id]/comments] 依頼者情報の取得に失敗しました', err);
+    return;
+  }
   // 依頼者自体が見つからなければメール / LINE どちらも送りようがないので早期 return する。
-  const creator = await repos.users.findById(ticket.creatorId);
   if (!creator) return;
 
   await Promise.all([

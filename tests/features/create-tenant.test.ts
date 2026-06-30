@@ -127,6 +127,9 @@ describe('createTenant', () => {
       const ticket = store.tickets.get(faq.ticketId);
       expect(ticket?.status).toBe('Closed');
       expect(ticket?.tenantId).toBe(result.tenantId);
+      // resolutionDueAt を設定しないこと (tickets.create は resolvedAt を常に null で作るため、
+      // 期限だけ設定すると getSlaState() が Closed なのに「期限切れ」と誤判定してしまう回帰防止)
+      expect(ticket?.resolutionDueAt).toBeNull();
     }
     // 質問文の内容も期待どおり (テンプレートの内容と一致)
     expect(faqs.map((f) => f.question)).toContain(

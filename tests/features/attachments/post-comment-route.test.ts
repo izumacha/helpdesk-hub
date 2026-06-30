@@ -420,14 +420,12 @@ describe('POST /api/tickets/[id]/comments', () => {
 
     // LINE push を有効化し、fetch をモックして実際の外部送信は行わない
     vi.stubEnv('LINE_CHANNEL_ACCESS_TOKEN', 'test-access-token');
-    const fetchMock = vi
-      .fn()
-      .mockResolvedValue({
-        ok: true,
-        status: 200,
-        type: 'basic',
-        text: () => Promise.resolve('{}'),
-      });
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      type: 'basic',
+      text: () => Promise.resolve('{}'),
+    });
     vi.stubGlobal('fetch', fetchMock);
 
     try {
@@ -447,6 +445,29 @@ describe('POST /api/tickets/[id]/comments', () => {
       // 他テストへ影響しないよう env / fetch のスタブを必ず元に戻す
       vi.unstubAllEnvs();
       vi.unstubAllGlobals();
+    }
+  });
+
+  // 回帰防止: 依頼者情報取得 (repos.users.findById) が一過性の DB エラーで失敗しても、
+  // コメント自体は保存済みのため 201 を返す (500 にしてフロントの二重投稿を誘発しない)
+  it('still returns 201 even if looking up the requester for notification fails', async () => {
+    const { ticketId } = await seed();
+    // findById を例外で落とす (一過性の DB 障害を模倣)
+    const originalFindById = repos.users.findById;
+    repos.users.findById = vi.fn(async () => {
+      throw new Error('synthetic DB failure');
+    });
+
+    try {
+      mockSession = buildSession(AGENT, 'agent', TENANT);
+      const { POST } = await import('@/app/api/tickets/[id]/comments/route');
+      const res = await POST(buildRequest('確認しました', []), makeParams(ticketId));
+      // 通知送信 (メール/LINE) は失敗してもコメント自体は保存済みなので 201 のまま
+      expect(res.status).toBe(201);
+      expect(store.comments.size).toBe(1);
+    } finally {
+      // 他テストへ影響しないよう元に戻す
+      repos.users.findById = originalFindById;
     }
   });
 });

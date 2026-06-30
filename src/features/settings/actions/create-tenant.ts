@@ -131,6 +131,11 @@ export async function createTenant(formData: FormData): Promise<CreateTenantResu
         // 公開 (Published) 状態へ更新する。サンプルチケット (SAMPLE_TICKETS) と同じ起票ロジックを使う。
         for (const faq of template.faqs) {
           // FAQ の元になるシードチケットを解決済み (Closed) で作成する
+          // 注意: tickets.create は resolvedAt を常に null で作成する (設定するには別途
+          // updateStatus が必要)。resolutionDueAt を指定すると、resolvedAt が null のまま
+          // 期限だけ過去の時刻になり、getSlaState() が「期限切れ」と誤判定してしまう
+          // (status は Closed なのに SLA バッジだけ overdue になる矛盾)。
+          // 解決済みシードチケットに本来 SLA 期限は不要なため、resolutionDueAt は指定しない。
           const faqTicket = await tx.tickets.create({
             title: faq.question, // 質問文をそのままタイトルに使う
             body: faq.answer, // 回答文を本文として残す (チケット詳細からも参照できる)
@@ -139,7 +144,6 @@ export async function createTenant(formData: FormData): Promise<CreateTenantResu
             creatorId: adminUser.id, // 初代管理者を起票者とする
             tenantId: tenant.id, // 所属テナント
             status: 'Closed', // 「よくある質問」は解決済みチケットから化けるという業務フローに合わせる
-            resolutionDueAt: now, // 既に解決済みのため期限は起票時刻でよい
           });
           // FAQ 候補を作成 (既定は Candidate) してから即座に Published へ更新する
           const faqCandidate = await tx.faq.create({
