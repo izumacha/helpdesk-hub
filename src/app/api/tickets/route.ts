@@ -22,8 +22,8 @@ import { initialStatusForMode } from '@/domain/ticket-status';
 import { getCurrentTenantMode } from '@/lib/tenant';
 // 'YYYY-MM-DD' を JST 終端 Date に変換するヘルパー (サーバ TZ 非依存)
 import { endOfDayJST } from '@/lib/format-date';
-// Phase 4 課金: プランごとの月間チケット上限チェック
-import { isMonthlyTicketLimitReached, getMonthlyTicketLimit } from '@/lib/plan-guard';
+// Phase 4 課金: プランごとの月間チケット上限チェック (CSV インポート・メール/LINE 取り込みと共有)
+import { getMonthlyTicketQuota } from '@/lib/tenant-plan';
 
 // 422 (バリデーションエラー) を共通フォーマットで返すヘルパー
 function validationError(message: string, path: (string | number)[]) {
@@ -144,28 +144,16 @@ export async function POST(req: Request) {
     }
   }
 
-  // Phase 4 課金: テナントのプランを取得して月間チケット数の上限を確認する
-  const currentTenant = await repos.tenants.findById(tenantId);
-  if (currentTenant) {
-    const plan = currentTenant.subscriptionPlan;
-    // 月間チケット上限がある場合 (Free プランのみ。Infinity なら -1 で上限なし) は件数を確認する
-    if (getMonthlyTicketLimit(plan) !== -1) {
-      // 当月の起票数をカウントする (現在月の開始日時を UTC で計算)
-      const now = new Date();
-      // 月初 00:00:00.000 (UTC) を起点にする
-      const monthStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
-      // 当月起票済み件数をカウントする (tenantId スコープ + createdAfter フィルター)
-      const monthlyCount = await repos.tickets.count({ createdAfter: monthStart }, tenantId);
-      // 上限超過なら 429 でプランアップグレードを促す
-      if (isMonthlyTicketLimitReached(plan, monthlyCount)) {
-        return NextResponse.json(
-          {
-            error: `月間の問い合わせ件数が上限 (${getMonthlyTicketLimit(plan)} 件) に達しました。プランをアップグレードしてください。`,
-          },
-          { status: 429 },
-        );
-      }
-    }
+  // Phase 4 課金: テナントの当月チケット起票の残枠を確認する (§6.1 料金プランの月間上限)
+  const quota = await getMonthlyTicketQuota(tenantId);
+  // 残枠が無い (上限のあるプランで使い切った) 場合は 429 でプランアップグレードを促す
+  if (quota.limited && quota.remaining <= 0) {
+    return NextResponse.json(
+      {
+        error: `月間の問い合わせ件数が上限 (${quota.limit} 件) に達しました。プランをアップグレードしてください。`,
+      },
+      { status: 429 },
+    );
   }
 
   // テナントの動作モードを取得し、Lite モード時の入力強制ルールを適用する
