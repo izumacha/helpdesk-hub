@@ -34,6 +34,18 @@ export interface MonthlyTicketQuota {
 // Web フォーム (POST /api/tickets) だけでなく、CSV インポート・メール取り込み・LINE 取り込みなど
 // チケットを作成する全ての入口で同じ判定を使うための共通ヘルパー (§6.1 料金プランの月間上限)。
 // plan を既に把握している呼び出し側は渡せる (二重の tenant 取得を避ける)。
+//
+// 注意点 (best-effort な上限であり、DB レベルの原子性は持たない):
+// - テナントが見つからない場合は resolveTenantPlan の規約どおり 'free' として扱う (fail-closed)。
+//   旧 tickets/route.ts のインライン実装は tenant が null なら上限チェック自体を skip していたが、
+//   本来ここには到達しない (User.tenantId → Tenant は Prisma スキーマで cascade 削除のため、
+//   セッションの tenantId が指す Tenant 行が消えることはない) ため実害はなく、より安全な
+//   fail-closed 側へ寄せている。
+// - この関数は「呼び出し時点のスナップショット」を返すだけで、以降の作成処理と同一トランザクション
+//   では実行されない。同一テナントへの同時並行インポート/起票がある場合、複数の呼び出しが同じ
+//   残枠を見て、合計では上限をわずかに超えることがありうる (check-then-act)。課金プランの利用制限
+//   は完全な原子性を要求しない運用上のソフトリミットとして扱っており、原子的なカウンタが必要になれば
+//   ここを DB 側の集計 (トランザクション内 SELECT ... FOR UPDATE 等) に差し替える。
 export async function getMonthlyTicketQuota(
   tenantId: string,
   plan?: SubscriptionPlan,
