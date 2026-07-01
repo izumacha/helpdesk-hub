@@ -10,6 +10,8 @@ import { formatDateTimeJP } from '@/lib/format-date';
 import { HISTORY_FIELD_LABELS } from '@/lib/constants';
 // CSV エクスポートボタン (Client Component)
 import { AuditExportButton } from '@/features/audit/components/AuditExportButton';
+// 監査ログ機能のプランゲート (§6.1 料金プラン: Pro / Enterprise のみ利用可能)
+import { isAuditLogAllowed } from '@/lib/plan-guard';
 
 // 一覧の取得件数上限 (パフォーマンス保護: 画面表示は 200 件まで)
 const PAGE_LIMIT = 200;
@@ -28,6 +30,19 @@ export default async function AuditPage() {
     return (
       <div className="rounded-2xl bg-white py-20 text-center text-slate-400 ring-1 ring-slate-200">
         <p className="text-sm">この画面は管理者のみ利用できます。</p>
+      </div>
+    );
+  }
+
+  // 監査ログはプランゲート対象の機能 (Pro / Enterprise のみ)。テナントの現在プランを確認する
+  // (UI 非表示だけに頼らずサーバー側で強制する §9)
+  const tenant = await repos.tenants.findById(session.user.tenantId);
+  if (!isAuditLogAllowed(tenant?.subscriptionPlan ?? 'free')) {
+    return (
+      <div className="rounded-2xl bg-white py-20 text-center text-slate-400 ring-1 ring-slate-200">
+        <p className="text-sm">
+          監査ログは Pro / Enterprise プランでご利用いただけます。設定画面からプランをアップグレードしてください。
+        </p>
       </div>
     );
   }

@@ -38,7 +38,8 @@ function seed() {
     industry: null,
     inboundToken: 'tok',
     slackWebhookUrl: null,
-    subscriptionPlan: 'free' as const,
+    // LINE 連携は Pro 以上でのみ利用可能 (§6.1) なので、既定シードは Pro にする
+    subscriptionPlan: 'pro' as const,
     stripeCustomerId: null,
     stripeSubscriptionId: null,
     stripeSubscriptionStatus: null,
@@ -95,6 +96,16 @@ describe('POST /api/inbound/line', () => {
 
   afterEach(() => {
     vi.unstubAllEnvs();
+  });
+
+  // Standard 以下のプランは LINE 連携不可 (§6.1 料金プラン)。署名は正しくても起票しない
+  it('Pro 未満のプランのテナントは起票せず 200 (プランゲート)', async () => {
+    // シード済みテナントを Standard プランに書き換える
+    store.tenants.set(TENANT, { ...store.tenants.get(TENANT)!, subscriptionPlan: 'standard' as const });
+    const { POST } = await import('@/app/api/inbound/line/route');
+    const res = await POST(makeRequest('プリンターが動きません', LINE_ID_UNLINKED));
+    expect(res.status).toBe(200);
+    expect(store.tickets.size).toBe(0);
   });
 
   // 未連携ユーザーの通常メッセージはプロキシ担当者を起票者にして起票する

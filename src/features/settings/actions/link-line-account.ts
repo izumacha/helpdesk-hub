@@ -32,6 +32,8 @@ import {
 } from '@/lib/line-link';
 // next-auth のセッション型
 import type { Session } from 'next-auth';
+// LINE 連携機能のプランゲート (§6.1 料金プラン: Pro / Enterprise のみ利用可能)
+import { isLineIntegrationAllowed } from '@/lib/plan-guard';
 
 // 解除操作のレート制限ウィンドウ (ミリ秒)。コード TTL (LINE_LINK_CODE_TTL_MS) とは独立した定数にすることで、
 // TTL の変更が解除操作のレート制限ウィンドウに意図せず波及しないようにする (コード有効期限とは別概念)。
@@ -61,6 +63,13 @@ export async function generateLineLinkCode_action(): Promise<GenerateLineLinkCod
   // 操作対象は常にセッション由来の自分・自テナントのみ
   const userId = session.user.id;
   const tenantId = session.user.tenantId;
+
+  // プランゲート: LINE 連携は Pro 以上のみ (Free / Standard では利用不可 §6.1 料金プラン)。
+  // Webhook 側でも同じ判定を行うが、コード発行時点で分かる方が親切なため先に弾く。
+  const tenant = await repos.tenants.findById(tenantId);
+  if (!isLineIntegrationAllowed(tenant?.subscriptionPlan ?? 'free')) {
+    throw new Error('LINE 連携は Pro / Enterprise プランでご利用いただけます。');
+  }
 
   // ユーザー単位のレート制限 (10 分に 5 回まで)。連打・総当たり的なコード再発行を抑止する
   try {

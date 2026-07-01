@@ -49,6 +49,8 @@ import { resolveAppBaseUrl } from '@/lib/app-url';
 import { buildReplyMessageId, resolveMessageIdDomain } from '@/lib/email-message-id';
 // 受付番号 (短縮 ID) の共有フォーマッタ (画面のチケット詳細ヘッダと同じ表記)
 import { formatTicketRef } from '@/lib/ticket-ref';
+// メール取り込み機能のプランゲート (§6.1 料金プラン: Free では利用不可)
+import { isEmailInboundAllowed } from '@/lib/plan-guard';
 
 // このルートは Node ランタイムで動かす (node:crypto / Prisma を使うため Edge では動かない)
 export const runtime = 'nodejs';
@@ -354,6 +356,16 @@ export async function POST(req: Request) {
   if (!tenant) {
     console.warn('[POST /api/inbound/email] no tenant for inbound token');
     return NextResponse.json({ error: '取り込み先が見つかりません' }, { status: 404 });
+  }
+
+  // プランゲート: メール取り込みは Standard 以上のみ (Free では利用不可 §6.1 料金プラン)。
+  // UI 非表示に頼らずサーバー側 (Webhook 受信口) で強制する。未知送信者と同様に隔離扱いにして
+  // 202 を返し、どのテナントが対象外かをレスポンスから推測されないようにする (§9)。
+  if (!isEmailInboundAllowed(tenant.subscriptionPlan)) {
+    console.warn('[POST /api/inbound/email] quarantined: email inbound not allowed for plan', {
+      plan: tenant.subscriptionPlan,
+    });
+    return NextResponse.json({ status: 'quarantined' }, { status: 202 });
   }
 
   // テナント単位で取り込み流量を制限する (シークレット漏洩時の起票スパムを抑える §9)。
