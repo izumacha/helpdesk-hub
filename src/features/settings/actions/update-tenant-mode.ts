@@ -14,6 +14,8 @@ import { assertAdminSession } from '@/lib/role';
 import { tenantModeSchema } from '@/lib/validations/tenant';
 // Pro モード機能のプランゲート (§6.1 料金プラン: Pro / Enterprise のみ利用可能)
 import { isProModeAllowed } from '@/lib/plan-guard';
+// テナントの現在プランを解決する共通ヘルパー (複数箇所での重複を避ける)
+import { resolveTenantPlan } from '@/lib/tenant-plan';
 
 // テナントの動作モード (lite | pro) を切り替えるサーバーアクション
 export async function updateTenantMode(formData: FormData): Promise<void> {
@@ -38,8 +40,8 @@ export async function updateTenantMode(formData: FormData): Promise<void> {
   // プランゲート: Pro モードへの切替は Pro / Enterprise プランのみ (Free / Standard では不可 §6.1)。
   // UI 非表示に頼らずサーバー側で強制する。Lite への切替はどのプランでも常に許可する。
   if (parsed.data === 'pro') {
-    const tenant = await repos.tenants.findById(tenantId);
-    if (!isProModeAllowed(tenant?.subscriptionPlan ?? 'free')) {
+    const plan = await resolveTenantPlan(tenantId);
+    if (!isProModeAllowed(plan)) {
       throw new Error('Pro モードは Pro / Enterprise プランでご利用いただけます。');
     }
   }
