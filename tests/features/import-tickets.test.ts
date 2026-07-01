@@ -216,6 +216,49 @@ describe('importTickets', () => {
     });
   });
 
+  // ── Phase 4 課金: 月間チケット上限 (プランゲート) ──────────────────
+  describe('月間チケット上限 (§6.1 料金プラン)', () => {
+    // Free プランは月 50 件まで。CSV インポートも Web フォームと同じ上限を守ることを確認する
+    it('Free プランで残枠を超える分はエラーとして記録され、残枠分だけ取り込まれる', async () => {
+      // 当月分としてテナントに 48 件のチケットを事前に作成しておく (残枠 2 件)
+      for (let i = 0; i < 48; i += 1) {
+        await repos.tickets.create({
+          title: `既存${i}`,
+          body: '',
+          priority: 'Medium',
+          categoryId: null,
+          creatorId: 'u-agt-1',
+          tenantId: TENANT,
+          status: 'Open',
+          resolutionDueAt: null,
+        });
+      }
+      const importTickets = await loadAction();
+      // 5 行の CSV を取り込む (残枠 2 件を超える)
+      const csv = `件名\n行1\n行2\n行3\n行4\n行5`;
+      const result = await importTickets(csv);
+      // 残枠 2 件分だけ成功する
+      expect(result.imported).toBe(2);
+      // 残り 3 件は上限エラーとして記録される
+      expect(result.errors).toHaveLength(3);
+      expect(result.errors[0]?.message).toContain('月間の問い合わせ件数が上限');
+      // DB 上のチケット総数は上限の 50 件を超えない
+      expect(store.tickets.size).toBe(50);
+    });
+
+    // Free 以外のプランは無制限なので、残枠チェックで取り込みが妨げられない
+    it('Pro プランでは月間上限に妨げられず全件取り込まれる', async () => {
+      // テナントのプランを Pro に切り替える (Free の 50 件上限は適用されない)
+      store.tenants.set(TENANT, { ...store.tenants.get(TENANT)!, subscriptionPlan: 'pro' as const });
+      const importTickets = await loadAction();
+      const csv = `件名\n行1\n行2\n行3`;
+      const result = await importTickets(csv);
+      // 3 件とも成功する
+      expect(result.imported).toBe(3);
+      expect(result.errors).toHaveLength(0);
+    });
+  });
+
   // ── RBAC ────────────────────────────────────────
   describe('RBAC (権限管理)', () => {
     // 依頼者 (requester) はエージェント専用操作のため拒否される

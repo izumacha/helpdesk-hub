@@ -23,6 +23,8 @@ import type { Priority, TicketStatus } from '@/domain/types';
 import { initialStatusForMode } from '@/domain/ticket-status';
 // CSV インポート完了後に他エージェントへ未読カウントを即時配信するヘルパー
 import { broadcastUnreadCountToMany } from '@/features/notifications/notify';
+// Phase 4 課金: 月間チケット上限チェック (Web フォーム・メール/LINE 取り込みと共有)
+import { getMonthlyTicketQuota } from '@/lib/tenant-plan';
 
 // 1 インポートあたりの最大行数 (これを超えたらエラー)
 const MAX_ROWS = 200;
@@ -234,6 +236,13 @@ export async function importTickets(csvText: string): Promise<ImportTicketsResul
     throw new Error(`1 回のインポートは最大 ${MAX_ROWS} 行です（${dataLines.length} 行ありました）`);
   }
 
+  // Phase 4 課金: 当月チケット起票の残枠を取得する (§6.1 料金プランの月間上限)。
+  // CSV インポートは 1 回で最大 MAX_ROWS 件を一括作成できるため、Web フォームと同じ上限チェックを
+  // 行わないと Free プランの月間上限 (50 件) を 1 回のインポートで容易に超過できてしまう。
+  // remaining はループ内で残り作成可能数として消費し、使い切ったら以降の行をエラーとして記録する。
+  // (ここまでの検証を通過したリクエストのみ DB 参照するため、形式エラーで無駄なクエリを発生させない)
+  const quota = await getMonthlyTicketQuota(tenantId);
+
   // 集計用カウンタとエラーリストを初期化する
   let imported = 0;
   const errors: Array<{ row: number; message: string }> = [];
@@ -282,6 +291,16 @@ export async function importTickets(csvText: string): Promise<ImportTicketsResul
     // バリデーション通過: 検証済みデータを展開する
     const { title, body, priority, resolutionDueAt } = validation.data;
 
+    // Phase 4 課金: 残枠を使い切っていたらこの行以降は起票せずエラーとして記録する
+    // (Web フォーム / メール / LINE 取り込みと同じ上限を CSV インポートにも適用する)
+    if (quota.limited && quota.remaining <= 0) {
+      errors.push({
+        row: rowNum,
+        message: `月間の問い合わせ件数が上限 (${quota.limit} 件) に達したため取り込めませんでした。プランをアップグレードしてください。`,
+      });
+      continue;
+    }
+
     // チケットを 1 件作成する (失敗してもループを続けて部分成功を許可する)
     try {
       // リポジトリ経由でチケットを DB に保存する
@@ -297,6 +316,9 @@ export async function importTickets(csvText: string): Promise<ImportTicketsResul
       });
       // 成功カウンタをインクリメント
       imported += 1;
+      // 上限のあるプランでは残枠を消費する (無制限プランは remaining が Infinity のため減算不要だが、
+      // 明示的にガードして意図を示す)
+      if (quota.limited) quota.remaining -= 1;
     } catch (err) {
       // 内部エラー (Prisma 例外等) をサーバーログに記録する (スキーマ情報の漏洩防止のため UI には返さない)
       console.error(`[importTickets] 行 ${rowNum} のチケット作成に失敗:`, err);
