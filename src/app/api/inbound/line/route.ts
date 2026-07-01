@@ -46,6 +46,8 @@ import {
 } from '@/lib/line-link';
 // 未読カウントを SSE で即時配信するヘルパー (新規起票後に担当者のバッジをリアルタイム更新する)
 import { broadcastUnreadCountToMany } from '@/features/notifications/notify';
+// LINE 連携機能のプランゲート (§6.1 料金プラン: Pro / Enterprise のみ利用可能)
+import { isLineIntegrationAllowed } from '@/lib/plan-guard';
 
 // このルートは Node ランタイムで動かす (node:crypto / Prisma を使うため Edge では動かない)
 export const runtime = 'nodejs';
@@ -226,6 +228,16 @@ export async function POST(req: Request) {
     // env var に設定したテナント ID が存在しない場合はサーバー設定エラーとして 404 を返す
     console.error('[POST /api/inbound/line] target tenant not found:', targetTenantId);
     return NextResponse.json({ error: '送信先テナントが見つかりません' }, { status: 404 });
+  }
+
+  // プランゲート: LINE 連携は Pro 以上のみ (Free / Standard では利用不可 §6.1 料金プラン)。
+  // UI 非表示に頼らずサーバー側 (Webhook 受信口) で強制する。200 を返して LINE の再送ループを止める
+  // (非 200 は LINE が 5 分以内に再送するため §9)。
+  if (!isLineIntegrationAllowed(tenant.subscriptionPlan)) {
+    console.warn('[POST /api/inbound/line] ignored: LINE integration not allowed for plan', {
+      plan: tenant.subscriptionPlan,
+    });
+    return NextResponse.json({ status: 'ignored', reason: 'plan_not_allowed' }, { status: 200 });
   }
 
   // 未紐付け LINE ユーザー (またはユーザー ID 不明) のフォールバック起票者を用意する。

@@ -70,7 +70,8 @@ function seed() {
     industry: null,
     inboundToken: TOKEN,
     slackWebhookUrl: null,
-    subscriptionPlan: 'free' as const,
+    // メール取り込みは Free では利用不可 (§6.1) なので、既定シードは Standard にする
+    subscriptionPlan: 'standard' as const,
     stripeCustomerId: null,
     stripeSubscriptionId: null,
     stripeSubscriptionStatus: null,
@@ -176,6 +177,16 @@ describe('POST /api/inbound/email', () => {
     const { POST } = await import('@/app/api/inbound/email/route');
     const res = await POST(makeRequest({ ...VALID_EMAIL, to: 'nope@inbox.helpdesk-hub.app' }));
     expect(res.status).toBe(404);
+    expect(store.tickets.size).toBe(0);
+  });
+
+  // Free プランはメール取り込み不可 (§6.1 料金プラン)。既知メンバーでも隔離して起票しない
+  it('Free プランのテナントは隔離して 202 を返す (プランゲート)', async () => {
+    // シード済みテナントを Free プランに書き換える
+    store.tenants.set(TENANT, { ...store.tenants.get(TENANT)!, subscriptionPlan: 'free' as const });
+    const { POST } = await import('@/app/api/inbound/email/route');
+    const res = await POST(makeRequest(VALID_EMAIL));
+    expect(res.status).toBe(202);
     expect(store.tickets.size).toBe(0);
   });
 
