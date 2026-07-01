@@ -14,15 +14,19 @@ type Params = { params: Promise<{ id: string }> };
 
 // GET /api/attachments/[id] : 認可されたユーザーに添付ファイルのバイト列を返すエンドポイント。
 // 必要な権限チェック:
-//   1. ログイン済み (未認証は 401)
+//   1. ログイン済み かつ テナントが確定している (未認証・tenantId 欠落は 401)
 //   2. 添付がセッションのテナント内に存在する (他テナントは 404 として握りつぶす)
 //   3. 親チケットの閲覧権限を持つ (requester は自分が起票したチケットのみ可。それ以外は 404)
 //   4. 物理ファイルが存在する (storage.get が null → 404)
 export async function GET(_req: Request, { params }: Params) {
   // セッション取得
   const session = await auth();
-  // 未ログインなら 401 を返す
-  if (!session?.user?.id) {
+  // 未ログイン、または tenantId が欠落しているセッションは 401 を返す。
+  // tenantId が undefined のまま Prisma の findFirst に渡すと where から
+  // tenantId 条件が脱落し、全テナントの添付に一致してしまう (クロステナント漏洩)。
+  // 通常 JWT コールバックが tenantId を補完するため到達しないが、他の認証ルートと
+  // 同様に多層防御として明示的に拒否し、fail-closed に倒す。
+  if (!session?.user?.id || !session.user.tenantId) {
     return NextResponse.json({ error: '認証が必要です' }, { status: 401 });
   }
   // 動的セグメントを取り出す

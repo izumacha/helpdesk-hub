@@ -1,6 +1,6 @@
 // GET /api/attachments/[id] の認可テスト。
 // 主検証:
-//   1. 未認証 → 401
+//   1. 未認証 (session なし / tenantId 欠落) → 401
 //   2. 同テナント + 自分のチケット → 200 + バイト列
 //   3. 別テナント → 404 (存在を隠す)
 //   4. 同テナント別ユーザー (requester) → 404
@@ -164,6 +164,19 @@ describe('GET /api/attachments/[id]', () => {
     const { attA } = await seed();
     const { GET } = await import('@/app/api/attachments/[id]/route');
     mockSession = null;
+    const res = await GET(buildRequest(), makeParams(attA.id));
+    expect(res.status).toBe(401);
+  });
+
+  // tenantId 欠落セッション → 401 (クロステナント漏洩を防ぐ fail-closed ガード)
+  it('returns 401 when the session has no tenantId', async () => {
+    const { attA } = await seed();
+    // id はあるが tenantId が欠けたセッション (通常は起きないが多層防御を検証する)
+    mockSession = {
+      user: { id: REQ_A, role: 'requester' },
+      expires: new Date(Date.now() + 86_400_000).toISOString(),
+    } as Session;
+    const { GET } = await import('@/app/api/attachments/[id]/route');
     const res = await GET(buildRequest(), makeParams(attA.id));
     expect(res.status).toBe(401);
   });
