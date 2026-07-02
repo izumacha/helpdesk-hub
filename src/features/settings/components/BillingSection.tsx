@@ -12,7 +12,7 @@ import { createCheckoutSession } from '@/features/settings/actions/create-checko
 import { createPortalSession } from '@/features/settings/actions/create-portal-session';
 // プラン型とプランごとの上限値ヘルパー
 import type { SubscriptionPlan } from '@/domain/types';
-import { USER_LIMIT, getMonthlyTicketLimit, isUserLimitReached } from '@/lib/plan-guard';
+import { USER_LIMIT, getMonthlyTicketLimit } from '@/lib/plan-guard';
 
 // 各プランの表示設定 (名称・月額・特徴)
 const PLAN_INFO: Record<
@@ -126,9 +126,13 @@ export function BillingSection({
 
   // 現在のプラン情報を取り出す
   const info = PLAN_INFO[currentPlan];
-  // 現在のスタッフ人数が現在プランの上限を超えているか (Stripe ポータルでの解約・
-  // ダウングレード後も既存メンバーは自動では削除されないため、ここで検知して警告する)
-  const isOverUserLimit = isUserLimitReached(currentPlan, currentUserCount);
+  // 現在のスタッフ人数が現在プランの上限を「超えている」か (Stripe ポータルでの解約・
+  // ダウングレード後も既存メンバーは自動では削除されないため、ここで検知して警告する)。
+  // isUserLimitReached (>= 判定) は「招待をこれ以上発行できるか」の判定用であり、
+  // ちょうど上限と同数 (例: Free で 3/3 名) は正常な「満枠」状態であって「超過」ではない。
+  // そのまま使うと満枠なだけの通常テナントにも「超えています」という誤った警告が
+  // 常時表示されてしまうため、ここでは厳密な超過 (>) のみを判定する
+  const isOverUserLimit = currentUserCount > USER_LIMIT[currentPlan];
 
   return (
     <div className="space-y-4">

@@ -226,10 +226,16 @@ export async function POST(req: Request) {
   // ストレージへの書き込みは DB トランザクション外で観測できない副作用なので、
   // 失敗時に手動で書き込み済みファイルを削除してロールバックを揃える
   const writtenKeys: string[] = []; // ロールバック用に書き込み済みキーを蓄える
+  // try の外側で宣言し、成功時のみ notifyNewTicketOutbound / レスポンス生成に使う。
+  // try 内に置いたままだと「外部通知の失敗」まで catch の添付ロールバック処理に
+  // 巻き込まれてしまう (notifyNewTicketOutbound は現状 throw しないが、将来の変更で
+  // 例外を投げるようになった場合に「作成済みチケットが失敗扱いになり添付が消される」
+  // 事故を避けるため、意図的にスコープを分離しておく)
+  let createdTicket: Ticket;
   try {
     // uow.run のコールバック内で「ストレージ書き込み + DB INSERT」をペアで実行する
     // どちらが失敗しても uow.run 自体が throw して DB は自動ロールバックされる
-    const ticket = await uow.run(async (r) => {
+    createdTicket = await uow.run(async (r) => {
       // チケット本体を tx 内で作成
       const t = await r.tickets.create({
         title,
@@ -270,10 +276,6 @@ export async function POST(req: Request) {
       // チケットを uow の戻り値として返す (呼び出し元で 201 ボディに使う)
       return t;
     });
-    // Phase 4: 外部チャネルへ新規問い合わせを通知する (ベストエフォート、失敗してもレスポンスには影響しない)
-    await notifyNewTicketOutbound(tenantId, ticket);
-    // 成功: 作成された行を 201 で返す
-    return NextResponse.json(ticket, { status: 201 });
   } catch (err) {
     // DB は自動ロールバック済。ストレージに書き込んだファイルを best-effort で削除する
     await Promise.all(
@@ -289,4 +291,9 @@ export async function POST(req: Request) {
     console.error('[POST /api/tickets] attachment save failed', err);
     return NextResponse.json({ error: '添付ファイルの保存に失敗しました' }, { status: 500 });
   }
+  // ここに到達するのはチケット + 添付の作成が完全に成功した場合のみ。
+  // 外部通知は try/catch の外で行い、添付ロールバック処理と失敗要因を混同しない
+  await notifyNewTicketOutbound(tenantId, createdTicket);
+  // 成功: 作成された行を 201 で返す
+  return NextResponse.json(createdTicket, { status: 201 });
 }
