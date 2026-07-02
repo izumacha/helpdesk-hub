@@ -24,6 +24,14 @@ import { getCurrentTenantMode } from '@/lib/tenant';
 import { endOfDayJST } from '@/lib/format-date';
 // Phase 4 課金: プランごとの月間チケット上限チェック (CSV インポート・メール/LINE 取り込みと共有)
 import { getMonthlyTicketQuota } from '@/lib/tenant-plan';
+// Phase 4: Slack/Teams/Chatwork 外部通知ヘルパー (失敗してもチケット作成は止めない)
+import { sendOutboundNotification } from '@/lib/outbound-notify';
+// メール/通知本文に載せるチケット詳細ページの絶対 URL を組み立てるためのベース URL 解決ヘルパー
+import { resolveAppBaseUrl } from '@/lib/app-url';
+// 優先度の日本語ラベル (外部通知本文に使う)
+import { PRIORITY_LABELS } from '@/lib/constants';
+// 新規作成されたチケットの型 (通知本文の組み立てに使う最小限のフィールドのみ参照)
+import type { Ticket } from '@/domain/types';
 
 // 422 (バリデーションエラー) を共通フォーマットで返すヘルパー
 function validationError(message: string, path: (string | number)[]) {
@@ -35,6 +43,27 @@ function validationError(message: string, path: (string | number)[]) {
     },
     { status: 422 },
   );
+}
+
+// 新規チケット作成を Slack/Teams/Chatwork の外部チャネルへ通知するヘルパー。
+// Phase 4「Slack / Chatwork / Microsoft Teams 通知 Adapter」の主目的である
+// 「新しい問い合わせが届いたことにすぐ気づける」を満たすため、起票直後に呼ぶ。
+// 送信失敗はログに残すだけでチケット作成のレスポンスには影響させない (非クリティカルな副作用)。
+async function notifyNewTicketOutbound(tenantId: string, ticket: Ticket): Promise<void> {
+  try {
+    // ベース URL を取得してチケットリンクを組み立てる (NEXTAUTH_URL 未設定時に例外が出る可能性があるため内側に置く)
+    const baseUrl = resolveAppBaseUrl();
+    // 外部チャネル (Slack/Teams/Chatwork) に通知を送る
+    await sendOutboundNotification(tenantId, {
+      subject: `新しい問い合わせが届きました: ${ticket.title}`,
+      body: `優先度: ${PRIORITY_LABELS[ticket.priority] ?? ticket.priority}`,
+      ticketUrl: `${baseUrl}/tickets/${ticket.id}`,
+    });
+  } catch (err) {
+    // 外部通知の失敗はログに記録するが、チケット作成自体は成功扱いにする
+    // (ネットワーク障害・Webhook 設定ミスでチケット起票が失敗に見えるのを防ぐ)
+    console.error('[POST /api/tickets] 外部通知の送信に失敗しました (チケット作成は完了):', err);
+  }
 }
 
 // POST /api/tickets : 新規チケットを作成する HTTP エンドポイント
@@ -188,6 +217,8 @@ export async function POST(req: Request) {
       status: initialStatus, // Lite は 'Open'、Pro は undefined(既定 New)
       resolutionDueAt,
     });
+    // Phase 4: 外部チャネルへ新規問い合わせを通知する (ベストエフォート、失敗してもレスポンスには影響しない)
+    await notifyNewTicketOutbound(tenantId, ticket);
     return NextResponse.json(ticket, { status: 201 });
   }
 
@@ -239,6 +270,8 @@ export async function POST(req: Request) {
       // チケットを uow の戻り値として返す (呼び出し元で 201 ボディに使う)
       return t;
     });
+    // Phase 4: 外部チャネルへ新規問い合わせを通知する (ベストエフォート、失敗してもレスポンスには影響しない)
+    await notifyNewTicketOutbound(tenantId, ticket);
     // 成功: 作成された行を 201 で返す
     return NextResponse.json(ticket, { status: 201 });
   } catch (err) {
