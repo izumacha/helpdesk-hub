@@ -37,6 +37,7 @@ function ticketsToCsv(tickets: TicketWithRefs[], mode: TenantMode): string {
     '状況',
     '優先度',
     'カテゴリ',
+    '拠点',
     '担当者',
     '起票者',
     '解決期限',
@@ -56,6 +57,8 @@ function ticketsToCsv(tickets: TicketWithRefs[], mode: TenantMode): string {
     PRIORITY_LABELS[t.priority] ?? t.priority,
     // カテゴリ名 (未分類なら空文字)
     t.category?.name ?? '',
+    // 拠点名 (Phase 4 多拠点。未指定なら空文字)
+    t.location?.name ?? '',
     // 担当者名 (未アサインなら空文字)
     t.assignee?.name ?? '',
     // 起票者名 (まれに関連ユーザーが取れない場合を考慮してオプショナルチェーンを使う)

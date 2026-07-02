@@ -197,6 +197,9 @@ export default async function TicketsPage({ searchParams }: Props) {
                     カテゴリ
                   </th>
                   <th className="px-5 py-3 text-left text-[11px] font-semibold tracking-wider text-slate-500 uppercase">
+                    拠点
+                  </th>
+                  <th className="px-5 py-3 text-left text-[11px] font-semibold tracking-wider text-slate-500 uppercase">
                     担当者
                   </th>
                   <th className="px-5 py-3 text-left text-[11px] font-semibold tracking-wider text-slate-500 uppercase">
@@ -230,6 +233,8 @@ export default async function TicketsPage({ searchParams }: Props) {
                     </td>
                     {/* カテゴリ名 (なければ "―") */}
                     <td className="px-5 py-3.5 text-slate-500">{ticket.category?.name ?? '―'}</td>
+                    {/* 拠点名 (Phase 4 多拠点。未指定なら "―") */}
+                    <td className="px-5 py-3.5 text-slate-500">{ticket.location?.name ?? '―'}</td>
                     {/* 担当者名 (なければ "未割当") */}
                     <td className="px-5 py-3.5 text-slate-500">
                       {ticket.assignee?.name ?? '未割当'}
@@ -277,6 +282,10 @@ export default async function TicketsPage({ searchParams }: Props) {
                   <div className="col-span-2 flex justify-between">
                     <dt className="text-slate-400">カテゴリ</dt>
                     <dd className="text-slate-600">{ticket.category?.name ?? '―'}</dd>
+                  </div>
+                  <div className="col-span-2 flex justify-between">
+                    <dt className="text-slate-400">拠点</dt>
+                    <dd className="text-slate-600">{ticket.location?.name ?? '―'}</dd>
                   </div>
                   <div className="col-span-2 flex justify-between">
                     <dt className="text-slate-400">担当者</dt>

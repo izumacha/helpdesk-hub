@@ -241,6 +241,12 @@ export default async function TicketDetailPage({ params }: Props) {
                 <dd className="mt-1 text-gray-700">{ticket.category?.name ?? '―'}</dd>
               </div>
 
+              {/* 拠点 (Phase 4 多拠点。未指定なら "―") */}
+              <div>
+                <dt className="font-medium text-gray-500">拠点</dt>
+                <dd className="mt-1 text-gray-700">{ticket.location?.name ?? '―'}</dd>
+              </div>
+
               {/* 登録者 (チケット作成者) */}
               <div>
                 <dt className="font-medium text-gray-500">登録者</dt>

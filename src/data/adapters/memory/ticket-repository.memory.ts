@@ -35,12 +35,15 @@ function attachRefs(ticket: Ticket, store: Store): TicketWithRefs {
   }
   // カテゴリ ID があれば引き当て (無ければ null)
   const category = ticket.categoryId ? (store.categories.get(ticket.categoryId) ?? null) : null;
+  // 拠点 ID があれば引き当て (無ければ null。Phase 4 多拠点)
+  const location = ticket.locationId ? (store.locations.get(ticket.locationId) ?? null) : null;
   // 全フィールドをそのまま引き継ぎつつ、関連情報を上書きで付加する
   return {
     ...ticket,
     creator,
     assignee: userSummary(store, ticket.assigneeId),
     category: category ? { id: category.id, name: category.name } : null,
+    location: location ? { id: location.id, name: location.name } : null,
   };
 }
 
