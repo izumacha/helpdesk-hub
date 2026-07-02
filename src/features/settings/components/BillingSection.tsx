@@ -12,7 +12,7 @@ import { createCheckoutSession } from '@/features/settings/actions/create-checko
 import { createPortalSession } from '@/features/settings/actions/create-portal-session';
 // プラン型とプランごとの上限値ヘルパー
 import type { SubscriptionPlan } from '@/domain/types';
-import { USER_LIMIT, getMonthlyTicketLimit } from '@/lib/plan-guard';
+import { USER_LIMIT, getMonthlyTicketLimit, isUserLimitReached } from '@/lib/plan-guard';
 
 // 各プランの表示設定 (名称・月額・特徴)
 const PLAN_INFO: Record<
@@ -74,10 +74,17 @@ interface Props {
   stripeStatus: string | null;
   // Stripe Customer ID の有無 (ポータルリンクを表示するかの判断に使う)
   hasStripeCustomer: boolean;
+  // 現在のスタッフ人数 (agent/admin のみ)。Stripe ダウングレード後の上限超過検知に使う
+  currentUserCount: number;
 }
 
 // サブスクリプション管理セクション (プラン表示 + アップグレード/管理ボタン)
-export function BillingSection({ currentPlan, stripeStatus, hasStripeCustomer }: Props) {
+export function BillingSection({
+  currentPlan,
+  stripeStatus,
+  hasStripeCustomer,
+  currentUserCount,
+}: Props) {
   // ボタン操作中のエラーメッセージ
   const [error, setError] = useState<string | null>(null);
   // Server Action の実行中フラグ (ボタン二重押し防止)
@@ -119,6 +126,9 @@ export function BillingSection({ currentPlan, stripeStatus, hasStripeCustomer }:
 
   // 現在のプラン情報を取り出す
   const info = PLAN_INFO[currentPlan];
+  // 現在のスタッフ人数が現在プランの上限を超えているか (Stripe ポータルでの解約・
+  // ダウングレード後も既存メンバーは自動では削除されないため、ここで検知して警告する)
+  const isOverUserLimit = isUserLimitReached(currentPlan, currentUserCount);
 
   return (
     <div className="space-y-4">
@@ -126,6 +136,21 @@ export function BillingSection({ currentPlan, stripeStatus, hasStripeCustomer }:
       {error && (
         <p role="alert" className="rounded-lg bg-rose-50 px-3 py-2.5 text-sm text-rose-700 ring-1 ring-rose-200">
           {error}
+        </p>
+      )}
+
+      {/* メンバー上限超過の警告: ダウングレード後も既存メンバーはそのまま利用できるが、
+          新規招待はプラン上限チェック (create-invitation.ts) でブロックされる。
+          その理由が分かるよう admin にここで明示する (§9 セキュリティ: fail-safe に既存利用は止めない) */}
+      {isOverUserLimit && (
+        <p
+          role="alert"
+          className="rounded-lg bg-amber-50 px-3 py-2.5 text-sm text-amber-800 ring-1 ring-amber-200"
+        >
+          現在のスタッフ人数 ({currentUserCount} 名) が {info.label}{' '}
+          プランの上限 ({USER_LIMIT[currentPlan]} 名) を超えています。既存メンバーはそのまま
+          利用できますが、新規メンバーの招待はできません。プランをアップグレードするか、
+          メンバーを整理してください。
         </p>
       )}
 
