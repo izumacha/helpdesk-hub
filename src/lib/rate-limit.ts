@@ -23,8 +23,20 @@ export type RateLimitOptions = {
   windowMs: number; // 判定に使う時間窓の長さ (ミリ秒)
 };
 
-// キー (userId:scope) ごとの実行タイムスタンプ一覧を持つバケット
-const buckets = new Map<string, number[]>();
+// 1 キー分のバケット。タイムスタンプ配列に加えて、そのキーの直近の呼び出しで
+// 使われた windowMs も保持する (キーごとに異なる呼び出し元が異なる窓長を渡すため、
+// 掃除処理で「このバケットはもう完全に期限切れか」を判定するのに必要)
+type Bucket = {
+  timestamps: number[]; // 実行タイムスタンプの一覧 (時系列昇順)
+  windowMs: number; // このバケットの直近呼び出し時の時間窓長 (ミリ秒)
+};
+
+// キー (userId:scope や userId:scope:ticketId 等) ごとのバケットを持つ Map。
+// `ticket-status:${userId}:${ticketId}` のようにチケット ID を含む使い捨てキーは
+// 一度しか呼ばれず二度と prune されないため、何もしないと Map が単調増加する。
+// enforceRateLimit の呼び出しごとに sweepStaleBuckets() で全体を掃除することで
+// 実質的に「アクティブな (直近 windowMs 以内に呼ばれた) キーの数」に上限を保つ。
+const buckets = new Map<string, Bucket>();
 
 // レート制限超過を表す専用エラー。
 // Server Action からは従来どおり Error として message が画面に surface する一方、
@@ -60,7 +72,7 @@ export function enforceRateLimit(
   // 窓の開始時刻を計算 (この時刻より古い記録は無視)
   const cutoff = now - windowMs;
   // 既存の履歴を取得 (なければ空配列)
-  const existing = buckets.get(key) ?? [];
+  const existing = buckets.get(key)?.timestamps ?? [];
   // 窓内に残る履歴だけに絞り込む
   const live = prune(existing, cutoff);
 
@@ -80,8 +92,36 @@ export function enforceRateLimit(
 
   // 今回の実行時刻を履歴の末尾に追加
   live.push(now);
-  // バケットを更新して保存
-  buckets.set(key, live);
+  // バケットを更新して保存 (このキー自身の windowMs も一緒に覚えておく)
+  buckets.set(key, { timestamps: live, windowMs });
+
+  // このキー以外のバケットも含めて、既に完全に期限切れになったものを掃除する。
+  // cron 等の定期実行ジョブが無いため、enforceRateLimit の呼び出しに便乗して
+  // 「ながら掃除」する (呼び出し頻度がそのまま掃除頻度になる)。
+  sweepStaleBuckets(now);
+}
+
+// buckets 全体を走査し、prune() 後に空配列になったバケットを Map から削除する。
+// 各バケットは自分自身が最後に使われた時の windowMs を保持しているため、
+// そのバケット固有の cutoff で判定できる (呼び出し元ごとに窓長が異なっても正しく動く)。
+// `ticket-status:${userId}:${ticketId}` のように一度しか呼ばれないキーは、
+// この掃除がなければ prune() 済みの空配列にすらならず Map に残り続けてしまう
+// (prune はローカル変数を返すだけで Map を書き換えないため)。
+function sweepStaleBuckets(now: number): void {
+  // Map の全エントリを走査する
+  for (const [key, bucket] of buckets) {
+    // このバケット自身の窓長を基準に cutoff を計算する
+    const cutoff = now - bucket.windowMs;
+    // 窓内に残る履歴だけに絞り込む
+    const live = prune(bucket.timestamps, cutoff);
+    if (live.length === 0) {
+      // 生き残りが 0 件 = このキーはもう追跡不要なので Map から削除する
+      buckets.delete(key);
+    } else if (live.length !== bucket.timestamps.length) {
+      // 一部だけ間引かれた場合は、間引いた結果で Map を更新しておく
+      buckets.set(key, { timestamps: live, windowMs: bucket.windowMs });
+    }
+  }
 }
 
 /** Testing helper: clear all buckets between test cases. */
@@ -89,4 +129,11 @@ export function enforceRateLimit(
 export function __resetRateLimits(): void {
   // 全バケットを空にする
   buckets.clear();
+}
+
+/** Testing helper: current number of tracked keys (used to assert no memory leak). */
+// buckets Map が保持しているキー数を返すテスト専用ヘルパー (本番コードからは呼ばない)
+export function __getRateLimitBucketCount(): number {
+  // Map のサイズをそのまま返す
+  return buckets.size;
 }

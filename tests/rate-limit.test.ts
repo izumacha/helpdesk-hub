@@ -1,8 +1,12 @@
 // Vitest のテスト DSL (フック/グルーピング/期待値/個別テスト)
 import { beforeEach, describe, expect, it } from 'vitest';
 
-// レート制限の本体と、テスト用に内部状態をリセットする関数
-import { __resetRateLimits, enforceRateLimit } from '../src/lib/rate-limit';
+// レート制限の本体と、テスト用に内部状態をリセット/参照する関数
+import {
+  __resetRateLimits,
+  __getRateLimitBucketCount,
+  enforceRateLimit,
+} from '../src/lib/rate-limit';
 
 // レート制限ヘルパーの仕様確認テスト群
 describe('enforceRateLimit', () => {
@@ -54,5 +58,32 @@ describe('enforceRateLimit', () => {
     }
     // user-b 側はカウントが別なので呼び出し可能
     expect(() => enforceRateLimit('user-b', { limit: 3, windowMs: 10_000 }, now)).not.toThrow();
+  });
+
+  // メモリリーク修正: チケット ID を含む使い捨てキー (ticket-status:user:ticket 等) が
+  // 二度と呼ばれなくても、後続の別呼び出しに便乗した掃除で Map から削除されること
+  it('removes fully-expired one-off keys from the internal map (no unbounded growth)', () => {
+    const t0 = 1_000_000;
+    // "ticket-status:u1:ticket-1" のような、二度と呼ばれない使い捨てキーを 1 回だけ使う
+    enforceRateLimit('ticket-status:u1:ticket-1', { limit: 10, windowMs: 10_000 }, t0);
+    // この時点ではまだ窓内なので Map にエントリが残っている
+    expect(__getRateLimitBucketCount()).toBe(1);
+
+    // 窓 (10 秒) より十分先に進めてから、別のキーで呼び出す
+    // (このライブラリには cron が無いので、他キーの呼び出しに便乗して掃除される設計)
+    enforceRateLimit('ticket-status:u2:ticket-2', { limit: 10, windowMs: 10_000 }, t0 + 20_000);
+
+    // 先に使った使い捨てキーは完全に期限切れになっているので削除され、
+    // 直近呼び出し分の 1 件だけが残る (2 件のまま溜まり続けない)
+    expect(__getRateLimitBucketCount()).toBe(1);
+  });
+
+  // 同じキーを繰り返し使う通常の利用パターンでは、窓内である限りエントリが保持される
+  it('keeps a key alive while it is still within its own window', () => {
+    const t0 = 1_000_000;
+    enforceRateLimit('ticket-comment:u1', { limit: 5, windowMs: 60_000 }, t0);
+    // 窓 (60 秒) の途中で他キーを呼んでも、まだ生きているキーは消えない
+    enforceRateLimit('other-key', { limit: 5, windowMs: 60_000 }, t0 + 5_000);
+    expect(__getRateLimitBucketCount()).toBe(2);
   });
 });

@@ -78,17 +78,6 @@ export function isUserLimitReached(plan: SubscriptionPlan, currentCount: number)
   return currentCount >= USER_LIMIT[plan];
 }
 
-// 月間チケット起票数が上限に達しているかを判定する
-// plan: テナントの現在プラン / currentMonthlyCount: 今月起票済み件数
-export function isMonthlyTicketLimitReached(
-  plan: SubscriptionPlan,
-  currentMonthlyCount: number,
-): boolean {
-  const limit = MONTHLY_TICKET_LIMIT[plan];
-  // Infinity の場合は常に false (制限なし)
-  return Number.isFinite(limit) && currentMonthlyCount >= limit;
-}
-
 // プランのユーザー上限値を返す (UI 表示用)。無制限 (Infinity) の場合は -1 を返す
 // (getMonthlyTicketLimit と同じ規約。呼び出し側は -1 を「無制限」として扱う)
 export function getUserLimit(plan: SubscriptionPlan): number {
