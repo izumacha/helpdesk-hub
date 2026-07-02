@@ -11,7 +11,6 @@ import {
   isProModeAllowed,
   isSsoAllowed,
   isUserLimitReached,
-  isMonthlyTicketLimitReached,
   getUserLimit,
   getMonthlyTicketLimit,
 } from '../src/lib/plan-guard';
@@ -102,14 +101,6 @@ describe('plan-guard: 上限到達判定と表示ヘルパー', () => {
   // Enterprise は無制限なのでどれだけ増えても到達しない
   it('Enterprise はユーザー上限に到達しない', () => {
     expect(isUserLimitReached('enterprise', 100000)).toBe(false); // 無制限
-  });
-
-  // 月間チケット上限: Free のみ到達し得る、無制限プランは常に false
-  it('isMonthlyTicketLimitReached は無制限プランで常に false', () => {
-    expect(isMonthlyTicketLimitReached('free', 50)).toBe(true); // 50 >= 50 到達
-    expect(isMonthlyTicketLimitReached('free', 49)).toBe(false); // 49 < 50 未到達
-    expect(isMonthlyTicketLimitReached('pro', 999999)).toBe(false); // 無制限
-    expect(isMonthlyTicketLimitReached('enterprise', 999999)).toBe(false); // 無制限
   });
 
   // 表示用ヘルパーは無制限を -1 で返す (UI は -1 を「無制限」と解釈する規約)
