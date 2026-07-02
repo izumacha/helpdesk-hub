@@ -67,6 +67,7 @@ const REFS_INCLUDE = {
   creator: { select: { id: true, name: true } },
   assignee: { select: { id: true, name: true } },
   category: { select: { id: true, name: true } },
+  location: { select: { id: true, name: true } }, // 拠点 (Phase 4 多拠点)
 } as const;
 
 // Prisma クライアントを使ったチケットリポジトリを生成する関数

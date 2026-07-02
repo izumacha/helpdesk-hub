@@ -144,6 +144,7 @@ export interface TicketWithRefs extends Ticket {
   creator: UserSummary; // 起票者の概要
   assignee: UserSummary | null; // 担当者の概要 (未アサインなら null)
   category: { id: string; name: string } | null; // カテゴリ概要 (未分類なら null)
+  location: { id: string; name: string } | null; // 拠点概要 (Phase 4 多拠点。未指定なら null)
 }
 
 // チケットに付いたコメント 1 件分

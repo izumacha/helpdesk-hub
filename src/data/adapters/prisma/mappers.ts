@@ -26,6 +26,7 @@ type TicketRowWithRefs = Prisma.TicketGetPayload<{
     creator: { select: { id: true; name: true } };
     assignee: { select: { id: true; name: true } };
     category: { select: { id: true; name: true } };
+    location: { select: { id: true; name: true } };
   };
 }>;
 // Notification テーブルの型エイリアス
@@ -100,6 +101,7 @@ export function toTicketWithRefs(row: TicketRowWithRefs): TicketWithRefs {
     creator: toUserSummary(row.creator), // 起票者
     assignee: row.assignee ? toUserSummary(row.assignee) : null, // 担当者 (未アサインなら null)
     category: row.category ? { id: row.category.id, name: row.category.name } : null, // カテゴリ
+    location: row.location ? { id: row.location.id, name: row.location.name } : null, // 拠点 (Phase 4 多拠点。未指定なら null)
   };
 }
 

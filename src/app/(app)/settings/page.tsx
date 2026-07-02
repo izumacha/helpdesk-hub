@@ -46,12 +46,15 @@ export default async function SettingsPage() {
 
   // 現在のテナントモード (lite | pro) を取得してフォームの初期値にする
   const mode = await getCurrentTenantMode(session.user.tenantId);
-  // Phase 4: テナント情報と拠点一覧を並列取得する
-  const [tenant, locations] = await Promise.all([
+  // Phase 4: テナント情報・拠点一覧・現在のスタッフ人数を並列取得する
+  const [tenant, locations, currentUserCount] = await Promise.all([
     // テナント情報 (slackWebhookUrl / プラン / Stripe 情報の現在値を取得)
     repos.tenants.findById(session.user.tenantId),
     // 拠点一覧 (LocationsSection の初期値として渡す)
     repos.locations.listByTenant(session.user.tenantId),
+    // 現在のスタッフ人数 (agent/admin のみ)。Stripe ダウングレード後にプラン上限を
+    // 超えていないかを BillingSection で警告表示するために使う
+    repos.users.countByTenant(session.user.tenantId),
   ]);
 
   // Phase 4 Enterprise: SSO は Enterprise プランのみ表示・設定可能。
@@ -152,6 +155,7 @@ export default async function SettingsPage() {
           currentPlan={tenant?.subscriptionPlan ?? 'free'}
           stripeStatus={tenant?.stripeSubscriptionStatus ?? null}
           hasStripeCustomer={!!tenant?.stripeCustomerId}
+          currentUserCount={currentUserCount}
         />
       </section>
 

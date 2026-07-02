@@ -24,6 +24,14 @@ import { getCurrentTenantMode } from '@/lib/tenant';
 import { endOfDayJST } from '@/lib/format-date';
 // Phase 4 課金: プランごとの月間チケット上限チェック (CSV インポート・メール/LINE 取り込みと共有)
 import { getMonthlyTicketQuota } from '@/lib/tenant-plan';
+// Phase 4: Slack/Teams/Chatwork 外部通知ヘルパー (失敗してもチケット作成は止めない)
+import { sendOutboundNotification } from '@/lib/outbound-notify';
+// メール/通知本文に載せるチケット詳細ページの絶対 URL を組み立てるためのベース URL 解決ヘルパー
+import { resolveAppBaseUrl } from '@/lib/app-url';
+// 優先度の日本語ラベル (外部通知本文に使う)
+import { PRIORITY_LABELS } from '@/lib/constants';
+// 新規作成されたチケットの型 (通知本文の組み立てに使う最小限のフィールドのみ参照)
+import type { Ticket } from '@/domain/types';
 
 // 422 (バリデーションエラー) を共通フォーマットで返すヘルパー
 function validationError(message: string, path: (string | number)[]) {
@@ -35,6 +43,27 @@ function validationError(message: string, path: (string | number)[]) {
     },
     { status: 422 },
   );
+}
+
+// 新規チケット作成を Slack/Teams/Chatwork の外部チャネルへ通知するヘルパー。
+// Phase 4「Slack / Chatwork / Microsoft Teams 通知 Adapter」の主目的である
+// 「新しい問い合わせが届いたことにすぐ気づける」を満たすため、起票直後に呼ぶ。
+// 送信失敗はログに残すだけでチケット作成のレスポンスには影響させない (非クリティカルな副作用)。
+async function notifyNewTicketOutbound(tenantId: string, ticket: Ticket): Promise<void> {
+  try {
+    // ベース URL を取得してチケットリンクを組み立てる (NEXTAUTH_URL 未設定時に例外が出る可能性があるため内側に置く)
+    const baseUrl = resolveAppBaseUrl();
+    // 外部チャネル (Slack/Teams/Chatwork) に通知を送る
+    await sendOutboundNotification(tenantId, {
+      subject: `新しい問い合わせが届きました: ${ticket.title}`,
+      body: `優先度: ${PRIORITY_LABELS[ticket.priority] ?? ticket.priority}`,
+      ticketUrl: `${baseUrl}/tickets/${ticket.id}`,
+    });
+  } catch (err) {
+    // 外部通知の失敗はログに記録するが、チケット作成自体は成功扱いにする
+    // (ネットワーク障害・Webhook 設定ミスでチケット起票が失敗に見えるのを防ぐ)
+    console.error('[POST /api/tickets] 外部通知の送信に失敗しました (チケット作成は完了):', err);
+  }
 }
 
 // POST /api/tickets : 新規チケットを作成する HTTP エンドポイント
@@ -188,6 +217,8 @@ export async function POST(req: Request) {
       status: initialStatus, // Lite は 'Open'、Pro は undefined(既定 New)
       resolutionDueAt,
     });
+    // Phase 4: 外部チャネルへ新規問い合わせを通知する (ベストエフォート、失敗してもレスポンスには影響しない)
+    await notifyNewTicketOutbound(tenantId, ticket);
     return NextResponse.json(ticket, { status: 201 });
   }
 
@@ -195,10 +226,16 @@ export async function POST(req: Request) {
   // ストレージへの書き込みは DB トランザクション外で観測できない副作用なので、
   // 失敗時に手動で書き込み済みファイルを削除してロールバックを揃える
   const writtenKeys: string[] = []; // ロールバック用に書き込み済みキーを蓄える
+  // try の外側で宣言し、成功時のみ notifyNewTicketOutbound / レスポンス生成に使う。
+  // try 内に置いたままだと「外部通知の失敗」まで catch の添付ロールバック処理に
+  // 巻き込まれてしまう (notifyNewTicketOutbound は現状 throw しないが、将来の変更で
+  // 例外を投げるようになった場合に「作成済みチケットが失敗扱いになり添付が消される」
+  // 事故を避けるため、意図的にスコープを分離しておく)
+  let createdTicket: Ticket;
   try {
     // uow.run のコールバック内で「ストレージ書き込み + DB INSERT」をペアで実行する
     // どちらが失敗しても uow.run 自体が throw して DB は自動ロールバックされる
-    const ticket = await uow.run(async (r) => {
+    createdTicket = await uow.run(async (r) => {
       // チケット本体を tx 内で作成
       const t = await r.tickets.create({
         title,
@@ -239,8 +276,6 @@ export async function POST(req: Request) {
       // チケットを uow の戻り値として返す (呼び出し元で 201 ボディに使う)
       return t;
     });
-    // 成功: 作成された行を 201 で返す
-    return NextResponse.json(ticket, { status: 201 });
   } catch (err) {
     // DB は自動ロールバック済。ストレージに書き込んだファイルを best-effort で削除する
     await Promise.all(
@@ -256,4 +291,9 @@ export async function POST(req: Request) {
     console.error('[POST /api/tickets] attachment save failed', err);
     return NextResponse.json({ error: '添付ファイルの保存に失敗しました' }, { status: 500 });
   }
+  // ここに到達するのはチケット + 添付の作成が完全に成功した場合のみ。
+  // 外部通知は try/catch の外で行い、添付ロールバック処理と失敗要因を混同しない
+  await notifyNewTicketOutbound(tenantId, createdTicket);
+  // 成功: 作成された行を 201 で返す
+  return NextResponse.json(createdTicket, { status: 201 });
 }
