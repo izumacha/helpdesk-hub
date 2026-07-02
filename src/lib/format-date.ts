@@ -48,3 +48,29 @@ export function endOfDayJST(yyyyMmDd: string): Date | null {
   }
   return d;
 }
+
+// 指定した日時が属する「JST の月初 00:00:00.000」を表す Date を返す関数
+// - サーバの実行タイムゾーンが UTC/JST どちらでも結果が変わらないよう、'Asia/Tokyo' で
+//   年・月を取り出してから明示的に +09:00 オフセット付きで組み立てる
+// - 月間チケット上限の集計 (src/lib/tenant-plan.ts) など、JST の暦月境界で
+//   件数を数えたい箇所から共通で使う (endOfDayJST と同じ Intl.DateTimeFormat パターン)
+// - 引数省略時は現在時刻 (Date.now()) を基準にする
+export function startOfMonthJST(date: Date = new Date()): Date {
+  // 'Asia/Tokyo' で年・月だけを取り出す (日は月初固定の 01 なので不要)
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Tokyo',
+    year: 'numeric',
+    month: '2-digit',
+  }).formatToParts(date);
+  // parts から年・月の文字列を取り出すヘルパー
+  const valueOf = (type: 'year' | 'month') => parts.find((p) => p.type === type)?.value;
+  const year = valueOf('year');
+  const month = valueOf('month');
+  // year/month が取れない (実行環境の Intl 実装異常等) 場合は fail-closed で例外にする。
+  // 呼び出し側 (集計処理) が誤って「無制限」扱いにならないよう、黙ってフォールバックしない。
+  if (!year || !month) {
+    throw new Error('startOfMonthJST: Asia/Tokyo の年月を取得できませんでした');
+  }
+  // YYYY-MM-01T00:00:00.000+09:00 を組み立てて JST の月初を表す Date にする
+  return new Date(`${year}-${month}-01T00:00:00.000+09:00`);
+}

@@ -1,7 +1,7 @@
 // Vitest のテスト DSL
 import { describe, expect, it } from 'vitest';
-// 検証対象 (YYYY-MM-DD → JST 終端 Date 変換ヘルパー)
-import { endOfDayJST } from '@/lib/format-date';
+// 検証対象 (YYYY-MM-DD → JST 終端 Date 変換ヘルパー / JST 月初計算ヘルパー)
+import { endOfDayJST, startOfMonthJST } from '@/lib/format-date';
 
 // JST 終端 Date 変換の境界値テスト
 describe('endOfDayJST', () => {
@@ -33,5 +33,42 @@ describe('endOfDayJST', () => {
     const d = endOfDayJST('2026-12-31');
     // JST 12/31 23:59:59 → UTC 12/31 14:59:59
     expect(d!.toISOString()).toBe('2026-12-31T14:59:59.999Z');
+  });
+});
+
+// JST 月初計算の境界値テスト (月間チケット上限の集計基準)
+describe('startOfMonthJST', () => {
+  // UTC で見ると前日 (5/31) の午後だが、JST では 6/1 になっている時刻。
+  // Date.UTC ベースの旧実装だとここで月初が 1 ヶ月分ずれていた (5/1 のまま)。
+  it('resolves to the JST month even when UTC is still in the previous month', () => {
+    // 2026-06-01 00:30 JST = 2026-05-31 15:30 UTC
+    const jstJustAfterMidnight = new Date('2026-05-31T15:30:00.000Z');
+    const start = startOfMonthJST(jstJustAfterMidnight);
+    // JST 6/1 00:00:00.000 = UTC 5/31 15:00:00.000
+    expect(start.toISOString()).toBe('2026-05-31T15:00:00.000Z');
+  });
+
+  // UTC で見ると翌日 (6/1) の午前だが、JST ではまだ 5/31 のうち (=5月扱い) の時刻。
+  it('resolves to the JST month even when UTC has already rolled over to the next month', () => {
+    // 2026-05-31 23:30 JST = 2026-05-31 14:30 UTC
+    const stillMayInJst = new Date('2026-05-31T14:30:00.000Z');
+    const start = startOfMonthJST(stillMayInJst);
+    // JST 5/1 00:00:00.000 = UTC 4/30 15:00:00.000
+    expect(start.toISOString()).toBe('2026-04-30T15:00:00.000Z');
+  });
+
+  // 年をまたぐ場合 (JST 1/1 直後) も正しく年初月初になる
+  it('handles the year boundary correctly', () => {
+    // 2027-01-01 00:30 JST = 2026-12-31 15:30 UTC
+    const jstNewYear = new Date('2026-12-31T15:30:00.000Z');
+    const start = startOfMonthJST(jstNewYear);
+    // JST 2027-01-01 00:00:00.000 = UTC 2026-12-31 15:00:00.000
+    expect(start.toISOString()).toBe('2026-12-31T15:00:00.000Z');
+  });
+
+  // 引数省略時は現在時刻を基準にする (例外を投げず Date を返すことだけ確認)
+  it('defaults to the current time when no argument is given', () => {
+    expect(() => startOfMonthJST()).not.toThrow();
+    expect(startOfMonthJST()).toBeInstanceOf(Date);
   });
 });

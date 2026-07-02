@@ -13,6 +13,8 @@ import { repos } from '@/data';
 import type { SubscriptionPlan } from '@/domain/types';
 // 月間チケット上限の判定ヘルパー (プランごとの上限値は plan-guard.ts が単一の源)
 import { getMonthlyTicketLimit } from '@/lib/plan-guard';
+// JST (日本時間) 基準の月初を計算する共通ヘルパー (endOfDayJST と同じファイルに集約)
+import { startOfMonthJST } from '@/lib/format-date';
 
 // 指定テナントの現在の課金プランを返す。テナントが見つからない場合は 'free' として扱う
 // (fail-closed: 存在しない/取得できないテナントに Pro/Enterprise 限定機能を渡さない)。
@@ -58,10 +60,10 @@ export async function getMonthlyTicketQuota(
   if (limit === -1) {
     return { limited: false, limit: -1, remaining: Infinity };
   }
-  // 当月の起票数をカウントする (現在月の開始日時を UTC で計算)
-  const now = new Date();
-  // 月初 00:00:00.000 (UTC) を起点にする
-  const monthStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
+  // 当月の起票数をカウントする (「当月」は JST 基準。UTC 月境界だと JST 深夜帯で
+  // 集計対象月がずれてしまうため、他の日付処理 (endOfDayJST 等) と同じく JST に統一する)
+  // 月初 00:00:00.000 (JST) を起点にする
+  const monthStart = startOfMonthJST();
   // 当月起票済み件数をカウントする (tenantId スコープ + createdAfter フィルター)
   const currentCount = await repos.tickets.count({ createdAfter: monthStart }, tenantId);
   // 残枠は 0 未満にならないようクランプする
