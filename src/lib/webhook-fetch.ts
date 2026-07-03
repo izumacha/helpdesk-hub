@@ -72,9 +72,68 @@ export async function postWebhook(
     throw new Error('Webhook 送信失敗: リダイレクト応答は SSRF 対策のため許可されません');
   }
 
-  // レスポンス本文を上限バイト数まで読む (巨大な本文をそのまま保持しない)
-  const bodyText = await response.text().then((t) => t.slice(0, options.maxResponseBytes));
+  // レスポンス本文を上限バイト数まで読む (巨大な本文をそのまま保持しない §8/§9)
+  const bodyText = await readBodyCapped(response, options.maxResponseBytes);
 
   // HTTP の成否・ステータス・本文を呼び出し側へ返す
   return { ok: response.ok, status: response.status, bodyText };
+}
+
+// レスポンス本文を上限バイト数まで読み取り、超過分は読み込まずに打ち切る内部ヘルパー。
+// `response.text()` は本文全体をメモリに読み切ってから返すため、それに `.slice()` を後掛けする
+// だけでは「上限バイト数」が名目上の値になり、乗っ取られた/悪意ある Webhook 先が巨大な本文を
+// 送り続けた場合にサーバーのメモリを消費してしまう (§8 リソース解放 / §9 DoS 対策)。
+// ここでは response.body の ReadableStream を直接読み、上限に達した時点で reader.cancel() して
+// それ以降のバイト列を読まずに接続を閉じる。
+async function readBodyCapped(response: Response, maxBytes: number): Promise<string> {
+  // body ストリームを取得できない実行環境 (一部のテスト用モック等) では
+  // 上限保護が効かなくなるが、素直に text() へフォールバックして機能を壊さない
+  const body = response.body;
+  if (!body) {
+    // 全文を読んでから文字数で切り詰める (従来どおりの挙動)
+    const text = await response.text();
+    return text.slice(0, maxBytes);
+  }
+
+  // ストリームを 1 チャンクずつ読み取るためのリーダー
+  const reader = body.getReader();
+  // 受信済みチャンクを蓄えるバッファ (上限を超えたら以降は積まない)
+  const chunks: Uint8Array[] = [];
+  // ここまでに受信したバイト数の合計
+  let received = 0;
+  try {
+    // ストリームが終わるか上限に達するまで読み続ける
+    for (;;) {
+      const { done, value } = await reader.read();
+      // ストリームが正常終了したらループを抜ける
+      if (done) break;
+      if (value) {
+        chunks.push(value);
+        received += value.length;
+        // 上限に達したら、残りのバイト列は読まずに接続を閉じてメモリを守る
+        if (received >= maxBytes) {
+          await reader.cancel().catch(() => {
+            // cancel 自体の失敗は無視する (既に十分なデータは確保できている)
+          });
+          break;
+        }
+      }
+    }
+  } finally {
+    // 例外発生時もリーダーのロックを解放してストリームを解放する
+    reader.releaseLock();
+  }
+
+  // 蓄えたチャンクを 1 本の Uint8Array に連結する (上限超過分は既に読んでいないため安全なサイズ)
+  const combined = new Uint8Array(received);
+  let offset = 0;
+  for (const chunk of chunks) {
+    combined.set(chunk, offset);
+    offset += chunk.length;
+  }
+  // UTF-8 として上限バイト数までデコードする (マルチバイト文字の境界を跨ぐ可能性はあるが
+  // TextDecoder は不正なバイト列を U+FFFD に置換するだけで例外にはならないため安全側に倒せる)
+  const decoded = new TextDecoder().decode(combined.subarray(0, maxBytes));
+  // 文字数ベースでも上限を掛けておく (呼び出し側の従来仕様と挙動を揃える)
+  return decoded.slice(0, maxBytes);
 }
