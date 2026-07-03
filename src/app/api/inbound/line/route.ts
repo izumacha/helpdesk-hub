@@ -289,6 +289,10 @@ export async function POST(req: Request) {
     // 冪等化: このメッセージ ID を既に取り込み済みなら、再送とみなして起票し直さない。
     // LINE は Webhook 応答が遅延/未受信だと同一メッセージを 5 分以内に再送する (at-least-once)。
     // id が欠落/非文字列 (想定外の応答) のときは突き合わせできないため、通常どおり起票へ進む。
+    // 既知の制約: この確認とチケット作成/register はトランザクションで結ばれていないため、
+    // 理論上は完全に同時 (SELECT が両方とも先に走る) だと二重起票の窓が残る。EmailThreadRepository
+    // (メール取り込み) も同じ read-then-write 方式を採用しており、実運用上は再送が「応答タイムアウト後」
+    // にしか起きないため窓は極めて狭い。同水準のリスク許容として本 PR ではこの制約を踏襲する。
     if (typeof textMessage.id === 'string' && textMessage.id) {
       const existingTicketId = await repos.lineMessages.findTicketIdByMessageId(
         textMessage.id,
@@ -327,7 +331,11 @@ export async function POST(req: Request) {
           );
           continue;
         }
-        // invalid (コードの形だが有効な発行行が無い) は通常の問い合わせとして下の起票へ進む
+        // invalid (コードの形だが有効な発行行が無い) は通常の問い合わせとして下の起票へ進む。
+        // 既知の制約: この分岐は起票を伴わないため、上のメッセージ ID 冪等化 (register) の対象外。
+        // 連携成功直後に応答が遅延して LINE が同一メッセージを再送すると、2 回目はコードが
+        // 消費済みで invalid になり、コード文字列を本文とする問い合わせが起票され得る
+        // (Webhook 応答の高速化で再送自体を減らすのが現実的な対策。将来課題)
       }
     }
 
@@ -455,6 +463,7 @@ export async function POST(req: Request) {
   }
 
   // LINE サーバーはレスポンスを所定時間内に受信しないと再送するため、必ず 200 を返す。
-  // 冪等化 (メッセージ ID による重複排除) は上の findTicketIdByMessageId / register で実施済み。
+  // 冪等化 (メッセージ ID による重複排除) は上の findTicketIdByMessageId / register で、
+  // 起票を伴う通常メッセージについて実施済み (連携コード分岐の既知の制約は上のコメント参照)。
   return NextResponse.json({ ticketIds }, { status: 200 });
 }
