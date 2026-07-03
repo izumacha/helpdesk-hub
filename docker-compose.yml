@@ -27,7 +27,13 @@ services:
   # Next.js アプリ本体のサービス
   app:
     # カレントディレクトリの Dockerfile からビルド
-    build: .
+    build:
+      context: .
+      # ビルド時のみ参照する引数。ヘルプセンターの getting-started ページが force-static
+      # (SSG) のため、next build 実行時点の値が HTML に焼き込まれる (未設定なら空文字 = 非表示)。
+      # 値を変更したら `docker compose build app` の再実行が必要 (起動時の environment だけでは反映されない)
+      args:
+        TUTORIAL_VIDEO_URL: ${TUTORIAL_VIDEO_URL:-}
     # 自動再起動
     restart: unless-stopped
     # ホストの 3000 をコンテナの 3000 に公開
@@ -45,6 +51,9 @@ services:
       NEXTAUTH_URL: ${NEXTAUTH_URL:-http://localhost:3000}
       # Auth.js v5: リバースプロキシ/コンテナ環境ではホスト検証を信頼する
       AUTH_TRUST_HOST: 'true'
+      # チュートリアル動画リンク (任意)。ダッシュボードは動的レンダリングのため
+      # コンテナ再起動だけで反映される (静的な getting-started ページは build.args 側が必要)
+      TUTORIAL_VIDEO_URL: ${TUTORIAL_VIDEO_URL:-}
     # db のヘルスチェックが green になってから起動する
     depends_on:
       db:
