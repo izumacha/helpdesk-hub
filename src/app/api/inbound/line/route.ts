@@ -375,13 +375,24 @@ export async function POST(req: Request) {
       ticketIds.push(ticket.id);
       // メッセージ ID → チケット の対応を記録する (次にこのメッセージが再送されたときの冪等化用)。
       // id が無い場合は上の判定で既にスキップされているためここでは常に文字列のはずだが、
-      // 型ガードとして再度確認してから登録する (欠落時は将来課題どおり再送保護なしで進む)
+      // 型ガードとして再度確認してから登録する (欠落時は将来課題どおり再送保護なしで進む)。
+      // チケット起票は既に確定しているため、この登録の失敗で起票全体を失敗扱い (外側の catch) に
+      // しない: 外側の catch に落ちると後段の通知処理までスキップされ、ログも「起票失敗」に
+      // 誤帰属してしまう (§9 fail-safe)。失敗時は次回再送時の冪等化が効かなくなるだけなのでログのみ残す。
       if (typeof textMessage.id === 'string' && textMessage.id) {
-        await repos.lineMessages.register({
-          lineMessageId: textMessage.id,
-          ticketId: ticket.id,
-          tenantId: targetTenantId,
-        });
+        try {
+          await repos.lineMessages.register({
+            lineMessageId: textMessage.id,
+            ticketId: ticket.id,
+            tenantId: targetTenantId,
+          });
+        } catch (registerErr) {
+          console.warn(
+            '[POST /api/inbound/line] failed to register message id for idempotency',
+            ticket.id,
+            registerErr,
+          );
+        }
       }
       // 起票成功後に担当者全員へ「新しい問い合わせが届きました」通知を送る (ベストエフォート)。
       // 失敗してもチケット起票自体は確定済みのため、ログを残して次のイベントへ進む (§9 fail-safe)。
