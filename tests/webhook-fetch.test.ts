@@ -20,12 +20,7 @@ const OPTIONS = {
 };
 
 // HTTP レスポンスのモックを作るヘルパー (type は redirect 判定用に任意指定)
-function mockResponse(opts: {
-  ok: boolean;
-  status: number;
-  body?: string;
-  type?: string;
-}) {
+function mockResponse(opts: { ok: boolean; status: number; body?: string; type?: string }) {
   return {
     ok: opts.ok,
     status: opts.status,
@@ -79,5 +74,51 @@ describe('postWebhook', () => {
     const result = await postWebhook(URL, { ...OPTIONS, maxResponseBytes: 10 });
     // 10 文字に切り詰められている
     expect(result.bodyText).toBe('a'.repeat(10));
+  });
+
+  // メモリ保護: response.body が ReadableStream で提供される場合、上限到達後は
+  // それ以上ストリームを読み進めず reader.cancel() で打ち切ることを検証する。
+  // (text() で全文を読み切ってから slice するだけでは、悪意ある Webhook 先が
+  // 巨大な本文を送り続けたときにサーバーのメモリを消費してしまうため)
+  it('response.body がストリームの場合、上限到達後は読み取りを打ち切る', async () => {
+    // 1 チャンク 100 バイトずつ、合計 50 チャンク (5000 バイト) 送ってくる巨大ストリームを模擬する
+    const CHUNK_SIZE = 100;
+    const TOTAL_CHUNKS = 50;
+    let producedChunks = 0;
+    // cancel() が呼ばれた回数を数える (上限到達後に確実に打ち切られたことを確認するため)
+    let cancelCalls = 0;
+    const stream = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        // まだチャンクが残っていれば 1 つ積む
+        if (producedChunks < TOTAL_CHUNKS) {
+          controller.enqueue(new Uint8Array(CHUNK_SIZE).fill(97)); // 'a' の文字コード
+          producedChunks += 1;
+        } else {
+          controller.close();
+        }
+      },
+      cancel() {
+        cancelCalls += 1;
+      },
+    });
+    fetchMock.mockResolvedValue({
+      ok: true,
+      status: 200,
+      type: undefined,
+      body: stream,
+      // body がある場合 text() は呼ばれない想定だが、フォールバック経路の安全のため用意しておく
+      text: () => Promise.resolve('a'.repeat(CHUNK_SIZE * TOTAL_CHUNKS)),
+    });
+
+    // 上限 250 バイト (= 3 チャンク目の途中) で読み取る
+    const result = await postWebhook(URL, { ...OPTIONS, maxResponseBytes: 250 });
+
+    // 上限バイト数までに切り詰められている
+    expect(result.bodyText).toBe('a'.repeat(250));
+    // 50 チャンク全部 (5000 バイト) を生成する前に打ち切られている
+    // (上限到達に必要な最小チャンク数である 3 チャンク目まで読んだ時点で cancel されるはず)
+    expect(producedChunks).toBeLessThan(TOTAL_CHUNKS);
+    // reader.cancel() が実際に呼ばれ、ストリームが打ち切られたことを確認する
+    expect(cancelCalls).toBe(1);
   });
 });
