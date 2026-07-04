@@ -131,4 +131,42 @@ describe('ssrfSafeLookup (DNS リバインディング対策)', () => {
 
     expect(result).toBe(dnsError);
   });
+
+  // 呼び出し元 (undici/Node) が options.all を指定しない場合、dns.lookup は単一アドレス
+  // (配列でない) 形式で応答することがある。この形式でも解決先の検証が効くこと、
+  // かつ呼び出し元が要求した「単一アドレス」の形式のままコールバックへ返すことを確認する
+  // (誤って配列形式に変換してしまうと、呼び出し元が形式の食い違いで壊れる恐れがあるため)。
+  it('単一アドレス形式 (options.all 未指定) でも内部 IP を検出してブロックする', async () => {
+    dnsLookupMock.mockImplementation((hostname, options, callback) => {
+      // dns.lookup は options.all が無いとき (err, address: string, family: number) で返す
+      callback(null, '169.254.169.254', 4);
+    });
+
+    const result = await new Promise((resolve) => {
+      ssrfSafeLookup('rebind-attacker.example.com', {}, (err, address, family) => {
+        resolve({ err, address, family });
+      });
+    });
+
+    expect((result as { err: Error | null }).err).toBeInstanceOf(Error);
+    expect((result as { err: Error }).err.message).toMatch(/SSRFガード/);
+  });
+
+  // 単一アドレス形式でパブリック IP なら許可し、かつ単一アドレスのまま (配列に変換せず) 返す
+  it('単一アドレス形式でパブリック IP なら許可し、形式もそのまま維持する', async () => {
+    dnsLookupMock.mockImplementation((hostname, options, callback) => {
+      callback(null, '203.0.113.10', 4);
+    });
+
+    const result = await new Promise((resolve) => {
+      ssrfSafeLookup('hooks.slack.com', {}, (err, address, family) => {
+        resolve({ err, address, family });
+      });
+    });
+
+    expect((result as { err: Error | null }).err).toBeNull();
+    // 呼び出し元が単一アドレス形式で受け取った場合、コールバックにも単一アドレス形式で返す
+    expect((result as { address: unknown }).address).toBe('203.0.113.10');
+    expect((result as { family: unknown }).family).toBe(4);
+  });
 });

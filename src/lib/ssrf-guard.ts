@@ -103,26 +103,33 @@ export const ssrfSafeLookup = (
     family?: number,
   ) => void,
 ): void => {
-  // 実際の名前解決は Node 標準の dns.lookup に委譲する。呼び出し元 (undici) が
-  // 何を指定してきても、複数解決先をまとめて検証したいため常に all: true で解決する
-  dns.lookup(hostname, { family: options.family, all: true }, (err, addresses) => {
+  // 実際の名前解決は Node 標準の dns.lookup に委譲する。呼び出し元が要求した形式
+  // (options.all の有無で単一アドレス / 配列のどちらを返すか) をそのまま尊重して渡す。
+  // ここで独自に all: true を強制すると、呼び出し元が単一アドレス形式を期待している
+  // 場合に形が食い違い、接続処理側で予期しない不具合につながる恐れがあるため避ける。
+  dns.lookup(hostname, options, (err, address, family) => {
     if (err) {
       // DNS解決自体が失敗した場合はそのままエラーとして伝播する
-      callback(err, []);
+      callback(err, address, family);
       return;
     }
+    // 単一アドレス / 配列のどちらの形で返ってきても、検証は配列に正規化してまとめて行う
+    const resolved: LookupAddress[] = Array.isArray(address)
+      ? address
+      : [{ address, family: family ?? 0 }];
     // 解決された IP のうち 1 つでも内部/ループバック/リンクローカルなら、
     // DNS ラウンドロビンや rebind 経由の迂回を防ぐため一括で接続を拒否する (fail-closed)
-    const unsafe = addresses.find((entry) => isPrivateHost(entry.address));
+    const unsafe = resolved.find((entry) => isPrivateHost(entry.address));
     if (unsafe) {
       callback(
         new Error(`SSRFガード: 解決先アドレス ${unsafe.address} への接続は許可されません`),
-        [],
+        address,
+        family,
       );
       return;
     }
-    // 検証済みなので、実際に接続する IP としてそのまま返す
-    callback(null, addresses);
+    // 検証済みなので、実際に接続する IP として (呼び出し元が要求した形式のまま) 返す
+    callback(null, address, family);
   });
 };
 
