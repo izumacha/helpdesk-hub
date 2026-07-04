@@ -24,8 +24,8 @@ import { getStripeClient, getStripeWebhookSecret, stripeStatusToPlan } from '@/l
 import { enforceRateLimit, RateLimitError } from '@/lib/rate-limit';
 // Pro モード (7 ステータス・SLA・エスカレーション等) がそのプランで許可されるかの判定
 import { isProModeAllowed } from '@/lib/plan-guard';
-// テナントのモード / 課金プランの型
-import type { SubscriptionPlan, TenantMode } from '@/domain/types';
+// 課金プランの型
+import type { SubscriptionPlan } from '@/domain/types';
 
 // Stripe Webhook が送ってくる主要イベント種別の定数 (typo 防止のため文字列リテラルを定数化)
 const STRIPE_EVENT_SUBSCRIPTION_CREATED = 'customer.subscription.created';
@@ -130,9 +130,12 @@ async function handleStripeEvent(event: Stripe.Event): Promise<void> {
 // Pro 専用機能がプラン変更後も使い続けられてしまう (§9 認可はサーバー側で強制)。
 // updateStripeSubscription (プラン反映) と updateMode (Pro モード強制解除) を
 // 1 つのトランザクションにまとめ、片方だけ反映される中間状態が残らないようにする。
+//
+// mode の読み取りは呼び出し元からではなく、トランザクション内で tx.tenants.findById により
+// 都度読み直す (呼び出し元の existingTenant はトランザクション開始前に取得したスナップショットで、
+// その後に届いた別の Stripe イベントや管理者操作で mode が変わっていても反映されない古い値になり得るため)。
 async function applyPlanChange(
   tenantId: string,
-  currentMode: TenantMode,
   stripeFields: {
     stripeCustomerId: string;
     stripeSubscriptionId: string;
@@ -140,11 +143,16 @@ async function applyPlanChange(
     subscriptionPlan: SubscriptionPlan;
   },
 ): Promise<void> {
-  // 現在 Pro モードで運用中かつ、新プランが Pro モードを許可しないときだけモードを戻す
-  const shouldResetMode = currentMode === 'pro' && !isProModeAllowed(stripeFields.subscriptionPlan);
   await uow.run(async (tx) => {
+    // トランザクション内で最新のテナント状態を読み直す (呼び出し元のスナップショットに頼らない)
+    const tenant = await tx.tenants.findById(tenantId);
+    // 呼び出し元で存在確認済みだが、念のためここでも安全側 (何もしない) に倒す
+    if (!tenant) return;
     // Stripe 連携情報とプランを反映する
     await tx.tenants.updateStripeSubscription(tenantId, stripeFields);
+    // 現在 Pro モードで運用中かつ、新プランが Pro モードを許可しないときだけモードを戻す
+    const shouldResetMode =
+      tenant.mode === 'pro' && !isProModeAllowed(stripeFields.subscriptionPlan);
     if (shouldResetMode) {
       // Pro 専用機能を使えなくする (Lite モードへ強制的に戻す)
       await tx.tenants.updateMode(tenantId, 'lite');
@@ -203,7 +211,7 @@ async function handleSubscriptionUpsert(
   const nextPlan = existingTenant.subscriptionPlan === 'enterprise' ? 'enterprise' : plan;
 
   // テナントのサブスク情報を更新する (ダウングレードなら Pro モードも同時に強制解除する)
-  await applyPlanChange(tenantId, existingTenant.mode, {
+  await applyPlanChange(tenantId, {
     stripeCustomerId: customerId,
     stripeSubscriptionId: subscriptionId,
     stripeSubscriptionStatus: status,
@@ -247,7 +255,7 @@ async function handleSubscriptionDeleted(
 
   // サブスクリプション削除後は (Enterprise を除き) free に降格し、canceled 状態を記録する
   // (free は Pro モード対象外なので Pro モードも同時に強制解除される)
-  await applyPlanChange(tenantId, existingTenant.mode, {
+  await applyPlanChange(tenantId, {
     stripeCustomerId: customerId,
     stripeSubscriptionId: subscriptionId,
     stripeSubscriptionStatus: 'canceled', // Stripe の deleted イベントは canceled 扱いにする
