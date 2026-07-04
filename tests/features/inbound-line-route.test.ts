@@ -5,7 +5,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createHmac } from 'node:crypto';
 import { createMemoryContext, type Store } from '@/data/adapters/memory';
-import type { Repos } from '@/data/ports/unit-of-work';
+import type { Repos, UnitOfWork } from '@/data/ports/unit-of-work';
 import { hashLineLinkCode, normalizeLineLinkCode } from '@/lib/line-link';
 
 const SECRET = 'test-line-channel-secret';
@@ -20,11 +20,16 @@ const LINE_ID_NEW = 'U00000000000000000000000000000003'; // 新規連携対象
 
 let store: Store;
 let repos: Repos;
+let uow: UnitOfWork;
 
-// @/data を差し替え (getter で beforeEach の上書きを反映)
+// @/data を差し替え (getter で beforeEach の上書きを反映)。
+// ルートは冪等な起票を uow.run (Serializable トランザクション) で行うため uow も必要
 vi.mock('@/data', () => ({
   get repos() {
     return repos;
+  },
+  get uow() {
+    return uow;
   },
 }));
 
@@ -89,6 +94,7 @@ describe('POST /api/inbound/line', () => {
     const ctx = createMemoryContext();
     store = ctx.store;
     repos = ctx.repos;
+    uow = ctx.uow;
     seed();
     vi.stubEnv('LINE_CHANNEL_SECRET', SECRET);
     vi.stubEnv('LINE_TARGET_TENANT_ID', TENANT);
@@ -101,7 +107,10 @@ describe('POST /api/inbound/line', () => {
   // Standard 以下のプランは LINE 連携不可 (§6.1 料金プラン)。署名は正しくても起票しない
   it('Pro 未満のプランのテナントは起票せず 200 (プランゲート)', async () => {
     // シード済みテナントを Standard プランに書き換える
-    store.tenants.set(TENANT, { ...store.tenants.get(TENANT)!, subscriptionPlan: 'standard' as const });
+    store.tenants.set(TENANT, {
+      ...store.tenants.get(TENANT)!,
+      subscriptionPlan: 'standard' as const,
+    });
     const { POST } = await import('@/app/api/inbound/line/route');
     const res = await POST(makeRequest('プリンターが動きません', LINE_ID_UNLINKED));
     expect(res.status).toBe(200);
@@ -201,6 +210,54 @@ describe('POST /api/inbound/line', () => {
     // レスポンスには既存チケット ID がそのまま返る
     const secondBody = (await second.json()) as { ticketIds: string[] };
     expect(secondBody.ticketIds).toEqual([firstTicketId]);
+  });
+
+  // 書き込み競合 (Serializable 分離レベルでの中断) が起きても、対応表を読み直して
+  // 重複扱いにし、二重にチケットを作らないことを確認する。
+  // 実際の Postgres での競合は tests/data/line-message-repository.contract.prisma.test.ts
+  // (RUN_PRISMA_CONTRACT=1 が必要) で検証し、ここでは createLineTicketIdempotent の
+  // エラーハンドリング分岐 (uow.isTransactionConflict → 対応表の再読込) を検証する。
+  it('書き込み競合が起きても対応表を読み直して重複扱いにする (二重起票しない)', async () => {
+    // 「別リクエストが先に確定させた」チケットをあらかじめ用意しておく
+    const winnerTicket = await repos.tickets.create({
+      title: '先勝ちリクエストが作成',
+      body: '本文',
+      priority: 'Medium',
+      categoryId: null,
+      creatorId: AGENT_ID,
+      tenantId: TENANT,
+    });
+
+    // findTicketIdByMessageId: 1 回目 (事前チェック) は null、2 回目以降 (競合後の再確認) は
+    // 先勝ちチケット ID を返す。「事前チェックの時点では未処理だったが、その後 (このリクエストの
+    // トランザクションが競合で中断される間に) 別リクエストが確定させた」という順序を再現する
+    const findTicketIdByMessageId = vi
+      .fn()
+      .mockResolvedValueOnce(null)
+      .mockResolvedValue(winnerTicket.id);
+    repos = {
+      ...repos,
+      lineMessages: { ...repos.lineMessages, findTicketIdByMessageId },
+    };
+
+    // uow.run を「書き込み競合で必ず失敗する」実装に差し替える
+    const conflictError = new Error('simulated write conflict');
+    uow = {
+      run: vi.fn(async () => {
+        throw conflictError;
+      }),
+      isTransactionConflict: (err) => err === conflictError,
+    };
+
+    const { POST } = await import('@/app/api/inbound/line/route');
+    const res = await POST(makeRequest('プリンターが動きません', LINE_ID_UNLINKED));
+    expect(res.status).toBe(200);
+    // 新規チケットは作られず、先勝ちの 1 件のままであること
+    expect(store.tickets.size).toBe(1);
+    const body = (await res.json()) as { ticketIds: string[] };
+    expect(body.ticketIds).toEqual([winnerTicket.id]);
+    // 事前チェック + 競合後の再確認の 2 回、対応表が引かれている
+    expect(findTicketIdByMessageId).toHaveBeenCalledTimes(2);
   });
 
   // 署名が不正なリクエストは 401 で拒否する

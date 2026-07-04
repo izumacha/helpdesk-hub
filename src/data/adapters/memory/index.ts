@@ -51,6 +51,8 @@ export function buildMemoryRepos(store: Store): Repos {
 // メモリ版 UnitOfWork。スナップショットを取り、例外時に巻き戻す擬似トランザクション
 export function buildMemoryUow(store: Store): UnitOfWork {
   return {
+    // isolationLevel はメモリ実装では意味を持たない (Node は単一スレッドで、
+    // run() 呼び出しの間に他の run() が割り込んで同じキーを読み書きすることは無いため無視する)
     async run(fn) {
       const snapshot = cloneStore(store); // トランザクション開始時点のスナップショット
       try {
@@ -62,6 +64,10 @@ export function buildMemoryUow(store: Store): UnitOfWork {
         // エラーは呼び出し元に再 throw
         throw error;
       }
+    },
+    // メモリ実装は真の同時実行を扱わないため、書き込み競合エラーは起こり得ない
+    isTransactionConflict() {
+      return false;
     },
   };
 }

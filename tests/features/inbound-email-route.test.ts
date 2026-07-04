@@ -341,6 +341,55 @@ describe('POST /api/inbound/email', () => {
     expect(store.tickets.size).toBe(1);
   });
 
+  // 書き込み競合 (Serializable 分離レベルでの中断) が起きても、対応表を読み直して
+  // 重複扱いにし、二重にチケットを作らないことを確認する。
+  // 実際の Postgres での競合は契約テスト (RUN_PRISMA_CONTRACT=1 が必要) で検証し、
+  // ここでは createEmailTicketIdempotent のエラーハンドリング分岐
+  // (uow.isTransactionConflict → 対応表の再読込) を検証する。
+  it('書き込み競合が起きても対応表を読み直して重複扱いにする (二重起票しない)', async () => {
+    // 「別リクエストが先に確定させた」チケットをあらかじめ用意しておく
+    const winnerTicket = await repos.tickets.create({
+      title: '先勝ちリクエストが作成',
+      body: '本文',
+      priority: 'Medium',
+      categoryId: null,
+      creatorId: MEMBER_ID,
+      tenantId: TENANT,
+    });
+
+    // findTicketIdByMessageIds: 1 回目 (事前チェック) は null、2 回目以降 (競合後の再確認) は
+    // 先勝ちチケット ID を返す。「事前チェックの時点では未処理だったが、その後 (このリクエストの
+    // トランザクションが競合で中断される間に) 別リクエストが確定させた」という順序を再現する
+    const findTicketIdByMessageIds = vi
+      .fn()
+      .mockResolvedValueOnce(null)
+      .mockResolvedValue(winnerTicket.id);
+    repos = {
+      ...repos,
+      emailThreads: { ...repos.emailThreads, findTicketIdByMessageIds },
+    };
+
+    // uow.run を「書き込み競合で必ず失敗する」実装に差し替える
+    const conflictError = new Error('simulated write conflict');
+    uow = {
+      run: vi.fn(async () => {
+        throw conflictError;
+      }),
+      isTransactionConflict: (err) => err === conflictError,
+    };
+
+    const { POST } = await import('@/app/api/inbound/email/route');
+    const res = await POST(makeRequest({ ...VALID_EMAIL, messageId: '<race-1@example.com>' }));
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { ticketId: string; status?: string };
+    expect(body.status).toBe('duplicate');
+    expect(body.ticketId).toBe(winnerTicket.id);
+    // 新規チケットは作られず、先勝ちの 1 件のままであること
+    expect(store.tickets.size).toBe(1);
+    // 受領自動返信は既に先勝ちリクエスト側で送られているはずなので、ここでは送らない
+    expect(sentEmails).toHaveLength(0);
+  });
+
   // スレッド継続: 参照先が別テナントの Message-ID なら一致せず、新規起票にフォールバックする
   it('別テナントの Message-ID には紐付かず新規起票する', async () => {
     // 別テナントに Message-ID を直接登録しておく (別テナントのスレッド)

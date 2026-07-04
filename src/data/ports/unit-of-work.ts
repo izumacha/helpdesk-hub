@@ -34,8 +34,24 @@ export interface Repos {
   ssoConfigs: SsoConfigRepository; // Phase 4 Enterprise: テナント単位の SAML SSO 設定
 }
 
+// run() のオプション
+export interface RunOptions {
+  // 分離レベル。既定 (未指定) は DB の既定 (PostgreSQL は Read Committed)。
+  // 「既存レコードが無ければ作る」形の冪等化 (Webhook 再送チェック) のように、
+  // 同一キーに対する 2 トランザクションが競合し得る処理では 'Serializable' を指定する。
+  // Read Committed では両トランザクションが「無い」という読み取りを通過してしまい
+  // 二重作成につながるが、Serializable なら DB 側が競合を検知し、後勝ちのトランザクションを
+  // 書き込み競合エラーで中断する (呼び出し側が catch して重複扱いにリトライする前提)。
+  isolationLevel?: 'Serializable';
+}
+
 // トランザクション境界を表す契約 (Unit of Work パターン)
 // run に渡した関数内ではトランザクション対応の Repos が使える
 export interface UnitOfWork {
-  run<T>(fn: (txRepos: Repos) => Promise<T>): Promise<T>;
+  run<T>(fn: (txRepos: Repos) => Promise<T>, options?: RunOptions): Promise<T>;
+
+  // isolationLevel: 'Serializable' で実行した run() が、書き込み競合で中断された
+  // ときの例外かどうかを判定する。DB 固有のエラー形状 (Prisma のエラーコード等) を
+  // 呼び出し側 (Server Action / Route Handler) に漏らさないための判定ヘルパー。
+  isTransactionConflict(err: unknown): boolean;
 }
