@@ -28,10 +28,13 @@
 import { NextResponse } from 'next/server';
 // 署名検証に使う HMAC ユーティリティ (Node ランタイム前提)
 import { createHmac, timingSafeEqual } from 'node:crypto';
-// データ層の Composition Root (テナント / ユーザー / チケットのリポジトリ束 + トランザクション境界)
-import { repos, uow } from '@/data';
-// チケット作成の入力型 (冪等起票ヘルパーの引数に使う)
-import type { CreateTicketInput } from '@/data/ports/ticket-repository';
+// データ層の Composition Root (テナント / ユーザー / チケットのリポジトリ束)
+import { repos } from '@/data';
+// Webhook 再送に対する冪等起票の共通ヘルパー (LINE/メールで共有)
+import {
+  createTicketIdempotent,
+  lineMessageIdempotencyOps,
+} from '@/lib/idempotent-ticket-creation';
 // 新規起票時の初期ステータスを mode から決める共通ルール (Web フォーム起票と単一の源を共有)
 import { initialStatusForMode } from '@/domain/ticket-status';
 // 公開エンドポイントの流量制限 (§9: DoS / リソース枯渇防止)
@@ -121,59 +124,6 @@ function verifyLineSignature(rawBody: string, signature: string, channelSecret: 
   if (a.length !== b.length) return false;
   // 同一長さなら定数時間比較して HMAC 一致を判定する
   return timingSafeEqual(a, b);
-}
-
-// LINE メッセージ ID の冪等性を保ったままチケットを起票する。
-//
-// なぜ必要か: LINE は Webhook 応答が遅延/未受信だと同一メッセージを 5 分以内に再送する
-// (at-least-once)。以前の実装は「対応表を SELECT → 無ければ起票 → 対応表へ INSERT」を
-// 別々の呼び出しで行っており、同一メッセージの再送が完全に同時 (両方の SELECT が先に
-// 走る) だと二重起票の窓が残っていた (TOCTOU)。
-// ここでは SELECT → 起票 → 対応表登録を 1 つの Serializable トランザクションにまとめる。
-// Serializable なら DB 側が競合を検知し、後勝ちのトランザクションを書き込み競合エラーで
-// 中断するため、両方が「未処理」を読み取ったまま起票してしまうことがなくなる。
-// 中断されたリクエストは (勝った方が確定させた) 対応表を読み直して重複として扱う。
-async function createLineTicketIdempotent(
-  messageId: string | null, // 冪等化キー。取れなかった場合は null (冪等化なしで単発起票)
-  tenantId: string,
-  ticketInput: CreateTicketInput,
-): Promise<{ id: string; alreadyExisted: boolean }> {
-  // メッセージ ID が取れないイベントは突き合わせようがないため、従来どおり単発で起票する
-  if (!messageId) {
-    const created = await repos.tickets.create(ticketInput);
-    return { id: created.id, alreadyExisted: false };
-  }
-
-  try {
-    return await uow.run(
-      async (tx) => {
-        // トランザクション内で再確認する (外側の事前チェックから開始までの間に、
-        // 別リクエストが処理を終えている可能性があるため)
-        const already = await tx.lineMessages.findTicketIdByMessageId(messageId, tenantId);
-        if (already) return { id: already, alreadyExisted: true };
-        // 起票してから対応表に登録する (同一トランザクション内なので原子的)
-        const created = await tx.tickets.create(ticketInput);
-        await tx.lineMessages.register({
-          lineMessageId: messageId,
-          ticketId: created.id,
-          tenantId,
-        });
-        return { id: created.id, alreadyExisted: false };
-      },
-      { isolationLevel: 'Serializable' },
-    );
-  } catch (err) {
-    // 書き込み競合 = 同時に処理された同一メッセージの別リクエストが先に確定したということ。
-    // 確定後の対応表を読み直せば、そちらが登録したチケット ID が見つかるはずなので重複扱いにする
-    if (uow.isTransactionConflict(err)) {
-      const winnerTicketId = await repos.lineMessages.findTicketIdByMessageId(messageId, tenantId);
-      if (winnerTicketId) {
-        return { id: winnerTicketId, alreadyExisted: true };
-      }
-    }
-    // 書き込み競合以外、または競合なのに対応表が見つからない (想定外) 場合はそのまま伝播する
-    throw err;
-  }
 }
 
 // POST /api/inbound/line : LINE Webhook を受信してチケットを作成する
@@ -348,7 +298,7 @@ export async function POST(req: Request) {
     // 冪等化の早期チェック (fast path): このメッセージ ID を既に取り込み済みなら、
     // 連携コード判定や起票者解決などの以降の処理を行わずに次のイベントへ進む。
     // LINE は Webhook 応答が遅延/未受信だと同一メッセージを 5 分以内に再送する (at-least-once)。
-    // これは事前チェックに過ぎず、実際の二重起票防止は createLineTicketIdempotent 内の
+    // これは事前チェックに過ぎず、実際の二重起票防止は createTicketIdempotent 内の
     // Serializable トランザクションが保証する (このチェック単体では TOCTOU の窓が残るため)。
     if (messageId) {
       const existingTicketId = await repos.lineMessages.findTicketIdByMessageId(
@@ -423,13 +373,14 @@ export async function POST(req: Request) {
     // 新規チケットを起票する (Web フォーム・メール取り込みと同じ PORT 経由)。
     // 1 件の起票失敗で全体を 500 にすると LINE がバッチ全体を再送し、既に起票済みのチケットが
     // 重複する。そのため起票は個別に try/catch で囲み、失敗は文脈付きでログに残して次のイベントへ
-    // 進み、最後は必ず 200 を返す (再送そのものは createLineTicketIdempotent の Serializable
+    // 進み、最後は必ず 200 を返す (再送そのものは createTicketIdempotent の Serializable
     // トランザクションが二重起票を防ぐ)。
     try {
       // 起票 (+ メッセージ ID 登録) を 1 トランザクションで原子的に行う。
       // alreadyExisted が true のときは、書き込み競合で中断された後の再確認で「他リクエストが
       // 既に起票済み」と判明したケース (通知は既にそちらのリクエストで送られているはず)
-      const { id: ticketId, alreadyExisted } = await createLineTicketIdempotent(
+      const { id: ticketId, alreadyExisted } = await createTicketIdempotent(
+        lineMessageIdempotencyOps,
         messageId,
         targetTenantId,
         {
@@ -511,7 +462,7 @@ export async function POST(req: Request) {
   }
 
   // LINE サーバーはレスポンスを所定時間内に受信しないと再送するため、必ず 200 を返す。
-  // 冪等化 (メッセージ ID による重複排除) は createLineTicketIdempotent の Serializable
+  // 冪等化 (メッセージ ID による重複排除) は createTicketIdempotent の Serializable
   // トランザクションで、起票を伴う通常メッセージについて実施済み (連携コード分岐の既知の制約は
   // 上のコメント参照)。
   return NextResponse.json({ ticketIds }, { status: 200 });

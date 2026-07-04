@@ -22,8 +22,11 @@ import { timingSafeEqual } from 'node:crypto';
 import { revalidatePath } from 'next/cache';
 // データ層 (テナント / ユーザー / チケットのリポジトリ束 + トランザクション境界)
 import { repos, uow } from '@/data';
-// チケット作成の入力型 (冪等起票ヘルパーの引数に使う)
-import type { CreateTicketInput } from '@/data/ports/ticket-repository';
+// Webhook 再送に対する冪等起票の共通ヘルパー (LINE/メールで共有)
+import {
+  createTicketIdempotent,
+  emailMessageIdempotencyOps,
+} from '@/lib/idempotent-ticket-creation';
 // 新規起票時の初期ステータスを mode から決める共通ルール (Web フォーム起票と単一の源を共有)
 import { initialStatusForMode } from '@/domain/ticket-status';
 // コメント通知の宛先決定 (Web フォーム経由コメントと共有するヘルパー)
@@ -74,58 +77,6 @@ class BodyTooLargeError extends Error {
     // this.name を明示設定する。設定しないと err.name が 'Error' になり構造化ロガーで誤分類される
     // (RateLimitError が this.name を設定しているのと同じ理由 - src/lib/rate-limit.ts:37 参照)
     this.name = 'BodyTooLargeError';
-  }
-}
-
-// 受信メールの Message-ID の冪等性を保ったままチケットを起票する。
-//
-// なぜ必要か: メールプロバイダは Webhook 応答が遅延/未受信だと同一メールを再送する
-// (at-least-once)。以前の実装は「対応表を SELECT → 無ければ起票 → 対応表へ INSERT」を
-// 別々の呼び出しで行っており、同一メールの再送が完全に同時 (両方の SELECT が先に走る)
-// だと二重起票の窓が残っていた (TOCTOU)。
-// ここでは SELECT → 起票 → 対応表登録を 1 つの Serializable トランザクションにまとめる。
-// Serializable なら DB 側が競合を検知し、後勝ちのトランザクションを書き込み競合エラーで
-// 中断するため、両方が「未処理」を読み取ったまま起票してしまうことがなくなる。
-// 中断されたリクエストは (勝った方が確定させた) 対応表を読み直して重複として扱う。
-async function createEmailTicketIdempotent(
-  messageId: string | null, // 冪等化キー。取れなかった場合は null (冪等化なしで単発起票)
-  tenantId: string,
-  ticketInput: CreateTicketInput,
-): Promise<{ id: string; alreadyExisted: boolean }> {
-  // Message-ID が取れないメールは突き合わせようがないため、従来どおり単発で起票する
-  if (!messageId) {
-    const created = await repos.tickets.create(ticketInput);
-    return { id: created.id, alreadyExisted: false };
-  }
-
-  try {
-    return await uow.run(
-      async (tx) => {
-        // トランザクション内で再確認する (外側の事前チェックから開始までの間に、
-        // 別リクエストが処理を終えている可能性があるため)
-        const already = await tx.emailThreads.findTicketIdByMessageIds([messageId], tenantId);
-        if (already) return { id: already, alreadyExisted: true };
-        // 起票してから対応表に登録する (同一トランザクション内なので原子的)
-        const created = await tx.tickets.create(ticketInput);
-        await tx.emailThreads.register({ messageId, ticketId: created.id, tenantId });
-        return { id: created.id, alreadyExisted: false };
-      },
-      { isolationLevel: 'Serializable' },
-    );
-  } catch (err) {
-    // 書き込み競合 = 同時に処理された同一メールの別リクエストが先に確定したということ。
-    // 確定後の対応表を読み直せば、そちらが登録したチケット ID が見つかるはずなので重複扱いにする
-    if (uow.isTransactionConflict(err)) {
-      const winnerTicketId = await repos.emailThreads.findTicketIdByMessageIds(
-        [messageId],
-        tenantId,
-      );
-      if (winnerTicketId) {
-        return { id: winnerTicketId, alreadyExisted: true };
-      }
-    }
-    // 書き込み競合以外、または競合なのに対応表が見つからない (想定外) 場合はそのまま伝播する
-    throw err;
   }
 }
 
@@ -586,7 +537,8 @@ export async function POST(req: Request) {
   const resolutionDueAt = calculateResolutionDueAt('Medium', now);
 
   // 受信メールを 1 件の問い合わせとして作成する (起票 + 対応表登録を原子的に行う)
-  const { id: ticketId, alreadyExisted } = await createEmailTicketIdempotent(
+  const { id: ticketId, alreadyExisted } = await createTicketIdempotent(
+    emailMessageIdempotencyOps,
     email.messageId, // 冪等化キー (無い場合は null)
     tenant.id,
     {
