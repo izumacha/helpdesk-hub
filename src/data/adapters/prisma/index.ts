@@ -1,5 +1,5 @@
-// Prisma クライアント型と、リポジトリ束/UnitOfWork の契約型をインポート
-import type { PrismaClient } from '@/generated/prisma';
+// Prisma クライアント型 (トランザクション分離レベルの定数値は実行時に使うため型 import にしない)
+import { Prisma, type PrismaClient } from '@/generated/prisma';
 import type { Repos, UnitOfWork } from '@/data/ports/unit-of-work';
 // 各エンティティ用の Prisma リポジトリ生成関数を取り込む
 import { makeAttachmentRepo } from './attachment-repository.prisma';
@@ -45,13 +45,32 @@ export function buildPrismaRepos(db: PrismaLike): Repos {
   };
 }
 
+// Serializable 分離レベルで書き込み競合を検知したときに Prisma が投げるエラーコード。
+// ("Transaction failed due to a write conflict or a deadlock. Please retry your transaction.")
+const SERIALIZATION_FAILURE_CODE = 'P2034';
+
 // Prisma の $transaction を用いた UnitOfWork 実装を生成する関数
 export function buildPrismaUow(client: PrismaClient): UnitOfWork {
   return {
     // run に渡した関数をトランザクション内で実行する
-    async run(fn) {
-      // Prisma のトランザクションを開始し、tx クライアント用の Repos を渡して実行
-      return client.$transaction(async (tx) => fn(buildPrismaRepos(tx)));
+    async run(fn, options) {
+      // Prisma のトランザクションを開始し、tx クライアント用の Repos を渡して実行。
+      // isolationLevel は options で明示されたときだけ指定し、それ以外は DB の既定に委ねる
+      return client.$transaction(async (tx) => fn(buildPrismaRepos(tx)), {
+        isolationLevel:
+          options?.isolationLevel === 'Serializable'
+            ? Prisma.TransactionIsolationLevel.Serializable
+            : undefined,
+      });
+    },
+    // Prisma 固有のエラーコードで書き込み競合を判定する (呼び出し側に Prisma の型を持ち込ませない)
+    isTransactionConflict(err) {
+      return (
+        typeof err === 'object' &&
+        err !== null &&
+        'code' in err &&
+        (err as { code?: unknown }).code === SERIALIZATION_FAILURE_CODE
+      );
     },
   };
 }

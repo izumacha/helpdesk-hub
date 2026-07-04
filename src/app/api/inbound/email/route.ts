@@ -22,6 +22,11 @@ import { timingSafeEqual } from 'node:crypto';
 import { revalidatePath } from 'next/cache';
 // データ層 (テナント / ユーザー / チケットのリポジトリ束 + トランザクション境界)
 import { repos, uow } from '@/data';
+// Webhook 再送に対する冪等起票の共通ヘルパー (LINE/メールで共有)
+import {
+  createTicketIdempotent,
+  emailMessageIdempotencyOps,
+} from '@/lib/idempotent-ticket-creation';
 // 新規起票時の初期ステータスを mode から決める共通ルール (Web フォーム起票と単一の源を共有)
 import { initialStatusForMode } from '@/domain/ticket-status';
 // コメント通知の宛先決定 (Web フォーム経由コメントと共有するヘルパー)
@@ -313,7 +318,9 @@ export async function POST(req: Request) {
   const contentLength = Number(req.headers.get('content-length') || '-1');
   if (Number.isFinite(contentLength) && contentLength > MAX_INBOUND_BODY_BYTES) {
     // サイズ超過はサーバーログに残し、外部には詳細を出さない 413 を返す
-    console.warn(`[POST /api/inbound/email] request body too large (header): ${contentLength} bytes`);
+    console.warn(
+      `[POST /api/inbound/email] request body too large (header): ${contentLength} bytes`,
+    );
     return NextResponse.json({ error: 'メールが大きすぎます' }, { status: 413 });
   }
 
@@ -494,7 +501,9 @@ export async function POST(req: Request) {
           ),
         );
         // 通知作成に成功した受信者だけを SSE 配信対象にする (失敗分は DB レコードが無いためスキップ)
-        const succeededIds = recipientIds.filter((_, i) => notifyResults[i]?.status === 'fulfilled');
+        const succeededIds = recipientIds.filter(
+          (_, i) => notifyResults[i]?.status === 'fulfilled',
+        );
         const failedCount = recipientIds.length - succeededIds.length;
         if (failedCount > 0) {
           // 失敗件数だけログに残す (受信者 ID は個人情報のため省略)
@@ -527,30 +536,28 @@ export async function POST(req: Request) {
   // メールには期限指定が無いため、Web フォーム起票と同じく優先度 Medium ベースで解決期限を算出する
   const resolutionDueAt = calculateResolutionDueAt('Medium', now);
 
-  // 受信メールを 1 件の問い合わせとして作成する
-  const ticket = await repos.tickets.create({
-    title: email.subject, // 件名 (空メールは既定タイトルに正規化済み)
-    body: email.body, // 本文テキスト
-    priority: 'Medium', // メール取り込みは優先度を Medium 固定 (Lite の既定と揃える)
-    categoryId: null, // メール取り込みではカテゴリ未分類
-    creatorId: sender.id, // 起票者は送信者本人 (既知メンバー)
-    tenantId: tenant.id, // 取り込み先テナント
-    status: initialStatus, // Lite は 'Open'、Pro は undefined (既定 New)
-    resolutionDueAt, // 解決期限 (優先度ベース)
-  });
+  // 受信メールを 1 件の問い合わせとして作成する (起票 + 対応表登録を原子的に行う)
+  const { id: ticketId, alreadyExisted } = await createTicketIdempotent(
+    emailMessageIdempotencyOps,
+    email.messageId, // 冪等化キー (無い場合は null)
+    tenant.id,
+    {
+      title: email.subject, // 件名 (空メールは既定タイトルに正規化済み)
+      body: email.body, // 本文テキスト
+      priority: 'Medium', // メール取り込みは優先度を Medium 固定 (Lite の既定と揃える)
+      categoryId: null, // メール取り込みではカテゴリ未分類
+      creatorId: sender.id, // 起票者は送信者本人 (既知メンバー)
+      tenantId: tenant.id, // 取り込み先テナント
+      status: initialStatus, // Lite は 'Open'、Pro は undefined (既定 New)
+      resolutionDueAt, // 解決期限 (優先度ベース)
+    },
+  );
 
-  // この受信メールの Message-ID を対応表へ登録する (後続の返信をこのチケットへ紐付けるため)。
-  // ベストエフォート: 登録失敗で 500 を返すと再送 → 二重起票になりかねないので、握ってログに残す。
-  if (email.messageId) {
-    try {
-      await repos.emailThreads.register({
-        messageId: email.messageId,
-        ticketId: ticket.id,
-        tenantId: tenant.id,
-      });
-    } catch (err) {
-      console.warn('[POST /api/inbound/email] failed to register inbound message id', err);
-    }
+  if (alreadyExisted) {
+    // 書き込み競合により、別リクエストが既に起票・受領返信済みと判明したケース。
+    // 二重にチケットや受領メールを作らないよう、ここでは何もせず既存チケット ID を返す
+    console.info('[POST /api/inbound/email] resolved write conflict as duplicate', ticketId);
+    return NextResponse.json({ status: 'duplicate', ticketId }, { status: 200 });
   }
 
   // 初回メール起票の受領自動返信 (メンバー改善 #1): 送信元へ「受け付けました」を 1 通返す。
@@ -560,12 +567,12 @@ export async function POST(req: Request) {
   if (!isAutomatedEmail(fields)) {
     await sendReceivedAck({
       to: sender.email,
-      ticketId: ticket.id,
+      ticketId,
       ticketTitle: email.subject,
       tenantId: tenant.id,
     });
   }
 
   // 作成された問い合わせ ID を 201 で返す (プロバイダは本文を使わないが疎通確認に役立つ)
-  return NextResponse.json({ ticketId: ticket.id }, { status: 201 });
+  return NextResponse.json({ ticketId }, { status: 201 });
 }

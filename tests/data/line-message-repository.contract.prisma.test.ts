@@ -7,8 +7,8 @@
 import { describe, beforeAll, afterAll, beforeEach, expect, it } from 'vitest';
 // Prisma クライアント本体 (生成物)
 import { PrismaClient } from '@/generated/prisma';
-// 本番 Prisma 実装の repos 束を組み立てる関数
-import { buildPrismaRepos } from '@/data/adapters/prisma';
+// 本番 Prisma 実装の repos 束 / UnitOfWork を組み立てる関数
+import { buildPrismaRepos, buildPrismaUow } from '@/data/adapters/prisma';
 
 // テナント A / B の ID
 const TENANT_A = 'default-tenant';
@@ -98,8 +98,68 @@ describe.runIf(SHOULD_RUN)('LineMessageRef prisma adapter', () => {
   // 別テナントが同じメッセージ ID を使っても衝突しない ((tenantId, lineMessageId) 複合一意のため)
   it('テナントが違えば同一メッセージ ID を別々に登録できる', async () => {
     const repos = buildPrismaRepos(prisma);
-    await repos.lineMessages.register({ lineMessageId: 'same', ticketId: 't-a', tenantId: TENANT_A });
-    await repos.lineMessages.register({ lineMessageId: 'same', ticketId: 't-b', tenantId: TENANT_B });
+    await repos.lineMessages.register({
+      lineMessageId: 'same',
+      ticketId: 't-a',
+      tenantId: TENANT_A,
+    });
+    await repos.lineMessages.register({
+      lineMessageId: 'same',
+      ticketId: 't-b',
+      tenantId: TENANT_B,
+    });
     expect(await prisma.lineMessageRef.count()).toBe(2);
+  });
+
+  // 同一メッセージ ID に対する「確認 → 起票 → 登録」が完全に同時実行されても、Serializable
+  // 分離レベルなら書き込み競合が検知されて片方が中断され、二重起票にならないことを検証する。
+  // src/app/api/inbound/line/route.ts の createLineTicketIdempotent が依拠する DB 側の保証。
+  it('Serializable トランザクションが同時実行の書き込み競合を検知し二重起票を防ぐ', async () => {
+    const uow = buildPrismaUow(prisma);
+    const messageId = 'race-1';
+
+    // createLineTicketIdempotent と同じ形の「確認 → 起票 → 登録」を 1 トランザクションで行う
+    const attempt = () =>
+      uow.run(
+        async (tx) => {
+          const already = await tx.lineMessages.findTicketIdByMessageId(messageId, TENANT_A);
+          if (already) return { id: already, alreadyExisted: true };
+          // 両方の試行が「まだ無い」を読んだ直後にここで少し待つことで、読み取りタイミングを
+          // 揃え、書き込み競合を確実に起こす (待ちが無いと片方が先に完了してしまい得る)
+          await new Promise((resolve) => setTimeout(resolve, 100));
+          const created = await tx.tickets.create({
+            title: '同時実行テスト',
+            body: '本文',
+            priority: 'Medium',
+            categoryId: null,
+            creatorId: 'u-a',
+            tenantId: TENANT_A,
+          });
+          await tx.lineMessages.register({
+            lineMessageId: messageId,
+            ticketId: created.id,
+            tenantId: TENANT_A,
+          });
+          return { id: created.id, alreadyExisted: false };
+        },
+        { isolationLevel: 'Serializable' },
+      );
+
+    // 2 つの試行を完全に同時実行する
+    const results = await Promise.allSettled([attempt(), attempt()]);
+
+    // ちょうど 1 件が成功し、もう 1 件は書き込み競合で失敗する
+    const fulfilled = results.filter((r) => r.status === 'fulfilled');
+    const rejected = results.filter((r) => r.status === 'rejected');
+    expect(fulfilled).toHaveLength(1);
+    expect(rejected).toHaveLength(1);
+    // 失敗した方は uow.isTransactionConflict が true と判定するエラーであること
+    expect(uow.isTransactionConflict((rejected[0] as PromiseRejectedResult).reason)).toBe(true);
+
+    // DB 上にはチケット・対応表とも 1 件ずつしか作られていない (二重起票していない)
+    expect(
+      await prisma.ticket.count({ where: { tenantId: TENANT_A, title: '同時実行テスト' } }),
+    ).toBe(1);
+    expect(await prisma.lineMessageRef.count({ where: { lineMessageId: messageId } })).toBe(1);
   });
 });

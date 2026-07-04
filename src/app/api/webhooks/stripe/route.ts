@@ -16,12 +16,16 @@
 import { NextResponse } from 'next/server';
 // Stripe SDK の型定義 (Event 型を handleStripeEvent の引数に使う)
 import type Stripe from 'stripe';
-// データリポジトリ (テナント更新用)
-import { repos } from '@/data';
+// データリポジトリ (テナント更新用) + トランザクション境界
+import { repos, uow } from '@/data';
 // Stripe クライアントと設定ヘルパー
 import { getStripeClient, getStripeWebhookSecret, stripeStatusToPlan } from '@/lib/stripe';
 // レート制限 (署名検証の前に粗すぎる連打を弾いてサーバー負荷を抑える)
 import { enforceRateLimit, RateLimitError } from '@/lib/rate-limit';
+// Pro モード (7 ステータス・SLA・エスカレーション等) がそのプランで許可されるかの判定
+import { isProModeAllowed } from '@/lib/plan-guard';
+// 課金プランの型
+import type { SubscriptionPlan } from '@/domain/types';
 
 // Stripe Webhook が送ってくる主要イベント種別の定数 (typo 防止のため文字列リテラルを定数化)
 const STRIPE_EVENT_SUBSCRIPTION_CREATED = 'customer.subscription.created';
@@ -60,7 +64,10 @@ export async function POST(request: Request): Promise<NextResponse> {
     rawBody = await request.text();
   } catch {
     // ボディ読み取り失敗は 400 で返す (ボディが壊れている場合)
-    return NextResponse.json({ error: 'リクエストボディの読み取りに失敗しました' }, { status: 400 });
+    return NextResponse.json(
+      { error: 'リクエストボディの読み取りに失敗しました' },
+      { status: 400 },
+    );
   }
 
   // Stripe クライアントと Webhook Secret を取得する
@@ -102,10 +109,7 @@ async function handleStripeEvent(event: Stripe.Event): Promise<void> {
   const obj = event.data.object as unknown as Record<string, unknown>;
 
   // サブスクリプション作成・更新イベント: プランと状態を更新する
-  if (
-    type === STRIPE_EVENT_SUBSCRIPTION_CREATED ||
-    type === STRIPE_EVENT_SUBSCRIPTION_UPDATED
-  ) {
+  if (type === STRIPE_EVENT_SUBSCRIPTION_CREATED || type === STRIPE_EVENT_SUBSCRIPTION_UPDATED) {
     await handleSubscriptionUpsert(obj);
     return;
   }
@@ -119,14 +123,55 @@ async function handleStripeEvent(event: Stripe.Event): Promise<void> {
   // 未対応のイベントは無視する (200 を返すことで Stripe が再送しないようにする)
 }
 
+// Stripe 由来のプラン変更をテナントへ適用する共通ヘルパー。
+//
+// なぜ必要か: 新プランが Pro モードを許可しなくなった (ダウングレード/解約) 場合、
+// tenant.mode がそれまでの 'pro' のまま残ると、エスカレーションや 7 ステータスワークフローなど
+// Pro 専用機能がプラン変更後も使い続けられてしまう (§9 認可はサーバー側で強制)。
+// updateStripeSubscription (プラン反映) と updateMode (Pro モード強制解除) を
+// 1 つのトランザクションにまとめ、片方だけ反映される中間状態が残らないようにする。
+//
+// mode の読み取りは呼び出し元からではなく、トランザクション内で tx.tenants.findById により
+// 都度読み直す (呼び出し元の existingTenant はトランザクション開始前に取得したスナップショットで、
+// その後に届いた別の Stripe イベントや管理者操作で mode が変わっていても反映されない古い値になり得るため)。
+async function applyPlanChange(
+  tenantId: string,
+  stripeFields: {
+    stripeCustomerId: string;
+    stripeSubscriptionId: string;
+    stripeSubscriptionStatus: string;
+    subscriptionPlan: SubscriptionPlan;
+  },
+): Promise<void> {
+  await uow.run(async (tx) => {
+    // トランザクション内で最新のテナント状態を読み直す (呼び出し元のスナップショットに頼らない)
+    const tenant = await tx.tenants.findById(tenantId);
+    // 呼び出し元で存在確認済みだが、念のためここでも安全側 (何もしない) に倒す
+    if (!tenant) return;
+    // Stripe 連携情報とプランを反映する
+    await tx.tenants.updateStripeSubscription(tenantId, stripeFields);
+    // 現在 Pro モードで運用中かつ、新プランが Pro モードを許可しないときだけモードを戻す
+    const shouldResetMode =
+      tenant.mode === 'pro' && !isProModeAllowed(stripeFields.subscriptionPlan);
+    if (shouldResetMode) {
+      // Pro 専用機能を使えなくする (Lite モードへ強制的に戻す)
+      await tx.tenants.updateMode(tenantId, 'lite');
+    }
+  });
+}
+
 // サブスクリプション作成・更新を処理する: テナントのプランと状態を最新に保つ
-async function handleSubscriptionUpsert(subscriptionObject: Record<string, unknown>): Promise<void> {
+async function handleSubscriptionUpsert(
+  subscriptionObject: Record<string, unknown>,
+): Promise<void> {
   // Stripe のサブスクリプションオブジェクトから必要なフィールドを取り出す
   const subscriptionId = subscriptionObject['id'] as string | undefined;
   const customerId = subscriptionObject['customer'] as string | undefined;
   const status = subscriptionObject['status'] as string | undefined;
   // items.data[0].price.id で Price ID を取得する (最初のアイテムのみ使用)
-  const items = subscriptionObject['items'] as { data?: Array<{ price?: { id?: string } }> } | undefined;
+  const items = subscriptionObject['items'] as
+    | { data?: Array<{ price?: { id?: string } }> }
+    | undefined;
   const priceId = items?.data?.[0]?.price?.id ?? '';
   // メタデータから tenantId を取得する (チェックアウト時に metadata.tenantId として設定する)
   const metadata = subscriptionObject['metadata'] as Record<string, string> | undefined;
@@ -134,10 +179,12 @@ async function handleSubscriptionUpsert(subscriptionObject: Record<string, unkno
 
   // 必須フィールドが揃っていない場合はスキップ (不完全なデータで更新しない)
   if (!subscriptionId || !customerId || !status || !tenantId) {
-    console.warn(
-      '[stripe-webhook] サブスクリプションに必須フィールドが不足しています:',
-      { subscriptionId, customerId, status, tenantId },
-    );
+    console.warn('[stripe-webhook] サブスクリプションに必須フィールドが不足しています:', {
+      subscriptionId,
+      customerId,
+      status,
+      tenantId,
+    });
     return;
   }
 
@@ -151,7 +198,10 @@ async function handleSubscriptionUpsert(subscriptionObject: Record<string, unkno
   const existingTenant = await repos.tenants.findById(tenantId);
   if (!existingTenant) {
     // 存在しない tenantId の場合はスキップして処理を止める (Stripe は 200 を受け取り再送しない)
-    console.warn('[stripe-webhook] メタデータの tenantId に対応するテナントが見つかりません:', tenantId);
+    console.warn(
+      '[stripe-webhook] メタデータの tenantId に対応するテナントが見つかりません:',
+      tenantId,
+    );
     return;
   }
 
@@ -160,8 +210,8 @@ async function handleSubscriptionUpsert(subscriptionObject: Record<string, unkno
   // Stripe 連携情報 (customer/subscription/status) は最新化しつつ、プランは enterprise を維持する。
   const nextPlan = existingTenant.subscriptionPlan === 'enterprise' ? 'enterprise' : plan;
 
-  // テナントのサブスク情報を更新する
-  await repos.tenants.updateStripeSubscription(tenantId, {
+  // テナントのサブスク情報を更新する (ダウングレードなら Pro モードも同時に強制解除する)
+  await applyPlanChange(tenantId, {
     stripeCustomerId: customerId,
     stripeSubscriptionId: subscriptionId,
     stripeSubscriptionStatus: status,
@@ -170,7 +220,9 @@ async function handleSubscriptionUpsert(subscriptionObject: Record<string, unkno
 }
 
 // サブスクリプション削除を処理する: free プランに降格してキャンセル状態を記録する
-async function handleSubscriptionDeleted(subscriptionObject: Record<string, unknown>): Promise<void> {
+async function handleSubscriptionDeleted(
+  subscriptionObject: Record<string, unknown>,
+): Promise<void> {
   // サブスクリプション ID と status を取得する
   const subscriptionId = subscriptionObject['id'] as string | undefined;
   const customerId = subscriptionObject['customer'] as string | undefined;
@@ -180,17 +232,21 @@ async function handleSubscriptionDeleted(subscriptionObject: Record<string, unkn
 
   // 必須フィールドが揃っていない場合はスキップ (customerId も含めて確認)
   if (!subscriptionId || !customerId || !tenantId) {
-    console.warn(
-      '[stripe-webhook] 削除イベントに必須フィールドが不足しています:',
-      { subscriptionId, customerId, tenantId },
-    );
+    console.warn('[stripe-webhook] 削除イベントに必須フィールドが不足しています:', {
+      subscriptionId,
+      customerId,
+      tenantId,
+    });
     return;
   }
 
   // upsert と同様にテナント実在チェックを行い、不正な tenantId による操作を防ぐ
   const existingTenant = await repos.tenants.findById(tenantId);
   if (!existingTenant) {
-    console.warn('[stripe-webhook] 削除イベントの tenantId に対応するテナントが見つかりません:', tenantId);
+    console.warn(
+      '[stripe-webhook] 削除イベントの tenantId に対応するテナントが見つかりません:',
+      tenantId,
+    );
     return;
   }
 
@@ -198,7 +254,8 @@ async function handleSubscriptionDeleted(subscriptionObject: Record<string, unkn
   const nextPlan = existingTenant.subscriptionPlan === 'enterprise' ? 'enterprise' : 'free';
 
   // サブスクリプション削除後は (Enterprise を除き) free に降格し、canceled 状態を記録する
-  await repos.tenants.updateStripeSubscription(tenantId, {
+  // (free は Pro モード対象外なので Pro モードも同時に強制解除される)
+  await applyPlanChange(tenantId, {
     stripeCustomerId: customerId,
     stripeSubscriptionId: subscriptionId,
     stripeSubscriptionStatus: 'canceled', // Stripe の deleted イベントは canceled 扱いにする

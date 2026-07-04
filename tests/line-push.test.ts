@@ -6,6 +6,18 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 // テスト対象: 本文組み立て / push 送信
 import { buildTicketReplyLineMessage, pushLineMessage } from '@/lib/line-push';
 
+// src/lib/webhook-fetch.ts は SSRF 対策の DNS 検証用 Dispatcher (Agent) を使うため
+// undici の fetch を直接 import している。vi.stubGlobal('fetch', ...) だけでは差し替わらない
+// ため、undici の fetch を globalThis.fetch (下の beforeEach で差し替える) へ委譲するモックにする
+vi.mock('undici', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('undici')>();
+  return {
+    ...actual,
+    fetch: ((...args: Parameters<typeof globalThis.fetch>) =>
+      globalThis.fetch(...args)) as unknown as typeof actual.fetch,
+  };
+});
+
 // テスト用の有効な LINE ユーザー ID (正規形式: 'U' + 32 桁 16 進数)
 const VALID_LINE_USER_ID = `U${'a'.repeat(32)}`;
 
@@ -44,14 +56,12 @@ describe('pushLineMessage', () => {
 
   beforeEach(() => {
     // 既定は成功レスポンス
-    fetchMock = vi
-      .fn()
-      .mockResolvedValue({
-        ok: true,
-        status: 200,
-        type: 'basic',
-        text: () => Promise.resolve('{}'),
-      });
+    fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      type: 'basic',
+      text: () => Promise.resolve('{}'),
+    });
     vi.stubGlobal('fetch', fetchMock);
   });
 

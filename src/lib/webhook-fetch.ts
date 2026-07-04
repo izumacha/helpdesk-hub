@@ -9,6 +9,18 @@
 // パブリックホストが 30x で内部アドレス (169.254.169.254 / 10.0.0.0/8 等) へ誘導すると、
 // リダイレクト先は再検証されないまま追従されてしまう。Incoming Webhook は正常時に
 // リダイレクトを返さないため、リダイレクト応答は一律エラー扱いにしてこの抜け道を塞ぐ。
+//
+// なぜ標準の fetch ではなく undici の fetch + Dispatcher を使うか:
+// ホスト名文字列の検証だけでは「検証後に DNS レコードを内部 IP に差し替える」DNS
+// リバインディング攻撃を防げない (src/lib/ssrf-guard.ts の ssrfSafeDispatcher 参照)。
+// 実際に接続する IP を検証するには、DNS 解決を行う undici の Dispatcher レベルで
+// フックする必要があるため、ここでは undici の fetch を明示的に使う。
+
+// SSRF 対策済みの undici fetch (Dispatcher を差し込める版)。標準の fetch は Node 内部の
+// undici を使うがカスタム Dispatcher を渡せないため、ここでは undici を直接 import する
+import { fetch as undiciFetch } from 'undici';
+// 接続直前に解決済み IP を検証する Dispatcher (DNS リバインディング対策)
+import { ssrfSafeDispatcher } from '@/lib/ssrf-guard';
 
 // Webhook レスポンスの最大読み取りサイズ (バイト数)。
 // Slack は "ok" (2 バイト)、Teams は "1" 程度、Chatwork は JSON を返すがエラー確認用に 1KB で十分。
@@ -51,7 +63,7 @@ export async function postWebhook(
   options: WebhookPostOptions,
 ): Promise<WebhookPostResult> {
   // 実際の HTTP リクエストを送る
-  const response = await fetch(url, {
+  const response = await undiciFetch(url, {
     // 通知系はすべて POST
     method: 'POST',
     // 呼び出し側が指定したヘッダをそのまま使う
@@ -63,6 +75,8 @@ export async function postWebhook(
     redirect: 'manual',
     // 一定時間で打ち切る (相手側障害時のハングを防ぐ)
     signal: AbortSignal.timeout(options.timeoutMs),
+    // SSRF 対策: DNS 解決した実際の接続先 IP を検証する (DNS リバインディング対策)
+    dispatcher: ssrfSafeDispatcher,
   });
 
   // redirect: 'manual' のとき、リダイレクト応答は opaqueredirect (type='opaqueredirect',
@@ -79,13 +93,28 @@ export async function postWebhook(
   return { ok: response.ok, status: response.status, bodyText };
 }
 
+// undici の Response 型と lib.dom の Response 型は、それぞれの ReadableStream 型
+// (node:stream/web 版と lib.dom 版) が微妙に非互換で直接代入できないため、
+// readBodyCapped が実際に使うメンバーだけを持つ最小限の構造型で受け取る
+// (どちらの Response の body.getReader() もこの形を満たす)
+interface FetchLikeResponse {
+  body: {
+    getReader(): {
+      read(): Promise<{ done: boolean; value?: Uint8Array }>;
+      cancel(): Promise<void>;
+      releaseLock(): void;
+    };
+  } | null;
+  text(): Promise<string>;
+}
+
 // レスポンス本文を上限バイト数まで読み取り、超過分は読み込まずに打ち切る内部ヘルパー。
 // `response.text()` は本文全体をメモリに読み切ってから返すため、それに `.slice()` を後掛けする
 // だけでは「上限バイト数」が名目上の値になり、乗っ取られた/悪意ある Webhook 先が巨大な本文を
 // 送り続けた場合にサーバーのメモリを消費してしまう (§8 リソース解放 / §9 DoS 対策)。
 // ここでは response.body の ReadableStream を直接読み、上限に達した時点で reader.cancel() して
 // それ以降のバイト列を読まずに接続を閉じる。
-async function readBodyCapped(response: Response, maxBytes: number): Promise<string> {
+async function readBodyCapped(response: FetchLikeResponse, maxBytes: number): Promise<string> {
   // body ストリームを取得できない実行環境 (一部のテスト用モック等) では
   // 上限保護が効かなくなるが、素直に text() へフォールバックして機能を壊さない
   const body = response.body;
