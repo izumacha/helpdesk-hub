@@ -22,6 +22,12 @@ COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 # Prisma クライアントを生成 (src/generated/prisma に出力)
 RUN npx prisma generate
+# チュートリアル動画リンク (任意)。ヘルプセンターの getting-started ページは
+# force-static (SSG) のため next build 実行時点の値が HTML に焼き込まれる。
+# --build-arg で渡さない限り docker compose build 経由では反映されないため、
+# compose 側で build.args として ${TUTORIAL_VIDEO_URL} を渡す (未設定なら空文字 = 非表示)
+ARG TUTORIAL_VIDEO_URL=""
+ENV TUTORIAL_VIDEO_URL=$TUTORIAL_VIDEO_URL
 # Next.js を本番ビルド (standalone 出力に従う)
 RUN npm run build
 

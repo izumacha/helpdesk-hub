@@ -95,23 +95,23 @@ enum AttachmentStorage {
 
 // 利用組織 1 件を表すモデル。マルチテナント化の境界として全エンティティから参照される
 model Tenant {
-  id        String     @id @default(cuid()) // 主キー (cuid)
-  name      String // 組織名 (画面表示用)
-  mode      TenantMode @default(lite) // Lite/Pro モード (既定は SMB 向けの lite)
-  industry  String? // 業種テンプレ識別子 (Phase 3 でカテゴリ初期投入に利用)
+  id               String     @id @default(cuid()) // 主キー (cuid)
+  name             String // 組織名 (画面表示用)
+  mode             TenantMode @default(lite) // Lite/Pro モード (既定は SMB 向けの lite)
+  industry         String? // 業種テンプレ識別子 (Phase 3 でカテゴリ初期投入に利用)
   // メール取り込み用の専用転送アドレスの識別子 (Phase 2 メール取り込み)。
   // 受信メールの宛先ローカルパート (例: <inboundToken>@inbox.helpdesk-hub.app) に埋め込み、
   // Webhook (/api/inbound/email) でこの値からテナントを特定する。@unique でテナント一意。
   // 既存テナント分のバックフィル中は null を許容する (発行前は取り込み無効)。
-  inboundToken String? @unique // メール取り込みアドレスのローカルパート (null=未発行)
+  inboundToken     String?    @unique // メール取り込みアドレスのローカルパート (null=未発行)
   // Phase 4: 外部通知チャネル (Slack Incoming Webhook URL)。
   // null なら Slack 通知無効。設定時は Slack Incoming Webhook の URL を格納する。
   // HMAC 検証不要の送信側なので URL 漏洩リスクに注意 (管理者のみ設定可)。
-  slackWebhookUrl String? // Slack Incoming Webhook URL (null=通知無効)
+  slackWebhookUrl  String? // Slack Incoming Webhook URL (null=通知無効)
   // Phase 4: 外部通知チャネル (Microsoft Teams Incoming Webhook URL)。
   // Teams は Slack とペイロード形式が異なる (Adaptive Card) ため専用 Adapter で送信する。
   // null なら Teams 通知無効。Power Automate / Workflows の Webhook URL を格納する。
-  teamsWebhookUrl String? // Teams Incoming Webhook URL (null=通知無効)
+  teamsWebhookUrl  String? // Teams Incoming Webhook URL (null=通知無効)
   // Phase 4: 外部通知チャネル (Chatwork)。Chatwork は Webhook ではなく REST API を使う。
   // chatworkApiToken と chatworkRoomId の両方が揃ったときのみ通知する (どちらか欠けたら無効)。
   // API トークンは秘匿情報のため管理者のみ設定可・ログ出力禁止。
@@ -121,25 +121,26 @@ model Tenant {
   // Phase 4 課金: Stripe Billing 連携フィールド。
   // Stripe ダッシュボードと連携して Free/Standard/Pro のサブスクを管理する。
   // subscriptionPlan は課金状態に応じて Stripe Webhook 受信時に自動更新される。
-  subscriptionPlan     SubscriptionPlan @default(free) // 現在の課金プラン (既定: 無料)
-  stripeCustomerId     String? // Stripe の Customer ID (cu_xxx)
-  stripeSubscriptionId String? // Stripe の Subscription ID (sub_xxx)
+  subscriptionPlan         SubscriptionPlan @default(free) // 現在の課金プラン (既定: 無料)
+  stripeCustomerId         String? // Stripe の Customer ID (cu_xxx)
+  stripeSubscriptionId     String? // Stripe の Subscription ID (sub_xxx)
   // Stripe 側のサブスク状態 ("active" | "trialing" | "past_due" | "canceled" | "none")
   stripeSubscriptionStatus String? // Stripe の subscription.status をそのまま格納
 
-  createdAt DateTime   @default(now()) // 作成日時
+  createdAt DateTime @default(now()) // 作成日時
 
   // 配下のリソース (テナント削除で連鎖削除)
-  users         User[]
-  categories    Category[]
-  tickets       Ticket[]
-  faqCandidates FaqCandidate[]
-  notifications Notification[]
-  attachments   Attachment[] // 添付ファイル (テナント境界の保持に必須)
-  invitations   Invitation[] // メンバー招待リンク (発行〜受諾までのワンタイムトークン)
+  users           User[]
+  categories      Category[]
+  tickets         Ticket[]
+  faqCandidates   FaqCandidate[]
+  notifications   Notification[]
+  attachments     Attachment[] // 添付ファイル (テナント境界の保持に必須)
+  invitations     Invitation[] // メンバー招待リンク (発行〜受諾までのワンタイムトークン)
   emailThreadRefs EmailThreadRef[] // メールスレッド継続用の Message-ID 対応表 (Phase 2)
-  locations     Location[] // Phase 4 多拠点: テナント内の店舗・拠点
-  ssoConfig     TenantSsoConfig? // Phase 4 Enterprise: SAML SSO 設定 (1 テナント 1 件・未設定なら null)
+  lineMessageRefs LineMessageRef[] // LINE メッセージ ID → チケット 対応表 (取り込みの冪等化 / Phase 2)
+  locations       Location[] // Phase 4 多拠点: テナント内の店舗・拠点
+  ssoConfig       TenantSsoConfig? // Phase 4 Enterprise: SAML SSO 設定 (1 テナント 1 件・未設定なら null)
 }
 
 // Phase 4 Enterprise: テナント単位の SAML シングルサインオン (SSO) 設定。
@@ -177,8 +178,8 @@ model User {
   // 確定リンク: この LINE ユーザー ID から起票されたチケットは本人が起票者になる (自己解決 UI 開通)。
   // 未連携は null。テナント内で 1 LINE ユーザー = 1 メンバーに保つため (tenantId, lineUserId) を一意にする
   // (NULL は重複可なので未連携ユーザーは何人でも共存できる)。
-  lineUserId           String? // 紐付け済み LINE ユーザー ID (未連携なら null)
-  lineLinkCodeHash     String? @unique // 発行中ワンタイムコードの SHA-256 (生コードは保存しない)
+  lineUserId            String? // 紐付け済み LINE ユーザー ID (未連携なら null)
+  lineLinkCodeHash      String?   @unique // 発行中ワンタイムコードの SHA-256 (生コードは保存しない)
   lineLinkCodeExpiresAt DateTime? // 上記コードの失効時刻 (null なら発行中コードなし)
 
   // 所属テナント (マルチテナント化の必須キー)
@@ -298,16 +299,17 @@ model Ticket {
   tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
 
   // Relations (リレーション)
-  creator       User            @relation("TicketCreator", fields: [creatorId], references: [id]) // 作成者ユーザー
-  assignee      User?           @relation("TicketAssignee", fields: [assigneeId], references: [id]) // 担当者ユーザー
-  category      Category?       @relation(fields: [categoryId], references: [id]) // カテゴリ
-  location      Location?       @relation(fields: [locationId], references: [id], onDelete: SetNull) // 拠点削除時は null に戻す
-  comments      TicketComment[] // 紐づくコメント一覧
-  histories     TicketHistory[] // 紐づく履歴一覧
-  faqCandidate  FaqCandidate? // 紐づく FAQ 候補 (1:1)
-  notifications Notification[] // このチケットを参照する通知
-  attachments   Attachment[] // 紐づく添付ファイル (画像)
+  creator         User             @relation("TicketCreator", fields: [creatorId], references: [id]) // 作成者ユーザー
+  assignee        User?            @relation("TicketAssignee", fields: [assigneeId], references: [id]) // 担当者ユーザー
+  category        Category?        @relation(fields: [categoryId], references: [id]) // カテゴリ
+  location        Location?        @relation(fields: [locationId], references: [id], onDelete: SetNull) // 拠点削除時は null に戻す
+  comments        TicketComment[] // 紐づくコメント一覧
+  histories       TicketHistory[] // 紐づく履歴一覧
+  faqCandidate    FaqCandidate? // 紐づく FAQ 候補 (1:1)
+  notifications   Notification[] // このチケットを参照する通知
+  attachments     Attachment[] // 紐づく添付ファイル (画像)
   emailThreadRefs EmailThreadRef[] // このチケットに紐づくメール Message-ID 群 (スレッド継続)
+  lineMessageRefs LineMessageRef[] // このチケットに紐づく LINE メッセージ ID 群 (取り込みの冪等化)
 
   // 検索性能向上のためのインデックス
   @@index([creatorId]) // 作成者で絞り込む一覧用
@@ -457,6 +459,28 @@ model EmailThreadRef {
   tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade) // テナント削除で連鎖削除
 
   @@unique([tenantId, messageId]) // テナント内で Message-ID は一意 (スレッド乗っ取り・二重取り込み防止)
+  @@index([ticketId]) // チケット削除の連鎖や逆引き用
+  @@index([tenantId]) // テナントスコープ検索用
+}
+
+// ─────────────────────────────────────────────
+// LineMessageRef (LINE メッセージ ID → チケット 対応表 / Phase 2)
+// ─────────────────────────────────────────────
+// docs/smb-dx-pivot-plan.md Phase 2「LINE 公式アカウント連携 (β)」。
+// LINE は Webhook 応答が遅延/未受信だと at-least-once で同一メッセージを再送する。
+// EmailThreadRef と同じ「メッセージ ID → チケット」対応表パターンで、再送時の二重起票を防ぐ。
+model LineMessageRef {
+  id            String   @id @default(cuid()) // 主キー
+  lineMessageId String // LINE メッセージ ID (Webhook イベントの message.id)
+  createdAt     DateTime @default(now()) // 記録日時
+
+  ticketId String // 紐づくチケット ID
+  tenantId String // 所属テナント (突き合わせは必ずこのスコープ内で行う)
+
+  ticket Ticket @relation(fields: [ticketId], references: [id], onDelete: Cascade) // チケット削除で連鎖削除
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade) // テナント削除で連鎖削除
+
+  @@unique([tenantId, lineMessageId]) // テナント内でメッセージ ID は一意 (再送での二重起票防止)
   @@index([ticketId]) // チケット削除の連鎖や逆引き用
   @@index([tenantId]) // テナントスコープ検索用
 }

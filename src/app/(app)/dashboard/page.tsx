@@ -10,6 +10,8 @@ import { isAgent as checkIsAgent } from '@/lib/role';
 import { STATUS_LABELS, STATUS_COLORS } from '@/lib/constants';
 // 現在ログイン中のテナントの動作モード (lite | pro) を取得するヘルパー
 import { getCurrentTenantMode } from '@/lib/tenant';
+// チュートリアル動画リンクの解決ヘルパー (未設定/不正 URL のときは null)
+import { getTutorialVideoUrl } from '@/lib/tutorial-video';
 // タブ ('mine' / 'overdue') の絞り込み条件を一元管理する純粋関数 (一覧ページと共有)
 import { applyTabFilter } from '@/features/tickets/tab-filter';
 // データ層が公開しているチケット一覧フィルタ型 (件数取得の引数)
@@ -357,6 +359,8 @@ async function LiteDashboard({
     repos.tickets.count(mineFilter, tenantId),
     repos.tickets.count(overdueFilter, tenantId),
   ]);
+  // チュートリアル動画リンク (未設定ならセクション自体を出さないため showTutorial のときだけ解決する)
+  const tutorialVideoUrl = showTutorial ? getTutorialVideoUrl() : null;
 
   return (
     <div className="space-y-8">
@@ -451,6 +455,21 @@ async function LiteDashboard({
             </Link>
             をご覧ください。
           </p>
+          {/* チュートリアル動画へのリンク (TUTORIAL_VIDEO_URL 未設定の間は表示しない) */}
+          {tutorialVideoUrl && (
+            <p className="mt-1 text-xs text-slate-400">
+              文章より映像で確認したい方はこちら。
+              {/* 外部動画のため新しいタブで開き、rel でタブナビゲーション経由の攻撃を防ぐ (§7 a11y) */}
+              <a
+                href={tutorialVideoUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="ml-1 text-teal-700 underline hover:text-teal-800"
+              >
+                チュートリアル動画を見る
+              </a>
+            </p>
+          )}
           {/* 問い合わせ一覧のサンプルチケットへのリンク (操作確認を促す) */}
           <p className="mt-1 text-xs text-slate-400">
             問い合わせ一覧にサンプルの問い合わせが 2 件入っています。

@@ -1,8 +1,12 @@
 // 30 分で運用開始するスタートガイドページ
 // Phase 3「ヘルプセンター」+ Phase 7.1「30 分で運用開始シナリオ」に対応
 import Link from 'next/link';
+// チュートリアル動画リンクの解決ヘルパー (未設定/不正 URL のときは null)
+import { getTutorialVideoUrl } from '@/lib/tutorial-video';
 
-// 認証不要・静的コンテンツのため SSG で出力する (CDN キャッシュに乗り高速化)
+// 認証不要・静的コンテンツのため SSG で出力する (CDN キャッシュに乗り高速化)。
+// TUTORIAL_VIDEO_URL はこの force-static ページではビルド時点の値が焼き込まれる
+// (値を変える場合は再ビルドが必要。他の env 依存ページと同じ運用上の制約)
 export const dynamic = 'force-static';
 
 export const metadata = {
@@ -11,6 +15,9 @@ export const metadata = {
 
 // スタートガイドページ
 export default function GettingStartedPage() {
+  // チュートリアル動画リンク (未設定/不正 URL のときは null。その場合は案内自体を出さない)
+  const tutorialVideoUrl = getTutorialVideoUrl();
+
   return (
     <div className="space-y-8">
       {/* ページタイトル */}
@@ -21,6 +28,20 @@ export default function GettingStartedPage() {
           メールアドレスさえあれば、今日中に問い合わせ管理を始められます。
           このガイドに沿って進めると 30 分ほどで完了します。
         </p>
+        {/* チュートリアル動画へのリンク (TUTORIAL_VIDEO_URL 未設定の間は表示しない) */}
+        {tutorialVideoUrl && (
+          <p className="mt-3 text-sm">
+            {/* 外部動画のため新しいタブで開き、rel でタブナビゲーション経由の攻撃を防ぐ (§7 a11y) */}
+            <a
+              href={tutorialVideoUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex items-center gap-1 font-medium text-teal-700 underline hover:text-teal-900"
+            >
+              動画で全体の流れを見る
+            </a>
+          </p>
+        )}
       </div>
 
       {/* ステップ 1: ログイン */}

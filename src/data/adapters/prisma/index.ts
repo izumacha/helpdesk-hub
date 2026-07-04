@@ -7,6 +7,7 @@ import { makeCategoryRepo } from './category-repository.prisma';
 import { makeEmailThreadRepo } from './email-thread-repository.prisma';
 import { makeFaqRepo } from './faq-repository.prisma';
 import { makeInvitationRepo } from './invitation-repository.prisma';
+import { makeLineMessageRepo } from './line-message-repository.prisma';
 import { makeLocationRepo } from './location-repository.prisma';
 import { makeMagicLinkRepo } from './magic-link-repository.prisma';
 import { makeNotificationRepo } from './notification-repository.prisma';
@@ -38,6 +39,7 @@ export function buildPrismaRepos(db: PrismaLike): Repos {
     invitations: makeInvitationRepo(db),
     attachments: makeAttachmentRepo(db),
     emailThreads: makeEmailThreadRepo(db),
+    lineMessages: makeLineMessageRepo(db), // LINE 取り込みの冪等化 (Phase 2)
     locations: makeLocationRepo(db), // Phase 4 多拠点
     ssoConfigs: makeSsoConfigRepo(db), // Phase 4 Enterprise: SAML SSO 設定
   };

@@ -184,6 +184,25 @@ describe('POST /api/inbound/line', () => {
     expect(Array.from(store.tickets.values())[0].creatorId).toBe(AGENT_ID);
   });
 
+  // 同じメッセージ ID を含む Webhook が再送されても、二重にチケットを起票しない (冪等化)
+  it('同じ LINE メッセージ ID の再送では重複起票しない', async () => {
+    const { POST } = await import('@/app/api/inbound/line/route');
+    // 1 回目: 通常どおり起票される
+    const first = await POST(makeRequest('プリンターが動きません', LINE_ID_UNLINKED));
+    expect(first.status).toBe(200);
+    expect(store.tickets.size).toBe(1);
+    const firstTicketId = Array.from(store.tickets.values())[0]!.id;
+
+    // 2 回目: 同じ message.id ('m1') を含む同一リクエストを再送する (LINE の at-least-once 再送を模す)
+    const second = await POST(makeRequest('プリンターが動きません', LINE_ID_UNLINKED));
+    expect(second.status).toBe(200);
+    // チケットは増えない (二重起票していない)
+    expect(store.tickets.size).toBe(1);
+    // レスポンスには既存チケット ID がそのまま返る
+    const secondBody = (await second.json()) as { ticketIds: string[] };
+    expect(secondBody.ticketIds).toEqual([firstTicketId]);
+  });
+
   // 署名が不正なリクエストは 401 で拒否する
   it('署名が不正なら 401 を返す', async () => {
     const body = JSON.stringify({ events: [] });

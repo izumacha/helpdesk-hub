@@ -286,6 +286,28 @@ export async function POST(req: Request) {
     const trimmedText = textMessage.text.trim();
     if (!trimmedText) continue;
 
+    // 冪等化: このメッセージ ID を既に取り込み済みなら、再送とみなして起票し直さない。
+    // LINE は Webhook 応答が遅延/未受信だと同一メッセージを 5 分以内に再送する (at-least-once)。
+    // id が欠落/非文字列 (想定外の応答) のときは突き合わせできないため、通常どおり起票へ進む。
+    // 既知の制約: この確認とチケット作成/register はトランザクションで結ばれていないため、
+    // 理論上は完全に同時 (SELECT が両方とも先に走る) だと二重起票の窓が残る。EmailThreadRepository
+    // (メール取り込み) も同じ read-then-write 方式を採用しており、実運用上は再送が「応答タイムアウト後」
+    // にしか起きないため窓は極めて狭い。同水準のリスク許容として本 PR ではこの制約を踏襲する。
+    if (typeof textMessage.id === 'string' && textMessage.id) {
+      const existingTicketId = await repos.lineMessages.findTicketIdByMessageId(
+        textMessage.id,
+        targetTenantId,
+      );
+      if (existingTicketId) {
+        // 既知のメッセージ ID: 二重起票を避けて既存チケット ID を記録し、次のイベントへ進む
+        ticketIds.push(existingTicketId);
+        console.info(
+          `[POST /api/inbound/line] duplicate message id, skipping re-create: ${textMessage.id}`,
+        );
+        continue;
+      }
+    }
+
     // メンバー紐付け: テキストが発行済みワンタイムコードなら、起票せず lineUserId をメンバーへ紐付ける。
     // (lineUserId が取得できないイベントは紐付けようがないので、この処理を飛ばして通常起票へ進む)
     if (lineUserId !== '不明') {
@@ -309,7 +331,11 @@ export async function POST(req: Request) {
           );
           continue;
         }
-        // invalid (コードの形だが有効な発行行が無い) は通常の問い合わせとして下の起票へ進む
+        // invalid (コードの形だが有効な発行行が無い) は通常の問い合わせとして下の起票へ進む。
+        // 既知の制約: この分岐は起票を伴わないため、上のメッセージ ID 冪等化 (register) の対象外。
+        // 連携成功直後に応答が遅延して LINE が同一メッセージを再送すると、2 回目はコードが
+        // 消費済みで invalid になり、コード文字列を本文とする問い合わせが起票され得る
+        // (Webhook 応答の高速化で再送自体を減らすのが現実的な対策。将来課題)
       }
     }
 
@@ -339,8 +365,9 @@ export async function POST(req: Request) {
 
     // 新規チケットを起票する (Web フォーム・メール取り込みと同じ PORT 経由)。
     // 1 件の起票失敗で全体を 500 にすると LINE がバッチ全体を再送し、既に起票済みのチケットが
-    // 重複する (このルートはまだメッセージ ID による冪等化を持たない)。そのため起票は個別に
-    // try/catch で囲み、失敗は文脈付きでログに残して次のイベントへ進み、最後は必ず 200 を返す。
+    // 重複する。そのため起票は個別に try/catch で囲み、失敗は文脈付きでログに残して次のイベントへ
+    // 進み、最後は必ず 200 を返す (再送そのものはメッセージ ID の冪等化 [上の findTicketIdByMessageId]
+    // が二重起票を防ぐ)。
     try {
       const ticket = await repos.tickets.create({
         title, // LINE メッセージから生成したタイトル
@@ -354,6 +381,27 @@ export async function POST(req: Request) {
       });
       // 起票したチケット ID を記録する
       ticketIds.push(ticket.id);
+      // メッセージ ID → チケット の対応を記録する (次にこのメッセージが再送されたときの冪等化用)。
+      // id が無い場合は上の判定で既にスキップされているためここでは常に文字列のはずだが、
+      // 型ガードとして再度確認してから登録する (欠落時は将来課題どおり再送保護なしで進む)。
+      // チケット起票は既に確定しているため、この登録の失敗で起票全体を失敗扱い (外側の catch) に
+      // しない: 外側の catch に落ちると後段の通知処理までスキップされ、ログも「起票失敗」に
+      // 誤帰属してしまう (§9 fail-safe)。失敗時は次回再送時の冪等化が効かなくなるだけなのでログのみ残す。
+      if (typeof textMessage.id === 'string' && textMessage.id) {
+        try {
+          await repos.lineMessages.register({
+            lineMessageId: textMessage.id,
+            ticketId: ticket.id,
+            tenantId: targetTenantId,
+          });
+        } catch (registerErr) {
+          console.warn(
+            '[POST /api/inbound/line] failed to register message id for idempotency',
+            ticket.id,
+            registerErr,
+          );
+        }
+      }
       // 起票成功後に担当者全員へ「新しい問い合わせが届きました」通知を送る (ベストエフォート)。
       // 失敗してもチケット起票自体は確定済みのため、ログを残して次のイベントへ進む (§9 fail-safe)。
       try {
@@ -415,6 +463,7 @@ export async function POST(req: Request) {
   }
 
   // LINE サーバーはレスポンスを所定時間内に受信しないと再送するため、必ず 200 を返す。
-  // 冪等化 (LINE メッセージ ID による重複排除) はメール取り込みの Message-ID 方式に倣った将来課題。
+  // 冪等化 (メッセージ ID による重複排除) は上の findTicketIdByMessageId / register で、
+  // 起票を伴う通常メッセージについて実施済み (連携コード分岐の既知の制約は上のコメント参照)。
   return NextResponse.json({ ticketIds }, { status: 200 });
 }

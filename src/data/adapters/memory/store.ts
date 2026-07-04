@@ -32,6 +32,15 @@ export interface EmailThreadRefRow {
   createdAt: Date; // 記録日時 (新しい紐付けを優先するため)
 }
 
+// メモリ内で保持する LINE メッセージ対応表の 1 行 (LINE メッセージ ID → ticket / Phase 2 冪等化)
+export interface LineMessageRefRow {
+  id: string; // 行 ID
+  lineMessageId: string; // LINE メッセージ ID (Webhook イベントの message.id)
+  ticketId: string; // 紐づくチケット ID
+  tenantId: string; // 所属テナント ID (突き合わせスコープのキー)
+  createdAt: Date; // 記録日時
+}
+
 // テスト用アダプタが使うインメモリストア。
 // `idSeq` カウンタはストアごとに独立しているので、テストコンテキスト間で状態が混ざらず
 // 連番 ID も安定して再現できる。
@@ -49,6 +58,7 @@ export interface Store {
   invitations: Map<string, Invitation>; // 招待リンクトークン (メンバー招待)
   attachments: Map<string, Attachment>; // 添付ファイルのメタ情報 (画像)
   emailThreadRefs: Map<string, EmailThreadRefRow>; // メール Message-ID → チケット 対応表 (Phase 2)
+  lineMessageRefs: Map<string, LineMessageRefRow>; // LINE メッセージ ID → チケット 対応表 (Phase 2 冪等化)
   locations: Map<string, Location>; // Phase 4 多拠点: テナント内の店舗・拠点
   ssoConfigs: Map<string, TenantSsoConfig>; // Phase 4 Enterprise: テナント単位の SAML SSO 設定
   idSeq: { value: number }; // 連番生成用のカウンタ (オブジェクトに包んで参照共有)
@@ -70,6 +80,7 @@ export function createEmptyStore(): Store {
     invitations: new Map(),
     attachments: new Map(),
     emailThreadRefs: new Map(),
+    lineMessageRefs: new Map(),
     locations: new Map(), // Phase 4 多拠点: テナント内の店舗・拠点
     ssoConfigs: new Map(), // Phase 4 Enterprise: SAML SSO 設定
     idSeq: { value: 0 },
@@ -92,6 +103,7 @@ export function cloneStore(src: Store): Store {
     invitations: new Map(src.invitations),
     attachments: new Map(src.attachments),
     emailThreadRefs: new Map(src.emailThreadRefs),
+    lineMessageRefs: new Map(src.lineMessageRefs),
     locations: new Map(src.locations), // Phase 4 多拠点
     ssoConfigs: new Map(src.ssoConfigs), // Phase 4 Enterprise: SAML SSO 設定
     idSeq: { value: src.idSeq.value },
@@ -113,6 +125,7 @@ export function overwriteStore(dst: Store, src: Store): void {
   dst.invitations = new Map(src.invitations);
   dst.attachments = new Map(src.attachments);
   dst.emailThreadRefs = new Map(src.emailThreadRefs);
+  dst.lineMessageRefs = new Map(src.lineMessageRefs);
   dst.locations = new Map(src.locations); // Phase 4 多拠点
   dst.ssoConfigs = new Map(src.ssoConfigs); // Phase 4 Enterprise: SAML SSO 設定
   // 連番も元に戻す
