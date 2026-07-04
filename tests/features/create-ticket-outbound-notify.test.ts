@@ -27,6 +27,18 @@ let uow: UnitOfWork;
 // fetch のモック関数 (Slack Adapter が呼ぶ)
 let fetchMock: ReturnType<typeof vi.fn>;
 
+// src/lib/webhook-fetch.ts は SSRF 対策の DNS 検証用 Dispatcher (Agent) を使うため
+// undici の fetch を直接 import している。vi.stubGlobal('fetch', ...) だけでは差し替わらない
+// ため、undici の fetch を globalThis.fetch (下の beforeEach で差し替える) へ委譲するモックにする
+vi.mock('undici', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('undici')>();
+  return {
+    ...actual,
+    fetch: ((...args: Parameters<typeof globalThis.fetch>) =>
+      globalThis.fetch(...args)) as unknown as typeof actual.fetch,
+  };
+});
+
 // @/data モジュールを差し替え (getter で参照することで beforeEach の上書きを反映)
 vi.mock('@/data', () => ({
   get repos() {
@@ -94,7 +106,9 @@ beforeEach(() => {
   // 動的 import の結果をリセット (mock 設定を反映させるため)
   vi.resetModules();
   // fetch は常にモックし、成功レスポンスを返す (Slack Adapter が呼ぶ)
-  fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200, text: () => Promise.resolve('ok') });
+  fetchMock = vi
+    .fn()
+    .mockResolvedValue({ ok: true, status: 200, text: () => Promise.resolve('ok') });
   vi.stubGlobal('fetch', fetchMock);
 });
 
@@ -108,7 +122,11 @@ describe('POST /api/tickets (外部通知)', () => {
     const { POST } = await import('@/app/api/tickets/route');
 
     const res = await POST(
-      buildJsonRequest({ title: '複合機が印刷できない', body: '朝から紙詰まりが続く', priority: 'Medium' }),
+      buildJsonRequest({
+        title: '複合機が印刷できない',
+        body: '朝から紙詰まりが続く',
+        priority: 'Medium',
+      }),
     );
 
     // チケット作成自体は成功する
@@ -128,7 +146,11 @@ describe('POST /api/tickets (外部通知)', () => {
     const { POST } = await import('@/app/api/tickets/route');
 
     const res = await POST(
-      buildJsonRequest({ title: 'PC が起動しない', body: '電源ボタンを押しても反応なし', priority: 'High' }),
+      buildJsonRequest({
+        title: 'PC が起動しない',
+        body: '電源ボタンを押しても反応なし',
+        priority: 'High',
+      }),
     );
 
     expect(res.status).toBe(201);
@@ -143,7 +165,11 @@ describe('POST /api/tickets (外部通知)', () => {
     const { POST } = await import('@/app/api/tickets/route');
 
     const res = await POST(
-      buildJsonRequest({ title: 'ネットワークに繋がらない', body: 'Wi-Fi が切れる', priority: 'Low' }),
+      buildJsonRequest({
+        title: 'ネットワークに繋がらない',
+        body: 'Wi-Fi が切れる',
+        priority: 'Low',
+      }),
     );
 
     // Slack 送信が失敗してもチケット作成は 201 で成功する (ベストエフォート)

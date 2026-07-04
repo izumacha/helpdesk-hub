@@ -36,6 +36,18 @@ let storage: MemoryStoragePort;
 // セッションをテストごとに差し替えるためのモック対象
 let mockSession: Session | null;
 
+// src/lib/webhook-fetch.ts は SSRF 対策の DNS 検証用 Dispatcher (Agent) を使うため
+// undici の fetch を直接 import している。vi.stubGlobal('fetch', ...) だけでは差し替わらない
+// ため、undici の fetch を globalThis.fetch (呼び出し側で差し替える) へ委譲するモックにする
+vi.mock('undici', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('undici')>();
+  return {
+    ...actual,
+    fetch: ((...args: Parameters<typeof globalThis.fetch>) =>
+      globalThis.fetch(...args)) as unknown as typeof actual.fetch,
+  };
+});
+
 // @/data モジュールを差し替え
 vi.mock('@/data', () => ({
   get repos() {

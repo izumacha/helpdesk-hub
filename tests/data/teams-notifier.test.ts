@@ -7,6 +7,18 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 // テスト対象: Teams 通知 Adapter のファクトリ
 import { createTeamsNotifier } from '@/data/adapters/teams/teams-notifier';
 
+// src/lib/webhook-fetch.ts は SSRF 対策の DNS 検証用 Dispatcher (Agent) を使うため
+// undici の fetch を直接 import している。vi.stubGlobal('fetch', ...) だけでは差し替わらない
+// ため、undici の fetch を globalThis.fetch (下の beforeEach で差し替える) へ委譲するモックにする
+vi.mock('undici', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('undici')>();
+  return {
+    ...actual,
+    fetch: ((...args: Parameters<typeof globalThis.fetch>) =>
+      globalThis.fetch(...args)) as unknown as typeof actual.fetch,
+  };
+});
+
 // モックする Webhook URL (実際には送信されない)
 const WEBHOOK_URL = 'https://example.webhook.office.com/webhookb2/abc';
 
@@ -88,7 +100,9 @@ describe('createTeamsNotifier', () => {
     fetchMock.mockResolvedValue(mockResponse(false, 400, 'Bad Request'));
     const notifier = createTeamsNotifier(WEBHOOK_URL);
     // 送信が reject されること
-    await expect(notifier.send({ subject: 'x', body: 'y' })).rejects.toThrow(/Teams Webhook 送信失敗/);
+    await expect(notifier.send({ subject: 'x', body: 'y' })).rejects.toThrow(
+      /Teams Webhook 送信失敗/,
+    );
   });
 
   // SSRF 防御: リダイレクト応答 (opaqueredirect) は追従せず例外を投げる

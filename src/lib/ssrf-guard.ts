@@ -3,6 +3,13 @@
 // 内部ネットワーク・ループバック・クラウドメタデータへ誤って送信しないよう検証する。
 // CLAUDE.md §9「サーバー側の外向きリクエストを検証する（SSRF 対策）」準拠。
 
+// DNS 解決を行い、接続直前に解決済み IP を検証する Dispatcher を作るために使う
+import dns from 'node:dns';
+// dns.lookup のオプション/コールバック型 (net.LookupFunction と同じ形に合わせるため)
+import type { LookupAddress, LookupOptions } from 'node:dns';
+// undici の Agent (Dispatcher) — Node 標準 fetch に接続先解決ロジックを差し込むために使う
+import { Agent } from 'undici';
+
 // プライベート / ループバック / リンクローカル / CGNAT のホスト名を判定する関数。
 // URL をパースした後の hostname 文字列 (IPv6 は "[...]" 括弧付き) を受け取る。
 // DNS 名には対応していない (DNS リバインディングは別レイヤで対処)。
@@ -71,3 +78,57 @@ export function isUnsafeUrl(rawUrl: string): boolean {
   // プライベートホストへのリクエストは拒否する
   return isPrivateHost(parsed.hostname);
 }
+
+// SSRF 対策済みの undici Dispatcher (Agent)。
+//
+// なぜこれが必要か: isUnsafeUrl によるホスト名文字列の検証は「保存時」と「送信直前」に
+// 行っているが、どちらも「検証した時点でそのホスト名が指す IP」までは見ていない。
+// 攻撃者 (悪意あるテナント管理者) が一度パブリック IP に解決されるドメインを Webhook URL
+// として登録して両チェックを通過させたあと、TTL の短い DNS レコードを内部 IP
+// (169.254.169.254 のクラウドメタデータ等) へ差し替える「DNS リバインディング」を行うと、
+// 実際に fetch() が接続する IP はチェック時とは別物になり得る (チェックと接続の間の
+// TOCTOU: Time-Of-Check-Time-Of-Use の空白)。
+//
+// この Dispatcher は実際に TCP 接続する直前、DNS で解決した「その IP」を検証すること
+// で、チェックと接続を同一タイミングにし、上記の空白を無くす。
+//
+// Agent のコンストラクタに直接クロージャを書かずここで名前付き関数として切り出しているのは、
+// ユニットテストから (実際に TCP 接続せず) dns.lookup をモックして直接呼び出せるようにするため。
+export const ssrfSafeLookup = (
+  hostname: string,
+  options: LookupOptions,
+  callback: (
+    err: NodeJS.ErrnoException | null,
+    address: string | LookupAddress[],
+    family?: number,
+  ) => void,
+): void => {
+  // 実際の名前解決は Node 標準の dns.lookup に委譲する。呼び出し元 (undici) が
+  // 何を指定してきても、複数解決先をまとめて検証したいため常に all: true で解決する
+  dns.lookup(hostname, { family: options.family, all: true }, (err, addresses) => {
+    if (err) {
+      // DNS解決自体が失敗した場合はそのままエラーとして伝播する
+      callback(err, []);
+      return;
+    }
+    // 解決された IP のうち 1 つでも内部/ループバック/リンクローカルなら、
+    // DNS ラウンドロビンや rebind 経由の迂回を防ぐため一括で接続を拒否する (fail-closed)
+    const unsafe = addresses.find((entry) => isPrivateHost(entry.address));
+    if (unsafe) {
+      callback(
+        new Error(`SSRFガード: 解決先アドレス ${unsafe.address} への接続は許可されません`),
+        [],
+      );
+      return;
+    }
+    // 検証済みなので、実際に接続する IP としてそのまま返す
+    callback(null, addresses);
+  });
+};
+
+// SSRF 対策済みの undici Dispatcher (Agent)。
+// モジュール読み込み時に一度だけ生成し、コネクションプールとして使い回す
+// (リクエストごとに new Agent() すると毎回別プールになり非効率なため)。
+export const ssrfSafeDispatcher = new Agent({
+  connect: { lookup: ssrfSafeLookup },
+});

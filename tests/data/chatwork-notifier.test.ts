@@ -7,6 +7,18 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 // テスト対象: Chatwork 通知 Adapter のファクトリ
 import { createChatworkNotifier } from '@/data/adapters/chatwork/chatwork-notifier';
 
+// src/lib/webhook-fetch.ts は SSRF 対策の DNS 検証用 Dispatcher (Agent) を使うため
+// undici の fetch を直接 import している。vi.stubGlobal('fetch', ...) だけでは差し替わらない
+// ため、undici の fetch を globalThis.fetch (下の beforeEach で差し替える) へ委譲するモックにする
+vi.mock('undici', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('undici')>();
+  return {
+    ...actual,
+    fetch: ((...args: Parameters<typeof globalThis.fetch>) =>
+      globalThis.fetch(...args)) as unknown as typeof actual.fetch,
+  };
+});
+
 // テスト用の API トークンとルーム ID
 const API_TOKEN = 'test-token-123';
 const ROOM_ID = '12345678';
@@ -78,6 +90,8 @@ describe('createChatworkNotifier', () => {
   it('HTTP エラー時は例外を投げる', async () => {
     fetchMock.mockResolvedValue(mockResponse(false, 401, 'Unauthorized'));
     const notifier = createChatworkNotifier(API_TOKEN, ROOM_ID);
-    await expect(notifier.send({ subject: 'x', body: 'y' })).rejects.toThrow(/Chatwork API 送信失敗/);
+    await expect(notifier.send({ subject: 'x', body: 'y' })).rejects.toThrow(
+      /Chatwork API 送信失敗/,
+    );
   });
 });

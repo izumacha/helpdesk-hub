@@ -7,6 +7,18 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 // テスト対象: Webhook POST 共通ユーティリティ
 import { postWebhook } from '@/lib/webhook-fetch';
 
+// webhook-fetch.ts は SSRF 対策の DNS 検証用 Dispatcher (Agent) を使うため undici の fetch を
+// 直接 import している。vi.stubGlobal('fetch', ...) だけでは差し替わらないため、undici の
+// fetch を globalThis.fetch (下の beforeEach で差し替える) へ委譲するモックにする
+vi.mock('undici', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('undici')>();
+  return {
+    ...actual,
+    fetch: ((...args: Parameters<typeof globalThis.fetch>) =>
+      globalThis.fetch(...args)) as unknown as typeof actual.fetch,
+  };
+});
+
 // fetch のモック関数 (各テストで差し替える)
 let fetchMock: ReturnType<typeof vi.fn>;
 

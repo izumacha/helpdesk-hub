@@ -7,6 +7,18 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 // テスト対象: Slack 通知 Adapter のファクトリ
 import { createSlackNotifier } from '@/data/adapters/slack/slack-notifier';
 
+// src/lib/webhook-fetch.ts は SSRF 対策の DNS 検証用 Dispatcher (Agent) を使うため
+// undici の fetch を直接 import している。vi.stubGlobal('fetch', ...) だけでは差し替わらない
+// ため、undici の fetch を globalThis.fetch (下の beforeEach で差し替える) へ委譲するモックにする
+vi.mock('undici', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('undici')>();
+  return {
+    ...actual,
+    fetch: ((...args: Parameters<typeof globalThis.fetch>) =>
+      globalThis.fetch(...args)) as unknown as typeof actual.fetch,
+  };
+});
+
 // モックする Webhook URL (実際には送信されない)
 const WEBHOOK_URL = 'https://hooks.slack.com/services/T000/B000/xxx';
 
@@ -73,14 +85,18 @@ describe('createSlackNotifier', () => {
   it('HTTP エラー時は例外を投げる', async () => {
     fetchMock.mockResolvedValue(mockResponse(false, 500, 'Server Error'));
     const notifier = createSlackNotifier(WEBHOOK_URL);
-    await expect(notifier.send({ subject: 'x', body: 'y' })).rejects.toThrow(/Slack Webhook 送信失敗/);
+    await expect(notifier.send({ subject: 'x', body: 'y' })).rejects.toThrow(
+      /Slack Webhook 送信失敗/,
+    );
   });
 
   // 異常系: HTTP 200 でもアプリレベルエラー (本文が "ok" 以外) なら例外を投げる
   it('本文が ok 以外なら例外を投げる', async () => {
     fetchMock.mockResolvedValue(mockResponse(true, 200, 'invalid_payload'));
     const notifier = createSlackNotifier(WEBHOOK_URL);
-    await expect(notifier.send({ subject: 'x', body: 'y' })).rejects.toThrow(/Slack Webhook 送信失敗/);
+    await expect(notifier.send({ subject: 'x', body: 'y' })).rejects.toThrow(
+      /Slack Webhook 送信失敗/,
+    );
   });
 
   // SSRF 防御: リダイレクト応答 (opaqueredirect) は追従せず例外を投げる
