@@ -106,12 +106,15 @@ interface LineWebhookBody {
   events?: LineMessageEvent[]; // 1 リクエストに複数イベントが含まれることがある
 }
 
+// repos.users.listAgents() が返す配列の要素 1 件分の型 (agents / proxyCreator で共有する)
+type LineAgent = Awaited<ReturnType<typeof repos.users.listAgents>>[number];
+
 // 1 リクエスト内の全イベントで共通して使う文脈。POST 内で 1 度だけ解決した値を
 // processLineEvent に渡し、イベントごとに DB を引き直さずに済ませる。
 interface LineEventContext {
   targetTenantId: string; // 取り込み先テナント ID
-  agents: Awaited<ReturnType<typeof repos.users.listAgents>>; // テナント内の agent/admin 一覧 (通知先解決に使う)
-  proxyCreator: LineEventContext['agents'][number]; // 未紐付けユーザー向けの代理起票者 (agents の先頭)
+  agents: LineAgent[]; // テナント内の agent/admin 一覧 (通知先解決に使う)
+  proxyCreator: LineAgent; // 未紐付けユーザー向けの代理起票者 (agents の先頭)
   now: Date; // 起票時刻 (SLA 期限計算の基準)
   initialStatus: ReturnType<typeof initialStatusForMode>; // 初期ステータス (mode 依存)
   resolutionDueAt: ReturnType<typeof calculateResolutionDueAt>; // 優先度 Medium ベースの解決期限
@@ -279,12 +282,12 @@ export async function POST(req: Request) {
   // 1 リクエストに含まれる複数イベントを順に処理してチケットを起票する。
   // 1 件ずつの詳細処理は processLineEvent に委譲し、ここでは結果 (チケット ID) の収集に専念する。
   const eventContext: LineEventContext = {
-    targetTenantId,
-    agents,
-    proxyCreator,
-    now,
-    initialStatus,
-    resolutionDueAt,
+    targetTenantId, // 取り込み先テナント ID
+    agents, // テナント内の agent/admin 一覧 (通知先解決に使う)
+    proxyCreator, // 未紐付けユーザー向けの代理起票者
+    now, // 起票時刻 (SLA 期限計算の基準)
+    initialStatus, // 初期ステータス (mode 依存)
+    resolutionDueAt, // 優先度 Medium ベースの解決期限
   };
   const ticketIds: string[] = [];
   for (const event of body.events) {

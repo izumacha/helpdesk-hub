@@ -29,8 +29,8 @@ export const createTicketSchema = z.object({
   body: z
     .string()
     .trim() // タイトルと同様、空白だけの本文を弾く
-    .min(1, '内容は必須です')
-    .max(10_000, '内容は10000文字以内で入力してください'),
+    .min(1, '内容は必須です') // 空文字を許さない
+    .max(10_000, '内容は10000文字以内で入力してください'), // 上限制約
   // カテゴリ ID: 任意。空文字なら undefined に変換 (未選択扱い)
   categoryId: z
     .string()

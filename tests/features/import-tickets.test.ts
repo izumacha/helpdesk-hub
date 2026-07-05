@@ -326,6 +326,17 @@ describe('importTickets', () => {
       expect(result.errors[0]?.message).toMatch(/件名が空/); // エラーメッセージが「件名が空」を含むことを確認する
     });
 
+    // 引用符付きの空白だけの本文セルは trim され、空文字として保存される (件名と同じ扱い)
+    it('引用符付きの空白だけの本文は trim されて保存される', async () => {
+      const importTickets = await loadAction(); // Action を動的ロードする
+      // 本文セルが引用符付きの空白だけ → trim() で空文字になり保存される (本文は空文字を許容する設計)
+      const csv = `件名,内容\n正常件名,"   "`;
+      const result = await importTickets(csv); // 空白だけの本文を含む CSV でインポートを実行する
+      expect(result.imported).toBe(1); // 本文は空文字許容のため取り込まれることを確認する
+      const ticket = [...store.tickets.values()][0]; // 保存されたチケットを取り出す
+      expect(ticket?.body).toBe(''); // 本文が trim 済みの空文字で保存されていることを確認する
+    });
+
     // 未知の優先度文字列はその行だけエラーになる
     it('無効な優先度はその行だけエラーになる', async () => {
       const importTickets = await loadAction(); // Action を動的ロードする

@@ -106,8 +106,9 @@ function validateImportRow(
     return { ok: false, message: `件名が長すぎます（${TITLE_MAX_LENGTH}文字以内にしてください）` };
   }
 
-  // 本文セルを取り出す (未指定なら空文字)
-  const bodyRaw = bodyIndex !== -1 ? (cells[bodyIndex] ?? '') : '';
+  // 本文セルを取り出す (未指定なら空文字)。前後の空白は除去する
+  // (本文は空文字自体を許容するが、件名と同様に空白だけが残った見た目を避ける)
+  const bodyRaw = (bodyIndex !== -1 ? (cells[bodyIndex] ?? '') : '').trim();
   // 本文が長すぎる場合はエラーとして記録する
   if (bodyRaw.length > BODY_MAX_LENGTH) {
     return { ok: false, message: `内容が長すぎます（${BODY_MAX_LENGTH}文字以内にしてください）` };
