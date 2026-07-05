@@ -35,6 +35,26 @@ describe('createTicketSchema', () => {
     expect(r.success).toBe(false);
   });
 
+  // 空白だけのタイトル/本文は trim 後に空文字となり拒否される (見た目が空白のチケット作成を防ぐ)
+  it('rejects a whitespace-only title', () => {
+    const r = createTicketSchema.safeParse({ ...base, title: '   ' });
+    expect(r.success).toBe(false);
+  });
+  it('rejects a whitespace-only body', () => {
+    const r = createTicketSchema.safeParse({ ...base, body: '   ' });
+    expect(r.success).toBe(false);
+  });
+
+  // 前後の空白は trim され、保存値には含まれない
+  it('trims leading/trailing whitespace from title and body', () => {
+    const r = createTicketSchema.safeParse({ ...base, title: '  タイトル  ', body: '  内容  ' });
+    expect(r.success).toBe(true);
+    if (r.success) {
+      expect(r.data.title).toBe('タイトル');
+      expect(r.data.body).toBe('内容');
+    }
+  });
+
   // dueDate 省略時は undefined に正規化されて通る (Lite フォームで未入力のケース)
   it('accepts input without dueDate', () => {
     const r = createTicketSchema.safeParse(base);
