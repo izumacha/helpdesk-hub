@@ -106,6 +106,20 @@ interface LineWebhookBody {
   events?: LineMessageEvent[]; // 1 リクエストに複数イベントが含まれることがある
 }
 
+// repos.users.listAgents() が返す配列の要素 1 件分の型 (agents / proxyCreator で共有する)
+type LineAgent = Awaited<ReturnType<typeof repos.users.listAgents>>[number];
+
+// 1 リクエスト内の全イベントで共通して使う文脈。POST 内で 1 度だけ解決した値を
+// processLineEvent に渡し、イベントごとに DB を引き直さずに済ませる。
+interface LineEventContext {
+  targetTenantId: string; // 取り込み先テナント ID
+  agents: LineAgent[]; // テナント内の agent/admin 一覧 (通知先解決に使う)
+  proxyCreator: LineAgent; // 未紐付けユーザー向けの代理起票者 (agents の先頭)
+  now: Date; // 起票時刻 (SLA 期限計算の基準)
+  initialStatus: ReturnType<typeof initialStatusForMode>; // 初期ステータス (mode 依存)
+  resolutionDueAt: ReturnType<typeof calculateResolutionDueAt>; // 優先度 Medium ベースの解決期限
+}
+
 // LINE Webhook の署名を検証する関数 (LINE Developers ドキュメント準拠)
 // X-Line-Signature = Base64(HMAC-SHA256(requestBody, channelSecret))
 // タイミング攻撃対策として定数時間比較を使う
@@ -265,200 +279,21 @@ export async function POST(req: Request) {
   // メッセージには期限指定が無いため優先度 Medium ベースで解決期限を算出する
   const resolutionDueAt = calculateResolutionDueAt('Medium', now);
 
-  // 1 リクエストに含まれる複数イベントを順に処理してチケットを起票する
+  // 1 リクエストに含まれる複数イベントを順に処理してチケットを起票する。
+  // 1 件ずつの詳細処理は processLineEvent に委譲し、ここでは結果 (チケット ID) の収集に専念する。
+  const eventContext: LineEventContext = {
+    targetTenantId, // 取り込み先テナント ID
+    agents, // テナント内の agent/admin 一覧 (通知先解決に使う)
+    proxyCreator, // 未紐付けユーザー向けの代理起票者
+    now, // 起票時刻 (SLA 期限計算の基準)
+    initialStatus, // 初期ステータス (mode 依存)
+    resolutionDueAt, // 優先度 Medium ベースの解決期限
+  };
   const ticketIds: string[] = [];
   for (const event of body.events) {
-    // 配列要素が null / 非オブジェクトでも落ちないように、まず event の存在とメッセージ種別を確認する
-    if (event?.type !== 'message') continue;
-    // メッセージ本体を取り出す (欠落していてもよいよう optional 扱い)
-    const message = event.message;
-    // テキストメッセージ以外 (スタンプ / 画像 / 動画 等) や message 欠落イベントはスキップする
-    if (message?.type !== 'text') continue;
-
-    // テキストメッセージとして型を確定させる (type==='text' を確認済み)
-    const textMessage = message as LineTextMessage;
-    // LINE ユーザー ID を取得する (source / userId が無い場合は '不明' とする)。
-    // LINE の正規形式は 'U' + 32 桁 16 進数。署名検証済みでも形式外の値をそのままチケット本文に
-    // 埋め込むと将来の出力経路 (HTML メール等) でインジェクションになりうるため §9 に従い検証する
-    const rawUserId = event.source?.userId ?? '';
-    // 形式が一致する場合のみ採用し、それ以外は '不明' に置き換える
-    const lineUserId = LINE_USER_ID_PATTERN.test(rawUserId) ? rawUserId : '不明';
-    // text が文字列でない (欠落・型不正) イベントは起票できないためスキップする
-    if (typeof textMessage.text !== 'string') continue;
-
-    // 空白のみのメッセージはタイトルが空文字列になるため起票対象外としてスキップする
-    // (LINE は空文字メッセージを送信できる場合があり、Zod min(1) を持たないこのパスでは別途ガードが必要)
-    const trimmedText = textMessage.text.trim();
-    if (!trimmedText) continue;
-
-    // 冪等化キー (このメッセージが再送かどうかの突き合わせに使う)。
-    // id が欠落/非文字列 (想定外の応答) のときは突き合わせできないため null にする
-    const messageId = typeof textMessage.id === 'string' && textMessage.id ? textMessage.id : null;
-
-    // 冪等化の早期チェック (fast path): このメッセージ ID を既に取り込み済みなら、
-    // 連携コード判定や起票者解決などの以降の処理を行わずに次のイベントへ進む。
-    // LINE は Webhook 応答が遅延/未受信だと同一メッセージを 5 分以内に再送する (at-least-once)。
-    // これは事前チェックに過ぎず、実際の二重起票防止は createTicketIdempotent 内の
-    // Serializable トランザクションが保証する (このチェック単体では TOCTOU の窓が残るため)。
-    if (messageId) {
-      const existingTicketId = await repos.lineMessages.findTicketIdByMessageId(
-        messageId,
-        targetTenantId,
-      );
-      if (existingTicketId) {
-        // 既知のメッセージ ID: 二重起票を避けて既存チケット ID を記録し、次のイベントへ進む
-        ticketIds.push(existingTicketId);
-        console.info(
-          `[POST /api/inbound/line] duplicate message id, skipping re-create: ${messageId}`,
-        );
-        continue;
-      }
-    }
-
-    // メンバー紐付け: テキストが発行済みワンタイムコードなら、起票せず lineUserId をメンバーへ紐付ける。
-    // (lineUserId が取得できないイベントは紐付けようがないので、この処理を飛ばして通常起票へ進む)
-    if (lineUserId !== '不明') {
-      // 受信テキストを正規化 (ハイフン・空白除去 + 大文字化) してコードの形か軽く判定する
-      const normalizedCode = normalizeLineLinkCode(trimmedText);
-      if (looksLikeLineLinkCode(normalizedCode)) {
-        // 形が一致したらハッシュ化し、有効な発行行があれば原子的に紐付ける
-        const codeHash = await hashLineLinkCode(normalizedCode);
-        const link = await repos.users.linkLineUserByCode({
-          codeHash,
-          tenantId: targetTenantId,
-          lineUserId,
-          now,
-        });
-        // 連携成功 / 競合 (コードとして処理済み) のときは、このメッセージを問い合わせにしない
-        if (link.status === 'linked' || link.status === 'conflict') {
-          // 連携結果をログに残す (利用者は Web 設定画面の「連携済み」表示で連携状態を確認する)
-          console.info(
-            `[POST /api/inbound/line] line link ${link.status} for tenant`,
-            targetTenantId,
-          );
-          continue;
-        }
-        // invalid (コードの形だが有効な発行行が無い) は通常の問い合わせとして下の起票へ進む。
-        // 既知の制約: この分岐は起票を伴わないため、上のメッセージ ID 冪等化 (register) の対象外。
-        // 連携成功直後に応答が遅延して LINE が同一メッセージを再送すると、2 回目はコードが
-        // 消費済みで invalid になり、コード文字列を本文とする問い合わせが起票され得る
-        // (Webhook 応答の高速化で再送自体を減らすのが現実的な対策。将来課題)
-      }
-    }
-
-    // 起票者を決める: この LINE ユーザーが紐付け済みなら本人を起票者にして自己解決 UI を開通させる。
-    // 未紐付け (または lineUserId 不明) は従来どおりプロキシ担当者を起票者にする (β フォールバック)。
-    const linkedMember =
-      lineUserId !== '不明' ? await repos.users.findByLineUserId(targetTenantId, lineUserId) : null;
-    const creatorId = linkedMember ? linkedMember.id : proxyCreator.id;
-
-    // チケットタイトルはメッセージテキストの先頭 MAX_TITLE_LENGTH 文字にする
-    const title =
-      trimmedText.length > MAX_TITLE_LENGTH
-        ? `${trimmedText.slice(0, MAX_TITLE_LENGTH)}…`
-        : trimmedText;
-
-    // メッセージ本文をサーバー側でも上限に丸める (LINE の送信上限 5000 文字よりも大きい 10000 文字で守る)
-    // プラットフォーム上限だけに頼らずサーバー側でも明示的に制限して DB への過大な書き込みを防ぐ。
-    // trimmedText を使うことで先頭・末尾の空白を除いてから切り詰める (textMessage.text のままだと
-    // 空白だけのメッセージが上の空白チェックをすり抜けた場合にチケット本文が空白だらけになる)。
-    const safeText =
-      trimmedText.length > MAX_BODY_LENGTH
-        ? `${trimmedText.slice(0, MAX_BODY_LENGTH)}…`
-        : trimmedText;
-
-    // チケット本文: LINE ユーザー ID と全メッセージテキストを含める (担当者が手動連絡できるよう)
-    const ticketBody = `[LINE 経由の問い合わせ]\nLINE ユーザー ID: ${lineUserId}\n\n${safeText}`;
-
-    // 新規チケットを起票する (Web フォーム・メール取り込みと同じ PORT 経由)。
-    // 1 件の起票失敗で全体を 500 にすると LINE がバッチ全体を再送し、既に起票済みのチケットが
-    // 重複する。そのため起票は個別に try/catch で囲み、失敗は文脈付きでログに残して次のイベントへ
-    // 進み、最後は必ず 200 を返す (再送そのものは createTicketIdempotent の Serializable
-    // トランザクションが二重起票を防ぐ)。
-    try {
-      // 起票 (+ メッセージ ID 登録) を 1 トランザクションで原子的に行う。
-      // alreadyExisted が true のときは、書き込み競合で中断された後の再確認で「他リクエストが
-      // 既に起票済み」と判明したケース (通知は既にそちらのリクエストで送られているはず)
-      const { id: ticketId, alreadyExisted } = await createTicketIdempotent(
-        lineMessageIdempotencyOps,
-        messageId,
-        targetTenantId,
-        {
-          title, // LINE メッセージから生成したタイトル
-          body: ticketBody, // LINE ユーザー ID + 全文
-          priority: 'Medium', // LINE 取り込みは優先度 Medium 固定 (他チャネルと揃える)
-          categoryId: null, // カテゴリは未分類 (担当者が後で設定)
-          creatorId, // 紐付け済みなら本人、未紐付けならプロキシ担当者 (上で解決済み)
-          tenantId: targetTenantId, // 取り込み先テナント
-          status: initialStatus, // Lite は 'Open'、Pro は DB 既定 'New'
-          resolutionDueAt, // 優先度 Medium ベースの解決期限
-        },
-      );
-      // 起票したチケット ID を記録する
-      ticketIds.push(ticketId);
-      if (alreadyExisted) {
-        // 既に他リクエストが起票・通知済みのため、ここでは何もせず次のイベントへ進む
-        console.info(`[POST /api/inbound/line] resolved write conflict as duplicate: ${messageId}`);
-        continue;
-      }
-      // 起票成功後に担当者全員へ「新しい問い合わせが届きました」通知を送る (ベストエフォート)。
-      // 失敗してもチケット起票自体は確定済みのため、ログを残して次のイベントへ進む (§9 fail-safe)。
-      try {
-        // 通知対象: 起票者がプロキシ担当者 (未紐付け) の場合は全担当者、本人起票なら起票者以外の担当者
-        const notifyTargets = linkedMember
-          ? agents.filter((a) => a.id !== creatorId) // 本人起票: 他担当者のみ
-          : agents; // プロキシ起票: 全担当者に通知
-        if (notifyTargets.length > 0) {
-          // 各担当者へ通知を作成する。allSettled で 1 件失敗しても他を止めない
-          const notifyResults = await Promise.allSettled(
-            notifyTargets.map((a) =>
-              repos.notifications.create({
-                userId: a.id, // 通知受信者: 各担当者
-                type: 'imported', // LINE からの取り込みによる新規起票通知 (inbound チャネルは 'imported' を使う)
-                message: `LINE から新しい問い合わせが届きました：${title}`, // 通知文言
-                ticketId, // 紐付けチケット
-                tenantId: targetTenantId, // テナントスコープ
-              }),
-            ),
-          );
-          // 通知作成に成功した担当者 ID だけを SSE 配信対象にする (失敗分は DB レコードが無いためスキップ)
-          const succeededIds = notifyTargets
-            .filter((_, i) => notifyResults[i]?.status === 'fulfilled')
-            .map((a) => a.id);
-          const failedCount = notifyTargets.length - succeededIds.length;
-          if (failedCount > 0) {
-            // 失敗件数だけログに残す
-            console.warn(
-              `[POST /api/inbound/line] ${failedCount} notification(s) failed to create for ticket`,
-              ticketId,
-            );
-          }
-          // 未読カウントを SSE で即時配信して通知ベルに反映させる (成功分のみ)
-          if (succeededIds.length > 0) {
-            await broadcastUnreadCountToMany(
-              succeededIds, // 通知作成に成功した担当者 ID 一覧
-              targetTenantId, // テナントスコープ
-            ).catch((broadcastErr) => {
-              // SSE 配信失敗はバッジ更新が遅れるだけ。ログのみ残して続行する
-              console.warn(
-                '[POST /api/inbound/line] failed to broadcast unread count',
-                broadcastErr,
-              );
-            });
-          }
-        }
-      } catch (notifyErr) {
-        // 通知失敗はログのみ (チケット起票は完了しているため応答は成功扱いのまま)
-        console.warn(
-          '[POST /api/inbound/line] failed to notify agents for ticket',
-          ticketId,
-          notifyErr,
-        );
-      }
-    } catch (err) {
-      // 起票失敗は握り潰さずログに残す。再送による重複起票を避けるため全体は 200 で受領する
-      console.error('[POST /api/inbound/line] failed to create ticket from event', err);
-    }
+    const ticketId = await processLineEvent(event, eventContext);
+    // null はスタンプ/空メッセージ/連携コード処理/起票失敗など「起票しなかった」ことを意味する
+    if (ticketId) ticketIds.push(ticketId);
   }
 
   // LINE サーバーはレスポンスを所定時間内に受信しないと再送するため、必ず 200 を返す。
@@ -466,4 +301,203 @@ export async function POST(req: Request) {
   // トランザクションで、起票を伴う通常メッセージについて実施済み (連携コード分岐の既知の制約は
   // 上のコメント参照)。
   return NextResponse.json({ ticketIds }, { status: 200 });
+}
+
+// LINE Webhook イベント 1 件を処理する。起票 (または重複判定) できた場合はチケット ID を返し、
+// スタンプ/空メッセージ/連携コード処理/起票失敗など「起票しない」イベントは null を返す。
+// POST から呼び出す前提の内部ヘルパーのため export しない。
+async function processLineEvent(
+  event: LineMessageEvent,
+  ctx: LineEventContext,
+): Promise<string | null> {
+  // 文脈オブジェクトから各値を取り出す (POST 側で 1 度だけ解決済み)
+  const { targetTenantId, agents, proxyCreator, now, initialStatus, resolutionDueAt } = ctx;
+
+  // 配列要素が null / 非オブジェクトでも落ちないように、まず event の存在とメッセージ種別を確認する
+  if (event?.type !== 'message') return null;
+  // メッセージ本体を取り出す (欠落していてもよいよう optional 扱い)
+  const message = event.message;
+  // テキストメッセージ以外 (スタンプ / 画像 / 動画 等) や message 欠落イベントはスキップする
+  if (message?.type !== 'text') return null;
+
+  // テキストメッセージとして型を確定させる (type==='text' を確認済み)
+  const textMessage = message as LineTextMessage;
+  // LINE ユーザー ID を取得する (source / userId が無い場合は '不明' とする)。
+  // LINE の正規形式は 'U' + 32 桁 16 進数。署名検証済みでも形式外の値をそのままチケット本文に
+  // 埋め込むと将来の出力経路 (HTML メール等) でインジェクションになりうるため §9 に従い検証する
+  const rawUserId = event.source?.userId ?? '';
+  // 形式が一致する場合のみ採用し、それ以外は '不明' に置き換える
+  const lineUserId = LINE_USER_ID_PATTERN.test(rawUserId) ? rawUserId : '不明';
+  // text が文字列でない (欠落・型不正) イベントは起票できないためスキップする
+  if (typeof textMessage.text !== 'string') return null;
+
+  // 空白のみのメッセージはタイトルが空文字列になるため起票対象外としてスキップする
+  // (LINE は空文字メッセージを送信できる場合があり、Zod min(1) を持たないこのパスでは別途ガードが必要)
+  const trimmedText = textMessage.text.trim();
+  if (!trimmedText) return null;
+
+  // 冪等化キー (このメッセージが再送かどうかの突き合わせに使う)。
+  // id が欠落/非文字列 (想定外の応答) のときは突き合わせできないため null にする
+  const messageId = typeof textMessage.id === 'string' && textMessage.id ? textMessage.id : null;
+
+  // 冪等化の早期チェック (fast path): このメッセージ ID を既に取り込み済みなら、
+  // 連携コード判定や起票者解決などの以降の処理を行わずに既存チケット ID を返す。
+  // LINE は Webhook 応答が遅延/未受信だと同一メッセージを 5 分以内に再送する (at-least-once)。
+  // これは事前チェックに過ぎず、実際の二重起票防止は createTicketIdempotent 内の
+  // Serializable トランザクションが保証する (このチェック単体では TOCTOU の窓が残るため)。
+  if (messageId) {
+    const existingTicketId = await repos.lineMessages.findTicketIdByMessageId(
+      messageId,
+      targetTenantId,
+    );
+    if (existingTicketId) {
+      // 既知のメッセージ ID: 二重起票を避けて既存チケット ID を返す
+      console.info(
+        `[POST /api/inbound/line] duplicate message id, skipping re-create: ${messageId}`,
+      );
+      return existingTicketId;
+    }
+  }
+
+  // メンバー紐付け: テキストが発行済みワンタイムコードなら、起票せず lineUserId をメンバーへ紐付ける。
+  // (lineUserId が取得できないイベントは紐付けようがないので、この処理を飛ばして通常起票へ進む)
+  if (lineUserId !== '不明') {
+    // 受信テキストを正規化 (ハイフン・空白除去 + 大文字化) してコードの形か軽く判定する
+    const normalizedCode = normalizeLineLinkCode(trimmedText);
+    if (looksLikeLineLinkCode(normalizedCode)) {
+      // 形が一致したらハッシュ化し、有効な発行行があれば原子的に紐付ける
+      const codeHash = await hashLineLinkCode(normalizedCode);
+      const link = await repos.users.linkLineUserByCode({
+        codeHash,
+        tenantId: targetTenantId,
+        lineUserId,
+        now,
+      });
+      // 連携成功 / 競合 (コードとして処理済み) のときは、このメッセージを問い合わせにしない
+      if (link.status === 'linked' || link.status === 'conflict') {
+        // 連携結果をログに残す (利用者は Web 設定画面の「連携済み」表示で連携状態を確認する)
+        console.info(
+          `[POST /api/inbound/line] line link ${link.status} for tenant`,
+          targetTenantId,
+        );
+        return null;
+      }
+      // invalid (コードの形だが有効な発行行が無い) は通常の問い合わせとして下の起票へ進む。
+      // 既知の制約: この分岐は起票を伴わないため、上のメッセージ ID 冪等化 (register) の対象外。
+      // 連携成功直後に応答が遅延して LINE が同一メッセージを再送すると、2 回目はコードが
+      // 消費済みで invalid になり、コード文字列を本文とする問い合わせが起票され得る
+      // (Webhook 応答の高速化で再送自体を減らすのが現実的な対策。将来課題)
+    }
+  }
+
+  // 起票者を決める: この LINE ユーザーが紐付け済みなら本人を起票者にして自己解決 UI を開通させる。
+  // 未紐付け (または lineUserId 不明) は従来どおりプロキシ担当者を起票者にする (β フォールバック)。
+  const linkedMember =
+    lineUserId !== '不明' ? await repos.users.findByLineUserId(targetTenantId, lineUserId) : null;
+  const creatorId = linkedMember ? linkedMember.id : proxyCreator.id;
+
+  // チケットタイトルはメッセージテキストの先頭 MAX_TITLE_LENGTH 文字にする
+  const title =
+    trimmedText.length > MAX_TITLE_LENGTH
+      ? `${trimmedText.slice(0, MAX_TITLE_LENGTH)}…`
+      : trimmedText;
+
+  // メッセージ本文をサーバー側でも上限に丸める (LINE の送信上限 5000 文字よりも大きい 10000 文字で守る)
+  // プラットフォーム上限だけに頼らずサーバー側でも明示的に制限して DB への過大な書き込みを防ぐ。
+  // trimmedText を使うことで先頭・末尾の空白を除いてから切り詰める (textMessage.text のままだと
+  // 空白だけのメッセージが上の空白チェックをすり抜けた場合にチケット本文が空白だらけになる)。
+  const safeText =
+    trimmedText.length > MAX_BODY_LENGTH
+      ? `${trimmedText.slice(0, MAX_BODY_LENGTH)}…`
+      : trimmedText;
+
+  // チケット本文: LINE ユーザー ID と全メッセージテキストを含める (担当者が手動連絡できるよう)
+  const ticketBody = `[LINE 経由の問い合わせ]\nLINE ユーザー ID: ${lineUserId}\n\n${safeText}`;
+
+  // 新規チケットを起票する (Web フォーム・メール取り込みと同じ PORT 経由)。
+  // 1 件の起票失敗で全体を 500 にすると LINE がバッチ全体を再送し、既に起票済みのチケットが
+  // 重複する。そのため起票は try/catch で囲み、失敗は文脈付きでログに残して null を返す
+  // (呼び出し側 POST は必ず 200 を返す。再送そのものは createTicketIdempotent の Serializable
+  // トランザクションが二重起票を防ぐ)。
+  try {
+    // 起票 (+ メッセージ ID 登録) を 1 トランザクションで原子的に行う。
+    // alreadyExisted が true のときは、書き込み競合で中断された後の再確認で「他リクエストが
+    // 既に起票済み」と判明したケース (通知は既にそちらのリクエストで送られているはず)
+    const { id: ticketId, alreadyExisted } = await createTicketIdempotent(
+      lineMessageIdempotencyOps,
+      messageId,
+      targetTenantId,
+      {
+        title, // LINE メッセージから生成したタイトル
+        body: ticketBody, // LINE ユーザー ID + 全文
+        priority: 'Medium', // LINE 取り込みは優先度 Medium 固定 (他チャネルと揃える)
+        categoryId: null, // カテゴリは未分類 (担当者が後で設定)
+        creatorId, // 紐付け済みなら本人、未紐付けならプロキシ担当者 (上で解決済み)
+        tenantId: targetTenantId, // 取り込み先テナント
+        status: initialStatus, // Lite は 'Open'、Pro は DB 既定 'New'
+        resolutionDueAt, // 優先度 Medium ベースの解決期限
+      },
+    );
+    if (alreadyExisted) {
+      // 既に他リクエストが起票・通知済みのため、通知は送らずチケット ID だけ返す
+      console.info(`[POST /api/inbound/line] resolved write conflict as duplicate: ${messageId}`);
+      return ticketId;
+    }
+    // 起票成功後に担当者全員へ「新しい問い合わせが届きました」通知を送る (ベストエフォート)。
+    // 失敗してもチケット起票自体は確定済みのため、ログを残して続行する (§9 fail-safe)。
+    try {
+      // 通知対象: 起票者がプロキシ担当者 (未紐付け) の場合は全担当者、本人起票なら起票者以外の担当者
+      const notifyTargets = linkedMember
+        ? agents.filter((a) => a.id !== creatorId) // 本人起票: 他担当者のみ
+        : agents; // プロキシ起票: 全担当者に通知
+      if (notifyTargets.length > 0) {
+        // 各担当者へ通知を作成する。allSettled で 1 件失敗しても他を止めない
+        const notifyResults = await Promise.allSettled(
+          notifyTargets.map((a) =>
+            repos.notifications.create({
+              userId: a.id, // 通知受信者: 各担当者
+              type: 'imported', // LINE からの取り込みによる新規起票通知 (inbound チャネルは 'imported' を使う)
+              message: `LINE から新しい問い合わせが届きました：${title}`, // 通知文言
+              ticketId, // 紐付けチケット
+              tenantId: targetTenantId, // テナントスコープ
+            }),
+          ),
+        );
+        // 通知作成に成功した担当者 ID だけを SSE 配信対象にする (失敗分は DB レコードが無いためスキップ)
+        const succeededIds = notifyTargets
+          .filter((_, i) => notifyResults[i]?.status === 'fulfilled')
+          .map((a) => a.id);
+        const failedCount = notifyTargets.length - succeededIds.length;
+        if (failedCount > 0) {
+          // 失敗件数だけログに残す
+          console.warn(
+            `[POST /api/inbound/line] ${failedCount} notification(s) failed to create for ticket`,
+            ticketId,
+          );
+        }
+        // 未読カウントを SSE で即時配信して通知ベルに反映させる (成功分のみ)
+        if (succeededIds.length > 0) {
+          await broadcastUnreadCountToMany(
+            succeededIds, // 通知作成に成功した担当者 ID 一覧
+            targetTenantId, // テナントスコープ
+          ).catch((broadcastErr) => {
+            // SSE 配信失敗はバッジ更新が遅れるだけ。ログのみ残して続行する
+            console.warn('[POST /api/inbound/line] failed to broadcast unread count', broadcastErr);
+          });
+        }
+      }
+    } catch (notifyErr) {
+      // 通知失敗はログのみ (チケット起票は完了しているため応答は成功扱いのまま)
+      console.warn(
+        '[POST /api/inbound/line] failed to notify agents for ticket',
+        ticketId,
+        notifyErr,
+      );
+    }
+    return ticketId;
+  } catch (err) {
+    // 起票失敗は握り潰さずログに残す。再送による重複起票を避けるため呼び出し側は 200 で受領する
+    console.error('[POST /api/inbound/line] failed to create ticket from event', err);
+    return null;
+  }
 }

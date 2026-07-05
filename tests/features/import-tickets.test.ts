@@ -249,7 +249,10 @@ describe('importTickets', () => {
     // Free 以外のプランは無制限なので、残枠チェックで取り込みが妨げられない
     it('Pro プランでは月間上限に妨げられず全件取り込まれる', async () => {
       // テナントのプランを Pro に切り替える (Free の 50 件上限は適用されない)
-      store.tenants.set(TENANT, { ...store.tenants.get(TENANT)!, subscriptionPlan: 'pro' as const });
+      store.tenants.set(TENANT, {
+        ...store.tenants.get(TENANT)!,
+        subscriptionPlan: 'pro' as const,
+      });
       const importTickets = await loadAction();
       const csv = `件名\n行1\n行2\n行3`;
       const result = await importTickets(csv);
@@ -308,6 +311,30 @@ describe('importTickets', () => {
       // 件名が空の行がエラーとして記録される
       expect(result.errors).toHaveLength(1); // エラーが 1 件記録されていることを確認する
       expect(result.errors[0]?.message).toMatch(/件名が空/); // エラーメッセージが「件名が空」を含むことを確認する
+    });
+
+    // 空白だけの件名セル (引用符付きセルは前後空白が保持される) も「件名が空」として弾く
+    it('空白だけの件名 (引用符付きセル) はエラーになる', async () => {
+      const importTickets = await loadAction(); // Action を動的ロードする
+      // 引用符付きの空白だけのセルは CSV パーサーが前後空白を保持したまま返すため、
+      // trim() していないとタイトルが空白だけのチケットが作成されてしまう
+      const csv = `件名,内容\n"   ",本文あり`;
+      const result = await importTickets(csv); // 空白だけの件名を含む CSV でインポートを実行する
+      // 取り込みは 0 件でエラーが 1 件記録される
+      expect(result.imported).toBe(0); // 空白だけの件名は取り込まれないことを確認する
+      expect(result.errors).toHaveLength(1); // エラーが 1 件記録されていることを確認する
+      expect(result.errors[0]?.message).toMatch(/件名が空/); // エラーメッセージが「件名が空」を含むことを確認する
+    });
+
+    // 引用符付きの空白だけの本文セルは trim され、空文字として保存される (件名と同じ扱い)
+    it('引用符付きの空白だけの本文は trim されて保存される', async () => {
+      const importTickets = await loadAction(); // Action を動的ロードする
+      // 本文セルが引用符付きの空白だけ → trim() で空文字になり保存される (本文は空文字を許容する設計)
+      const csv = `件名,内容\n正常件名,"   "`;
+      const result = await importTickets(csv); // 空白だけの本文を含む CSV でインポートを実行する
+      expect(result.imported).toBe(1); // 本文は空文字許容のため取り込まれることを確認する
+      const ticket = [...store.tickets.values()][0]; // 保存されたチケットを取り出す
+      expect(ticket?.body).toBe(''); // 本文が trim 済みの空文字で保存されていることを確認する
     });
 
     // 未知の優先度文字列はその行だけエラーになる

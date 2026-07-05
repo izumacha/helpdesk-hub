@@ -95,8 +95,8 @@ function validateImportRow(
   // 引数オブジェクトから各列インデックスを取り出す
   const { titleIndex, bodyIndex, dueDateIndex, priorityIndex } = indices;
 
-  // 件名セルを取り出す
-  const titleRaw = cells[titleIndex] ?? '';
+  // 件名セルを取り出す。前後の空白は除去する (空白だけのセルを「入力あり」と誤判定しないため)
+  const titleRaw = (cells[titleIndex] ?? '').trim();
   // 件名が空の行はエラーとして記録してスキップする (静かにスキップせずユーザーに通知する)
   if (!titleRaw) {
     return { ok: false, message: '件名が空です' };
@@ -106,8 +106,9 @@ function validateImportRow(
     return { ok: false, message: `件名が長すぎます（${TITLE_MAX_LENGTH}文字以内にしてください）` };
   }
 
-  // 本文セルを取り出す (未指定なら空文字)
-  const bodyRaw = bodyIndex !== -1 ? (cells[bodyIndex] ?? '') : '';
+  // 本文セルを取り出す (未指定なら空文字)。前後の空白は除去する
+  // (本文は空文字自体を許容するが、件名と同様に空白だけが残った見た目を避ける)
+  const bodyRaw = (bodyIndex !== -1 ? (cells[bodyIndex] ?? '') : '').trim();
   // 本文が長すぎる場合はエラーとして記録する
   if (bodyRaw.length > BODY_MAX_LENGTH) {
     return { ok: false, message: `内容が長すぎます（${BODY_MAX_LENGTH}文字以内にしてください）` };
@@ -119,7 +120,8 @@ function validateImportRow(
   // Object.hasOwn を使い、Object.prototype 上のキー (__proto__ 等) を誤って通過させない
   if (priorityRaw && !Object.hasOwn(PRIORITY_MAP, priorityRaw)) {
     // エラーメッセージにセル値を反映する際は 100 文字に切り詰め、レスポンス肥大化を防ぐ
-    const priorityDisplay = priorityRaw.length > 100 ? `${priorityRaw.slice(0, 100)}…` : priorityRaw;
+    const priorityDisplay =
+      priorityRaw.length > 100 ? `${priorityRaw.slice(0, 100)}…` : priorityRaw;
     return {
       ok: false,
       message: `優先度の値が正しくありません: "${priorityDisplay}"（高・中・低 のいずれかを指定してください）`,
@@ -139,7 +141,8 @@ function validateImportRow(
       if (parsed === null) {
         // 変換に失敗した (不正な形式) 場合はエラーとして記録する
         // エラーメッセージにセル値を反映する際は 100 文字に切り詰め、レスポンス肥大化を防ぐ
-        const dueDateDisplay = dueDateRaw.length > 100 ? `${dueDateRaw.slice(0, 100)}…` : dueDateRaw;
+        const dueDateDisplay =
+          dueDateRaw.length > 100 ? `${dueDateRaw.slice(0, 100)}…` : dueDateRaw;
         return {
           ok: false,
           message: `期限日の形式が正しくありません: "${dueDateDisplay}"（YYYY-MM-DD 形式で入力してください）`,
@@ -233,7 +236,9 @@ export async function importTickets(csvText: string): Promise<ImportTicketsResul
 
   // 最大行数チェック (DoS / リソース枯渇防止)
   if (dataLines.length > MAX_ROWS) {
-    throw new Error(`1 回のインポートは最大 ${MAX_ROWS} 行です（${dataLines.length} 行ありました）`);
+    throw new Error(
+      `1 回のインポートは最大 ${MAX_ROWS} 行です（${dataLines.length} 行ありました）`,
+    );
   }
 
   // Phase 4 課金: 当月チケット起票の残枠を取得する (§6.1 料金プランの月間上限)。
@@ -323,7 +328,10 @@ export async function importTickets(csvText: string): Promise<ImportTicketsResul
       // 内部エラー (Prisma 例外等) をサーバーログに記録する (スキーマ情報の漏洩防止のため UI には返さない)
       console.error(`[importTickets] 行 ${rowNum} のチケット作成に失敗:`, err);
       // ユーザーには汎用メッセージのみ返す (Prisma のエラー詳細をフロントに漏らさない)
-      errors.push({ row: rowNum, message: 'チケットの作成に失敗しました。内容を確認してください。' });
+      errors.push({
+        row: rowNum,
+        message: 'チケットの作成に失敗しました。内容を確認してください。',
+      });
     }
   }
 
@@ -363,7 +371,10 @@ export async function importTickets(csvText: string): Promise<ImportTicketsResul
         // 失敗内容の詳細もログに残す (CLAUDE.md §6: エラーを握り潰さない)
         notifyResults.forEach((r, i) => {
           if (r.status === 'rejected') {
-            console.warn(`[importTickets] エージェント ${otherAgents[i].id} への通知書き込みに失敗:`, r.reason);
+            console.warn(
+              `[importTickets] エージェント ${otherAgents[i].id} への通知書き込みに失敗:`,
+              r.reason,
+            );
           }
         });
       }
