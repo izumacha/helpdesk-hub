@@ -1,5 +1,5 @@
-// Vitest のテスト DSL
-import { describe, expect, it } from 'vitest';
+// Vitest のテスト DSL (vi はスパイ/モック用)
+import { describe, expect, it, vi } from 'vitest';
 // Node 標準のファイル操作 (一時ファイルを read / delete する)
 import { readFileSync, rmSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -61,6 +61,36 @@ describe('createConsoleEmailSender', () => {
       expect(JSON.parse(lines[0]).to).toBe('a@example.com');
       expect(JSON.parse(lines[1]).to).toBe('b@example.com');
     } finally {
+      if (existsSync(outboxPath)) rmSync(outboxPath);
+    }
+  });
+
+  // マジックリンク本文には未消費のトークンを含む URL が入るため、stdout ログにはそれを出さないこと
+  it('stdout ログに本文 (マジックリンク URL 等の機微情報) を出力しない', async () => {
+    const outboxPath = tempOutbox();
+    const sender = createConsoleEmailSender({ outboxPath });
+    // console.log をスパイして実際の出力内容を検証する
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    try {
+      const secretUrl =
+        'http://localhost:3000/api/auth/magic-link/callback?token=super-secret-token';
+      await sender.send({
+        to: 'tester@example.com',
+        subject: 'ログインリンク',
+        html: `<a href="${secretUrl}">link</a>`,
+        text: `リンク\n\n${secretUrl}`,
+      });
+
+      // console.log に渡された全引数を文字列化して連結し、トークンを含む URL が含まれないことを確認する
+      const loggedText = logSpy.mock.calls.map((args) => JSON.stringify(args)).join('\n');
+      expect(loggedText).not.toContain('super-secret-token');
+      expect(loggedText).not.toContain(secretUrl);
+      // to/subject は引き続き stdout に出ていること (dev での目視確認に必要)
+      expect(loggedText).toContain('tester@example.com');
+      expect(loggedText).toContain('ログインリンク');
+    } finally {
+      logSpy.mockRestore();
       if (existsSync(outboxPath)) rmSync(outboxPath);
     }
   });

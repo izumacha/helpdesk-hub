@@ -27,11 +27,12 @@ export function createConsoleEmailSender(options?: { outboxPath?: string }): Ema
   return {
     // 1 件のメッセージを「送ったことにする」実装
     async send(message: EmailMessage) {
-      // 標準出力に整形ログを出す (dev で目視確認しやすくする)
+      // 標準出力に整形ログを出す (dev で目視確認しやすくする)。
+      // 本文はマジックリンク/招待リンクのように未消費トークンを含む URL を先頭近くに持つことがあるため、
+      // stdout には to/subject のみを出し本文プレビューは含めない (本文全体は outbox ファイル側で確認する)。
       console.log('[email:console]', {
         to: message.to,
         subject: message.subject,
-        textPreview: message.text.slice(0, 120),
       });
 
       // メッセージ全体を 1 行 JSON で append (E2E が末尾を読む想定)
