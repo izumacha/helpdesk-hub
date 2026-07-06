@@ -58,9 +58,9 @@ export function makeLineConfigRepo(db: PrismaLike): LineConfigRepository {
         },
         // 既存更新時の値 (tenantId は変更しない)
         update: {
-          channelSecret: input.channelSecret,
-          channelAccessToken: input.channelAccessToken,
-          botUserId: input.botUserId,
+          channelSecret: input.channelSecret, // Webhook 署名検証用シークレット
+          channelAccessToken: input.channelAccessToken, // Messaging API push 用アクセストークン
+          botUserId: input.botUserId, // このチャネルの Bot User ID
         },
       });
       // 作成/更新後の行をドメイン型に変換して返す

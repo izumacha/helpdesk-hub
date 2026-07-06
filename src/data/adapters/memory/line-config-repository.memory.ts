@@ -21,8 +21,10 @@ export function makeLineConfigRepo(store: Store): LineConfigRepository {
     async findByBotUserId(botUserId) {
       // ストアの値から botUserId が一致する設定を線形探索する
       for (const cfg of store.lineConfigs.values()) {
+        // 一致したらその設定を返す (botUserId は @unique)
         if (cfg.botUserId === botUserId) return cfg;
       }
+      // 見つからなければ null
       return null;
     },
 
@@ -49,10 +51,10 @@ export function makeLineConfigRepo(store: Store): LineConfigRepository {
         // 更新後の設定オブジェクトを組み立てる (createdAt は維持、updatedAt を更新)
         const updated = {
           ...cfg,
-          channelSecret: input.channelSecret,
-          channelAccessToken: input.channelAccessToken,
-          botUserId: input.botUserId,
-          updatedAt: now,
+          channelSecret: input.channelSecret, // Webhook 署名検証用シークレット
+          channelAccessToken: input.channelAccessToken, // Messaging API push 用アクセストークン
+          botUserId: input.botUserId, // このチャネルの Bot User ID
+          updatedAt: now, // 更新日時を現在時刻に差し替え
         };
         // ストアへ書き戻す
         store.lineConfigs.set(existing, updated);
@@ -63,13 +65,13 @@ export function makeLineConfigRepo(store: Store): LineConfigRepository {
       const id = `line_cfg_${++store.idSeq.value}`;
       // 新規設定オブジェクトを組み立てる
       const created = {
-        id,
-        tenantId: input.tenantId,
-        channelSecret: input.channelSecret,
-        channelAccessToken: input.channelAccessToken,
-        botUserId: input.botUserId,
-        createdAt: now,
-        updatedAt: now,
+        id, // 払い出した ID
+        tenantId: input.tenantId, // 所属テナント (セッション由来のみ)
+        channelSecret: input.channelSecret, // Webhook 署名検証用シークレット
+        channelAccessToken: input.channelAccessToken, // Messaging API push 用アクセストークン
+        botUserId: input.botUserId, // このチャネルの Bot User ID
+        createdAt: now, // 作成日時
+        updatedAt: now, // 更新日時 (作成時は作成日時と同じ)
       };
       // ストアへ保存する
       store.lineConfigs.set(id, created);
