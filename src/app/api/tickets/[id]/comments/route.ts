@@ -249,7 +249,7 @@ async function notifyRequesterOfReply(args: {
 
   await Promise.all([
     sendReplyEmailToRequester({ creator, ticket, authorName, commentBody, ticketId, tenantId }),
-    sendReplyLineToRequester({ creator, ticket, authorName, commentBody, ticketId }),
+    sendReplyLineToRequester({ creator, ticket, authorName, commentBody, ticketId, tenantId }),
   ]);
 }
 
@@ -305,20 +305,26 @@ async function sendReplyEmailToRequester(args: {
 }
 
 // 担当者の返信を依頼者へ LINE で届ける内部ヘルパー (ベストエフォート / 副作用は push のみ)。
-// LINE_CHANNEL_ACCESS_TOKEN 未設定、または依頼者が LINE 未連携 (lineUserId なし) の環境では
-// pushLineMessage 側 / ここでの早期 return により何もしない (機能オプトインの正常系)。
+// テナントの LINE 連携が未設定、または依頼者が LINE 未連携 (lineUserId なし) の場合は
+// 早期 return により何もしない (機能オプトインの正常系)。
 async function sendReplyLineToRequester(args: {
   creator: { lineUserId?: string | null };
   ticket: { title: string };
   authorName: string;
   commentBody: string;
   ticketId: string;
+  tenantId: string;
 }): Promise<void> {
-  const { creator, ticket, authorName, commentBody, ticketId } = args;
+  const { creator, ticket, authorName, commentBody, ticketId, tenantId } = args;
   // LINE 未連携なら送りようがないのでスキップ
   if (!creator.lineUserId) return;
 
   try {
+    // テナントの LINE 連携設定 (アクセストークン) を引く。未設定ならこのテナントは
+    // LINE push を使わないので何もしない (Pro/Enterprise 限定機能の任意設定)
+    const lineConfig = await repos.lineConfigs.findByTenant(tenantId);
+    if (!lineConfig) return;
+
     // メール内リンクと同じベース URL 解決ロジックを再利用する (single source)
     const baseUrl = resolveAppBaseUrl();
     const ticketUrl = buildTicketUrl(baseUrl, ticketId);
@@ -329,8 +335,8 @@ async function sendReplyLineToRequester(args: {
       commentBody,
       agentName: authorName,
     });
-    // Messaging API へ push する (アクセストークン未設定時は内部で何もしない)
-    await pushLineMessage(creator.lineUserId, text);
+    // Messaging API へ push する (このテナント専用のアクセストークンを使う)
+    await pushLineMessage(lineConfig.channelAccessToken, creator.lineUserId, text);
   } catch (err) {
     // 送信失敗はサーバログに残すだけ (依頼者への通知はアプリ内にも残っている)
     console.error('[POST /api/tickets/[id]/comments] 依頼者宛 LINE 送信に失敗しました', err);

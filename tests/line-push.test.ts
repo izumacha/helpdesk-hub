@@ -67,20 +67,17 @@ describe('pushLineMessage', () => {
 
   afterEach(() => {
     vi.unstubAllGlobals();
-    vi.unstubAllEnvs();
   });
 
-  // 未設定: LINE_CHANNEL_ACCESS_TOKEN が無ければ何もせず fetch を呼ばない (任意機能のスキップ)
-  it('LINE_CHANNEL_ACCESS_TOKEN 未設定なら fetch を呼ばない', async () => {
-    vi.stubEnv('LINE_CHANNEL_ACCESS_TOKEN', '');
-    await pushLineMessage(VALID_LINE_USER_ID, 'こんにちは');
+  // 未設定: accessToken が空文字なら何もせず fetch を呼ばない (テナント未設定のスキップ)
+  it('accessToken が空文字なら fetch を呼ばない', async () => {
+    await pushLineMessage('', VALID_LINE_USER_ID, 'こんにちは');
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
   // 正常系: Messaging API の push エンドポイントへ Bearer 認証付きで POST する
   it('Messaging API へ Bearer 認証付きで POST する', async () => {
-    vi.stubEnv('LINE_CHANNEL_ACCESS_TOKEN', 'test-access-token');
-    await pushLineMessage(VALID_LINE_USER_ID, 'こんにちは');
+    await pushLineMessage('test-access-token', VALID_LINE_USER_ID, 'こんにちは');
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const [url, init] = fetchMock.mock.calls[0];
@@ -93,22 +90,20 @@ describe('pushLineMessage', () => {
 
   // セキュリティ: 不正な形式の lineUserId は fetch を呼ばずにスキップする (防御的な多層チェック)
   it('不正な形式の lineUserId は fetch を呼ばない', async () => {
-    vi.stubEnv('LINE_CHANNEL_ACCESS_TOKEN', 'test-access-token');
-    await pushLineMessage('not-a-line-user-id', 'こんにちは');
+    await pushLineMessage('test-access-token', 'not-a-line-user-id', 'こんにちは');
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
   // 異常系: HTTP エラー時は例外を投げる (呼び出し側がベストエフォートとして catch する)
   it('HTTP エラー時は例外を投げる', async () => {
-    vi.stubEnv('LINE_CHANNEL_ACCESS_TOKEN', 'test-access-token');
     fetchMock.mockResolvedValue({
       ok: false,
       status: 401,
       type: 'basic',
       text: () => Promise.resolve('Unauthorized'),
     });
-    await expect(pushLineMessage(VALID_LINE_USER_ID, 'こんにちは')).rejects.toThrow(
-      /LINE push 送信失敗/,
-    );
+    await expect(
+      pushLineMessage('test-access-token', VALID_LINE_USER_ID, 'こんにちは'),
+    ).rejects.toThrow(/LINE push 送信失敗/);
   });
 });

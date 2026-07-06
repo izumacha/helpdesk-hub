@@ -1,14 +1,20 @@
 /**
- * LINE 公式アカウント Webhook (Phase 2 β / docs/smb-dx-pivot-plan.md §4 / §5.3)
+ * LINE 公式アカウント Webhook (Phase 2 β / docs/smb-dx-pivot-plan.md §4 Phase 2 / §4 Phase 2.1 / §5.3)
  *
  * LINE 公式アカウントに送られたテキストメッセージを受信し、テナントの問い合わせ (Ticket) として
  * 取り込む。複数イベントを 1 リクエストで受け取ることがあるため、テキストメッセージ以外は無視して
  * 全イベントを処理してから 200 を返す (LINE は 200 未受信で 5 分以内に再送するため必ず 200 を返す)。
  *
- * β 制約 (本計画書 §8 リスク表):
- *  - 1 テナント / 1 LINE チャネル構成を env var で決め打ち (マルチチャネルは将来課題)。
- *    LINE_CHANNEL_SECRET: Webhook 署名の検証に使うチャネルシークレット
- *    LINE_TARGET_TENANT_ID: メッセージを受け付けるテナント ID
+ * マルチテナント化 (§4 Phase 2.1 / 2026-07-06 フォローアップ):
+ *  - チャネルごとの認証情報 (channelSecret / channelAccessToken) はテナント単位の
+ *    `TenantLineConfig` (DB) で管理する (旧: 環境変数 LINE_CHANNEL_SECRET / LINE_TARGET_TENANT_ID
+ *    による 1 デプロイ環境 = 1 テナント決め打ちの β 制約を解消)。
+ *  - テナント解決: LINE Webhook が送ってくる `destination` (このチャネル自身の Bot User ID。
+ *    署名鍵ではない公開識別子) で `TenantLineConfig.botUserId` を引く。署名検証前の値なので、
+ *    これ単体では「どのテナント宛か」の手がかりに過ぎず、実際の認証は次の署名検証が担う
+ *    (メール取り込みの `inboundToken` と同じ「公開識別子でテナントを特定 → 秘密鍵で認証」設計)。
+ *  - チャネル未登録・署名不一致のどちらも同一の 401 を返す (どちらが原因かを外部に漏らさない)。
+ *  - 1 テナント / 1 LINE チャネルの制約自体は β のまま (マルチチャネル/1 テナントは将来課題)。
  *  - LINE ユーザーとテナントメンバーの紐付け: メンバーが Web 設定画面で発行したワンタイムコードを
  *    LINE に送ると、その送信元 LINE ユーザー ID をメンバーへ紐付ける。紐付け済みなら起票者は本人になり
  *    自己解決 UI が開通する。未紐付けの LINE ユーザーは従来どおりテナント内担当者をプロキシ起票者とする
@@ -20,8 +26,10 @@
  *
  * セキュリティ要点 (§9):
  *  - X-Line-Signature ヘッダの HMAC-SHA256 を定数時間比較で検証する (LINE Docs 準拠)。
- *  - シークレット・テナント ID 未設定は fail-closed (500 で取り込み口を閉じる)。
- *  - テナント単位のレート制限でバーストに備える。
+ *  - 未登録チャネル・シークレット不一致は fail-closed (401 で取り込み口を閉じ、理由は漏らさない)。
+ *  - レート制限は 2 段構え: テナント解決 (DB 参照) 前は攻撃者が操作できない固定キーで
+ *    全体の上限を設け (destination を変え続けるレート制限回避を防ぐ)、解決後は信頼できる
+ *    tenantId をキーにしたチャネル単位の上限で個別テナントのバーストに備える。
  */
 
 // JSON レスポンスヘルパー
@@ -57,8 +65,38 @@ import { isLineIntegrationAllowed } from '@/lib/plan-guard';
 // このルートは Node ランタイムで動かす (node:crypto / Prisma を使うため Edge では動かない)
 export const runtime = 'nodejs';
 
-// テナント単位の取り込み流量上限 (シークレット漏洩時のスパムを抑える)
+// テナント解決 (DB 参照) より前に適用する、固定キーの全体レート制限。
+// destination は署名検証前の値で攻撃者が自由に生成できるため、これをレート制限のキーに
+// 使うと値を毎回変えるだけで無制限に新しいバケットが作られ、事実上レート制限を回避されて
+// しまう (バケット数の際限ない増加は enforceRateLimit 内の全体掃除処理の負荷も増やす)。
+// そのため DB 参照 (findByBotUserId) の前段では固定キーで「未認証リクエスト全体」の上限を
+// 設け、destination をどれだけ変えても DB 参照の総量が頭打ちになるようにする。
+const LINE_UNAUTHENTICATED_RATE_LIMIT = { limit: 600, windowMs: 60_000 } as const;
+
+// テナント解決後に適用する、チャネル (テナント) 単位の取り込み流量上限
+// (シークレット漏洩時のスパムを抑える)。lineConfig.tenantId は DB 由来の信頼できる値
+// (botUserId の @unique 制約でテナントと 1:1) なので、これをキーにする。
 const LINE_RATE_LIMIT = { limit: 120, windowMs: 60_000 } as const;
+
+// レート制限を適用し、超過していれば 429 レスポンスを返す共通ヘルパー。
+// 超過なしなら null を返し、呼び出し側はそのまま処理を続行する。
+function checkRateLimit(key: string, options: { limit: number; windowMs: number }) {
+  try {
+    // 同期の流量制限チェック (超過時は RateLimitError を throw する)
+    enforceRateLimit(key, options);
+    // 超過なし: 呼び出し側へ処理続行を伝える
+    return null;
+  } catch (err) {
+    // 流量超過専用エラーだけを 429 にマップ。それ以外は想定外なので上位へ再 throw する
+    if (err instanceof RateLimitError) {
+      return NextResponse.json(
+        { error: '取り込みが混み合っています' },
+        { status: 429, headers: { 'Retry-After': String(err.retryAfterSec) } },
+      );
+    }
+    throw err;
+  }
+}
 
 // チケットタイトルとして使うテキストの最大文字数 (長すぎる場合は末尾を省略する)
 const MAX_TITLE_LENGTH = 100;
@@ -102,7 +140,7 @@ interface LineMessageEvent {
 
 // LINE が POST してくる Webhook ボディの型 (パース直後は信用せず events が配列かを実行時に検証する)
 interface LineWebhookBody {
-  destination?: string; // LINE チャネルのユーザー ID (受信先の特定に使えるが β では env var を使う)
+  destination?: string; // このチャネル自身の Bot User ID (テナント解決キー。署名検証前は未信用の値)
   events?: LineMessageEvent[]; // 1 リクエストに複数イベントが含まれることがある
 }
 
@@ -142,22 +180,6 @@ function verifyLineSignature(rawBody: string, signature: string, channelSecret: 
 
 // POST /api/inbound/line : LINE Webhook を受信してチケットを作成する
 export async function POST(req: Request) {
-  // LINE チャネルシークレットを環境変数から取得する (未設定なら fail-closed)
-  const channelSecret = process.env.LINE_CHANNEL_SECRET?.trim();
-  if (!channelSecret) {
-    // 設定漏れはサーバーログに残し、外部には詳細を出さない 500 を返す (§9 fail-closed)
-    console.error('[POST /api/inbound/line] LINE_CHANNEL_SECRET is not configured');
-    return NextResponse.json({ error: 'LINE 連携は利用できません' }, { status: 500 });
-  }
-
-  // 取り込み先テナント ID を環境変数から取得する (未設定なら fail-closed)
-  const targetTenantId = process.env.LINE_TARGET_TENANT_ID?.trim();
-  if (!targetTenantId) {
-    // テナント ID が設定されていない場合はメッセージを起票する先がないため拒否する
-    console.error('[POST /api/inbound/line] LINE_TARGET_TENANT_ID is not configured');
-    return NextResponse.json({ error: 'LINE 連携の送信先が設定されていません' }, { status: 500 });
-  }
-
   // 署名ヘッダの存在を最初に確認する。未認証リクエストにサイズ情報を漏らさないため、
   // Content-Length チェックより前に行う (存在しなければ 401 を返して終了)。
   // trim() でプロキシが付加した余分な空白を除去してから比較する
@@ -192,16 +214,10 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: 'リクエストが大きすぎます' }, { status: 413 });
   }
 
-  // 署名を検証する (不正なら 401)
-  if (!verifyLineSignature(rawBody, signature, channelSecret)) {
-    // 署名不一致は LINE サーバからのものではないため拒否する (なりすまし POST の防止)
-    return NextResponse.json({ error: '署名の検証に失敗しました' }, { status: 401 });
-  }
-
-  // 検証済みの生ボディを JSON としてパースする
+  // ボディを JSON としてパースする。この時点では署名未検証なので中身は一切信用しない。
+  // 唯一の目的は「どのチャネル (テナント) 宛かを示す公開識別子 (destination)」を取り出すことだけ。
   let body: LineWebhookBody;
   try {
-    // 署名は検証済みだが JSON の中身は信用しない (構造は下で実行時チェックする)
     body = JSON.parse(rawBody) as LineWebhookBody;
   } catch (err) {
     // パース失敗は 400 (内容を外部に出さずログに記録する)
@@ -209,7 +225,7 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: 'リクエストの形式が正しくありません' }, { status: 400 });
   }
 
-  // 署名検証済みでも JSON の構造は信用しない (§9 入力は信用しない)。events が配列でなければ
+  // 署名検証前でも JSON の構造は信用しない (§9 入力は信用しない)。events が配列でなければ
   // 以降の body.events.length / for-of が TypeError になるため、ここで 400 を返して握り潰さない
   if (!Array.isArray(body.events)) {
     console.warn('[POST /api/inbound/line] webhook body has no events array');
@@ -226,25 +242,54 @@ export async function POST(req: Request) {
     return NextResponse.json({ status: 'ignored', reason: 'too_many_events' }, { status: 200 });
   }
 
-  // テナント単位のレート制限を適用する (シークレット漏洩時のバーストを防ぐ)
-  try {
-    // 同期の流量制限チェック (超過時は RateLimitError を throw する)
-    enforceRateLimit(`inbound-line:${targetTenantId}`, LINE_RATE_LIMIT);
-  } catch (err) {
-    // 流量超過専用エラーだけを 429 にマップ。それ以外は想定外なので上位へ再 throw する
-    if (err instanceof RateLimitError) {
-      return NextResponse.json(
-        { error: '取り込みが混み合っています' },
-        { status: 429, headers: { 'Retry-After': String(err.retryAfterSec) } },
-      );
-    }
-    throw err;
+  // destination (このチャネル自身の Bot User ID) を取り出す。署名鍵ではない公開識別子だが、
+  // 正規の LINE ユーザー ID と同じ 'U' + 32 桁 16 進数の形式に必ず従うため、ここで形式を検証する
+  // (形式外の値をそのまま DB 検索に使わない §9)。欠落・形式不正はテナントを
+  // 特定できないため、以降の「チャネル未登録」「署名不一致」と同一の 401 で拒否する
+  // (どの理由で失敗したかを外部に区別させない fail-closed)。
+  const destination = typeof body.destination === 'string' ? body.destination : '';
+  if (!LINE_USER_ID_PATTERN.test(destination)) {
+    return NextResponse.json({ error: '署名の検証に失敗しました' }, { status: 401 });
   }
 
-  // 取り込み先テナントを ID で引く
+  // 固定キーの全体レート制限を適用する (DB 参照より前に置き、destination を変え続ける
+  // ことでのレート制限回避・DB 負荷増大を防ぐ。詳細は定数の定義コメント参照)
+  const unauthLimitResponse = checkRateLimit(
+    'inbound-line:unauthenticated',
+    LINE_UNAUTHENTICATED_RATE_LIMIT,
+  );
+  if (unauthLimitResponse) return unauthLimitResponse;
+
+  // destination からテナントの LINE 連携設定 (チャネルシークレット等) を引く。
+  // 未登録チャネルは「どのテナントの鍵で検証すべきか」が分からないため、この時点で拒否する
+  // (署名不一致と同一メッセージ・ステータスにして、チャネル登録の有無を外部に漏らさない)。
+  const lineConfig = await repos.lineConfigs.findByBotUserId(destination);
+  if (!lineConfig) {
+    return NextResponse.json({ error: '署名の検証に失敗しました' }, { status: 401 });
+  }
+
+  // テナントが解決できたので、ここからは信頼できる tenantId をキーにしたチャネル単位の
+  // レート制限を適用する (destination のような攻撃者が操作可能な値はキーに使わない)。
+  const tenantLimitResponse = checkRateLimit(
+    `inbound-line:${lineConfig.tenantId}`,
+    LINE_RATE_LIMIT,
+  );
+  if (tenantLimitResponse) return tenantLimitResponse;
+
+  // このチャネル (テナント) 専用のシークレットで署名を検証する (不正なら 401)
+  if (!verifyLineSignature(rawBody, signature, lineConfig.channelSecret)) {
+    // 署名不一致は LINE サーバからのものではないため拒否する (なりすまし POST の防止)
+    return NextResponse.json({ error: '署名の検証に失敗しました' }, { status: 401 });
+  }
+
+  // ここまでで署名検証済み: 以降は body の中身を信用してよい
+  const targetTenantId = lineConfig.tenantId;
+
+  // 取り込み先テナントを ID で引く (botUserId の @unique 制約により通常は必ず見つかるが、
+  // データ不整合に備えた防御的チェック)
   const tenant = await repos.tenants.findById(targetTenantId);
   if (!tenant) {
-    // env var に設定したテナント ID が存在しない場合はサーバー設定エラーとして 404 を返す
+    // 署名検証済みのチャネルなのにテナントが見つからない場合はデータ不整合としてログに残す
     console.error('[POST /api/inbound/line] target tenant not found:', targetTenantId);
     return NextResponse.json({ error: '送信先テナントが見つかりません' }, { status: 404 });
   }

@@ -429,9 +429,20 @@ describe('POST /api/tickets/[id]/comments', () => {
     // 依頼者を LINE 連携済みにする
     const requester = store.users.get(REQUESTER)!;
     store.users.set(REQUESTER, { ...requester, lineUserId: REQUESTER_LINE_USER_ID });
+    // テナントの LINE 連携設定 (アクセストークン) をシードする
+    // (Phase 2 フォローアップ: グローバル環境変数ではなくテナント単位の DB 設定から解決する)
+    const now = new Date();
+    store.lineConfigs.set('line_cfg_test', {
+      id: 'line_cfg_test',
+      tenantId: TENANT,
+      channelSecret: 'irrelevant-for-push',
+      channelAccessToken: 'test-access-token',
+      botUserId: `U${'b'.repeat(32)}`,
+      createdAt: now,
+      updatedAt: now,
+    });
 
-    // LINE push を有効化し、fetch をモックして実際の外部送信は行わない
-    vi.stubEnv('LINE_CHANNEL_ACCESS_TOKEN', 'test-access-token');
+    // fetch をモックして実際の外部送信は行わない
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,
       status: 200,
@@ -454,8 +465,7 @@ describe('POST /api/tickets/[id]/comments', () => {
       expect(body.to).toBe(REQUESTER_LINE_USER_ID);
       expect(body.messages[0].text).toContain('対応しました');
     } finally {
-      // 他テストへ影響しないよう env / fetch のスタブを必ず元に戻す
-      vi.unstubAllEnvs();
+      // 他テストへ影響しないよう fetch のスタブを必ず元に戻す
       vi.unstubAllGlobals();
     }
   });

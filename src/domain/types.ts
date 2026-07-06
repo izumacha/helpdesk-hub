@@ -82,6 +82,18 @@ export interface TenantSsoConfig {
   updatedAt: Date; // 更新日時
 }
 
+// Phase 2 フォローアップ: テナント単位の LINE 公式アカウント連携設定 1 件分。
+// docs/smb-dx-pivot-plan.md §4 Phase 2.1。Webhook 署名検証・Messaging API push の認証情報を保持する。
+export interface TenantLineConfig {
+  id: string; // 設定 ID (主キー)
+  tenantId: string; // 所属テナント ID (1 テナント 1 設定)
+  channelSecret: string; // Webhook 署名 (X-Line-Signature) の HMAC-SHA256 検証用シークレット
+  channelAccessToken: string; // Messaging API push (担当者の返信を LINE へ返す) 用の長期アクセストークン
+  botUserId: string; // LINE の destination フィールドと一致するこのチャネルの Bot User ID (テナント解決キー)
+  createdAt: Date; // 作成日時
+  updatedAt: Date; // 更新日時
+}
+
 // Phase 4 多拠点: テナント内の店舗・拠点 1 件分
 export interface Location {
   id: string; // 拠点 ID (主キー)

@@ -7,11 +7,15 @@ import { createHmac } from 'node:crypto';
 import { createMemoryContext, type Store } from '@/data/adapters/memory';
 import type { Repos, UnitOfWork } from '@/data/ports/unit-of-work';
 import { hashLineLinkCode, normalizeLineLinkCode } from '@/lib/line-link';
+// レート制限バケットをテスト間で初期化するためのヘルパー (グローバル Map の汚染を防ぐ)
+import { __resetRateLimits } from '@/lib/rate-limit';
 
 const SECRET = 'test-line-channel-secret';
 const TENANT = 'default-tenant';
 const AGENT_ID = 'u-agent-1';
 const MEMBER_ID = 'u-member-1';
+// このテナントのチャネルを表す Bot User ID (LINE の destination フィールドと一致させる値)
+const BOT_USER_ID = 'Ubbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
 // LINE ユーザー ID のテスト用固定値。LINE の実形式 (U + 32桁小文字 hex) に合わせる。
 // ルートが userId フォーマットを検証するようになったため、形式外の値は '不明' 扱いになる
 const LINE_ID_UNLINKED = 'U00000000000000000000000000000001'; // テナントメンバーに未紐付け
@@ -64,6 +68,16 @@ function seed() {
     createdAt: now,
     updatedAt: now,
   });
+  // テナント単位の LINE 連携設定 (destination=BOT_USER_ID からこのテナントを解決する)
+  store.lineConfigs.set('line_cfg_1', {
+    id: 'line_cfg_1',
+    tenantId: TENANT,
+    channelSecret: SECRET,
+    channelAccessToken: 'test-access-token',
+    botUserId: BOT_USER_ID,
+    createdAt: now,
+    updatedAt: now,
+  });
 }
 
 // LINE 署名を計算する (X-Line-Signature = Base64(HMAC-SHA256(body, secret)))
@@ -71,9 +85,11 @@ function sign(body: string): string {
   return createHmac('sha256', SECRET).update(body, 'utf8').digest('base64');
 }
 
-// 1 件のテキストメッセージイベントを含む署名付きリクエストを組み立てる
-function makeRequest(text: string, userId: string): Request {
+// 1 件のテキストメッセージイベントを含む署名付きリクエストを組み立てる。
+// destination はチャネル解決に使う値で、既定はシード済みテナントの BOT_USER_ID
+function makeRequest(text: string, userId: string, destination: string = BOT_USER_ID): Request {
   const body = JSON.stringify({
+    destination,
     events: [
       {
         type: 'message',
@@ -96,12 +112,39 @@ describe('POST /api/inbound/line', () => {
     repos = ctx.repos;
     uow = ctx.uow;
     seed();
-    vi.stubEnv('LINE_CHANNEL_SECRET', SECRET);
-    vi.stubEnv('LINE_TARGET_TENANT_ID', TENANT);
+    // レート制限バケットはモジュールグローバルなので、他ファイルのテストの影響を受けないよう初期化する
+    __resetRateLimits();
   });
 
   afterEach(() => {
-    vi.unstubAllEnvs();
+    // 次のテストファイルに影響しないよう、このファイルで消費したバケットも初期化しておく
+    __resetRateLimits();
+  });
+
+  // セキュリティ回帰テスト: destination (署名検証前の値) をレート制限のキーに使うと、
+  // 攻撃者が destination を毎回変えるだけで無制限に新しいバケットを作れてしまい、
+  // レート制限が事実上機能しなくなる。固定キーの全体レート制限がこれを防いでいることを確認する。
+  it('destination を変え続けても固定キーの全体レート制限で頭打ちになる (レート制限回避の防止)', async () => {
+    const { POST } = await import('@/app/api/inbound/line/route');
+    // LINE_UNAUTHENTICATED_RATE_LIMIT の上限 (600件/分) に達するまで、
+    // 毎回異なる未登録 destination で送り続ける (署名は無効なので全て 401 になるはず)
+    let lastStatus = 0;
+    for (let i = 0; i < 601; i += 1) {
+      // 16進32桁のランダムな destination を都度生成する (登録済み BOT_USER_ID とは無関係)
+      const randomDestination = `U${i.toString(16).padStart(32, '0')}`;
+      const body = JSON.stringify({ destination: randomDestination, events: [] });
+      const req = new Request('http://localhost/api/inbound/line', {
+        method: 'POST',
+        // 署名はこの destination 用のチャネル設定が無いのでどうせ無効 (未登録チャネル判定になる)
+        headers: { 'content-type': 'application/json', 'x-line-signature': 'invalid-signature' },
+        body,
+      });
+      const res = await POST(req);
+      lastStatus = res.status;
+    }
+    // 601 回目 (上限 600 を超えた直後) は、destination が変わっていても固定キーの
+    // 全体レート制限に引っかかり 429 になる (401 のままなら回避が成立してしまっている)
+    expect(lastStatus).toBe(429);
   });
 
   // Standard 以下のプランは LINE 連携不可 (§6.1 料金プラン)。署名は正しくても起票しない
@@ -260,12 +303,39 @@ describe('POST /api/inbound/line', () => {
     expect(findTicketIdByMessageId).toHaveBeenCalledTimes(2);
   });
 
-  // 署名が不正なリクエストは 401 で拒否する
+  // 署名が不正なリクエストは 401 で拒否する (destination は登録済みチャネルと一致させ、
+  // 「チャネル未登録」ではなく「署名不一致」の分岐を確実に踏む)
   it('署名が不正なら 401 を返す', async () => {
-    const body = JSON.stringify({ events: [] });
+    const body = JSON.stringify({ destination: BOT_USER_ID, events: [] });
     const req = new Request('http://localhost/api/inbound/line', {
       method: 'POST',
       headers: { 'content-type': 'application/json', 'x-line-signature': 'wrong' },
+      body,
+    });
+    const { POST } = await import('@/app/api/inbound/line/route');
+    const res = await POST(req);
+    expect(res.status).toBe(401);
+    expect(store.tickets.size).toBe(0);
+  });
+
+  // destination が未登録のチャネルを指す場合も 401 で拒否する (署名は正当な値で計算するが、
+  // どのテナントの鍵で検証すべきか分からないため署名検証まで到達しない)
+  it('destination が未登録のチャネルなら 401 を返す', async () => {
+    const unknownDestination = 'Uccccccccccccccccccccccccccccccc';
+    const body = JSON.stringify({
+      destination: unknownDestination,
+      events: [
+        {
+          type: 'message',
+          source: { type: 'user', userId: LINE_ID_UNLINKED },
+          message: { type: 'text', id: 'm1', text: 'プリンターが動きません' },
+        },
+      ],
+    });
+    // このチャネルの正しいシークレットが無いので、SECRET で署名しても一致しないテナントに届く想定
+    const req = new Request('http://localhost/api/inbound/line', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-line-signature': sign(body) },
       body,
     });
     const { POST } = await import('@/app/api/inbound/line/route');

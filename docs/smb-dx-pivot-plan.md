@@ -131,6 +131,31 @@
 - [x] メール通知テンプレートの整備（HTML、日本語、件名規約）
 - [x] 「対応すると依頼者にメールで返信が届く」を既定動作に（依頼者がアプリにログインしなくても完結）
 
+#### 2.1 フォローアップ（2026-07-06）: LINE 連携のマルチテナント化
+
+初回実装（PR #170 系列）では 1 デプロイ環境につき 1 テナント / 1 LINE チャネルを
+`LINE_CHANNEL_SECRET` / `LINE_TARGET_TENANT_ID` / `LINE_CHANNEL_ACCESS_TOKEN` の環境変数で
+決め打ちする β 制約付きで実装した（`src/app/api/inbound/line/route.ts` のコメント参照）。
+本アプリはマルチテナント SaaS が前提（§3.3・§5.6）であり、他の全チャネル（メール取り込み・
+Slack/Teams/Chatwork 通知・SSO）は既にテナント単位の設定として実装済みのため、LINE 連携だけが
+グローバル単一チャネルのままなのは設計上の整合性を欠く。よって本計画を更新し、以下を追加実装する:
+
+- テナント単位の `TenantLineConfig`（channelSecret / channelAccessToken / botUserId）を Prisma
+  モデルとして追加し、Port/Adapter（Prisma + メモリ）で管理する。
+- Webhook 受信時は LINE が送ってくる `destination`（チャネルの Bot User ID。秘密情報ではない
+  公開識別子）で `TenantLineConfig` を引き、そのテナント専用の `channelSecret` で署名検証する
+  （メール取り込みの `inboundToken` と同じ「公開識別子でテナントを特定 → 秘密鍵で認証」の設計）。
+  署名検証前に `destination` を信用してはいけないため、検証成功までは「該当チャネル設定が
+  存在するかどうか」を含め詳細を外部に漏らさない（未設定・不一致のどちらも同一の 401 を返す）。
+- 担当者からの LINE 返信 push（`src/lib/line-push.ts`）もテナントの `channelAccessToken` を
+  使うよう変更し、環境変数 `LINE_CHANNEL_ACCESS_TOKEN` への依存を廃止する。
+- 設定画面（`/settings`、admin 専用・Pro/Enterprise プランのみ）でテナントごとに
+  チャネルシークレット・アクセストークン・Bot User ID を登録できるようにする。
+
+この変更により、複数テナントが同時に別々の LINE 公式アカウントを連携できるようになる
+（β の「1 テナント 1 チャネル」制約そのものは変わらないが、それがテナントごとに独立して
+設定可能になる）。
+
 ### Phase 3 — オンボーディング & 業種テンプレ（3 週間）
 
 - [x] テナント作成時に **業種テンプレ**（製造業 / 飲食 / 介護 / 不動産 / 士業 / 卸売 など）でカテゴリと「よくある質問」を初期投入

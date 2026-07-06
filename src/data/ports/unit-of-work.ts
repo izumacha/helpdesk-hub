@@ -4,6 +4,7 @@ import type { CategoryRepository } from './category-repository';
 import type { EmailThreadRepository } from './email-thread-repository';
 import type { FaqRepository } from './faq-repository';
 import type { InvitationRepository } from './invitation-repository';
+import type { LineConfigRepository } from './line-config-repository';
 import type { LineMessageRepository } from './line-message-repository';
 import type { LocationRepository } from './location-repository';
 import type { MagicLinkRepository } from './magic-link-repository';
@@ -32,6 +33,7 @@ export interface Repos {
   lineMessages: LineMessageRepository; // LINE メッセージ ID → チケット 対応表 (取り込みの冪等化 / Phase 2)
   locations: LocationRepository; // Phase 4 多拠点: テナント内の店舗・拠点
   ssoConfigs: SsoConfigRepository; // Phase 4 Enterprise: テナント単位の SAML SSO 設定
+  lineConfigs: LineConfigRepository; // Phase 2 フォローアップ: テナント単位の LINE 連携設定
 }
 
 // run() のオプション

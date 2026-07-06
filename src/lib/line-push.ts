@@ -5,9 +5,9 @@
  * コメント (返信) すると、依頼者がアプリにログインしなくても内容を確認できるよう LINE へ push する。
  * 既存のメール返信 (src/lib/ticket-email.ts) と同じ「何を送るか (純粋関数) / 送る (副作用)」の分離方針。
  *
- * 必要な環境変数: LINE_CHANNEL_ACCESS_TOKEN (Messaging API の長期アクセストークン)。
- * 未設定の間は push をスキップする (LINE 連携自体が任意機能のため、メール送信のような起動失敗には
- * しない。メール取り込み用シークレット等の必須セキュリティ設定とは性質が異なる)。
+ * アクセストークン (Messaging API の長期アクセストークン) はテナント単位の `TenantLineConfig`
+ * (§4 Phase 2.1 フォローアップ) から呼び出し側が解決して渡す。この関数自体は環境変数を読まない
+ * (呼び出し側でテナントの LINE 連携が未設定なら、そもそも呼び出されない想定)。
  */
 
 // Webhook POST 共通ユーティリティ (タイムアウト・本文上限・リダイレクト非追従) を再利用する
@@ -53,12 +53,17 @@ export function buildTicketReplyLineMessage(input: {
 }
 
 // 指定した LINE ユーザーへテキストメッセージを push する。
-// LINE_CHANNEL_ACCESS_TOKEN 未設定時は何もしない (任意機能のためサイレントにスキップする)。
+// accessToken が空文字ならこのテナントで LINE 連携が未設定 (または未対応プラン) であることを
+// 意味し、何もしない (任意機能のためサイレントにスキップする)。
 // HTTP エラー時は例外を投げる (呼び出し側がベストエフォートとして catch する設計)。
-export async function pushLineMessage(lineUserId: string, text: string): Promise<void> {
-  // アクセストークン未設定はこの環境で LINE push が無効であることを意味する (フィーチャーフラグ的に扱う)
-  const accessToken = process.env.LINE_CHANNEL_ACCESS_TOKEN?.trim();
-  if (!accessToken) return;
+export async function pushLineMessage(
+  accessToken: string,
+  lineUserId: string,
+  text: string,
+): Promise<void> {
+  // アクセストークン未設定はこのテナントで LINE push が無効であることを意味する (フィーチャーフラグ的に扱う)
+  const trimmedToken = accessToken.trim();
+  if (!trimmedToken) return;
 
   // 紐付け済み lineUserId は DB 由来だが、JSON ボディに載せる前に形式を再検証する (防御的多層化)。
   // 形式外の値を送っても LINE 側で 400 になるだけだが、外部 API へ無駄なリクエストを送らずに済む。
@@ -72,7 +77,7 @@ export async function pushLineMessage(lineUserId: string, text: string): Promise
     headers: {
       'Content-Type': 'application/json',
       // 長期アクセストークンを Bearer 認証で渡す (LINE Messaging API 仕様)
-      Authorization: `Bearer ${accessToken}`,
+      Authorization: `Bearer ${trimmedToken}`,
     },
     body: JSON.stringify({
       to: lineUserId,

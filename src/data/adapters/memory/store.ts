@@ -6,6 +6,7 @@ import type {
   MagicLinkToken,
   Notification,
   Tenant,
+  TenantLineConfig,
   TenantSsoConfig,
   Ticket,
   TicketComment,
@@ -61,6 +62,7 @@ export interface Store {
   lineMessageRefs: Map<string, LineMessageRefRow>; // LINE メッセージ ID → チケット 対応表 (Phase 2 冪等化)
   locations: Map<string, Location>; // Phase 4 多拠点: テナント内の店舗・拠点
   ssoConfigs: Map<string, TenantSsoConfig>; // Phase 4 Enterprise: テナント単位の SAML SSO 設定
+  lineConfigs: Map<string, TenantLineConfig>; // Phase 2 フォローアップ: テナント単位の LINE 連携設定
   idSeq: { value: number }; // 連番生成用のカウンタ (オブジェクトに包んで参照共有)
 }
 
@@ -83,6 +85,7 @@ export function createEmptyStore(): Store {
     lineMessageRefs: new Map(),
     locations: new Map(), // Phase 4 多拠点: テナント内の店舗・拠点
     ssoConfigs: new Map(), // Phase 4 Enterprise: SAML SSO 設定
+    lineConfigs: new Map(), // Phase 2 フォローアップ: テナント単位の LINE 連携設定
     idSeq: { value: 0 },
   };
 }
@@ -106,6 +109,7 @@ export function cloneStore(src: Store): Store {
     lineMessageRefs: new Map(src.lineMessageRefs),
     locations: new Map(src.locations), // Phase 4 多拠点
     ssoConfigs: new Map(src.ssoConfigs), // Phase 4 Enterprise: SAML SSO 設定
+    lineConfigs: new Map(src.lineConfigs), // Phase 2 フォローアップ: テナント単位の LINE 連携設定
     idSeq: { value: src.idSeq.value },
   };
 }
@@ -128,6 +132,7 @@ export function overwriteStore(dst: Store, src: Store): void {
   dst.lineMessageRefs = new Map(src.lineMessageRefs);
   dst.locations = new Map(src.locations); // Phase 4 多拠点
   dst.ssoConfigs = new Map(src.ssoConfigs); // Phase 4 Enterprise: SAML SSO 設定
+  dst.lineConfigs = new Map(src.lineConfigs); // Phase 2 フォローアップ: テナント単位の LINE 連携設定
   // 連番も元に戻す
   dst.idSeq.value = src.idSeq.value;
 }
