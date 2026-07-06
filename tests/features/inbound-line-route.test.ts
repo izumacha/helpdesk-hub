@@ -2,11 +2,13 @@
 // 署名検証済みの本文を渡し、(a) ワンタイムコード送信での連携 (起票しない)、
 // (b) 連携済みユーザーの起票者が本人になる、(c) 未連携はプロキシ担当者、を検証する (DB は持ち込まない)。
 
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createHmac } from 'node:crypto';
 import { createMemoryContext, type Store } from '@/data/adapters/memory';
 import type { Repos, UnitOfWork } from '@/data/ports/unit-of-work';
 import { hashLineLinkCode, normalizeLineLinkCode } from '@/lib/line-link';
+// レート制限バケットをテスト間で初期化するためのヘルパー (グローバル Map の汚染を防ぐ)
+import { __resetRateLimits } from '@/lib/rate-limit';
 
 const SECRET = 'test-line-channel-secret';
 const TENANT = 'default-tenant';
@@ -110,6 +112,39 @@ describe('POST /api/inbound/line', () => {
     repos = ctx.repos;
     uow = ctx.uow;
     seed();
+    // レート制限バケットはモジュールグローバルなので、他ファイルのテストの影響を受けないよう初期化する
+    __resetRateLimits();
+  });
+
+  afterEach(() => {
+    // 次のテストファイルに影響しないよう、このファイルで消費したバケットも初期化しておく
+    __resetRateLimits();
+  });
+
+  // セキュリティ回帰テスト: destination (署名検証前の値) をレート制限のキーに使うと、
+  // 攻撃者が destination を毎回変えるだけで無制限に新しいバケットを作れてしまい、
+  // レート制限が事実上機能しなくなる。固定キーの全体レート制限がこれを防いでいることを確認する。
+  it('destination を変え続けても固定キーの全体レート制限で頭打ちになる (レート制限回避の防止)', async () => {
+    const { POST } = await import('@/app/api/inbound/line/route');
+    // LINE_UNAUTHENTICATED_RATE_LIMIT の上限 (600件/分) に達するまで、
+    // 毎回異なる未登録 destination で送り続ける (署名は無効なので全て 401 になるはず)
+    let lastStatus = 0;
+    for (let i = 0; i < 601; i += 1) {
+      // 16進32桁のランダムな destination を都度生成する (登録済み BOT_USER_ID とは無関係)
+      const randomDestination = `U${i.toString(16).padStart(32, '0')}`;
+      const body = JSON.stringify({ destination: randomDestination, events: [] });
+      const req = new Request('http://localhost/api/inbound/line', {
+        method: 'POST',
+        // 署名はこの destination 用のチャネル設定が無いのでどうせ無効 (未登録チャネル判定になる)
+        headers: { 'content-type': 'application/json', 'x-line-signature': 'invalid-signature' },
+        body,
+      });
+      const res = await POST(req);
+      lastStatus = res.status;
+    }
+    // 601 回目 (上限 600 を超えた直後) は、destination が変わっていても固定キーの
+    // 全体レート制限に引っかかり 429 になる (401 のままなら回避が成立してしまっている)
+    expect(lastStatus).toBe(429);
   });
 
   // Standard 以下のプランは LINE 連携不可 (§6.1 料金プラン)。署名は正しくても起票しない

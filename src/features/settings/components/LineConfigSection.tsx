@@ -10,17 +10,17 @@ import { useActionState, useTransition } from 'react';
 import { updateLineConfig } from '@/features/settings/actions/update-line-config';
 import { deleteLineConfig } from '@/features/settings/actions/delete-line-config';
 
-// 現在の LINE 連携設定 (未設定なら null)。秘匿情報 (シークレット/トークン) も
-// 既存の Chatwork API トークン欄と同じ運用で type="password" 欄にそのまま表示する。
+// 現在の LINE 連携設定の「安全に表示できる部分」だけを受け取る (未設定なら null)。
+// channelSecret / channelAccessToken は秘密情報のため §9 に従いフロントへ渡さない
+// (書き込み専用: 空欄で保存すると既存値を維持する。update-line-config.ts 参照)。
+// botUserId は秘密情報ではないので現在値をそのまま表示・再編集できる。
 interface LineConfigView {
-  channelSecret: string; // Webhook 署名検証用シークレット
-  channelAccessToken: string; // Messaging API push 用アクセストークン
   botUserId: string; // このチャネルの Bot User ID
 }
 
 // Webhook 受信 URL (LINE Developers コンソールに登録する値。秘密情報ではない)
 interface Props {
-  config: LineConfigView | null; // 現在の LINE 連携設定
+  config: LineConfigView | null; // 現在の LINE 連携設定 (botUserId のみ)
   webhookUrl: string; // Webhook 受信 URL
 }
 
@@ -102,40 +102,46 @@ export function LineConfigSection({ config, webhookUrl }: Props) {
           />
         </div>
 
-        {/* チャネルシークレット */}
+        {/* チャネルシークレット (書き込み専用: 現在値は表示しない。空欄保存で維持) */}
         <div className="space-y-1">
           <label htmlFor="line-channel-secret" className={labelClass}>
             チャネルシークレット
           </label>
-          <p className={helpClass}>Webhook の署名検証に使う秘匿情報です。</p>
+          <p className={helpClass}>
+            Webhook の署名検証に使う秘匿情報です。
+            {config
+              ? '設定済みのため画面には表示されません。変更する場合のみ新しい値を入力してください（空欄なら現在の値を維持します）。'
+              : ''}
+          </p>
           <input
             id="line-channel-secret"
             name="channelSecret"
             type="password"
-            defaultValue={config?.channelSecret ?? ''}
-            placeholder="チャネルシークレット"
+            placeholder={config ? '変更する場合のみ入力' : 'チャネルシークレット'}
             autoComplete="off"
-            required
+            required={!config}
             className={fieldClass}
           />
         </div>
 
-        {/* チャネルアクセストークン */}
+        {/* チャネルアクセストークン (書き込み専用: 現在値は表示しない。空欄保存で維持) */}
         <div className="space-y-1">
           <label htmlFor="line-channel-access-token" className={labelClass}>
             チャネルアクセストークン
           </label>
           <p className={helpClass}>
             担当者の返信を LINE へ push する Messaging API の長期アクセストークンです。
+            {config
+              ? '設定済みのため画面には表示されません。変更する場合のみ新しい値を入力してください（空欄なら現在の値を維持します）。'
+              : ''}
           </p>
           <input
             id="line-channel-access-token"
             name="channelAccessToken"
             type="password"
-            defaultValue={config?.channelAccessToken ?? ''}
-            placeholder="チャネルアクセストークン"
+            placeholder={config ? '変更する場合のみ入力' : 'チャネルアクセストークン'}
             autoComplete="off"
-            required
+            required={!config}
             className={fieldClass}
           />
         </div>

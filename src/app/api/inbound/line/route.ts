@@ -27,7 +27,9 @@
  * セキュリティ要点 (§9):
  *  - X-Line-Signature ヘッダの HMAC-SHA256 を定数時間比較で検証する (LINE Docs 準拠)。
  *  - 未登録チャネル・シークレット不一致は fail-closed (401 で取り込み口を閉じ、理由は漏らさない)。
- *  - チャネル (destination) 単位のレート制限でバーストに備える。
+ *  - レート制限は 2 段構え: テナント解決 (DB 参照) 前は攻撃者が操作できない固定キーで
+ *    全体の上限を設け (destination を変え続けるレート制限回避を防ぐ)、解決後は信頼できる
+ *    tenantId をキーにしたチャネル単位の上限で個別テナントのバーストに備える。
  */
 
 // JSON レスポンスヘルパー
@@ -63,10 +65,38 @@ import { isLineIntegrationAllowed } from '@/lib/plan-guard';
 // このルートは Node ランタイムで動かす (node:crypto / Prisma を使うため Edge では動かない)
 export const runtime = 'nodejs';
 
-// LINE チャネル (destination) 単位の取り込み流量上限 (シークレット漏洩時のスパムを抑える)。
-// テナント解決 (DB 参照) より前にチェックするため、まだ認証していない destination 値を
-// キーに使う (botUserId は @unique でテナントと 1:1 なので、実質テナント単位の制限と同じ)。
+// テナント解決 (DB 参照) より前に適用する、固定キーの全体レート制限。
+// destination は署名検証前の値で攻撃者が自由に生成できるため、これをレート制限のキーに
+// 使うと値を毎回変えるだけで無制限に新しいバケットが作られ、事実上レート制限を回避されて
+// しまう (バケット数の際限ない増加は enforceRateLimit 内の全体掃除処理の負荷も増やす)。
+// そのため DB 参照 (findByBotUserId) の前段では固定キーで「未認証リクエスト全体」の上限を
+// 設け、destination をどれだけ変えても DB 参照の総量が頭打ちになるようにする。
+const LINE_UNAUTHENTICATED_RATE_LIMIT = { limit: 600, windowMs: 60_000 } as const;
+
+// テナント解決後に適用する、チャネル (テナント) 単位の取り込み流量上限
+// (シークレット漏洩時のスパムを抑える)。lineConfig.tenantId は DB 由来の信頼できる値
+// (botUserId の @unique 制約でテナントと 1:1) なので、これをキーにする。
 const LINE_RATE_LIMIT = { limit: 120, windowMs: 60_000 } as const;
+
+// レート制限を適用し、超過していれば 429 レスポンスを返す共通ヘルパー。
+// 超過なしなら null を返し、呼び出し側はそのまま処理を続行する。
+function checkRateLimit(key: string, options: { limit: number; windowMs: number }) {
+  try {
+    // 同期の流量制限チェック (超過時は RateLimitError を throw する)
+    enforceRateLimit(key, options);
+    // 超過なし: 呼び出し側へ処理続行を伝える
+    return null;
+  } catch (err) {
+    // 流量超過専用エラーだけを 429 にマップ。それ以外は想定外なので上位へ再 throw する
+    if (err instanceof RateLimitError) {
+      return NextResponse.json(
+        { error: '取り込みが混み合っています' },
+        { status: 429, headers: { 'Retry-After': String(err.retryAfterSec) } },
+      );
+    }
+    throw err;
+  }
+}
 
 // チケットタイトルとして使うテキストの最大文字数 (長すぎる場合は末尾を省略する)
 const MAX_TITLE_LENGTH = 100;
@@ -214,7 +244,7 @@ export async function POST(req: Request) {
 
   // destination (このチャネル自身の Bot User ID) を取り出す。署名鍵ではない公開識別子だが、
   // 正規の LINE ユーザー ID と同じ 'U' + 32 桁 16 進数の形式に必ず従うため、ここで形式を検証する
-  // (形式外の値をそのまま DB 検索・レート制限キーに使わない §9)。欠落・形式不正はテナントを
+  // (形式外の値をそのまま DB 検索に使わない §9)。欠落・形式不正はテナントを
   // 特定できないため、以降の「チャネル未登録」「署名不一致」と同一の 401 で拒否する
   // (どの理由で失敗したかを外部に区別させない fail-closed)。
   const destination = typeof body.destination === 'string' ? body.destination : '';
@@ -222,21 +252,13 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: '署名の検証に失敗しました' }, { status: 401 });
   }
 
-  // チャネル (destination) 単位のレート制限を適用する (DB 参照より前に置き、
-  // シークレット漏洩やチャネル総当たりによるバースト・DB 負荷を抑える)
-  try {
-    // 同期の流量制限チェック (超過時は RateLimitError を throw する)
-    enforceRateLimit(`inbound-line:${destination}`, LINE_RATE_LIMIT);
-  } catch (err) {
-    // 流量超過専用エラーだけを 429 にマップ。それ以外は想定外なので上位へ再 throw する
-    if (err instanceof RateLimitError) {
-      return NextResponse.json(
-        { error: '取り込みが混み合っています' },
-        { status: 429, headers: { 'Retry-After': String(err.retryAfterSec) } },
-      );
-    }
-    throw err;
-  }
+  // 固定キーの全体レート制限を適用する (DB 参照より前に置き、destination を変え続ける
+  // ことでのレート制限回避・DB 負荷増大を防ぐ。詳細は定数の定義コメント参照)
+  const unauthLimitResponse = checkRateLimit(
+    'inbound-line:unauthenticated',
+    LINE_UNAUTHENTICATED_RATE_LIMIT,
+  );
+  if (unauthLimitResponse) return unauthLimitResponse;
 
   // destination からテナントの LINE 連携設定 (チャネルシークレット等) を引く。
   // 未登録チャネルは「どのテナントの鍵で検証すべきか」が分からないため、この時点で拒否する
@@ -245,6 +267,14 @@ export async function POST(req: Request) {
   if (!lineConfig) {
     return NextResponse.json({ error: '署名の検証に失敗しました' }, { status: 401 });
   }
+
+  // テナントが解決できたので、ここからは信頼できる tenantId をキーにしたチャネル単位の
+  // レート制限を適用する (destination のような攻撃者が操作可能な値はキーに使わない)。
+  const tenantLimitResponse = checkRateLimit(
+    `inbound-line:${lineConfig.tenantId}`,
+    LINE_RATE_LIMIT,
+  );
+  if (tenantLimitResponse) return tenantLimitResponse;
 
   // このチャネル (テナント) 専用のシークレットで署名を検証する (不正なら 401)
   if (!verifyLineSignature(rawBody, signature, lineConfig.channelSecret)) {

@@ -34,18 +34,28 @@ export async function updateLineConfig(
   // 検証済みの tenantId (セッション由来)
   const tenantId = gate.tenantId;
 
-  // フォームから各値を取り出して前後空白を除去する
-  const channelSecret = String(formData.get('channelSecret') ?? '').trim();
-  const channelAccessToken = String(formData.get('channelAccessToken') ?? '').trim();
+  // フォームから各値を取り出して前後空白を除去する。
+  // channelSecret / channelAccessToken は書き込み専用フィールド (§9 秘密情報をフロントに
+  // 露出させない): 設定画面はこれらの現在値を表示しない。空欄で送信された場合は
+  // 「変更しない」ことを意味し、既存の値をそのまま維持する (新規設定時は必須)。
+  const channelSecretInput = String(formData.get('channelSecret') ?? '').trim();
+  const channelAccessTokenInput = String(formData.get('channelAccessToken') ?? '').trim();
   const botUserId = String(formData.get('botUserId') ?? '').trim();
 
-  // チャネルシークレットの検証 (必須・長さ上限)
+  // 既存設定を取得する (空欄フィールドを既存値で補うため、および必須判定のため)
+  const existing = await repos.lineConfigs.findByTenant(tenantId);
+
+  // 空欄なら既存値を維持し、入力があればそれを採用する
+  const channelSecret = channelSecretInput || existing?.channelSecret || '';
+  const channelAccessToken = channelAccessTokenInput || existing?.channelAccessToken || '';
+
+  // チャネルシークレットの検証 (新規設定時は必須・長さ上限)
   if (!channelSecret) return { error: 'チャネルシークレットは必須です' };
   if (channelSecret.length > CHANNEL_SECRET_MAX) {
     return { error: 'チャネルシークレットが長すぎます' };
   }
 
-  // アクセストークンの検証 (必須・長さ上限)
+  // アクセストークンの検証 (新規設定時は必須・長さ上限)
   if (!channelAccessToken) return { error: 'チャネルアクセストークンは必須です' };
   if (channelAccessToken.length > CHANNEL_ACCESS_TOKEN_MAX) {
     return { error: 'チャネルアクセストークンが長すぎます' };
@@ -54,6 +64,7 @@ export async function updateLineConfig(
   // Bot User ID の検証 (必須・LINE ユーザー ID と同じ 'U' + 32 桁 16 進数の形式)。
   // Webhook 受信 (/api/inbound/line) はこの値と destination の一致でテナントを解決するため、
   // 形式外の値を登録させると絶対に一致せず連携が機能しなくなる (事前に弾いて設定ミスを防ぐ)。
+  // Bot User ID 自体は秘密情報ではないため、既存値の表示・再送信は問題ない。
   if (!botUserId) return { error: 'Bot User ID は必須です' };
   if (!LINE_USER_ID_PATTERN.test(botUserId)) {
     return { error: 'Bot User ID の形式が正しくありません ("U" + 32桁の16進数)' };

@@ -59,19 +59,17 @@ export default async function SettingsPage() {
     repos.users.countByTenant(session.user.tenantId),
   ]);
 
-  // Phase 4 Enterprise: SSO は Enterprise プランのみ表示・設定可能。
-  // プランが許可する場合のみ SSO 設定を取得する (非対象テナントに余計なクエリを投げない)。
+  // Phase 4 Enterprise: SSO は Enterprise プランのみ、Phase 2 フォローアップ: LINE 連携は
+  // Pro / Enterprise プランのみ表示・設定可能。それぞれ独立したクエリなので Promise.all で
+  // 並列に取得する (非対象テナントには Promise.resolve(null) で余計なクエリを投げない)。
   const ssoAllowed = isSsoAllowed(tenant?.subscriptionPlan ?? 'free');
-  const ssoConfig = ssoAllowed ? await repos.ssoConfigs.findByTenant(session.user.tenantId) : null;
+  const lineAllowed = isLineIntegrationAllowed(tenant?.subscriptionPlan ?? 'free');
+  const [ssoConfig, lineConfig] = await Promise.all([
+    ssoAllowed ? repos.ssoConfigs.findByTenant(session.user.tenantId) : Promise.resolve(null),
+    lineAllowed ? repos.lineConfigs.findByTenant(session.user.tenantId) : Promise.resolve(null),
+  ]);
   // SP の各 URL を組み立てる (Enterprise のときだけ使う)
   const spUrls = ssoAllowed ? buildSpUrls(resolveAppBaseUrl(), session.user.tenantId) : null;
-
-  // Phase 2 フォローアップ: LINE 連携は Pro / Enterprise プランのみ表示・設定可能。
-  // プランが許可する場合のみ設定を取得する (非対象テナントに余計なクエリを投げない)。
-  const lineAllowed = isLineIntegrationAllowed(tenant?.subscriptionPlan ?? 'free');
-  const lineConfig = lineAllowed
-    ? await repos.lineConfigs.findByTenant(session.user.tenantId)
-    : null;
   // Webhook 受信 URL (LINE Developers コンソールに登録する値)
   const lineWebhookUrl = `${resolveAppBaseUrl()}/api/inbound/line`;
 
@@ -212,8 +210,11 @@ export default async function SettingsPage() {
               へ届けます。LINE Developers コンソールで発行したチャネル情報を設定してください。
             </p>
           </div>
-          {/* LINE 連携設定フォーム (現在の設定と Webhook URL を渡す) */}
-          <LineConfigSection config={lineConfig} webhookUrl={lineWebhookUrl} />
+          {/* LINE 連携設定フォーム (秘密情報は渡さず botUserId のみ渡す。§9 参照) */}
+          <LineConfigSection
+            config={lineConfig ? { botUserId: lineConfig.botUserId } : null}
+            webhookUrl={lineWebhookUrl}
+          />
         </section>
       )}
 
