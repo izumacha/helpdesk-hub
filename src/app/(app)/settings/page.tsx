@@ -18,10 +18,12 @@ import { LocationsSection } from '@/features/settings/components/LocationsSectio
 import { BillingSection } from '@/features/settings/components/BillingSection';
 // Phase 4 Enterprise: SAML SSO 設定セクション (Client Component)
 import { SsoConfigSection } from '@/features/settings/components/SsoConfigSection';
+// Phase 2 フォローアップ: テナント単位の LINE 連携設定セクション (Client Component)
+import { LineConfigSection } from '@/features/settings/components/LineConfigSection';
 // テナント情報取得 (slackWebhookUrl / 拠点一覧 / プラン情報の初期値を渡すため)
 import { repos } from '@/data';
-// Enterprise プランのみ SSO を表示するためのプランゲート
-import { isSsoAllowed } from '@/lib/plan-guard';
+// プランゲート: Enterprise のみ SSO、Pro/Enterprise のみ LINE 連携を表示する
+import { isLineIntegrationAllowed, isSsoAllowed } from '@/lib/plan-guard';
 // SSO の SP エンドポイント URL を組み立てるヘルパー
 import { buildSpUrls } from '@/lib/saml';
 // アプリの公開ベース URL を解決するヘルパー (SP URL の組み立てに使う)
@@ -63,6 +65,15 @@ export default async function SettingsPage() {
   const ssoConfig = ssoAllowed ? await repos.ssoConfigs.findByTenant(session.user.tenantId) : null;
   // SP の各 URL を組み立てる (Enterprise のときだけ使う)
   const spUrls = ssoAllowed ? buildSpUrls(resolveAppBaseUrl(), session.user.tenantId) : null;
+
+  // Phase 2 フォローアップ: LINE 連携は Pro / Enterprise プランのみ表示・設定可能。
+  // プランが許可する場合のみ設定を取得する (非対象テナントに余計なクエリを投げない)。
+  const lineAllowed = isLineIntegrationAllowed(tenant?.subscriptionPlan ?? 'free');
+  const lineConfig = lineAllowed
+    ? await repos.lineConfigs.findByTenant(session.user.tenantId)
+    : null;
+  // Webhook 受信 URL (LINE Developers コンソールに登録する値)
+  const lineWebhookUrl = `${resolveAppBaseUrl()}/api/inbound/line`;
 
   return (
     <div className="mx-auto max-w-2xl space-y-6">
@@ -186,6 +197,23 @@ export default async function SettingsPage() {
             }
             sp={spUrls}
           />
+        </section>
+      )}
+
+      {/* Phase 2 フォローアップ: LINE 公式アカウント連携設定カード (Pro/Enterprise プランのみ表示) */}
+      {lineAllowed && (
+        <section className="space-y-4 rounded-2xl bg-white p-6 shadow-sm ring-1 ring-slate-100">
+          <div>
+            {/* セクション見出し */}
+            <h2 className="text-base font-semibold text-slate-900">LINE 公式アカウント連携</h2>
+            {/* 説明: テナント単位の LINE チャネル設定であることを伝える */}
+            <p className="mt-1 text-sm text-slate-500">
+              LINE 公式アカウントに送られたメッセージを問い合わせとして取り込み、担当者の返信を LINE
+              へ届けます。LINE Developers コンソールで発行したチャネル情報を設定してください。
+            </p>
+          </div>
+          {/* LINE 連携設定フォーム (現在の設定と Webhook URL を渡す) */}
+          <LineConfigSection config={lineConfig} webhookUrl={lineWebhookUrl} />
         </section>
       )}
 

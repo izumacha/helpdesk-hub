@@ -141,6 +141,7 @@ model Tenant {
   lineMessageRefs LineMessageRef[] // LINE メッセージ ID → チケット 対応表 (取り込みの冪等化 / Phase 2)
   locations       Location[] // Phase 4 多拠点: テナント内の店舗・拠点
   ssoConfig       TenantSsoConfig? // Phase 4 Enterprise: SAML SSO 設定 (1 テナント 1 件・未設定なら null)
+  lineConfig      TenantLineConfig? // Phase 2 フォローアップ: LINE 公式アカウント連携設定 (1 テナント 1 件・未設定なら null)
 }
 
 // Phase 4 Enterprise: テナント単位の SAML シングルサインオン (SSO) 設定。
@@ -156,6 +157,30 @@ model TenantSsoConfig {
   idpX509Cert String // IdP の署名検証用 X.509 証明書 (PEM またはその base64 本体)
   createdAt   DateTime @default(now()) // 作成日時
   updatedAt   DateTime @updatedAt // 更新日時 (Prisma が自動更新)
+
+  // 所属テナント (テナント削除で連鎖削除)
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+}
+
+// Phase 2 フォローアップ (docs/smb-dx-pivot-plan.md §4 Phase 2.1): テナント単位の LINE 公式アカウント
+// 連携設定。従来は 1 デプロイ環境 / 1 テナント / 1 LINE チャネルを環境変数で決め打ちしていたが、
+// マルチテナント SaaS の他チャネル (メール取り込み・SSO・外部通知) と同様にテナントごとの
+// DB 設定へ切り替える。Webhook 受信時は botUserId (LINE の destination フィールド。秘密情報ではない
+// 公開識別子) でこの行を引き、その行の channelSecret で署名を検証する (メール取り込みの inboundToken
+// と同じ「公開識別子でテナントを特定 → 秘密鍵で認証」の設計)。
+model TenantLineConfig {
+  id                 String   @id @default(cuid()) // 主キー (cuid)
+  tenantId           String   @unique // 所属テナント (1 テナント 1 設定。@unique で 1:1 を担保)
+  // Webhook 署名 (X-Line-Signature) の HMAC-SHA256 検証に使うチャネルシークレット (秘匿情報)
+  channelSecret      String
+  // Messaging API push (担当者の返信を LINE へ返す) に使う長期アクセストークン (秘匿情報)
+  channelAccessToken String
+  // LINE が Webhook の destination フィールドで送ってくる、このチャネル自身の Bot User ID。
+  // 秘密情報ではない公開識別子だが、複数テナントで同じ値を登録できないよう @unique にする
+  // (同じ LINE チャネルを 2 テナントが同時に名乗るクロステナント混線を防ぐ)。
+  botUserId          String   @unique
+  createdAt          DateTime @default(now()) // 作成日時
+  updatedAt          DateTime @updatedAt // 更新日時 (Prisma が自動更新)
 
   // 所属テナント (テナント削除で連鎖削除)
   tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)

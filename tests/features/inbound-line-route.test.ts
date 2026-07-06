@@ -2,7 +2,7 @@
 // 署名検証済みの本文を渡し、(a) ワンタイムコード送信での連携 (起票しない)、
 // (b) 連携済みユーザーの起票者が本人になる、(c) 未連携はプロキシ担当者、を検証する (DB は持ち込まない)。
 
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { createHmac } from 'node:crypto';
 import { createMemoryContext, type Store } from '@/data/adapters/memory';
 import type { Repos, UnitOfWork } from '@/data/ports/unit-of-work';
@@ -12,6 +12,8 @@ const SECRET = 'test-line-channel-secret';
 const TENANT = 'default-tenant';
 const AGENT_ID = 'u-agent-1';
 const MEMBER_ID = 'u-member-1';
+// このテナントのチャネルを表す Bot User ID (LINE の destination フィールドと一致させる値)
+const BOT_USER_ID = 'Ubbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
 // LINE ユーザー ID のテスト用固定値。LINE の実形式 (U + 32桁小文字 hex) に合わせる。
 // ルートが userId フォーマットを検証するようになったため、形式外の値は '不明' 扱いになる
 const LINE_ID_UNLINKED = 'U00000000000000000000000000000001'; // テナントメンバーに未紐付け
@@ -64,6 +66,16 @@ function seed() {
     createdAt: now,
     updatedAt: now,
   });
+  // テナント単位の LINE 連携設定 (destination=BOT_USER_ID からこのテナントを解決する)
+  store.lineConfigs.set('line_cfg_1', {
+    id: 'line_cfg_1',
+    tenantId: TENANT,
+    channelSecret: SECRET,
+    channelAccessToken: 'test-access-token',
+    botUserId: BOT_USER_ID,
+    createdAt: now,
+    updatedAt: now,
+  });
 }
 
 // LINE 署名を計算する (X-Line-Signature = Base64(HMAC-SHA256(body, secret)))
@@ -71,9 +83,11 @@ function sign(body: string): string {
   return createHmac('sha256', SECRET).update(body, 'utf8').digest('base64');
 }
 
-// 1 件のテキストメッセージイベントを含む署名付きリクエストを組み立てる
-function makeRequest(text: string, userId: string): Request {
+// 1 件のテキストメッセージイベントを含む署名付きリクエストを組み立てる。
+// destination はチャネル解決に使う値で、既定はシード済みテナントの BOT_USER_ID
+function makeRequest(text: string, userId: string, destination: string = BOT_USER_ID): Request {
   const body = JSON.stringify({
+    destination,
     events: [
       {
         type: 'message',
@@ -96,12 +110,6 @@ describe('POST /api/inbound/line', () => {
     repos = ctx.repos;
     uow = ctx.uow;
     seed();
-    vi.stubEnv('LINE_CHANNEL_SECRET', SECRET);
-    vi.stubEnv('LINE_TARGET_TENANT_ID', TENANT);
-  });
-
-  afterEach(() => {
-    vi.unstubAllEnvs();
   });
 
   // Standard 以下のプランは LINE 連携不可 (§6.1 料金プラン)。署名は正しくても起票しない
@@ -260,12 +268,39 @@ describe('POST /api/inbound/line', () => {
     expect(findTicketIdByMessageId).toHaveBeenCalledTimes(2);
   });
 
-  // 署名が不正なリクエストは 401 で拒否する
+  // 署名が不正なリクエストは 401 で拒否する (destination は登録済みチャネルと一致させ、
+  // 「チャネル未登録」ではなく「署名不一致」の分岐を確実に踏む)
   it('署名が不正なら 401 を返す', async () => {
-    const body = JSON.stringify({ events: [] });
+    const body = JSON.stringify({ destination: BOT_USER_ID, events: [] });
     const req = new Request('http://localhost/api/inbound/line', {
       method: 'POST',
       headers: { 'content-type': 'application/json', 'x-line-signature': 'wrong' },
+      body,
+    });
+    const { POST } = await import('@/app/api/inbound/line/route');
+    const res = await POST(req);
+    expect(res.status).toBe(401);
+    expect(store.tickets.size).toBe(0);
+  });
+
+  // destination が未登録のチャネルを指す場合も 401 で拒否する (署名は正当な値で計算するが、
+  // どのテナントの鍵で検証すべきか分からないため署名検証まで到達しない)
+  it('destination が未登録のチャネルなら 401 を返す', async () => {
+    const unknownDestination = 'Uccccccccccccccccccccccccccccccc';
+    const body = JSON.stringify({
+      destination: unknownDestination,
+      events: [
+        {
+          type: 'message',
+          source: { type: 'user', userId: LINE_ID_UNLINKED },
+          message: { type: 'text', id: 'm1', text: 'プリンターが動きません' },
+        },
+      ],
+    });
+    // このチャネルの正しいシークレットが無いので、SECRET で署名しても一致しないテナントに届く想定
+    const req = new Request('http://localhost/api/inbound/line', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-line-signature': sign(body) },
       body,
     });
     const { POST } = await import('@/app/api/inbound/line/route');
