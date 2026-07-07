@@ -464,6 +464,24 @@ export async function escalateTicket(ticketId: string, reason: string) {
     console.error('[escalateTicket] エージェント宛メール送信に失敗しました', err);
   }
 
+  // Phase 4: Slack/Teams/Chatwork 外部通知 (updateTicketStatus と同じパターン)。
+  // エスカレーションは対応漏れを防ぐための最重要イベントであり、チーム共有チャネルに
+  // 一番届いてほしい通知であるにもかかわらず、これまでステータス変更のみ外部通知されていた。
+  // 外部通知の失敗はチケット更新に影響させないよう try/catch で包む。
+  try {
+    // ベース URL を解決してチケットリンクを組み立てる (メール送信と別 try のため再解決)
+    const baseUrl = resolveAppBaseUrl();
+    // 外部チャネル (Slack/Teams/Chatwork) にエスカレーション発生を通知する
+    await sendOutboundNotification(tenantId, {
+      subject: `エスカレーションされました: ${title}`,
+      body: `「${title}」がエスカレーションされました。理由: ${trimmedReason}`,
+      ticketUrl: `${baseUrl}/tickets/${ticketId}`,
+    });
+  } catch (err) {
+    // 外部通知の失敗はログに記録するが、チケット更新自体は成功扱いにする
+    console.error('[escalateTicket] 外部通知の送信に失敗しました (チケット更新は完了):', err);
+  }
+
   // 詳細ページを再描画
   revalidatePath(`/tickets/${ticketId}`);
 }
