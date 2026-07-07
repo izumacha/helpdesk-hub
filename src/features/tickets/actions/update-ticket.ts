@@ -42,7 +42,7 @@ import { getEmailSender } from '@/lib/email';
 // メールに埋め込むリンクのベース URL を解決するヘルパー
 import { resolveAppBaseUrl } from '@/lib/app-url';
 // Phase 4: Slack/Teams 外部通知ヘルパー (失敗してもチケット操作を止めない)
-import { sendOutboundNotification } from '@/lib/outbound-notify';
+import { sendOutboundNotification, notifyOutboundBestEffort } from '@/lib/outbound-notify';
 
 // セッションがログイン済みであることを保証するアサーション関数
 function assertAuthenticatedUser(session: Session | null): asserts session is Session {
@@ -354,23 +354,19 @@ export async function updateTicketAssignee(ticketId: string, newAssigneeId: stri
   // 担当者アサインもステータス変更・エスカレーションと同格の重要イベントであり、
   // チーム共有チャネルで「誰が対応することになったか」に気づけることが望ましい。
   // 担当解除 (null) はチームの注意を引く必要が薄いため対象外にする。
+  // 自己割当でも送る (上の個人宛メールとは異なる意図): Slack はチームの共有チャネル宛の
+  // 「見える化」目的なので、updateTicketStatus の Slack 通知と同じく自己操作でも除外しない。
   if (newAssigneeId) {
-    try {
-      // ベース URL を解決してチケットリンクを組み立てる (NEXTAUTH_URL 未設定時は例外 → 下の catch で握る)
-      const baseUrl = resolveAppBaseUrl();
-      // 外部チャネル (Slack/Teams/Chatwork) に担当者アサインを通知する
-      await sendOutboundNotification(tenantId, {
+    // ベース URL 解決・送信・ログ処理は共通ヘルパーに集約する (§6 DRY)
+    await notifyOutboundBestEffort(
+      tenantId,
+      (baseUrl) => ({
         subject: `担当者が割り当てられました: ${ticket.title}`,
         body: `担当: ${newName ?? '(不明)'}`,
         ticketUrl: buildTicketUrl(baseUrl, ticketId),
-      });
-    } catch (err) {
-      // 外部通知の失敗はログに記録するが、チケット更新自体は成功扱いにする
-      console.error(
-        '[updateTicketAssignee] 外部通知の送信に失敗しました (チケット更新は完了):',
-        err,
-      );
-    }
+      }),
+      '[updateTicketAssignee]',
+    );
   }
 
   // 詳細ページのキャッシュを無効化

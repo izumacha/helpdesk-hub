@@ -26,9 +26,7 @@ import { broadcastUnreadCountToMany } from '@/features/notifications/notify';
 // Phase 4 課金: 月間チケット上限チェック (Web フォーム・メール/LINE 取り込みと共有)
 import { getMonthlyTicketQuota } from '@/lib/tenant-plan';
 // Phase 4: Slack/Teams/Chatwork 外部通知ヘルパー (Web フォーム・メール・LINE 取り込みと共有)
-import { sendOutboundNotification } from '@/lib/outbound-notify';
-// メール/通知本文に載せる一覧ページの絶対 URL を組み立てるためのベース URL 解決ヘルパー
-import { resolveAppBaseUrl } from '@/lib/app-url';
+import { notifyOutboundBestEffort } from '@/lib/outbound-notify';
 
 // 1 インポートあたりの最大行数 (これを超えたらエラー)
 const MAX_ROWS = 200;
@@ -392,17 +390,16 @@ export async function importTickets(csvText: string): Promise<ImportTicketsResul
     // Phase 4: 新規起票を Slack/Teams/Chatwork へ通知する (Web フォーム・メール・LINE と同じ経路)。
     // CSV は 1 回で最大 MAX_ROWS 件を作成しうるため、他チャネルと違いチケットごとには送らず、
     // 件数をまとめた 1 通にする (アプリ内通知と同じ「まとめて 1 通」方針。200 件でも通知は 1 通)。
-    // 失敗してもインポート結果には影響させないベストエフォート。
-    try {
-      const baseUrl = resolveAppBaseUrl();
-      await sendOutboundNotification(tenantId, {
-        subject: `CSV インポートで${imported}件の問い合わせが追加されました`,
-        body: `一覧から内容を確認してください。`,
-        ticketUrl: `${baseUrl}/tickets`,
-      });
-    } catch (err) {
-      console.error('[importTickets] 外部通知の送信に失敗しました (インポートは完了):', err);
-    }
+    // ベース URL 解決・送信・失敗時のベストエフォートログは共通ヘルパーに集約する (§6 DRY)
+    await notifyOutboundBestEffort(
+      tenantId,
+      (baseUrl) => ({
+        subject: `CSV インポートで${imported}件の問い合わせが追加されました`, // 通知の見出し (件数を含める)
+        body: `一覧から内容を確認してください。`, // 個々のチケット内容は含めず一覧への導線のみ示す
+        ticketUrl: `${baseUrl}/tickets`, // 単一チケットに紐づかないため一覧ページへリンクする
+      }),
+      '[importTickets]',
+    );
 
     // 同テナントの他エージェント (インポート実行者を除く) に一括追加を通知する。
     // 個別チケットごとではなく 1 通にまとめることで通知の過多を防ぐ (200 件追加でも通知は 1 通)。

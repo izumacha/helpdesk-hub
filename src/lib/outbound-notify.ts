@@ -115,6 +115,28 @@ export async function sendOutboundNotification(
   });
 }
 
+// tenantId + 呼び出し元コンテキストを受け取り、ベース URL 解決 + 送信 + ベストエフォート
+// エラーハンドリングをまとめる共通ヘルパー。担当者アサイン変更・CSV インポートのように
+// 「ベース URL を解決してメッセージを組み立て、失敗はログのみに留める」形が繰り返し
+// 現れる箇所で使う (§6 DRY)。メッセージ本文はベース URL 依存 (ticketUrl) のことが多いため、
+// buildMessage にベース URL を渡してその場で組み立ててもらう。
+export async function notifyOutboundBestEffort(
+  tenantId: string, // 送信先テナント
+  buildMessage: (baseUrl: string) => OutboundMessage, // ベース URL を使ってメッセージを組み立てる関数
+  logContext: string, // エラーログの接頭辞 (呼び出し元を識別するため。例: '[updateTicketAssignee]')
+): Promise<void> {
+  try {
+    // ベース URL を取得する (NEXTAUTH_URL 未設定時に例外が出る可能性があるため内側に置く)
+    const baseUrl = resolveAppBaseUrl();
+    // 呼び出し元が組み立てたメッセージを外部チャネルへ送る
+    await sendOutboundNotification(tenantId, buildMessage(baseUrl));
+  } catch (err) {
+    // 外部通知の失敗はログに記録するが、呼び出し元の処理自体は成功扱いにする
+    // (ネットワーク障害・Webhook 設定ミスで本来の操作が失敗に見えるのを防ぐ)
+    console.error(`${logContext} 外部通知の送信に失敗しました (処理自体は完了):`, err);
+  }
+}
+
 // 新規チケット作成を Slack/Teams/Chatwork の外部チャネルへ通知する共通ヘルパー。
 // Phase 4「Slack / Chatwork / Microsoft Teams 通知 Adapter」の主目的である
 // 「新しい問い合わせが届いたことにすぐ気づける」を、起票チャネル (Web フォーム / メール取り込み /
