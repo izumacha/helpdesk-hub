@@ -34,6 +34,18 @@ vi.mock('undici', async (importOriginal) => {
   };
 });
 
+// getMonthlyTicketQuota だけ差し替え可能にする (実装は既定で本物を使い、上限到達テストでのみ
+// 上書きする)。Standard/Pro プランは現状無制限 (Infinity) のため、実際のプラン設定だけでは
+// 上限到達を再現できず、この関数の呼び出し配線自体を検証する必要があるため
+const { getMonthlyTicketQuotaMock } = vi.hoisted(() => ({
+  getMonthlyTicketQuotaMock: vi.fn(),
+}));
+vi.mock('@/lib/tenant-plan', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/lib/tenant-plan')>();
+  getMonthlyTicketQuotaMock.mockImplementation(actual.getMonthlyTicketQuota);
+  return { ...actual, getMonthlyTicketQuota: getMonthlyTicketQuotaMock };
+});
+
 // 各テストで差し替える可変な依存 (Route import 前に値を入れる)
 let store: Store;
 let repos: Repos;
@@ -631,6 +643,28 @@ describe('POST /api/inbound/email', () => {
       expect(reply.status).toBe(200);
       // スレッド追記では「新規起票」通知を重複して送らない
       expect(fetchMock).not.toHaveBeenCalled();
+    });
+  });
+
+  // 回帰防止: 月間チケット上限 (§6.1 料金プラン)。Web フォーム・CSV インポートと共有する
+  // getMonthlyTicketQuota が、メール取り込みからも呼ばれることを確認する。
+  // Standard プランは現状無制限のため、この関数自体をモックして上限到達を再現する。
+  describe('月間チケット上限 (§6.1 料金プラン)', () => {
+    it('上限到達済みなら隔離して 202 を返し、起票しない', async () => {
+      // 残枠 0 の状態を再現する
+      getMonthlyTicketQuotaMock.mockResolvedValueOnce({ limited: true, limit: 10, remaining: 0 });
+      const { POST } = await import('@/app/api/inbound/email/route');
+      const res = await POST(makeRequest(VALID_EMAIL));
+      expect(res.status).toBe(202);
+      expect(store.tickets.size).toBe(0);
+    });
+
+    it('残枠があれば通常どおり起票する', async () => {
+      getMonthlyTicketQuotaMock.mockResolvedValueOnce({ limited: true, limit: 10, remaining: 3 });
+      const { POST } = await import('@/app/api/inbound/email/route');
+      const res = await POST(makeRequest(VALID_EMAIL));
+      expect(res.status).toBe(201);
+      expect(store.tickets.size).toBe(1);
     });
   });
 });

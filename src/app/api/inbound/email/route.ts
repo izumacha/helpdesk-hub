@@ -58,6 +58,8 @@ import { formatTicketRef } from '@/lib/ticket-ref';
 import { isEmailInboundAllowed } from '@/lib/plan-guard';
 // Phase 4: Slack/Teams/Chatwork 外部通知ヘルパー (Web フォーム・LINE 取り込み・CSV インポートと共有)
 import { notifyNewTicketOutbound } from '@/lib/outbound-notify';
+// Phase 4 課金: 月間チケット上限チェック (Web フォーム・CSV インポートと共有)
+import { getMonthlyTicketQuota } from '@/lib/tenant-plan';
 
 // このルートは Node ランタイムで動かす (node:crypto / Prisma を使うため Edge では動かない)
 export const runtime = 'nodejs';
@@ -529,6 +531,20 @@ export async function POST(req: Request) {
     }
     // 参照先チケットが見つからない (削除済み等) 場合は、下の新規起票へフォールスルーする
     console.warn('[POST /api/inbound/email] referenced ticket not found; creating a new one');
+  }
+
+  // Phase 4 課金: 月間チケット上限チェック (Web フォーム・CSV インポートと共有)。
+  // tenant-plan.ts のコメントで「全ての起票入口で共有する」と明記されているにもかかわらず、
+  // メール取り込みだけこのチェックを呼んでいなかった。現状メール取り込みが使えるプラン
+  // (Standard 以上) は月間上限が無制限のため実害は無いが、将来 Standard に有限上限が付いた
+  // 瞬間にこの入口だけ無制限の抜け道になる SSOT 違反を防ぐため、他入口と揃えておく。
+  // 上限到達時は未知送信者と同じ「隔離 202」にして、プロバイダの再送ループを避ける。
+  const quota = await getMonthlyTicketQuota(tenant.id, tenant.subscriptionPlan);
+  if (quota.limited && quota.remaining <= 0) {
+    console.warn('[POST /api/inbound/email] quarantined: monthly ticket quota reached', {
+      plan: tenant.subscriptionPlan,
+    });
+    return NextResponse.json({ status: 'quarantined' }, { status: 202 });
   }
 
   // 起票時刻 (SLA 期限の計算基準)
