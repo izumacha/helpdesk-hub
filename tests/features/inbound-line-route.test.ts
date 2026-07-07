@@ -10,6 +10,21 @@ import { hashLineLinkCode, normalizeLineLinkCode } from '@/lib/line-link';
 // レート制限バケットをテスト間で初期化するためのヘルパー (グローバル Map の汚染を防ぐ)
 import { __resetRateLimits } from '@/lib/rate-limit';
 
+// 外部通知 (Slack/Teams/Chatwork) テスト用の Slack Webhook URL (実際には送信されない)
+const SLACK_WEBHOOK_URL = 'https://hooks.slack.com/services/T000/B000/xxx';
+
+// src/lib/webhook-fetch.ts は SSRF 対策の DNS 検証用 Dispatcher (Agent) を使うため
+// undici の fetch を直接 import している。vi.stubGlobal('fetch', ...) だけでは差し替わらない
+// ため、undici の fetch を globalThis.fetch へ委譲するモックにする (他テストへは影響しない)
+vi.mock('undici', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('undici')>();
+  return {
+    ...actual,
+    fetch: ((...args: Parameters<typeof globalThis.fetch>) =>
+      globalThis.fetch(...args)) as unknown as typeof actual.fetch,
+  };
+});
+
 const SECRET = 'test-line-channel-secret';
 const TENANT = 'default-tenant';
 const AGENT_ID = 'u-agent-1';
@@ -342,5 +357,72 @@ describe('POST /api/inbound/line', () => {
     const res = await POST(req);
     expect(res.status).toBe(401);
     expect(store.tickets.size).toBe(0);
+  });
+
+  // 回帰防止: 新規起票を Slack/Teams/Chatwork の外部チャネルへ通知する (Web フォーム/メール/CSV と共有)。
+  // 従来は Web フォーム (POST /api/tickets) にしか配線されておらず、LINE 経由の起票は
+  // 担当者チームの Slack に気づかれないまま埋もれてしまっていた。
+  describe('外部通知 (Slack/Teams/Chatwork)', () => {
+    let fetchMock: ReturnType<typeof vi.fn>;
+    beforeEach(() => {
+      fetchMock = vi
+        .fn()
+        .mockResolvedValue({ ok: true, status: 200, text: () => Promise.resolve('ok') });
+      vi.stubGlobal('fetch', fetchMock);
+    });
+    afterEach(() => {
+      vi.unstubAllGlobals();
+    });
+
+    it('Slack Webhook 設定済みテナントで新規起票すると Slack へ通知される', async () => {
+      const tenant = store.tenants.get(TENANT)!;
+      store.tenants.set(TENANT, { ...tenant, slackWebhookUrl: SLACK_WEBHOOK_URL });
+
+      const { POST } = await import('@/app/api/inbound/line/route');
+      const res = await POST(makeRequest('プリンターが動きません', LINE_ID_UNLINKED));
+      expect(res.status).toBe(200);
+      expect(store.tickets.size).toBe(1);
+
+      // Slack Webhook へ 1 回だけ POST される
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      const [url, init] = fetchMock.mock.calls[0];
+      expect(url).toBe(SLACK_WEBHOOK_URL);
+      expect(JSON.stringify(JSON.parse(init.body))).toContain('プリンターが動きません');
+    });
+
+    it('外部通知が未設定のテナントで新規起票しても fetch は呼ばれない', async () => {
+      const { POST } = await import('@/app/api/inbound/line/route');
+      const res = await POST(makeRequest('プリンターが動きません', LINE_ID_UNLINKED));
+      expect(res.status).toBe(200);
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    // ワンタイムコードでの連携処理は起票を伴わないため、新規起票向け外部通知も送らない
+    it('ワンタイムコードでの連携処理では外部通知を送らない', async () => {
+      const tenant = store.tenants.get(TENANT)!;
+      store.tenants.set(TENANT, { ...tenant, slackWebhookUrl: SLACK_WEBHOOK_URL });
+      // 有効な連携コードを発行しておく
+      const now = new Date();
+      const rawCode = 'ABCD1234';
+      const codeHash = await hashLineLinkCode(normalizeLineLinkCode(rawCode));
+      store.users.set(MEMBER_ID, {
+        id: MEMBER_ID,
+        email: 'member@example.com',
+        name: '会員 花子',
+        passwordHash: 'x',
+        role: 'requester',
+        tenantId: TENANT,
+        createdAt: now,
+        updatedAt: now,
+        lineLinkCodeHash: codeHash,
+        lineLinkCodeExpiresAt: new Date(Date.now() + 60_000),
+      });
+
+      const { POST } = await import('@/app/api/inbound/line/route');
+      const res = await POST(makeRequest(rawCode, LINE_ID_NEW));
+      expect(res.status).toBe(200);
+      expect(store.tickets.size).toBe(0);
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
   });
 });

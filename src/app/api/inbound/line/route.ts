@@ -61,6 +61,8 @@ import {
 import { broadcastUnreadCountToMany } from '@/features/notifications/notify';
 // LINE 連携機能のプランゲート (§6.1 料金プラン: Pro / Enterprise のみ利用可能)
 import { isLineIntegrationAllowed } from '@/lib/plan-guard';
+// Phase 4: Slack/Teams/Chatwork 外部通知ヘルパー (Web フォーム・メール取り込み・CSV インポートと共有)
+import { notifyNewTicketOutbound } from '@/lib/outbound-notify';
 
 // このルートは Node ランタイムで動かす (node:crypto / Prisma を使うため Edge では動かない)
 export const runtime = 'nodejs';
@@ -539,6 +541,9 @@ async function processLineEvent(
         notifyErr,
       );
     }
+    // Phase 4: 新規起票を Slack/Teams/Chatwork へ通知する (Web フォーム・メール・CSV と同じ経路)。
+    // アプリ内通知とは独立したベストエフォート処理なので、失敗してもここまでの成功を巻き戻さない
+    await notifyNewTicketOutbound(targetTenantId, { id: ticketId, title, priority: 'Medium' });
     return ticketId;
   } catch (err) {
     // 起票失敗は握り潰さずログに残す。再送による重複起票を避けるため呼び出し側は 200 で受領する

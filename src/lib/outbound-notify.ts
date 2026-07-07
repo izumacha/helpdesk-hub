@@ -16,6 +16,17 @@ import type { OutboundMessage, OutboundNotifier } from '@/data/ports/outbound-no
 import { repos } from '@/data';
 // SSRF ガード: 送信直前に URL の安全性を再検証する (DNS リバインディング対策の二重防御)
 import { isUnsafeUrl } from '@/lib/ssrf-guard';
+// メール/通知本文に載せるチケット詳細ページの絶対 URL を組み立てるためのベース URL 解決ヘルパー
+import { resolveAppBaseUrl } from '@/lib/app-url';
+// 優先度の日本語ラベル (外部通知本文に使う)
+import { PRIORITY_LABELS } from '@/lib/constants';
+// 新規作成されたチケットの型 (通知本文の組み立てに使う最小限のフィールドのみ参照)
+import type { Ticket } from '@/domain/types';
+
+// notifyNewTicketOutbound が参照する最小限のチケット情報。
+// メール/LINE 取り込みは冪等化ヘルパーが { id, alreadyExisted } しか返さず、通知のためだけに
+// フル Ticket を再取得するのは無駄なため、呼び出し元が持つ最小限のフィールドだけ要求する。
+export type NewTicketNotifyInput = Pick<Ticket, 'id' | 'title' | 'priority'>;
 
 // 設定済みチャネルを表す内部型 (ログ用のチャネル名と送信実体をペアで持つ)
 interface ResolvedChannel {
@@ -37,7 +48,9 @@ function addWebhookChannel(
   // DNS リバインディング攻撃 (登録後に内部 IP へ変更) を緩和するため送信直前にも再検証する。
   if (isUnsafeUrl(url)) {
     // 安全でない URL が DB に残っている場合はスキップしてエラーログを残す
-    console.error(`[outbound-notify] SSRF ガード: 安全でない ${name} Webhook URL をスキップしました`);
+    console.error(
+      `[outbound-notify] SSRF ガード: 安全でない ${name} Webhook URL をスキップしました`,
+    );
     // 安全でない URL にはリクエストを送らずここで終わる
     return;
   }
@@ -100,4 +113,32 @@ export async function sendOutboundNotification(
       );
     }
   });
+}
+
+// 新規チケット作成を Slack/Teams/Chatwork の外部チャネルへ通知する共通ヘルパー。
+// Phase 4「Slack / Chatwork / Microsoft Teams 通知 Adapter」の主目的である
+// 「新しい問い合わせが届いたことにすぐ気づける」を、起票チャネル (Web フォーム / メール取り込み /
+// LINE 連携 / CSV インポート) を問わず満たすため、チケットを作成する全ての入口から呼ぶ。
+// 送信失敗はログに残すだけで呼び出し元のチケット作成処理には影響させない (非クリティカルな副作用)。
+export async function notifyNewTicketOutbound(
+  tenantId: string,
+  ticket: NewTicketNotifyInput,
+): Promise<void> {
+  try {
+    // ベース URL を取得してチケットリンクを組み立てる (NEXTAUTH_URL 未設定時に例外が出る可能性があるため内側に置く)
+    const baseUrl = resolveAppBaseUrl();
+    // 外部チャネル (Slack/Teams/Chatwork) に通知を送る
+    await sendOutboundNotification(tenantId, {
+      subject: `新しい問い合わせが届きました: ${ticket.title}`,
+      body: `優先度: ${PRIORITY_LABELS[ticket.priority] ?? ticket.priority}`,
+      ticketUrl: `${baseUrl}/tickets/${ticket.id}`,
+    });
+  } catch (err) {
+    // 外部通知の失敗はログに記録するが、呼び出し元のチケット作成自体は成功扱いにする
+    // (ネットワーク障害・Webhook 設定ミスでチケット起票が失敗に見えるのを防ぐ)
+    console.error(
+      '[notifyNewTicketOutbound] 外部通知の送信に失敗しました (チケット作成は完了):',
+      err,
+    );
+  }
 }
