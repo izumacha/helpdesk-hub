@@ -94,6 +94,10 @@ export async function createCheckoutSession(
           tenantId: session.user.tenantId, // Webhook でテナントを特定するためのキー
         },
       },
+      // §8 リスク対策「IT導入補助金の審査要件 (インボイス対応)」。日本の適格請求書等保存方式
+      // (インボイス制度) に対応するため、顧客の登録番号 (T+13桁) を Checkout 画面で収集できるように
+      // する。任意入力扱い (required: 'never') とし、未登録の顧客の決済を妨げない
+      tax_id_collection: { enabled: true },
     });
 
     // Stripe Checkout の支払いページ URL を返す
