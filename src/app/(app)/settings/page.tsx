@@ -2,6 +2,9 @@
 import { auth } from '@/lib/auth';
 // 現在ログイン中のテナントの動作モード (lite | pro) を取得するヘルパー
 import { getCurrentTenantMode } from '@/lib/tenant';
+// tenantId → Tenant のリクエストスコープ共有キャッシュ。(app)/layout.tsx 等と同じキャッシュ
+// 経由でテナント本体を取得し、同一リクエスト内での冗長な Tenant SELECT を避ける
+import { getCachedTenant } from '@/lib/tenant-cache';
 // クライアント遷移付きリンク (テナント作成画面への導線)
 import Link from 'next/link';
 // モードの日本語ラベル (現在値の表示に使う)
@@ -60,8 +63,9 @@ export default async function SettingsPage() {
   const mode = await getCurrentTenantMode(session.user.tenantId);
   // Phase 4: テナント情報・拠点一覧・現在のスタッフ人数を並列取得する
   const [tenant, locations, currentUserCount] = await Promise.all([
-    // テナント情報 (slackWebhookUrl / プラン / Stripe 情報の現在値を取得)
-    repos.tenants.findById(session.user.tenantId),
+    // テナント情報 (slackWebhookUrl / プラン / Stripe 情報の現在値を取得)。共有キャッシュ経由
+    // にすることで、同一リクエスト内の (app)/layout.tsx (mode/plan 解決) と Tenant SELECT を共有する
+    getCachedTenant(session.user.tenantId),
     // 拠点一覧 (LocationsSection の初期値として渡す)
     repos.locations.listByTenant(session.user.tenantId),
     // 現在のスタッフ人数 (agent/admin のみ)。Stripe ダウングレード後にプラン上限を
@@ -116,6 +120,14 @@ export default async function SettingsPage() {
     tenant?.inboundToken && inboundEmailDomain
       ? buildInboundAddress(tenant.inboundToken, inboundEmailDomain)
       : null;
+  // アドレスが組み立てられない場合の原因は 2 通りある (このテナント固有の inboundToken 未発行 か、
+  // 環境側の INBOUND_EMAIL_DOMAIN 未設定か) ので、案内メッセージを取り違えないよう区別する。
+  // inboundToken は新規テナント作成時 (create-tenant.ts) にのみ自動発行され、それ以前に作成された
+  // テナントには自動付与されない (20260619000000_add_tenant_inbound_token マイグレーション参照) ため
+  // 実運用でも起こりうる
+  const inboundEmailUnavailableReason = tenant?.inboundToken
+    ? 'domain' // トークンはあるがドメイン未設定
+    : 'token'; // このテナントにトークン自体が未発行
 
   return (
     <div className="mx-auto max-w-2xl space-y-6">
@@ -182,11 +194,17 @@ export default async function SettingsPage() {
             <p className="rounded bg-slate-50 px-2 py-1 font-mono text-xs break-all text-slate-700 ring-1 ring-slate-200">
               {inboundEmailAddress}
             </p>
-          ) : (
+          ) : inboundEmailUnavailableReason === 'domain' ? (
             // INBOUND_EMAIL_DOMAIN が未設定の環境向けの案内 (運用者向け。秘密情報は含まない)
             <p className="rounded-lg bg-amber-50 px-3 py-2.5 text-sm text-amber-800 ring-1 ring-amber-200">
               メール取り込み用のドメインが未設定のため、転送先アドレスを表示できません。
               運用者に環境変数 (INBOUND_EMAIL_DOMAIN) の設定を確認してください。
+            </p>
+          ) : (
+            // このテナントに inboundToken が未発行の場合の案内 (マイグレーション前から存在する
+            // テナント等、create-tenant.ts の自動発行を経ていないケース)
+            <p className="rounded-lg bg-amber-50 px-3 py-2.5 text-sm text-amber-800 ring-1 ring-amber-200">
+              このテナントには転送先アドレスが未発行です。サポートまでお問い合わせください。
             </p>
           )}
         </section>
