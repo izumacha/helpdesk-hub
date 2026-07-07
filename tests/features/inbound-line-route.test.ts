@@ -9,6 +9,8 @@ import type { Repos, UnitOfWork } from '@/data/ports/unit-of-work';
 import { hashLineLinkCode, normalizeLineLinkCode } from '@/lib/line-link';
 // レート制限バケットをテスト間で初期化するためのヘルパー (グローバル Map の汚染を防ぐ)
 import { __resetRateLimits } from '@/lib/rate-limit';
+// 連携コード冪等化 Map をテスト間で初期化・検査するためのヘルパー
+import { __resetLineLinkCodeDedup, __getLineLinkCodeDedupSize } from '@/lib/line-link-code-dedup';
 
 // 外部通知 (Slack/Teams/Chatwork) テスト用の Slack Webhook URL (実際には送信されない)
 const SLACK_WEBHOOK_URL = 'https://hooks.slack.com/services/T000/B000/xxx';
@@ -23,6 +25,18 @@ vi.mock('undici', async (importOriginal) => {
     fetch: ((...args: Parameters<typeof globalThis.fetch>) =>
       globalThis.fetch(...args)) as unknown as typeof actual.fetch,
   };
+});
+
+// getMonthlyTicketQuota だけ差し替え可能にする (実装は既定で本物を使い、上限到達テストでのみ
+// 上書きする)。Pro プランは現状無制限 (Infinity) のため、実際のプラン設定だけでは
+// 上限到達を再現できず、この関数の呼び出し配線自体を検証する必要があるため
+const { getMonthlyTicketQuotaMock } = vi.hoisted(() => ({
+  getMonthlyTicketQuotaMock: vi.fn(),
+}));
+vi.mock('@/lib/tenant-plan', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/lib/tenant-plan')>();
+  getMonthlyTicketQuotaMock.mockImplementation(actual.getMonthlyTicketQuota);
+  return { ...actual, getMonthlyTicketQuota: getMonthlyTicketQuotaMock };
 });
 
 const SECRET = 'test-line-channel-secret';
@@ -102,14 +116,19 @@ function sign(body: string): string {
 
 // 1 件のテキストメッセージイベントを含む署名付きリクエストを組み立てる。
 // destination はチャネル解決に使う値で、既定はシード済みテナントの BOT_USER_ID
-function makeRequest(text: string, userId: string, destination: string = BOT_USER_ID): Request {
+function makeRequest(
+  text: string,
+  userId: string,
+  destination: string = BOT_USER_ID,
+  messageId: string = 'm1',
+): Request {
   const body = JSON.stringify({
     destination,
     events: [
       {
         type: 'message',
         source: { type: 'user', userId },
-        message: { type: 'text', id: 'm1', text },
+        message: { type: 'text', id: messageId, text },
       },
     ],
   });
@@ -129,6 +148,9 @@ describe('POST /api/inbound/line', () => {
     seed();
     // レート制限バケットはモジュールグローバルなので、他ファイルのテストの影響を受けないよう初期化する
     __resetRateLimits();
+    // 連携コード冪等化 Map もモジュールグローバルなので、固定 messageId ('m1') を使う
+    // 他テストの記録が残らないよう初期化する (route モジュールはテスト間でキャッシュされる)
+    __resetLineLinkCodeDedup();
   });
 
   afterEach(() => {
@@ -238,6 +260,105 @@ describe('POST /api/inbound/line', () => {
     expect(store.users.get(MEMBER_ID)?.lineUserId).toBe(LINE_ID_NEW);
     // 発行中コードは消費済み
     expect(store.users.get(MEMBER_ID)?.lineLinkCodeHash).toBeNull();
+  });
+
+  // 回帰防止: 連携成功直後に Webhook 応答が遅延して LINE が同一メッセージを再送すると、
+  // 2 回目はコードが既に消費済み (invalid) になり、コード文字列そのものが本文の問い合わせ
+  // として誤起票され得た (既知の制約として明記されていたエッジケース)。
+  // 同一 messageId の連携コード処理は冪等化され、再送では起票されないことを確認する。
+  it('連携コード成功後の同一メッセージ ID 再送では誤起票しない', async () => {
+    const now = new Date();
+    const rawCode = 'AB7K-9QF2';
+    const codeHash = await hashLineLinkCode(normalizeLineLinkCode(rawCode));
+    store.users.set(MEMBER_ID, {
+      id: MEMBER_ID,
+      email: 'member@example.com',
+      name: '依頼 花子',
+      passwordHash: 'x',
+      role: 'requester',
+      tenantId: TENANT,
+      createdAt: now,
+      updatedAt: now,
+      lineLinkCodeHash: codeHash,
+      lineLinkCodeExpiresAt: new Date(Date.now() + 60_000),
+    });
+    const { POST } = await import('@/app/api/inbound/line/route');
+    // 1 回目: 連携が成立し、コードが消費される (チケットは作られない)
+    const req = () => makeRequest('ab7k9qf2', LINE_ID_NEW);
+    const first = await POST(req());
+    expect(first.status).toBe(200);
+    expect(store.tickets.size).toBe(0);
+    expect(store.users.get(MEMBER_ID)?.lineUserId).toBe(LINE_ID_NEW);
+
+    // 2 回目: 同一 messageId ('m1') の再送 (LINE の at-least-once 再送を模す)。
+    // 冪等化が無ければコードが消費済みで invalid 判定になり、"ab7k9qf2" が本文の問い合わせとして
+    // 誤起票されてしまう。冪等化により再送はスキップされ、チケットは作られない。
+    const second = await POST(req());
+    expect(second.status).toBe(200);
+    expect(store.tickets.size).toBe(0);
+  });
+
+  // 回帰防止: 連携コード冪等化 Map (recentlyLinkedMessageIds) が無制限に増加しないこと。
+  // 二度と再送されない (= 大多数の) messageId も、TTL 経過後の別呼び出しに便乗した
+  // 「ながら掃除」で削除されることを検証する (src/lib/rate-limit.ts の sweepStaleBuckets と同じ)。
+  it('連携コード冪等化 Map は TTL 超過エントリを掃除し無制限に増加しない', async () => {
+    vi.useFakeTimers();
+    try {
+      const now = new Date();
+      // LINE_LINK_CODE_LENGTH(8) かつ CODE_ALPHABET (0-9, I/L/O/U を除く A-Z) に収まる
+      // ユニークなコードを 3 件用意する (それぞれ別の messageId で連携させるため)
+      const rawCodes = ['A1B2C3D0', 'A1B2C3D1', 'A1B2C3D2'];
+      for (let i = 0; i < rawCodes.length; i += 1) {
+        const codeHash = await hashLineLinkCode(normalizeLineLinkCode(rawCodes[i]!));
+        store.users.set(`u-member-${i}`, {
+          id: `u-member-${i}`,
+          email: `member${i}@example.com`,
+          name: `会員${i}`,
+          passwordHash: 'x',
+          role: 'requester',
+          tenantId: TENANT,
+          createdAt: now,
+          updatedAt: now,
+          lineLinkCodeHash: codeHash,
+          lineLinkCodeExpiresAt: new Date(Date.now() + 3_600_000),
+        });
+      }
+      const { POST } = await import('@/app/api/inbound/line/route');
+      // 3 件、それぞれ異なる messageId で連携成功させる (二度と再送されない想定の messageId)
+      for (let i = 0; i < rawCodes.length; i += 1) {
+        const res = await POST(
+          makeRequest(rawCodes[i]!, `U${'1'.repeat(31)}${i}`, BOT_USER_ID, `link-${i}`),
+        );
+        expect(res.status).toBe(200);
+      }
+      expect(__getLineLinkCodeDedupSize()).toBe(3);
+
+      // TTL (10分) を超えて時計を進める
+      vi.setSystemTime(new Date(Date.now() + 11 * 60 * 1000));
+
+      // 4 件目の連携成功イベント (新しい messageId) がながら掃除のトリガーになる
+      const rawCode4 = 'A1B2C3D4';
+      const codeHash4 = await hashLineLinkCode(normalizeLineLinkCode(rawCode4));
+      store.users.set('u-member-4', {
+        id: 'u-member-4',
+        email: 'member4@example.com',
+        name: '会員4',
+        passwordHash: 'x',
+        role: 'requester',
+        tenantId: TENANT,
+        createdAt: now,
+        updatedAt: now,
+        lineLinkCodeHash: codeHash4,
+        lineLinkCodeExpiresAt: new Date(Date.now() + 3_600_000),
+      });
+      const res4 = await POST(makeRequest(rawCode4, `U${'2'.repeat(32)}`, BOT_USER_ID, 'link-4'));
+      expect(res4.status).toBe(200);
+
+      // 期限切れの 3 件は掃除され、直近の 1 件だけが残る (4 件のまま溜まり続けない)
+      expect(__getLineLinkCodeDedupSize()).toBe(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   // コードの形だが発行行が無いテキストは通常の問い合わせとして起票する
@@ -423,6 +544,27 @@ describe('POST /api/inbound/line', () => {
       expect(res.status).toBe(200);
       expect(store.tickets.size).toBe(0);
       expect(fetchMock).not.toHaveBeenCalled();
+    });
+  });
+
+  // 回帰防止: 月間チケット上限 (§6.1 料金プラン)。Web フォーム・CSV インポート・メール取り込みと
+  // 共有する getMonthlyTicketQuota が、LINE 取り込みからも呼ばれることを確認する。
+  // Pro プランは現状無制限のため、この関数自体をモックして上限到達を再現する。
+  describe('月間チケット上限 (§6.1 料金プラン)', () => {
+    it('上限到達済みなら起票せず 200 を返す', async () => {
+      getMonthlyTicketQuotaMock.mockResolvedValueOnce({ limited: true, limit: 10, remaining: 0 });
+      const { POST } = await import('@/app/api/inbound/line/route');
+      const res = await POST(makeRequest('プリンターが動きません', LINE_ID_UNLINKED));
+      expect(res.status).toBe(200);
+      expect(store.tickets.size).toBe(0);
+    });
+
+    it('残枠があれば通常どおり起票する', async () => {
+      getMonthlyTicketQuotaMock.mockResolvedValueOnce({ limited: true, limit: 10, remaining: 3 });
+      const { POST } = await import('@/app/api/inbound/line/route');
+      const res = await POST(makeRequest('プリンターが動きません', LINE_ID_UNLINKED));
+      expect(res.status).toBe(200);
+      expect(store.tickets.size).toBe(1);
     });
   });
 });

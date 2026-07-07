@@ -539,4 +539,51 @@ describe('POST /api/tickets/[id]/comments', () => {
       repos.users.findById = originalFindById;
     }
   });
+
+  // 回帰防止: コメント投稿を Slack/Teams/Chatwork の外部チャネルへ通知する
+  // (updateTicketStatus/escalateTicket/updateTicketAssignee と同じパターン)。
+  // 従来はアプリ内通知・メール・LINE はあるのに、外部チャネルにだけ一切届かなかった。
+  describe('外部通知 (Slack/Teams/Chatwork)', () => {
+    const SLACK_WEBHOOK_URL = 'https://hooks.slack.com/services/T000/B000/xxx';
+    let fetchMock: ReturnType<typeof vi.fn>;
+    beforeEach(() => {
+      fetchMock = vi
+        .fn()
+        .mockResolvedValue({ ok: true, status: 200, text: () => Promise.resolve('ok') });
+      vi.stubGlobal('fetch', fetchMock);
+    });
+
+    it('Slack Webhook 設定済みテナントでコメント投稿すると Slack へ通知される', async () => {
+      const { ticketId } = await seed();
+      const tenant = store.tenants.get(TENANT)!;
+      store.tenants.set(TENANT, { ...tenant, slackWebhookUrl: SLACK_WEBHOOK_URL });
+
+      try {
+        mockSession = buildSession(AGENT, 'agent', TENANT);
+        const { POST } = await import('@/app/api/tickets/[id]/comments/route');
+        const res = await POST(buildRequest('対応しました', []), makeParams(ticketId));
+        expect(res.status).toBe(201);
+
+        expect(fetchMock).toHaveBeenCalledTimes(1);
+        const [url, init] = fetchMock.mock.calls[0];
+        expect(url).toBe(SLACK_WEBHOOK_URL);
+        expect(JSON.stringify(JSON.parse(init.body))).toContain('プリンタ');
+      } finally {
+        vi.unstubAllGlobals();
+      }
+    });
+
+    it('外部通知が未設定のテナントでコメント投稿しても fetch は呼ばれない', async () => {
+      const { ticketId } = await seed();
+      try {
+        mockSession = buildSession(AGENT, 'agent', TENANT);
+        const { POST } = await import('@/app/api/tickets/[id]/comments/route');
+        const res = await POST(buildRequest('対応しました', []), makeParams(ticketId));
+        expect(res.status).toBe(201);
+        expect(fetchMock).not.toHaveBeenCalled();
+      } finally {
+        vi.unstubAllGlobals();
+      }
+    });
+  });
 });

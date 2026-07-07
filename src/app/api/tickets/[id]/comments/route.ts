@@ -36,6 +36,8 @@ import { validateUploadedFiles } from '@/lib/validations/attachment';
 import { MIME_TO_EXTENSION } from '@/domain/attachment';
 // LINE 連携機能のプランゲート (§6.1 料金プラン: Pro / Enterprise のみ利用可能)
 import { isLineIntegrationAllowed } from '@/lib/plan-guard';
+// Phase 4: Slack/Teams/Chatwork 外部通知のベストエフォート送信共通ヘルパー
+import { notifyOutboundBestEffort } from '@/lib/outbound-notify';
 
 // /api/tickets/[id]/comments の動的セグメント
 type Params = { params: Promise<{ id: string }> };
@@ -196,6 +198,21 @@ export async function POST(req: Request, { params }: Params) {
 
   // 通知対象が 1 名以上いれば未読件数を一斉配信
   if (recipientIds.length > 0) await broadcastUnreadCountToMany(recipientIds, tenantId);
+
+  // Phase 4: Slack/Teams/Chatwork 外部通知 (updateTicketStatus / escalateTicket /
+  // updateTicketAssignee と同じパターン)。ステータス変更・エスカレーション・担当者割当は
+  // 外部チャネルに通知されるのに、コメント (依頼者からの新着質問・担当者の返信) だけ
+  // チーム共有チャネルに一切届かず「対応漏れに気づける」という Phase 4 の目的から抜けていた。
+  // アプリ内通知/メール/LINE と同じくベストエフォートで送る (失敗してもコメント投稿は成功扱い)。
+  await notifyOutboundBestEffort(
+    tenantId,
+    (baseUrl) => ({
+      subject: `新しいコメントが投稿されました: ${ticket.title}`,
+      body: `投稿者: ${session.user.name ?? (authorIsAgent ? '担当者' : '依頼者')}`,
+      ticketUrl: buildTicketUrl(baseUrl, ticketId),
+    }),
+    '[POST /api/tickets/[id]/comments]',
+  );
 
   // Phase 2「対応すると依頼者にメールで返信が届く」「担当者の返信が LINE に返る」
   // (docs/smb-dx-pivot-plan.md §4 Phase 2): 担当者がコメント (返信) した場合は、依頼者が
