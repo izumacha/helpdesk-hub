@@ -466,6 +466,7 @@ export function runTicketRepositoryContract(
         { reason: 'cross-tenant attempt', at: new Date() },
         tenantB,
       );
+      await ctx.repos.tickets.markFirstResponded(ticketA.id, new Date(), tenantB);
 
       // A 側の状態は一切変わっていないこと (status=New, priority=Low, assignee=null)
       const fresh = await ctx.repos.tickets.findById(ticketA.id, TENANT_ID);
@@ -473,6 +474,27 @@ export function runTicketRepositoryContract(
       expect(fresh?.priority).toBe('Low');
       expect(fresh?.assigneeId).toBeNull();
       expect(fresh?.escalatedAt).toBeNull();
+      expect(fresh?.firstRespondedAt).toBeNull();
+    });
+
+    // markFirstResponded が同テナントの行には正しく反映されること
+    it('markFirstResponded records the timestamp for a same-tenant ticket', async () => {
+      const { requester, categoryId } = await ctx.seedBasicFixture();
+      const ticket = await ctx.repos.tickets.create({
+        title: '初回応答未対応',
+        body: 'b',
+        priority: 'Medium',
+        creatorId: requester.id,
+        categoryId,
+        tenantId: TENANT_ID,
+      });
+      expect(ticket.firstRespondedAt).toBeNull();
+
+      const respondedAt = new Date();
+      await ctx.repos.tickets.markFirstResponded(ticket.id, respondedAt, TENANT_ID);
+
+      const fresh = await ctx.repos.tickets.findById(ticket.id, TENANT_ID);
+      expect(fresh?.firstRespondedAt?.getTime()).toBe(respondedAt.getTime());
     });
 
     // dashboardStats が他テナントのチケットを集計に含めないこと

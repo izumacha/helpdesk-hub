@@ -261,6 +261,11 @@ export function makeTicketRepo(db: PrismaLike): TicketRepository {
       });
     },
 
+    // 初回応答日時を記録する (tenantId スコープ)
+    async markFirstResponded(id, at, tenantId) {
+      await db.ticket.updateMany({ where: { id, tenantId }, data: { firstRespondedAt: at } });
+    },
+
     // 品質メトリクスを算出して返す (issue-backlog #25)
     // 平均初回応答時間・平均解決時間・再オープン率を 3 本の SQL で並列取得する。
     // Prisma ORM では日時間隔の AVG を直接計算できないため $queryRaw で PostgreSQL の

@@ -48,7 +48,7 @@ import { initialStatusForMode } from '@/domain/ticket-status';
 // 公開エンドポイントの流量制限 (§9: DoS / リソース枯渇防止)
 import { enforceRateLimit, RateLimitError } from '@/lib/rate-limit';
 // 優先度から解決期限を計算する SLA ヘルパー (他の取り込みチャネルと同じ既定値に揃える)
-import { calculateResolutionDueAt } from '@/lib/sla';
+import { calculateFirstResponseDueAt, calculateResolutionDueAt } from '@/lib/sla';
 // LINE メンバー紐付け: 受信テキストの正規化・コード形判定・ハッシュ化 (発行は Web 設定画面側)
 // LINE ユーザー ID の正規形式 (line-push.ts と共有する単一の源)
 import {
@@ -166,6 +166,7 @@ interface LineEventContext {
   now: Date; // 起票時刻 (SLA 期限計算の基準)
   initialStatus: ReturnType<typeof initialStatusForMode>; // 初期ステータス (mode 依存)
   resolutionDueAt: ReturnType<typeof calculateResolutionDueAt>; // 優先度 Medium ベースの解決期限
+  firstResponseDueAt: ReturnType<typeof calculateFirstResponseDueAt>; // 優先度 Medium ベースの初回応答期限
   quota: MonthlyTicketQuota; // 月間チケット上限の残枠 (イベントごとに消費するミュータブルなカウンタ)
 }
 
@@ -334,6 +335,8 @@ export async function POST(req: Request) {
   const initialStatus = initialStatusForMode(tenant.mode);
   // メッセージには期限指定が無いため優先度 Medium ベースで解決期限を算出する
   const resolutionDueAt = calculateResolutionDueAt('Medium', now);
+  // 初回応答期限も同じく優先度 Medium ベースで自動算出する
+  const firstResponseDueAt = calculateFirstResponseDueAt('Medium', now);
   // Phase 4 課金: 月間チケット上限の残枠を 1 度だけ取得する (Web フォーム・CSV インポートと共有)。
   // 1 リクエストに複数イベントが含まれうるため、イベントごとに ctx.quota.remaining を消費する
   const quota = await getMonthlyTicketQuota(targetTenantId, tenant.subscriptionPlan);
@@ -347,6 +350,7 @@ export async function POST(req: Request) {
     now, // 起票時刻 (SLA 期限計算の基準)
     initialStatus, // 初期ステータス (mode 依存)
     resolutionDueAt, // 優先度 Medium ベースの解決期限
+    firstResponseDueAt, // 優先度 Medium ベースの初回応答期限
     quota, // 月間チケット上限の残枠
   };
   const ticketIds: string[] = [];
@@ -371,7 +375,15 @@ async function processLineEvent(
   ctx: LineEventContext,
 ): Promise<string | null> {
   // 文脈オブジェクトから各値を取り出す (POST 側で 1 度だけ解決済み)
-  const { targetTenantId, agents, proxyCreator, now, initialStatus, resolutionDueAt } = ctx;
+  const {
+    targetTenantId,
+    agents,
+    proxyCreator,
+    now,
+    initialStatus,
+    resolutionDueAt,
+    firstResponseDueAt,
+  } = ctx;
 
   // 配列要素が null / 非オブジェクトでも落ちないように、まず event の存在とメッセージ種別を確認する
   if (event?.type !== 'message') return null;
@@ -520,6 +532,7 @@ async function processLineEvent(
         tenantId: targetTenantId, // 取り込み先テナント
         status: initialStatus, // Lite は 'Open'、Pro は DB 既定 'New'
         resolutionDueAt, // 優先度 Medium ベースの解決期限
+        firstResponseDueAt, // 優先度 Medium ベースの初回応答期限
       },
     );
     if (alreadyExisted) {

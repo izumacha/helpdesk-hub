@@ -24,6 +24,26 @@ export function calculateResolutionDueAt(priority: Priority, from: Date): Date {
   return new Date(from.getTime() + hours * 60 * 60 * 1000);
 }
 
+/**
+ * Hours allowed for the first response, by priority. Same placeholder-policy
+ * caveat as SLA_RESOLUTION_HOURS_BY_PRIORITY (shorter than the resolution
+ * window since a first response is a much lighter action than resolving).
+ */
+// 優先度ごとの「初回応答までに許される時間 (時間単位)」
+export const FIRST_RESPONSE_HOURS_BY_PRIORITY: Record<Priority, number> = {
+  High: 4, // 優先度高: 4 時間
+  Medium: 8, // 優先度中: 8 時間 (営業時間内)
+  Low: 24, // 優先度低: 24 時間 (1 日)
+};
+
+// 起票時刻 from から優先度に応じた初回応答期限を計算して返す関数
+export function calculateFirstResponseDueAt(priority: Priority, from: Date): Date {
+  // 表から対応する時間数を取得
+  const hours = FIRST_RESPONSE_HOURS_BY_PRIORITY[priority];
+  // from の時刻 (ミリ秒) に hours 時間分のミリ秒を加えた新しい Date を返す
+  return new Date(from.getTime() + hours * 60 * 60 * 1000);
+}
+
 // 期限日時と解決日時から現在の SLA 状態を判定する関数
 export function getSlaState(resolutionDueAt: Date | null, resolvedAt: Date | null): SlaState {
   // 期限が未設定なら 'none' (対象外)

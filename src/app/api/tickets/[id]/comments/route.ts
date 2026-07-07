@@ -138,6 +138,8 @@ export async function POST(req: Request, { params }: Params) {
   // 通知の送信先を決定する (既存 addComment と同じロジック)
   const recipientIds = await resolveCommentRecipients(ticket, authorId, authorIsAgent, tenantId);
   const message = `チケット「${ticket.title}」に新しいコメントが追加されました`;
+  // 初回応答日時の記録に使う基準時刻
+  const now = new Date();
 
   // ストレージへ書き込んだキーをロールバック用に蓄える
   const writtenKeys: string[] = [];
@@ -151,6 +153,13 @@ export async function POST(req: Request, { params }: Params) {
         body: trimmedBody,
         tenantId, // 親チケットのテナント一致を Adapter 側でも検証する (issue #123)
       });
+
+      // SLA: エージェントの初回応答を記録する (SLA §初回応答期限)。
+      // 依頼者自身のコメントは「応答」ではないため対象外。既に記録済みなら上書きしない
+      // (2 回目以降のエージェントコメントで初回応答日時が後ろにズレるのを防ぐ)
+      if (authorIsAgent && !ticket.firstRespondedAt) {
+        await r.tickets.markFirstResponded(ticketId, now, tenantId);
+      }
 
       // 添付ファイルがあれば 1 件ずつ「ストレージ書き込み → メタ INSERT」の順に処理する
       for (const v of attachmentValidation.files) {

@@ -8,8 +8,8 @@ import { auth } from '@/lib/auth';
 import { repos, uow } from '@/data';
 // 添付ファイル本体の StoragePort (Edge runtime 汚染回避のため別モジュールから取り込む)
 import { storage } from '@/data/storage';
-// 優先度から解決期限を計算する SLA ヘルパー
-import { calculateResolutionDueAt } from '@/lib/sla';
+// 優先度から解決期限・初回応答期限を計算する SLA ヘルパー
+import { calculateFirstResponseDueAt, calculateResolutionDueAt } from '@/lib/sla';
 // 新規チケット入力の Zod スキーマ
 import { createTicketSchema } from '@/lib/validations/ticket';
 // 添付ファイル検証ヘルパー
@@ -192,6 +192,8 @@ export async function POST(req: Request) {
   const resolutionDueAt = dueDate
     ? (endOfDayJST(dueDate) ?? calculateResolutionDueAt(effectivePriority, now))
     : calculateResolutionDueAt(effectivePriority, now);
+  // 初回応答期限: 解決期限と同じく priority ベースで自動計算する (手動指定は無い)
+  const firstResponseDueAt = calculateFirstResponseDueAt(effectivePriority, now);
 
   // 添付なしの単純パス: 従来どおりトランザクション無しで作成して返す
   if (attachmentValidation.files.length === 0) {
@@ -206,6 +208,7 @@ export async function POST(req: Request) {
       tenantId,
       status: initialStatus, // Lite は 'Open'、Pro は undefined(既定 New)
       resolutionDueAt,
+      firstResponseDueAt,
     });
     // Phase 4: 外部チャネルへ新規問い合わせを通知する (ベストエフォート、失敗してもレスポンスには影響しない)
     await notifyNewTicketOutbound(tenantId, ticket);
@@ -238,6 +241,7 @@ export async function POST(req: Request) {
         tenantId,
         status: initialStatus, // Lite は 'Open'、Pro は undefined(既定 New)
         resolutionDueAt,
+        firstResponseDueAt,
       });
       // 添付ファイルを 1 件ずつ「ストレージ書き込み → メタ INSERT」の順に処理する
       for (const v of attachmentValidation.files) {

@@ -78,6 +78,9 @@ export default async function TicketDetailPage({ params }: Props) {
 
   // SLA 状態 (none/ok/warning/overdue) を計算
   const slaState = getSlaState(ticket.resolutionDueAt, ticket.resolvedAt);
+  // 初回応答 SLA 状態 (Pro モードのみ表示。Lite は「期限日」1 項目に統合する方針のため対象外)
+  const firstResponseSlaState =
+    mode === 'pro' ? getSlaState(ticket.firstResponseDueAt, ticket.firstRespondedAt) : 'none';
   // エスカレーション可能か (エージェント && 現状から Escalated への遷移許可あり)
   // Pro モードの遷移表を参照する (Lite モードでは Escalated 自体が UI 上は存在しない)
   const canEscalate =
@@ -261,6 +264,34 @@ export default async function TicketDetailPage({ params }: Props) {
                   {formatDateJP(ticket.createdAt)}
                 </dd>
               </div>
+
+              {/* SLA: 初回応答期限 (Pro モード限定。Lite は「期限日」1 項目に統合する方針のため非表示) */}
+              {mode === 'pro' && ticket.firstResponseDueAt && (
+                <div>
+                  <dt className="font-medium text-gray-500">初回応答期限</dt>
+                  <dd className="mt-1 flex items-center gap-2">
+                    <span className="text-gray-700">
+                      {/* 初回応答期限を日本時間 (年月日) で表示する */}
+                      {formatDateJP(ticket.firstResponseDueAt)}
+                    </span>
+                    {/* 応答済みなら日時を、未応答なら警告/超過バッジを表示する */}
+                    {ticket.firstRespondedAt ? (
+                      <span className="text-xs text-gray-500">
+                        （{formatDateTimeJP(ticket.firstRespondedAt)} 応答済み）
+                      </span>
+                    ) : (
+                      firstResponseSlaState !== 'none' &&
+                      firstResponseSlaState !== 'ok' && (
+                        <span
+                          className={`inline-flex rounded-full px-2 py-0.5 text-xs font-medium ${SLA_COLORS[firstResponseSlaState]}`}
+                        >
+                          {SLA_LABELS[firstResponseSlaState]}
+                        </span>
+                      )
+                    )}
+                  </dd>
+                </div>
+              )}
 
               {/* SLA: 解決期限がある場合のみ表示 */}
               {ticket.resolutionDueAt && (

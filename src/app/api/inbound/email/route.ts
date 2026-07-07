@@ -45,7 +45,7 @@ import { isAgent } from '@/lib/role';
 // 公開エンドポイントの流量制限 (§9: DoS / リソース枯渇防止)
 import { enforceRateLimit, RateLimitError } from '@/lib/rate-limit';
 // 優先度から解決期限を計算する SLA ヘルパー (Web フォーム起票と同じ既定値に揃える)
-import { calculateResolutionDueAt } from '@/lib/sla';
+import { calculateFirstResponseDueAt, calculateResolutionDueAt } from '@/lib/sla';
 // 受領自動返信 (メンバー改善 #1) のための送信基盤・本文生成・リンク組み立てヘルパー
 import { getEmailSender } from '@/lib/email';
 import { renderTicketReceivedEmail, buildTicketUrl } from '@/lib/ticket-email';
@@ -553,6 +553,8 @@ export async function POST(req: Request) {
   const initialStatus = initialStatusForMode(tenant.mode);
   // メールには期限指定が無いため、Web フォーム起票と同じく優先度 Medium ベースで解決期限を算出する
   const resolutionDueAt = calculateResolutionDueAt('Medium', now);
+  // 初回応答期限も同じく優先度 Medium ベースで自動算出する
+  const firstResponseDueAt = calculateFirstResponseDueAt('Medium', now);
 
   // 受信メールを 1 件の問い合わせとして作成する (起票 + 対応表登録を原子的に行う)
   const { id: ticketId, alreadyExisted } = await createTicketIdempotent(
@@ -568,6 +570,7 @@ export async function POST(req: Request) {
       tenantId: tenant.id, // 取り込み先テナント
       status: initialStatus, // Lite は 'Open'、Pro は undefined (既定 New)
       resolutionDueAt, // 解決期限 (優先度ベース)
+      firstResponseDueAt, // 初回応答期限 (優先度ベース)
     },
   );
 

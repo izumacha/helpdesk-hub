@@ -207,6 +207,8 @@ describe('POST /api/inbound/line', () => {
     const ticket = Array.from(store.tickets.values())[0];
     // 未連携なので起票者はプロキシ担当者
     expect(ticket.creatorId).toBe(AGENT_ID);
+    // 回帰防止: firstResponseDueAt が配線されておらず常に null のまま起票される不備があった
+    expect(ticket.firstResponseDueAt).not.toBeNull();
   });
 
   // 連携済みユーザーのメッセージは本人を起票者にする (自己解決 UI 開通)

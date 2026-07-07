@@ -312,6 +312,13 @@ export function makeTicketRepo(store: Store): TicketRepository {
       });
     },
 
+    // 初回応答日時を記録する (tenantId スコープ)
+    async markFirstResponded(id, at, tenantId) {
+      const t = store.tickets.get(id);
+      if (!t || t.tenantId !== tenantId) return;
+      store.tickets.set(id, { ...t, firstRespondedAt: at, updatedAt: new Date() });
+    },
+
     // 品質メトリクスを算出して返す (tenantId スコープ。since 指定時はその日時以降作成分のみ)
     async qualityMetrics({ tenantId, since }) {
       // テナントスコープ + since 条件でチケットを絞り込む

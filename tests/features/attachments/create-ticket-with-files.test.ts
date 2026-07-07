@@ -268,4 +268,19 @@ describe('POST /api/tickets (multipart with attachments)', () => {
     expect(store.tickets.size).toBe(0);
     expect(storage.entries.size).toBe(0);
   });
+
+  // 回帰防止: firstResponseDueAt が配線されておらず常に null のまま起票される不備があった
+  // (品質メトリクス「平均初回応答時間」が常に集計対象 0 件になっていた)
+  it('sets firstResponseDueAt on ticket creation', async () => {
+    const { POST } = await import('@/app/api/tickets/route');
+    const req = buildMultipartRequest({ title: 't', body: 'b', priority: 'High' }, [
+      makeFile('a.jpg', 'image/jpeg', 'jpeg-a'),
+    ]);
+
+    const res = await POST(req);
+    expect(res.status).toBe(201);
+    const ticket = await res.json();
+    // 優先度 High は 4 時間後 (FIRST_RESPONSE_HOURS_BY_PRIORITY.High)
+    expect(ticket.firstResponseDueAt).not.toBeNull();
+  });
 });

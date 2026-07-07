@@ -173,6 +173,8 @@ describe('POST /api/inbound/email', () => {
     expect(ticket?.title).toBe('プリンターが動きません');
     expect(ticket?.creatorId).toBe(MEMBER_ID);
     expect(ticket?.tenantId).toBe(TENANT);
+    // 回帰防止: firstResponseDueAt が配線されておらず常に null のまま起票される不備があった
+    expect(ticket?.firstResponseDueAt).not.toBeNull();
   });
 
   // シークレット未設定 (env なし) なら fail-closed で 500
