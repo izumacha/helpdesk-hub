@@ -19,6 +19,21 @@ const MEMBER_ID = 'u-member-1';
 // UnitOfWork 型 (スレッド継続のコメント追記でトランザクションを使う)
 import type { UnitOfWork } from '@/data/ports/unit-of-work';
 
+// 外部通知 (Slack/Teams/Chatwork) テスト用の Slack Webhook URL (実際には送信されない)
+const SLACK_WEBHOOK_URL = 'https://hooks.slack.com/services/T000/B000/xxx';
+
+// src/lib/webhook-fetch.ts は SSRF 対策の DNS 検証用 Dispatcher (Agent) を使うため
+// undici の fetch を直接 import している。vi.stubGlobal('fetch', ...) だけでは差し替わらない
+// ため、undici の fetch を globalThis.fetch へ委譲するモックにする (他テストへは影響しない)
+vi.mock('undici', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('undici')>();
+  return {
+    ...actual,
+    fetch: ((...args: Parameters<typeof globalThis.fetch>) =>
+      globalThis.fetch(...args)) as unknown as typeof actual.fetch,
+  };
+});
+
 // 各テストで差し替える可変な依存 (Route import 前に値を入れる)
 let store: Store;
 let repos: Repos;
@@ -549,5 +564,73 @@ describe('POST /api/inbound/email', () => {
     expect(res.status).toBe(201);
     expect(store.tickets.size).toBe(1);
     expect(sentEmails).toHaveLength(0);
+  });
+
+  // 回帰防止: 新規起票を Slack/Teams/Chatwork の外部チャネルへ通知する (Web フォーム/LINE/CSV と共有)。
+  // 従来は Web フォーム (POST /api/tickets) にしか配線されておらず、メール取り込み経由の起票は
+  // 担当者チームの Slack に気づかれないまま埋もれてしまっていた。
+  describe('外部通知 (Slack/Teams/Chatwork)', () => {
+    // 各テストで fetch をモックする (Slack Adapter が呼ぶ)
+    let fetchMock: ReturnType<typeof vi.fn>;
+    beforeEach(() => {
+      fetchMock = vi
+        .fn()
+        .mockResolvedValue({ ok: true, status: 200, text: () => Promise.resolve('ok') });
+      vi.stubGlobal('fetch', fetchMock);
+    });
+    afterEach(() => {
+      vi.unstubAllGlobals();
+    });
+
+    it('Slack Webhook 設定済みテナントで新規起票すると Slack へ通知される', async () => {
+      // シード済みテナントに Slack Webhook を設定する
+      const tenant = store.tenants.get(TENANT)!;
+      store.tenants.set(TENANT, { ...tenant, slackWebhookUrl: SLACK_WEBHOOK_URL });
+
+      const { POST } = await import('@/app/api/inbound/email/route');
+      const res = await POST(makeRequest(VALID_EMAIL));
+      expect(res.status).toBe(201);
+
+      // Slack Webhook へ 1 回だけ POST される
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      const [url, init] = fetchMock.mock.calls[0];
+      expect(url).toBe(SLACK_WEBHOOK_URL);
+      const payload = JSON.parse(init.body);
+      expect(JSON.stringify(payload)).toContain('プリンターが動きません');
+    });
+
+    it('外部通知が未設定のテナントで新規起票しても fetch は呼ばれない', async () => {
+      const { POST } = await import('@/app/api/inbound/email/route');
+      const res = await POST(makeRequest(VALID_EMAIL));
+      expect(res.status).toBe(201);
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    // スレッド追記 (新規起票ではない) では新規チケット向けの外部通知を送らない
+    it('スレッド追記では外部通知を送らない', async () => {
+      const tenant = store.tenants.get(TENANT)!;
+      store.tenants.set(TENANT, { ...tenant, slackWebhookUrl: SLACK_WEBHOOK_URL });
+
+      // 1 通目: 新規起票 (ここで 1 回通知される)
+      const { POST } = await import('@/app/api/inbound/email/route');
+      const first = await POST(
+        makeRequest({ ...VALID_EMAIL, messageId: '<thread-1@example.com>' }),
+      );
+      expect(first.status).toBe(201);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+
+      // 2 通目: 1 通目への返信 (In-Reply-To で同じチケットへ追記)
+      fetchMock.mockClear();
+      const reply = await POST(
+        makeRequest({
+          ...VALID_EMAIL,
+          messageId: '<thread-2@example.com>',
+          inReplyTo: '<thread-1@example.com>',
+        }),
+      );
+      expect(reply.status).toBe(200);
+      // スレッド追記では「新規起票」通知を重複して送らない
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
   });
 });

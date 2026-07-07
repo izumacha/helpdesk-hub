@@ -56,6 +56,8 @@ import { buildReplyMessageId, resolveMessageIdDomain } from '@/lib/email-message
 import { formatTicketRef } from '@/lib/ticket-ref';
 // メール取り込み機能のプランゲート (§6.1 料金プラン: Free では利用不可)
 import { isEmailInboundAllowed } from '@/lib/plan-guard';
+// Phase 4: Slack/Teams/Chatwork 外部通知ヘルパー (Web フォーム・LINE 取り込み・CSV インポートと共有)
+import { notifyNewTicketOutbound } from '@/lib/outbound-notify';
 
 // このルートは Node ランタイムで動かす (node:crypto / Prisma を使うため Edge では動かない)
 export const runtime = 'nodejs';
@@ -559,6 +561,15 @@ export async function POST(req: Request) {
     console.info('[POST /api/inbound/email] resolved write conflict as duplicate', ticketId);
     return NextResponse.json({ status: 'duplicate', ticketId }, { status: 200 });
   }
+
+  // Phase 4: 新規起票を Slack/Teams/Chatwork へ通知する (Web フォーム・LINE・CSV と同じ経路)。
+  // メール取り込みは担当者が画面を開かなくても起票された事実に気づけることが重要なため、
+  // 受領自動返信と同様にベストエフォートで送る (失敗してもチケット作成のレスポンスには影響しない)
+  await notifyNewTicketOutbound(tenant.id, {
+    id: ticketId,
+    title: email.subject,
+    priority: 'Medium',
+  });
 
   // 初回メール起票の受領自動返信 (メンバー改善 #1): 送信元へ「受け付けました」を 1 通返す。
   // Web フォーム起票は送信後すぐ画面に出るが、メール起票は受領確認が無いと「届いたか不明」になる穴を埋める。

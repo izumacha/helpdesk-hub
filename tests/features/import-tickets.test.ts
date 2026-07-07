@@ -3,13 +3,28 @@
 // 外部 DB・SSE・メール送信は一切行わず、メモリ Adapter とモックで完結する。
 
 // Vitest の DSL とモック
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 // メモリ Adapter の context (store/repos)
 import { createMemoryContext, type Store } from '@/data/adapters/memory';
 // リポジトリ束の型
 import type { Repos } from '@/data/ports/unit-of-work';
 // レート制限をテスト間でクリアする内部用関数
 import { __resetRateLimits } from '@/lib/rate-limit';
+
+// 外部通知 (Slack/Teams/Chatwork) テスト用の Slack Webhook URL (実際には送信されない)
+const SLACK_WEBHOOK_URL = 'https://hooks.slack.com/services/T000/B000/xxx';
+
+// src/lib/webhook-fetch.ts は SSRF 対策の DNS 検証用 Dispatcher (Agent) を使うため
+// undici の fetch を直接 import している。vi.stubGlobal('fetch', ...) だけでは差し替わらない
+// ため、undici の fetch を globalThis.fetch へ委譲するモックにする (他テストへは影響しない)
+vi.mock('undici', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('undici')>();
+  return {
+    ...actual,
+    fetch: ((...args: Parameters<typeof globalThis.fetch>) =>
+      globalThis.fetch(...args)) as unknown as typeof actual.fetch,
+  };
+});
 
 // 各テストで書き換える「可変な依存」 (Action import 前に値を入れる必要がある)
 let store: Store;
@@ -471,6 +486,58 @@ describe('importTickets', () => {
       expect([...store.notifications.values()]).toHaveLength(0); // 通知が一切作成されていないことを確認する
       // SSE ブロードキャストも呼ばれない
       expect(broadcastMock).not.toHaveBeenCalled(); // ブロードキャストが発生しないことを確認する
+    });
+  });
+
+  // 回帰防止: 新規起票を Slack/Teams/Chatwork の外部チャネルへ通知する (Web フォーム/メール/LINE と共有)。
+  // CSV は 1 回で最大 200 件を作成しうるため、他チャネルと違いチケットごとには送らず件数をまとめた
+  // 1 通にする方針 (アプリ内通知と同じ「まとめて 1 通」)。
+  describe('外部通知 (Slack/Teams/Chatwork)', () => {
+    let fetchMock: ReturnType<typeof vi.fn>;
+    beforeEach(() => {
+      fetchMock = vi
+        .fn()
+        .mockResolvedValue({ ok: true, status: 200, text: () => Promise.resolve('ok') });
+      vi.stubGlobal('fetch', fetchMock);
+    });
+    afterEach(() => {
+      vi.unstubAllGlobals();
+    });
+
+    it('Slack Webhook 設定済みテナントでインポートすると件数をまとめて 1 通だけ通知される', async () => {
+      const tenant = store.tenants.get(TENANT)!;
+      store.tenants.set(TENANT, { ...tenant, slackWebhookUrl: SLACK_WEBHOOK_URL });
+
+      const importTickets = await loadAction();
+      // 3 件のチケットを含む CSV (200 件でも通知は 1 通であることの縮小版検証)
+      const csv = `件名\n問い合わせ1\n問い合わせ2\n問い合わせ3`;
+      const result = await importTickets(csv);
+      expect(result.imported).toBe(3);
+
+      // チケットごとではなく 1 回だけ通知される
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      const [url, init] = fetchMock.mock.calls[0];
+      expect(url).toBe(SLACK_WEBHOOK_URL);
+      // 件数が本文に含まれる
+      expect(JSON.stringify(JSON.parse(init.body))).toContain('3件');
+    });
+
+    it('外部通知が未設定のテナントでインポートしても fetch は呼ばれない', async () => {
+      const importTickets = await loadAction();
+      const csv = `件名\nテスト件名`;
+      await importTickets(csv);
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it('0 件インポートのときは外部通知も送らない', async () => {
+      const tenant = store.tenants.get(TENANT)!;
+      store.tenants.set(TENANT, { ...tenant, slackWebhookUrl: SLACK_WEBHOOK_URL });
+
+      const importTickets = await loadAction();
+      const csv = `件名`; // ヘッダのみ (0 件)
+      const result = await importTickets(csv);
+      expect(result.imported).toBe(0);
+      expect(fetchMock).not.toHaveBeenCalled();
     });
   });
 });
