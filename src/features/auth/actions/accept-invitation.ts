@@ -23,6 +23,10 @@ import { repos, uow } from '@/data';
 import { hashInviteToken } from '@/lib/invite';
 // 受諾フォームの入力検証スキーマと、ユーザー入力メールの検証・正規化スキーマ
 import { acceptInvitationSchema, emailSchema } from '@/lib/validations/invite';
+// Phase 4 課金: プランごとのスタッフシート空き状況チェック (create-invitation.ts と共有)。
+// 発行時だけでなく受諾時にも再確認しないと、admin が余裕を持って複数リンクを事前発行
+// → 後から一斉受諾で上限を突破できてしまう
+import { checkSeatAvailability } from '@/lib/tenant-plan';
 
 // accept の戻り値型。作成に使ったメールを返し、クライアントがそのままログインに使う
 export interface AcceptInvitationResult {
@@ -58,7 +62,9 @@ export async function acceptInvitation(
     const emailParsed = emailSchema.safeParse(rawInputEmail);
     // 形式不正・過大長ならユーザー向け日本語メッセージで throw (消費前に弾く)
     if (!emailParsed.success) {
-      throw new Error(emailParsed.error.issues[0]?.message ?? '正しいメールアドレスを入力してください');
+      throw new Error(
+        emailParsed.error.issues[0]?.message ?? '正しいメールアドレスを入力してください',
+      );
     }
     // 検証済みの正規化メール
     inputEmail = emailParsed.data;
@@ -71,41 +77,78 @@ export async function acceptInvitation(
 
   // 消費 (単回使用ガード) → ユーザー作成を 1 トランザクションで行う。
   // 途中で例外が出れば消費もロールバックされ、招待リンクは再利用可能なまま残る。
-  const result = await uow.run(async (tx) => {
-    // 招待を原子的に消費する。未消費かつ失効前のときだけ成功して招待行を返す
-    const invitation = await tx.invitations.consumeValidToken({ tokenHash, now });
-    // 無効 / 失効 / 既使用ならここで中断 (どれも同じ案内にして詮索余地を減らす)
-    if (!invitation) {
-      throw new Error('この招待リンクは無効か、既に使用されています。');
+  //
+  // isolationLevel: 'Serializable' が必須の理由 (既定の Read Committed では TOCTOU が残る):
+  // 同一テナント宛の複数の agent 招待が事前発行済みの状態で、2 人が同時に受諾すると、
+  // 既定分離レベルでは両方のトランザクションが「上限未到達」という同じスナップショットを読んで
+  // しまい、両方が通過してシート上限を超過し得る (checkSeatAvailability の再チェックだけでは
+  // 防げない TOCTOU)。src/lib/idempotent-ticket-creation.ts の Webhook 冪等化と同じ理由で
+  // Serializable を指定し、書き込み競合は下の catch で検知して片方を安全に失敗させる。
+  let result: AcceptInvitationResult;
+  try {
+    result = await uow.run(
+      async (tx) => {
+        // 招待を原子的に消費する。未消費かつ失効前のときだけ成功して招待行を返す
+        const invitation = await tx.invitations.consumeValidToken({ tokenHash, now });
+        // 無効 / 失効 / 既使用ならここで中断 (どれも同じ案内にして詮索余地を減らす)
+        if (!invitation) {
+          throw new Error('この招待リンクは無効か、既に使用されています。');
+        }
+
+        // 作成に使うメールを決める: 招待にメールがあればそれを優先 (なりすまし防止)、無ければ入力値
+        const finalEmail = invitation.email ?? inputEmail;
+        // どちらも無ければメール必須エラー
+        if (!finalEmail) {
+          throw new Error('メールアドレスは必須です');
+        }
+
+        // Phase 4 課金: スタッフ (agent) 招待はシートを消費するため、受諾の瞬間にも上限を再確認する。
+        // 発行時 (create-invitation.ts) のチェックだけでは、admin が上限に余裕がある間に
+        // 複数の招待リンクを事前発行しておき、後から一斉受諾させることでシート上限を
+        // 突破できてしまう (requester はシートを消費しないため対象外)。
+        if (invitation.role === 'agent') {
+          // 招待先テナントの空き状況を確認する (同一トランザクション内の tx repos で読み、消費と同じ視点にする)
+          const seat = await checkSeatAvailability(tx, invitation.tenantId);
+          // 上限に達していれば受諾を拒否する (例外で consumeValidToken もロールバックされ、招待は再利用可能なまま残る)
+          if (!seat.available) {
+            throw new Error(
+              `このプランのメンバー上限 (${seat.limit} 名) に達しているため、招待を受諾できません。管理者にお問い合わせください。`,
+            );
+          }
+        }
+
+        // 既存ユーザーとの重複を事前チェック (@unique 制約より親切な日本語エラーを返すため)
+        const existing = await tx.users.findByEmail(finalEmail);
+        if (existing) {
+          throw new Error('このメールアドレスは既に登録されています。ログインしてください。');
+        }
+
+        // パスワードを bcrypt でハッシュ化 (cost 12。seed と同条件)
+        const passwordHash = await hash(password, 12);
+        // 招待行が指すテナント・権限でユーザーを作成する (tenantId は入力ではなく invitation 由来)
+        await tx.users.create({
+          email: finalEmail,
+          name,
+          passwordHash,
+          role: invitation.role,
+          tenantId: invitation.tenantId,
+        });
+
+        // クライアントがログインに使うメールを返す
+        return { email: finalEmail };
+      },
+      { isolationLevel: 'Serializable' },
+    );
+  } catch (err) {
+    // Serializable の書き込み競合 = 同時に受諾された別の招待がシート枠を先に確定させたということ。
+    // 招待は自動ロールバックで未消費のまま残っているため、ユーザーに再試行を促す
+    // (webhook のような自動再送とは異なり対話的な操作なので、ここでは自動リトライしない)
+    if (uow.isTransactionConflict(err)) {
+      throw new Error('混み合っているため受諾できませんでした。もう一度お試しください。');
     }
-
-    // 作成に使うメールを決める: 招待にメールがあればそれを優先 (なりすまし防止)、無ければ入力値
-    const finalEmail = invitation.email ?? inputEmail;
-    // どちらも無ければメール必須エラー
-    if (!finalEmail) {
-      throw new Error('メールアドレスは必須です');
-    }
-
-    // 既存ユーザーとの重複を事前チェック (@unique 制約より親切な日本語エラーを返すため)
-    const existing = await tx.users.findByEmail(finalEmail);
-    if (existing) {
-      throw new Error('このメールアドレスは既に登録されています。ログインしてください。');
-    }
-
-    // パスワードを bcrypt でハッシュ化 (cost 12。seed と同条件)
-    const passwordHash = await hash(password, 12);
-    // 招待行が指すテナント・権限でユーザーを作成する (tenantId は入力ではなく invitation 由来)
-    await tx.users.create({
-      email: finalEmail,
-      name,
-      passwordHash,
-      role: invitation.role,
-      tenantId: invitation.tenantId,
-    });
-
-    // クライアントがログインに使うメールを返す
-    return { email: finalEmail };
-  });
+    // 書き込み競合以外 (バリデーションエラー・上限到達など) はそのまま伝播する
+    throw err;
+  }
 
   // トランザクションの結果 (作成に使ったメール) を返す
   return result;

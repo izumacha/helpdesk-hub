@@ -36,8 +36,8 @@ import {
 import { assertAdminSession } from '@/lib/role';
 // 招待発行フォームの入力検証スキーマ
 import { createInvitationSchema } from '@/lib/validations/invite';
-// Phase 4 課金: プランごとのユーザー上限チェック
-import { isUserLimitReached, getUserLimit } from '@/lib/plan-guard';
+// Phase 4 課金: プランごとのスタッフシート空き状況チェック (accept-invitation.ts と共有)
+import { checkSeatAvailability } from '@/lib/tenant-plan';
 
 // createInvitation の戻り値型 (発行した招待リンクの URL を返す)
 export interface CreateInvitationResult {
@@ -67,15 +67,14 @@ export async function createInvitation(formData: FormData): Promise<CreateInvita
   // 検証済みの権限と宛先メール (未指定なら undefined)
   const { role, email } = parsed.data;
 
-  // Phase 4 課金: テナントのプランを取得してユーザー上限を確認する
-  const currentTenant = await repos.tenants.findById(tenantId);
-  if (currentTenant) {
-    // 現在の有効ユーザー数を取得する (招待受諾済みのアクティブなメンバー)
-    const currentUserCount = await repos.users.countByTenant(tenantId);
-    // プランのユーザー上限に達している場合は招待を拒否する
-    if (isUserLimitReached(currentTenant.subscriptionPlan, currentUserCount)) {
+  // Phase 4 課金: このロールがシートを消費する場合のみ上限を確認する (requester はシート対象外)
+  if (role === 'agent') {
+    // テナントのプランを取得してスタッフシートの空き状況を確認する (受諾時と共通のロジック)
+    const seat = await checkSeatAvailability(repos, tenantId);
+    // 上限に達している場合は招待発行そのものを拒否する
+    if (!seat.available) {
       throw new Error(
-        `このプランのメンバー上限 (${getUserLimit(currentTenant.subscriptionPlan)} 名) に達しています。プランをアップグレードしてください。`,
+        `このプランのメンバー上限 (${seat.limit} 名) に達しています。プランをアップグレードしてください。`,
       );
     }
   }

@@ -75,6 +75,7 @@ interface ValidatedRow {
   body: string; // 検証済みの本文
   priority: Priority; // 変換済みの優先度
   resolutionDueAt: Date | null; // 変換済みの期限日 (null = 未指定)
+  locationName: string | null; // 拠点名 (trim 済み。null = 未指定。実在確認は DB を持つ呼び出し側で行う)
 }
 
 // CSV ヘッダの列インデックス一覧
@@ -83,6 +84,7 @@ interface ColumnIndices {
   bodyIndex: number; // 「内容」列 (-1 = 未指定)
   dueDateIndex: number; // 「期限日」列 (-1 = 未指定)
   priorityIndex: number; // 「優先度」列 (-1 = 未指定)
+  locationIndex: number; // 「拠点」列 (-1 = 未指定)
 }
 
 // CSV 1 行分のセルを受け取り、バリデーション・型変換を行う純粋関数。
@@ -93,7 +95,7 @@ function validateImportRow(
   indices: ColumnIndices, // 各列のインデックス
 ): { ok: true; data: ValidatedRow } | { ok: false; message: string } {
   // 引数オブジェクトから各列インデックスを取り出す
-  const { titleIndex, bodyIndex, dueDateIndex, priorityIndex } = indices;
+  const { titleIndex, bodyIndex, dueDateIndex, priorityIndex, locationIndex } = indices;
 
   // 件名セルを取り出す。前後の空白は除去する (空白だけのセルを「入力あり」と誤判定しないため)
   const titleRaw = (cells[titleIndex] ?? '').trim();
@@ -153,12 +155,18 @@ function validateImportRow(
     }
   }
 
+  // 拠点セルを取り出す (未指定なら null)。実在確認はテナントの拠点一覧を持つ呼び出し側で行う
+  // (この関数は DB アクセスを持たない純粋関数のまま保つため、ここでは trim のみ)
+  const locationRaw = locationIndex !== -1 ? (cells[locationIndex] ?? '').trim() : '';
+  // 空文字 (列なし、またはセルが空) の場合は「未指定」として null にフォールバックする
+  const locationName = locationRaw || null;
+
   // 全バリデーション通過: バリデーション済みのデータをそのまま返す。
   // CSV インジェクション対策は書き出し (エクスポート) 時に行う (AuditExportButton 等)。
   // インポート時に ' を付加すると DB に汚染データが保存され、チケット件名が '=formula のように表示される。
   return {
     ok: true,
-    data: { title: titleRaw, body: bodyRaw, priority, resolutionDueAt },
+    data: { title: titleRaw, body: bodyRaw, priority, resolutionDueAt, locationName },
   };
 }
 
@@ -230,6 +238,7 @@ export async function importTickets(csvText: string): Promise<ImportTicketsResul
   const bodyIndex = headers.indexOf('内容'); // チケット本文
   const dueDateIndex = headers.indexOf('期限日'); // 解決期限 (YYYY-MM-DD 形式)
   const priorityIndex = headers.indexOf('優先度'); // 高 / 中 / 低
+  const locationIndex = headers.indexOf('拠点'); // 拠点名 (Phase 4 多拠点。一覧/詳細/CSVエクスポートと対称の項目)
 
   // データ行 (2 行目以降) を取り出す
   const dataLines = nonEmptyLines.slice(1);
@@ -248,12 +257,29 @@ export async function importTickets(csvText: string): Promise<ImportTicketsResul
   // (ここまでの検証を通過したリクエストのみ DB 参照するため、形式エラーで無駄なクエリを発生させない)
   const quota = await getMonthlyTicketQuota(tenantId);
 
+  // 「拠点」列がある場合のみテナントの拠点一覧を取得し、拠点名 → ID の対応表を作る。
+  // Web フォーム (locationId で直接指定) と異なり CSV は拠点名の文字列で来るため、名前解決が必要。
+  // 列が無ければ全テナントで発生する不要な DB アクセスを避けるためスキップする。
+  const locationsByName = new Map<string, string>();
+  if (locationIndex !== -1) {
+    const locations = await repos.locations.listByTenant(tenantId);
+    for (const location of locations) {
+      locationsByName.set(location.name, location.id);
+    }
+  }
+
   // 集計用カウンタとエラーリストを初期化する
   let imported = 0;
   const errors: Array<{ row: number; message: string }> = [];
 
   // ヘッダ列インデックスをまとめてバリデーション関数へ渡す
-  const columnIndices: ColumnIndices = { titleIndex, bodyIndex, dueDateIndex, priorityIndex };
+  const columnIndices: ColumnIndices = {
+    titleIndex,
+    bodyIndex,
+    dueDateIndex,
+    priorityIndex,
+    locationIndex,
+  };
 
   // データ行を 1 件ずつ処理する (部分成功を許可するため、1 件エラーでも他を続ける)
   for (let i = 0; i < dataLines.length; i += 1) {
@@ -294,7 +320,23 @@ export async function importTickets(csvText: string): Promise<ImportTicketsResul
       continue;
     }
     // バリデーション通過: 検証済みデータを展開する
-    const { title, body, priority, resolutionDueAt } = validation.data;
+    const { title, body, priority, resolutionDueAt, locationName } = validation.data;
+
+    // 拠点名が指定されていれば ID に解決する。テナントに存在しない拠点名は
+    // タイポや削除済み拠点の可能性が高く、無言で「拠点未設定」にすると
+    // 取り込んだデータの拠点情報が消えたことに気づけないため、エラー行として記録する。
+    let locationId: string | null = null;
+    if (locationName !== null) {
+      const resolvedId = locationsByName.get(locationName);
+      if (!resolvedId) {
+        errors.push({
+          row: rowNum,
+          message: `拠点が見つかりません: "${locationName}"（設定済みの拠点名を指定してください）`,
+        });
+        continue;
+      }
+      locationId = resolvedId;
+    }
 
     // Phase 4 課金: 残枠を使い切っていたらこの行以降は起票せずエラーとして記録する
     // (Web フォーム / メール / LINE 取り込みと同じ上限を CSV インポートにも適用する)
@@ -318,6 +360,7 @@ export async function importTickets(csvText: string): Promise<ImportTicketsResul
         tenantId, // テナントスコープを必ず付与する (クロステナント防止)
         status: initialStatus, // Lite: Open / Pro: New
         resolutionDueAt, // 期限日 (未指定なら null)
+        locationId, // 拠点 ID (「拠点」列があれば名前解決済み、無ければ null)
       });
       // 成功カウンタをインクリメント
       imported += 1;

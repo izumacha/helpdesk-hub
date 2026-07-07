@@ -9,10 +9,12 @@
 
 // データ層の Composition Root (Prisma 直叩きを避ける入口)
 import { repos } from '@/data';
+// リポジトリ束の型 (トランザクション内の tx / 非トランザクションの repos のどちらも受け取れるようにする)
+import type { Repos } from '@/data/ports/unit-of-work';
 // 課金プランの型
 import type { SubscriptionPlan } from '@/domain/types';
-// 月間チケット上限の判定ヘルパー (プランごとの上限値は plan-guard.ts が単一の源)
-import { getMonthlyTicketLimit } from '@/lib/plan-guard';
+// 月間チケット上限・スタッフ上限の判定ヘルパー (プランごとの上限値は plan-guard.ts が単一の源)
+import { getMonthlyTicketLimit, getUserLimit, isUserLimitReached } from '@/lib/plan-guard';
 // JST (日本時間) 基準の月初を計算する共通ヘルパー (endOfDayJST と同じファイルに集約)
 import { startOfMonthJST } from '@/lib/format-date';
 
@@ -68,4 +70,34 @@ export async function getMonthlyTicketQuota(
   const currentCount = await repos.tickets.count({ createdAfter: monthStart }, tenantId);
   // 残枠は 0 未満にならないようクランプする
   return { limited: true, limit, remaining: Math.max(0, limit - currentCount) };
+}
+
+// スタッフ (agent/admin) シートの空き状況を表す (呼び出し側がメッセージ文言を組み立てるための最小情報)
+export interface SeatAvailability {
+  available: boolean; // 空きがあれば true (新規追加してよい)
+  limit: number; // このプランのスタッフ上限 (UI/エラー表示用。無制限なら -1)
+}
+
+// 指定テナントのスタッフシートに空きがあるかを判定する。
+// 招待発行 (create-invitation.ts) と招待受諾 (accept-invitation.ts) の双方が同じ
+// 「テナント取得 → 現在人数カウント → 上限判定」を必要とするため 1 か所に集約する (§6 DRY)。
+// 呼び出し側がトランザクション内 (tx) か通常の repos かを問わず使えるよう Repos 型を受け取る。
+// エラーメッセージは文脈 (発行者向け / 受諾者向け) で異なるため、呼び出し側が組み立てる。
+export async function checkSeatAvailability(
+  repos: Repos,
+  tenantId: string,
+): Promise<SeatAvailability> {
+  // テナントを取得する
+  const tenant = await repos.tenants.findById(tenantId);
+  // フェイルセーフ: テナントが取得できない場合は判定を行わず「空きあり」を返し、
+  // 後続の DB 操作 (FK 制約) 側で本来の失敗理由が表面化するのに任せる
+  // (User.tenantId → Tenant は Prisma スキーマで cascade 削除のため通常発生しない)
+  if (!tenant) return { available: true, limit: -1 };
+  // このテナントの現在のスタッフ (agent + admin) 数を数える
+  const currentUserCount = await repos.users.countByTenant(tenantId);
+  // 上限判定結果とプランの上限値を返す
+  return {
+    available: !isUserLimitReached(tenant.subscriptionPlan, currentUserCount),
+    limit: getUserLimit(tenant.subscriptionPlan),
+  };
 }
