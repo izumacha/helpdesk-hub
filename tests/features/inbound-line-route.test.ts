@@ -114,14 +114,19 @@ function sign(body: string): string {
 
 // 1 件のテキストメッセージイベントを含む署名付きリクエストを組み立てる。
 // destination はチャネル解決に使う値で、既定はシード済みテナントの BOT_USER_ID
-function makeRequest(text: string, userId: string, destination: string = BOT_USER_ID): Request {
+function makeRequest(
+  text: string,
+  userId: string,
+  destination: string = BOT_USER_ID,
+  messageId: string = 'm1',
+): Request {
   const body = JSON.stringify({
     destination,
     events: [
       {
         type: 'message',
         source: { type: 'user', userId },
-        message: { type: 'text', id: 'm1', text },
+        message: { type: 'text', id: messageId, text },
       },
     ],
   });
@@ -290,6 +295,69 @@ describe('POST /api/inbound/line', () => {
     const second = await POST(req());
     expect(second.status).toBe(200);
     expect(store.tickets.size).toBe(0);
+  });
+
+  // 回帰防止: 連携コード冪等化 Map (recentlyLinkedMessageIds) が無制限に増加しないこと。
+  // 二度と再送されない (= 大多数の) messageId も、TTL 経過後の別呼び出しに便乗した
+  // 「ながら掃除」で削除されることを検証する (src/lib/rate-limit.ts の sweepStaleBuckets と同じ)。
+  it('連携コード冪等化 Map は TTL 超過エントリを掃除し無制限に増加しない', async () => {
+    vi.useFakeTimers();
+    try {
+      const now = new Date();
+      // LINE_LINK_CODE_LENGTH(8) かつ CODE_ALPHABET (0-9, I/L/O/U を除く A-Z) に収まる
+      // ユニークなコードを 3 件用意する (それぞれ別の messageId で連携させるため)
+      const rawCodes = ['A1B2C3D0', 'A1B2C3D1', 'A1B2C3D2'];
+      for (let i = 0; i < rawCodes.length; i += 1) {
+        const codeHash = await hashLineLinkCode(normalizeLineLinkCode(rawCodes[i]!));
+        store.users.set(`u-member-${i}`, {
+          id: `u-member-${i}`,
+          email: `member${i}@example.com`,
+          name: `会員${i}`,
+          passwordHash: 'x',
+          role: 'requester',
+          tenantId: TENANT,
+          createdAt: now,
+          updatedAt: now,
+          lineLinkCodeHash: codeHash,
+          lineLinkCodeExpiresAt: new Date(Date.now() + 3_600_000),
+        });
+      }
+      const { POST, __getLineLinkCodeDedupSize } = await import('@/app/api/inbound/line/route');
+      // 3 件、それぞれ異なる messageId で連携成功させる (二度と再送されない想定の messageId)
+      for (let i = 0; i < rawCodes.length; i += 1) {
+        const res = await POST(
+          makeRequest(rawCodes[i]!, `U${'1'.repeat(31)}${i}`, BOT_USER_ID, `link-${i}`),
+        );
+        expect(res.status).toBe(200);
+      }
+      expect(__getLineLinkCodeDedupSize()).toBe(3);
+
+      // TTL (10分) を超えて時計を進める
+      vi.setSystemTime(new Date(Date.now() + 11 * 60 * 1000));
+
+      // 4 件目の連携成功イベント (新しい messageId) がながら掃除のトリガーになる
+      const rawCode4 = 'A1B2C3D4';
+      const codeHash4 = await hashLineLinkCode(normalizeLineLinkCode(rawCode4));
+      store.users.set('u-member-4', {
+        id: 'u-member-4',
+        email: 'member4@example.com',
+        name: '会員4',
+        passwordHash: 'x',
+        role: 'requester',
+        tenantId: TENANT,
+        createdAt: now,
+        updatedAt: now,
+        lineLinkCodeHash: codeHash4,
+        lineLinkCodeExpiresAt: new Date(Date.now() + 3_600_000),
+      });
+      const res4 = await POST(makeRequest(rawCode4, `U${'2'.repeat(32)}`, BOT_USER_ID, 'link-4'));
+      expect(res4.status).toBe(200);
+
+      // 期限切れの 3 件は掃除され、直近の 1 件だけが残る (4 件のまま溜まり続けない)
+      expect(__getLineLinkCodeDedupSize()).toBe(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   // コードの形だが発行行が無いテキストは通常の問い合わせとして起票する

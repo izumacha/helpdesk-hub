@@ -91,7 +91,11 @@ const LINK_CODE_DEDUP_TTL_MS = 10 * 60 * 1000;
 // invalid になり、コード文字列そのものが本文の問い合わせとして誤起票され得た。
 // このメモリ上の Map で「直近に連携コードとして処理済みの messageId」を記憶し、再送時は
 // 連携ロジックへ進まず即座にスキップする。sse-subscribers.ts / rate-limit.ts と同じ
-// 「インプロセス Map」の制約 (水平スケール未対応) を受け入れる。
+// 「インプロセス Map」の制約 (水平スケール未対応・複数インスタンス間で共有されない) を受け入れる。
+// キーは messageId のみで tenantId を含まない: LINE のメッセージ ID はプラットフォーム全体で
+// 一意な値であり (lineMessages 対応表の DB 冪等化と異なりテナント間でキーが衝突しないため)、
+// §9 のクロステナント漏洩対策としての tenantId スコープは元々不要 (メッセージの中身は一切
+// 保持しないため漏洩し得る情報も無い)。
 const recentlyLinkedMessageIds = new Map<string, number>(); // messageId -> 処理時刻 (ms)
 
 // messageId が直近 (TTL 以内) に連携コードとして処理済みかを判定する。期限切れエントリは掃除する
@@ -110,14 +114,37 @@ function wasRecentlyProcessedAsLinkCode(messageId: string): boolean {
 
 // messageId を「連携コードとして処理済み」として記録する
 function markProcessedAsLinkCode(messageId: string): void {
+  // 現在時刻を記録する (TTL 判定の基準)
   recentlyLinkedMessageIds.set(messageId, Date.now());
+  // このキー以外のエントリも含めて、既に TTL を過ぎたものを掃除する (rate-limit.ts の
+  // sweepStaleBuckets と同じ「ながら掃除」)。wasRecentlyProcessedAsLinkCode は「同じ
+  // messageId が再度問い合わせられたとき」しか掃除しないため、二度と再送されない
+  // (= 大多数の) messageId はここで掃除しない限り Map に残り続けてしまう
+  sweepStaleLinkCodeEntries(Date.now());
+}
+
+// recentlyLinkedMessageIds 全体を走査し、TTL を過ぎたエントリを削除する
+function sweepStaleLinkCodeEntries(now: number): void {
+  // Map の全エントリを走査する
+  for (const [messageId, processedAt] of recentlyLinkedMessageIds) {
+    // TTL を過ぎていれば削除する
+    if (now - processedAt > LINK_CODE_DEDUP_TTL_MS) {
+      recentlyLinkedMessageIds.delete(messageId);
+    }
+  }
 }
 
 // テスト専用: recentlyLinkedMessageIds をクリアする (src/lib/rate-limit.ts の
 // __resetRateLimits と同じ理由。この route モジュールはテスト間で import キャッシュが
 // 共有されるため、固定の messageId ('m1' 等) を使う別テストの記録が漏れ込むのを防ぐ)
 export function __resetLineLinkCodeDedup(): void {
+  // Map を空にする (次のテストへ記録を持ち越さない)
   recentlyLinkedMessageIds.clear();
+}
+
+// テスト専用: recentlyLinkedMessageIds の現在のエントリ数を返す (無制限増加しないことの検証用)
+export function __getLineLinkCodeDedupSize(): number {
+  return recentlyLinkedMessageIds.size;
 }
 
 // レート制限を適用し、超過していれば 429 レスポンスを返す共通ヘルパー。
@@ -486,7 +513,12 @@ async function processLineEvent(
         return null;
       }
       // invalid (コードの形だが有効な発行行が無い) は通常の問い合わせとして下の起票へ進む
-      // (typo 等の本来の invalid はメッセージ ID 冪等化の対象になるため再送で二重起票しない)
+      // (typo 等の本来の invalid はメッセージ ID 冪等化の対象になるため再送で二重起票しない)。
+      // 残存する既知の制約: recentlyLinkedMessageIds はインプロセス Map のため、
+      // (a) 連携成功直後の再送が別インスタンスに振られる水平スケール環境、
+      // (b) 連携成功直後 (TTL 10分以内) にプロセス再起動/デプロイが挟まる場合は、
+      // この冪等化が効かず本コメント冒頭の誤起票が再現し得る (水平スケール前提の解決には
+      // sse-subscribers.ts と同様 Redis 等の共有ストアへの置き換えが必要)。
     }
   }
 
