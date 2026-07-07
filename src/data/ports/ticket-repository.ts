@@ -167,4 +167,7 @@ export interface TicketRepository {
   updateAssignee(id: string, assigneeId: string | null, tenantId: string): Promise<void>;
   // エスカレーション状態にする (tenantId スコープ)
   markEscalated(id: string, args: MarkEscalatedInput, tenantId: string): Promise<void>;
+  // 初回応答日時を記録する (tenantId スコープ)。呼び出し側が「まだ未応答」を確認してから
+  // 呼ぶ前提 (2 回目以降の呼び出しで上書きしないための判定は呼び出し側の責務)
+  markFirstResponded(id: string, at: Date, tenantId: string): Promise<void>;
 }

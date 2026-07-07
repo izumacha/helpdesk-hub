@@ -15,10 +15,7 @@ import type { SubscriptionPlan } from '@/domain/types';
 import { USER_LIMIT, getMonthlyTicketLimit } from '@/lib/plan-guard';
 
 // 各プランの表示設定 (名称・月額・特徴)
-const PLAN_INFO: Record<
-  SubscriptionPlan,
-  { label: string; price: string; features: string[] }
-> = {
+const PLAN_INFO: Record<SubscriptionPlan, { label: string; price: string; features: string[] }> = {
   // 無料プラン: 最小構成でお試し
   free: {
     label: 'Free',
@@ -68,22 +65,31 @@ const PLAN_INFO: Record<
 
 // 受け取る props
 interface Props {
-  // 現在のサブスクリプションプラン
+  // 現在のサブスクリプションプラン (契約プランそのもの。プラン名・機能一覧の表示に使う)
   currentPlan: SubscriptionPlan;
+  // §7.2 Free trial 昇格後の実効プラン (トライアル対象外/終了済みなら currentPlan と同じ値)。
+  // スタッフ人数が「実際に今適用されている上限」を超えているかの判定はこちらを使う
+  // (トライアル中は Free の 3 名ではなく Standard の 10 名が適用されるため)
+  effectivePlan: SubscriptionPlan;
   // Stripe Subscription の status 文字列 (null なら未登録)
   stripeStatus: string | null;
   // Stripe Customer ID の有無 (ポータルリンクを表示するかの判断に使う)
   hasStripeCustomer: boolean;
   // 現在のスタッフ人数 (agent/admin のみ)。Stripe ダウングレード後の上限超過検知に使う
   currentUserCount: number;
+  // §7.2 Free trial の残り日数 (トライアル対象外/終了済みなら null)。
+  // Date は RSC 境界を跨ぐ受け渡しを避けるため、サーバー側で日数に変換済みの値を受け取る
+  trialDaysRemaining: number | null;
 }
 
 // サブスクリプション管理セクション (プラン表示 + アップグレード/管理ボタン)
 export function BillingSection({
   currentPlan,
+  effectivePlan,
   stripeStatus,
   hasStripeCustomer,
   currentUserCount,
+  trialDaysRemaining,
 }: Props) {
   // ボタン操作中のエラーメッセージ
   const [error, setError] = useState<string | null>(null);
@@ -124,22 +130,39 @@ export function BillingSection({
     });
   }
 
-  // 現在のプラン情報を取り出す
+  // 現在のプラン情報を取り出す (プラン名・機能一覧は契約プランそのものを表示する。
+  // トライアルで一時的に使える機能は上のトライアル案内バナーで別途伝える)
   const info = PLAN_INFO[currentPlan];
-  // 現在のスタッフ人数が現在プランの上限を「超えている」か (Stripe ポータルでの解約・
+  // 現在のスタッフ人数が「実際に今適用されている上限」を超えているか (Stripe ポータルでの解約・
   // ダウングレード後も既存メンバーは自動では削除されないため、ここで検知して警告する)。
+  // §7.2 Free trial 中は Standard 相当のシート数が適用される (checkSeatAvailability も
+  // resolveEffectivePlan 経由で同じ判定をしている) ため、必ず effectivePlan の上限で判定する。
+  // currentPlan (契約プランの Free) で判定すると、トライアル中で実際は上限内なのに
+  // 誤って「超えています」と表示してしまう。
   // isUserLimitReached (>= 判定) は「招待をこれ以上発行できるか」の判定用であり、
   // ちょうど上限と同数 (例: Free で 3/3 名) は正常な「満枠」状態であって「超過」ではない。
   // そのまま使うと満枠なだけの通常テナントにも「超えています」という誤った警告が
   // 常時表示されてしまうため、ここでは厳密な超過 (>) のみを判定する
-  const isOverUserLimit = currentUserCount > USER_LIMIT[currentPlan];
+  const isOverUserLimit = currentUserCount > USER_LIMIT[effectivePlan];
 
   return (
     <div className="space-y-4">
       {/* エラーメッセージ */}
       {error && (
-        <p role="alert" className="rounded-lg bg-rose-50 px-3 py-2.5 text-sm text-rose-700 ring-1 ring-rose-200">
+        <p
+          role="alert"
+          className="rounded-lg bg-rose-50 px-3 py-2.5 text-sm text-rose-700 ring-1 ring-rose-200"
+        >
           {error}
+        </p>
+      )}
+
+      {/* §7.2 Free trial 中の案内: Standard 相当の機能 (メール取り込み等) が利用可能なことと
+          残り日数を伝える (trialDaysRemaining は対象外/終了済みなら null で非表示) */}
+      {trialDaysRemaining !== null && (
+        <p className="rounded-lg bg-teal-50 px-3 py-2.5 text-sm text-teal-800 ring-1 ring-teal-200">
+          トライアル期間中です（残り {trialDaysRemaining} 日）。Standard
+          相当の機能（メール取り込み等）を無料でお試しいただけます。
         </p>
       )}
 
@@ -151,8 +174,8 @@ export function BillingSection({
           role="alert"
           className="rounded-lg bg-amber-50 px-3 py-2.5 text-sm text-amber-800 ring-1 ring-amber-200"
         >
-          現在のスタッフ人数 ({currentUserCount} 名) が {info.label}{' '}
-          プランの上限 ({USER_LIMIT[currentPlan]} 名) を超えています。既存メンバーはそのまま
+          現在のスタッフ人数 ({currentUserCount} 名) が {PLAN_INFO[effectivePlan].label}{' '}
+          プランの上限 ({USER_LIMIT[effectivePlan]} 名) を超えています。既存メンバーはそのまま
           利用できますが、新規メンバーの招待はできません。プランをアップグレードするか、
           メンバーを整理してください。
         </p>
@@ -163,7 +186,9 @@ export function BillingSection({
         {/* プラン名と月額 */}
         <div className="flex items-center justify-between">
           <div>
-            <p className="text-xs font-semibold uppercase tracking-wide text-teal-600">現在のプラン</p>
+            <p className="text-xs font-semibold tracking-wide text-teal-600 uppercase">
+              現在のプラン
+            </p>
             <p className="mt-0.5 text-lg font-bold text-slate-900">{info.label}</p>
           </div>
           <p className="text-sm font-semibold text-slate-700">{info.price}</p>
@@ -173,7 +198,9 @@ export function BillingSection({
           {info.features.map((f) => (
             <li key={f} className="flex items-center gap-1.5 text-sm text-slate-600">
               {/* チェックアイコン */}
-              <span className="text-teal-500" aria-hidden="true">✓</span>
+              <span className="text-teal-500" aria-hidden="true">
+                ✓
+              </span>
               {f}
             </li>
           ))}

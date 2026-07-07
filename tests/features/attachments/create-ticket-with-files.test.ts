@@ -62,6 +62,7 @@ async function seed() {
     stripeCustomerId: null,
     stripeSubscriptionId: null,
     stripeSubscriptionStatus: null,
+    trialEndsAt: null,
     teamsWebhookUrl: null,
     chatworkApiToken: null,
     chatworkRoomId: null, // Slack 通知未設定 (テスト用フィクスチャ)
@@ -267,5 +268,55 @@ describe('POST /api/tickets (multipart with attachments)', () => {
     expect(res.status).toBe(422);
     expect(store.tickets.size).toBe(0);
     expect(storage.entries.size).toBe(0);
+  });
+
+  // 回帰防止: §7.2 Free trial 中のテナントは Free の添付上限 (無制限) がそのまま適用され、
+  // Standard の 1GB 上限に「昇格」して逆に厳しくならないこと (トライアルは恩恵のみを与えるべきで、
+  // Standard 相当への実効プラン昇格が添付上限だけ逆転する回帰を防ぐ)
+  it('does not apply the Standard attachment cap to a Free-trial tenant', async () => {
+    const tenant = store.tenants.get(TENANT)!;
+    // Free プランのまま、トライアル期間中 (30日後まで有効) に設定する
+    store.tenants.set(TENANT, {
+      ...tenant,
+      subscriptionPlan: 'free' as const,
+      trialEndsAt: new Date(Date.now() + 10 * 24 * 60 * 60 * 1000),
+    });
+    // Standard の 1GB 上限ギリギリまで既に積み上げておく (Free の無制限のままなら拒否されない)
+    const ONE_GB = 1024 * 1024 * 1024;
+    await repos.attachments.create({
+      ticketId: 'other-ticket',
+      commentId: null,
+      uploaderId: REQUESTER,
+      tenantId: TENANT,
+      mimeType: 'image/jpeg',
+      size: ONE_GB - 100,
+      originalName: 'existing.jpg',
+      storageKey: `${TENANT}/other-ticket/existing.jpg`,
+      storage: 'local',
+    });
+
+    const { POST } = await import('@/app/api/tickets/route');
+    const req = buildMultipartRequest({ title: 't', body: 'b', priority: 'Medium' }, [
+      makeFile('big.jpg', 'image/jpeg', 'x'.repeat(200)),
+    ]);
+
+    const res = await POST(req);
+    // Free の無制限上限が適用されるため 201 (Standard の 1GB 上限に昇格して拒否されない)
+    expect(res.status).toBe(201);
+  });
+
+  // 回帰防止: firstResponseDueAt が配線されておらず常に null のまま起票される不備があった
+  // (品質メトリクス「平均初回応答時間」が常に集計対象 0 件になっていた)
+  it('sets firstResponseDueAt on ticket creation', async () => {
+    const { POST } = await import('@/app/api/tickets/route');
+    const req = buildMultipartRequest({ title: 't', body: 'b', priority: 'High' }, [
+      makeFile('a.jpg', 'image/jpeg', 'jpeg-a'),
+    ]);
+
+    const res = await POST(req);
+    expect(res.status).toBe(201);
+    const ticket = await res.json();
+    // 優先度 High は 4 時間後 (FIRST_RESPONSE_HOURS_BY_PRIORITY.High)
+    expect(ticket.firstResponseDueAt).not.toBeNull();
   });
 });

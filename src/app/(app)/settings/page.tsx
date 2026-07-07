@@ -22,8 +22,10 @@ import { SsoConfigSection } from '@/features/settings/components/SsoConfigSectio
 import { LineConfigSection } from '@/features/settings/components/LineConfigSection';
 // テナント情報取得 (slackWebhookUrl / 拠点一覧 / プラン情報の初期値を渡すため)
 import { repos } from '@/data';
-// プランゲート: Enterprise のみ SSO、Pro/Enterprise のみ LINE 連携を表示する
-import { isLineIntegrationAllowed, isSsoAllowed } from '@/lib/plan-guard';
+// プランゲート: Enterprise のみ SSO、Pro/Enterprise のみ LINE 連携を表示する。
+// resolveEffectivePlan は §7.2 Free trial 中の実効プラン (Standard 相当) を解決する
+// 唯一の判定ロジック (SSOT)。トライアル中かどうかの判定をここで再実装しない
+import { isLineIntegrationAllowed, isSsoAllowed, resolveEffectivePlan } from '@/lib/plan-guard';
 // SSO の SP エンドポイント URL を組み立てるヘルパー
 import { buildSpUrls } from '@/lib/saml';
 // アプリの公開ベース URL を解決するヘルパー (SP URL の組み立てに使う)
@@ -65,6 +67,25 @@ export default async function SettingsPage() {
   // sso-context.ts 参照)、設定の有無自体はプランに関わらず常に取得する。
   const ssoAllowed = isSsoAllowed(tenant?.subscriptionPlan ?? 'free');
   const lineAllowed = isLineIntegrationAllowed(tenant?.subscriptionPlan ?? 'free');
+  // §7.2 Free trial 中の実効プラン (Standard 相当への昇格を含む)。契約プラン自体は
+  // subscriptionPlan のままなので、スタッフ上限の超過判定など「今実際に適用されている上限」を
+  // 見る箇所は必ずこちらを使う (BillingSection の isOverUserLimit 等)
+  const now = new Date();
+  const effectivePlan = resolveEffectivePlan(
+    tenant?.subscriptionPlan ?? 'free',
+    tenant?.trialEndsAt ?? null,
+    now,
+  );
+  // トライアル中かどうかは「契約プランが free なのに実効プランがそれと異なる」ことで判定する
+  // (resolveEffectivePlan は free + トライアル有効期間中のみ 'standard' を返すため、
+  // trialEndsAt > now を再度ここで比較しない = SSOT を重複させない)
+  const isTrialActive = tenant?.subscriptionPlan === 'free' && effectivePlan !== 'free';
+  // §7.2 Free trial の残り日数 (対象外/終了済みなら null)。Date を Client Component へ直接
+  // 渡すのは避け、ここで日数に変換してから BillingSection に渡す
+  const trialDaysRemaining =
+    isTrialActive && tenant?.trialEndsAt
+      ? Math.ceil((tenant.trialEndsAt.getTime() - now.getTime()) / (24 * 60 * 60 * 1000))
+      : null;
   const [ssoConfig, lineConfig] = await Promise.all([
     repos.ssoConfigs.findByTenant(session.user.tenantId),
     repos.lineConfigs.findByTenant(session.user.tenantId),
@@ -165,9 +186,11 @@ export default async function SettingsPage() {
         {/* プラン情報と操作ボタン */}
         <BillingSection
           currentPlan={tenant?.subscriptionPlan ?? 'free'}
+          effectivePlan={effectivePlan}
           stripeStatus={tenant?.stripeSubscriptionStatus ?? null}
           hasStripeCustomer={!!tenant?.stripeCustomerId}
           currentUserCount={currentUserCount}
+          trialDaysRemaining={trialDaysRemaining}
         />
       </section>
 

@@ -27,6 +27,8 @@ import { broadcastUnreadCountToMany } from '@/features/notifications/notify';
 import { getMonthlyTicketQuota } from '@/lib/tenant-plan';
 // Phase 4: Slack/Teams/Chatwork 外部通知ヘルパー (Web フォーム・メール・LINE 取り込みと共有)
 import { notifyOutboundBestEffort } from '@/lib/outbound-notify';
+// 優先度から初回応答期限を計算する SLA ヘルパー (Web フォーム・メール・LINE 取り込みと共有)
+import { calculateFirstResponseDueAt } from '@/lib/sla';
 
 // 1 インポートあたりの最大行数 (これを超えたらエラー)
 const MAX_ROWS = 200;
@@ -202,6 +204,8 @@ export async function importTickets(csvText: string): Promise<ImportTicketsResul
 
   // テナントの動作モードを取得する (初期ステータスを Lite/Pro で切り替えるために必要)
   const mode = await getCurrentTenantMode(tenantId);
+  // 取り込み時刻 (初回応答期限の計算基準。行ごとに新規生成せず統一する)
+  const now = new Date();
 
   // Lite: 'Open'(未対応)、Pro: undefined → DB 既定値 'New'(新規) を使う。
   // メール取り込み・LINE 取り込みと同じ initialStatusForMode を呼ぶことで、
@@ -362,6 +366,9 @@ export async function importTickets(csvText: string): Promise<ImportTicketsResul
         tenantId, // テナントスコープを必ず付与する (クロステナント防止)
         status: initialStatus, // Lite: Open / Pro: New
         resolutionDueAt, // 期限日 (未指定なら null)
+        // 初回応答期限: CSV に対応列が無いため、常に優先度ベースで自動算出する
+        // (Web フォーム・メール・LINE 取り込みと同じ SLA ヘルパーを使う)
+        firstResponseDueAt: calculateFirstResponseDueAt(priority, now),
         locationId, // 拠点 ID (「拠点」列があれば名前解決済み、無ければ null)
       });
       // 成功カウンタをインクリメント

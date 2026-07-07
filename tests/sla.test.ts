@@ -1,9 +1,11 @@
 // Vitest のテスト DSL
 import { describe, expect, it } from 'vitest';
-// SLA 計算/状態判定/優先度ごとの解決時間テーブル
+// SLA 計算/状態判定/優先度ごとの解決時間・初回応答時間テーブル
 import {
+  calculateFirstResponseDueAt,
   calculateResolutionDueAt,
   getSlaState,
+  FIRST_RESPONSE_HOURS_BY_PRIORITY,
   SLA_RESOLUTION_HOURS_BY_PRIORITY,
 } from '../src/lib/sla';
 
@@ -35,6 +37,38 @@ describe('calculateResolutionDueAt', () => {
     expect(SLA_RESOLUTION_HOURS_BY_PRIORITY.High).toBe(24);
     expect(SLA_RESOLUTION_HOURS_BY_PRIORITY.Medium).toBe(72);
     expect(SLA_RESOLUTION_HOURS_BY_PRIORITY.Low).toBe(168);
+  });
+});
+
+// 初回応答期限算出関数のテスト (回帰防止: firstResponseDueAt が常に null のまま
+// 起票される不備が過去にあったため、計算関数自体の正しさを固定する)
+describe('calculateFirstResponseDueAt', () => {
+  // 起点時刻 (固定して時差ぶれを避ける)
+  const base = new Date('2026-04-17T00:00:00Z');
+
+  // High は 4 時間後を返す
+  it('adds 4 hours for High priority', () => {
+    const due = calculateFirstResponseDueAt('High', base);
+    expect(due.getTime() - base.getTime()).toBe(4 * 60 * 60 * 1000);
+  });
+
+  // Medium は 8 時間後を返す
+  it('adds 8 hours for Medium priority', () => {
+    const due = calculateFirstResponseDueAt('Medium', base);
+    expect(due.getTime() - base.getTime()).toBe(8 * 60 * 60 * 1000);
+  });
+
+  // Low は 24 時間後を返す
+  it('adds 24 hours for Low priority', () => {
+    const due = calculateFirstResponseDueAt('Low', base);
+    expect(due.getTime() - base.getTime()).toBe(24 * 60 * 60 * 1000);
+  });
+
+  // 公開テーブルの値が期待通りに揃っていること
+  it('exposes the hours table for each priority', () => {
+    expect(FIRST_RESPONSE_HOURS_BY_PRIORITY.High).toBe(4);
+    expect(FIRST_RESPONSE_HOURS_BY_PRIORITY.Medium).toBe(8);
+    expect(FIRST_RESPONSE_HOURS_BY_PRIORITY.Low).toBe(24);
   });
 });
 
@@ -72,5 +106,30 @@ describe('getSlaState', () => {
   // 24 時間以上先 + 未解決は "ok"
   it('returns "ok" when deadline is more than 24 hours away and not resolved', () => {
     expect(getSlaState(future, null)).toBe('ok');
+  });
+
+  // 回帰防止: 初回応答期限のように窓が短い SLA では、既定の 24 時間閾値をそのまま
+  // 使うと起票直後から常に warning になってしまう。warningThresholdMs を明示的に
+  // 渡すことで、窓の長さに応じた適切な閾値で判定できること
+  describe('warningThresholdMs (第3引数)', () => {
+    // High 優先度の初回応答期限 (4 時間窓) を想定: 窓の 25% = 1 時間
+    const highFirstResponseThresholdMs = 1 * 60 * 60 * 1000;
+
+    // 残り 3 時間 (閾値 1 時間より外) は "ok" (既定の 24 時間閾値なら誤って warning になる)
+    it('returns "ok" when remaining time exceeds the given threshold even if within 24 hours', () => {
+      const in3Hours = new Date(now.getTime() + 3 * 60 * 60 * 1000);
+      expect(getSlaState(in3Hours, null, highFirstResponseThresholdMs)).toBe('ok');
+    });
+
+    // 残り 30 分 (閾値 1 時間未満) は "warning"
+    it('returns "warning" when remaining time is within the given threshold', () => {
+      const in30Min = new Date(now.getTime() + 30 * 60 * 1000);
+      expect(getSlaState(in30Min, null, highFirstResponseThresholdMs)).toBe('warning');
+    });
+
+    // 第3引数を省略した場合は従来どおり既定の 24 時間閾値が使われる (後方互換)
+    it('defaults to the 24-hour threshold when warningThresholdMs is omitted', () => {
+      expect(getSlaState(soon, null)).toBe('warning');
+    });
   });
 });

@@ -97,6 +97,7 @@ async function seed() {
       stripeCustomerId: null,
       stripeSubscriptionId: null,
       stripeSubscriptionStatus: null,
+      trialEndsAt: null,
       teamsWebhookUrl: null,
       chatworkApiToken: null,
       chatworkRoomId: null,
@@ -310,6 +311,48 @@ describe('POST /api/tickets/[id]/comments', () => {
     const res = await POST(buildRequest('対応します', []), makeParams(ticketId));
     expect(res.status).toBe(201);
     expect(store.comments.size).toBe(1);
+  });
+
+  // ─────────────────────────────────────────────
+  // SLA: 初回応答日時 (firstRespondedAt) の記録 (回帰防止: 以前は書き込み経路が存在せず、
+  // 品質メトリクス「平均初回応答時間」が常に集計対象 0 件になっていた)
+  // ─────────────────────────────────────────────
+
+  // エージェントの最初のコメントで firstRespondedAt が記録される
+  it('records firstRespondedAt on the agent first comment', async () => {
+    const { ticketId } = await seed();
+    mockSession = buildSession(AGENT, 'agent', TENANT);
+    const { POST } = await import('@/app/api/tickets/[id]/comments/route');
+    const res = await POST(buildRequest('対応します', []), makeParams(ticketId));
+    expect(res.status).toBe(201);
+    const ticket = await repos.tickets.findById(ticketId, TENANT);
+    expect(ticket?.firstRespondedAt).not.toBeNull();
+  });
+
+  // 依頼者自身のコメントは「応答」とみなさず firstRespondedAt を記録しない
+  it('does not record firstRespondedAt for a requester comment', async () => {
+    const { ticketId } = await seed();
+    mockSession = buildSession(REQUESTER, 'requester', TENANT);
+    const { POST } = await import('@/app/api/tickets/[id]/comments/route');
+    const res = await POST(buildRequest('追加の情報です', []), makeParams(ticketId));
+    expect(res.status).toBe(201);
+    const ticket = await repos.tickets.findById(ticketId, TENANT);
+    expect(ticket?.firstRespondedAt).toBeNull();
+  });
+
+  // 2 回目以降のエージェントコメントでは firstRespondedAt を上書きしない
+  it('does not overwrite firstRespondedAt on a second agent comment', async () => {
+    const { ticketId } = await seed();
+    mockSession = buildSession(AGENT, 'agent', TENANT);
+    const { POST } = await import('@/app/api/tickets/[id]/comments/route');
+    await POST(buildRequest('1 回目の返信', []), makeParams(ticketId));
+    const firstTicket = await repos.tickets.findById(ticketId, TENANT);
+    const firstRespondedAt = firstTicket?.firstRespondedAt ?? null;
+    expect(firstRespondedAt).not.toBeNull();
+
+    await POST(buildRequest('2 回目の返信', []), makeParams(ticketId));
+    const secondTicket = await repos.tickets.findById(ticketId, TENANT);
+    expect(secondTicket?.firstRespondedAt?.getTime()).toBe(firstRespondedAt?.getTime());
   });
 
   // ─────────────────────────────────────────────

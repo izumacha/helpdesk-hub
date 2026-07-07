@@ -48,6 +48,7 @@ export function makeTenantRepo(store: Store): TenantRepository {
         stripeCustomerId: null,
         stripeSubscriptionId: null,
         stripeSubscriptionStatus: null,
+        trialEndsAt: input.trialEndsAt ?? null, // §7.2 Free trial 終了日時 (任意)
         createdAt: new Date(),
       };
       // ストアの Map に登録
@@ -82,8 +83,7 @@ export function makeTenantRepo(store: Store): TenantRepository {
           data.teamsWebhookUrl !== undefined ? data.teamsWebhookUrl : t.teamsWebhookUrl,
         chatworkApiToken:
           data.chatworkApiToken !== undefined ? data.chatworkApiToken : t.chatworkApiToken,
-        chatworkRoomId:
-          data.chatworkRoomId !== undefined ? data.chatworkRoomId : t.chatworkRoomId,
+        chatworkRoomId: data.chatworkRoomId !== undefined ? data.chatworkRoomId : t.chatworkRoomId,
       };
       store.tenants.set(id, updated);
       // 防御的コピーを返す

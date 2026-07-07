@@ -68,6 +68,7 @@ beforeEach(() => {
     stripeCustomerId: null,
     stripeSubscriptionId: null,
     stripeSubscriptionStatus: null,
+    trialEndsAt: null,
     teamsWebhookUrl: null,
     chatworkApiToken: null,
     chatworkRoomId: null, // Slack 通知未設定 (テスト用フィクスチャ)
@@ -104,6 +105,29 @@ describe('createTenant', () => {
     expect(admin?.tenantId).toBe(result.tenantId);
   });
 
+  // 回帰防止: §7.2「30日間の Free trial (Standard 相当)」。新規テナントには
+  // 作成時刻からおよそ 30 日後の trialEndsAt が設定されること
+  it('trialEndsAt が作成時刻からおよそ30日後に設定される', async () => {
+    const createTenant = await loadAction();
+    const before = Date.now();
+    const result = await createTenant(
+      makeForm({
+        tenantName: '新組織',
+        industry: '',
+        adminName: '管理 太郎',
+        adminEmail: 'trial-admin@example.com',
+        adminPassword: 'password123',
+      }),
+    );
+    const tenant = store.tenants.get(result.tenantId);
+    expect(tenant?.trialEndsAt).not.toBeNull();
+    const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
+    const diff = tenant!.trialEndsAt!.getTime() - before;
+    // 実行時間の揺れを許容しつつ、およそ 30 日後であることを確認する (前後 5 秒の許容誤差)
+    expect(diff).toBeGreaterThan(THIRTY_DAYS_MS - 5000);
+    expect(diff).toBeLessThan(THIRTY_DAYS_MS + 5000);
+  });
+
   // 業種テンプレートの「よくある質問」が公開済み FAQ として初期投入されること (Phase 3)
   it('業種テンプレートの FAQ を公開済みとして投入する', async () => {
     const createTenant = await loadAction();
@@ -135,6 +159,26 @@ describe('createTenant', () => {
     expect(faqs.map((f) => f.question)).toContain(
       '現場の PC が起動しません。どうすればいいですか？',
     );
+  });
+
+  // 回帰防止: サンプルチケットに firstResponseDueAt (初回応答期限) が配線されておらず
+  // 常に null のまま投入される不備があった (品質メトリクス「平均初回応答時間」の集計対象から
+  // サンプルチケットが漏れてしまう)
+  it('サンプルチケットに firstResponseDueAt が設定される', async () => {
+    const createTenant = await loadAction();
+    const result = await createTenant(
+      makeForm({
+        tenantName: '新組織',
+        industry: '',
+        adminName: '管理 太郎',
+        adminEmail: 'sample-admin@example.com',
+        adminPassword: 'password123',
+      }),
+    );
+    // サンプルチケットは全て firstResponseDueAt が設定されている (null のまま放置されない)
+    const sampleTickets = [...store.tickets.values()].filter((t) => t.tenantId === result.tenantId);
+    expect(sampleTickets.length).toBeGreaterThan(0);
+    expect(sampleTickets.every((t) => t.firstResponseDueAt !== null)).toBe(true);
   });
 
   // admin 以外は拒否されること (RBAC)

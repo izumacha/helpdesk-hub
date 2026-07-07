@@ -90,6 +90,7 @@ async function seed(slackWebhookUrl: string | null): Promise<{ ticketId: string 
     stripeCustomerId: null,
     stripeSubscriptionId: null,
     stripeSubscriptionStatus: null,
+    trialEndsAt: null,
     teamsWebhookUrl: null,
     chatworkApiToken: null,
     chatworkRoomId: null,

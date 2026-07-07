@@ -30,8 +30,10 @@ import { createTenantSchema } from '@/lib/validations/invite';
 import { generateInboundToken } from '@/lib/inbound-email';
 // 業種テンプレートの検索関数 (Phase 3 業種テンプレ自動投入)
 import { findIndustryTemplate } from '@/lib/industry-templates';
-// 優先度から解決期限を計算する SLA ヘルパー (サンプルチケットの期限算出に使う)
-import { calculateResolutionDueAt } from '@/lib/sla';
+// 優先度から解決期限・初回応答期限を計算する SLA ヘルパー (サンプルチケットの期限算出に使う)
+import { calculateFirstResponseDueAt, calculateResolutionDueAt } from '@/lib/sla';
+// §7.2 Free trial の期間 (30 日) をミリ秒で表す定数
+import { FREE_TRIAL_DURATION_MS } from '@/lib/plan-guard';
 // 新規起票時の初期ステータスを mode から決める共通ルール (サンプルチケットと揃える)
 import { initialStatusForMode } from '@/domain/ticket-status';
 
@@ -93,11 +95,15 @@ export async function createTenant(formData: FormData): Promise<CreateTenantResu
 
     // 新しいテナント (組織) を作成する。mode 未指定で SMB 既定の lite になる。
     // メール取り込み (Phase 2) の専用転送アドレス用トークンを払い出して紐付ける
-    // (作成時に発行しておくことで、運用者は最初から取り込みアドレスを案内できる)
+    // (作成時に発行しておくことで、運用者は最初から取り込みアドレスを案内できる)。
+    // §7.2「30日間の Free trial (Standard 相当)」: 作成時刻から 30 日後を trialEndsAt に設定する。
+    // これにより §7.1「30分で運用開始」オンボーディングのメール取り込み体験 (Standard 以上限定)
+    // を、課金前の新規テナントでもすぐに試せるようにする
     const tenant = await tx.tenants.create({
       name: tenantName,
       industry: industry ?? null,
       inboundToken: generateInboundToken(),
+      trialEndsAt: new Date(Date.now() + FREE_TRIAL_DURATION_MS),
     });
     // パスワードを bcrypt でハッシュ化する (cost 12)
     const passwordHash = await hash(adminPassword, 12);
@@ -162,8 +168,10 @@ export async function createTenant(formData: FormData): Promise<CreateTenantResu
     // 起票者には初代管理者 (adminUser) を設定する。
     // サンプルチケットは Lite モードの既定動作に合わせて初期化する (Pro でも同じ)。
     const initialStatus = initialStatusForMode(tenant.mode);
-    // サンプルチケットの解決期限は優先度 Medium ベースで自動計算する (now は上で取得済みのものを再利用)
+    // サンプルチケットの解決期限・初回応答期限は優先度 Medium ベースで自動計算する
+    // (now は上で取得済みのものを再利用)
     const resolutionDueAt = calculateResolutionDueAt('Medium', now);
+    const firstResponseDueAt = calculateFirstResponseDueAt('Medium', now);
     // サンプルチケットを 1 件ずつ直列で作成する (トランザクション内の複数クエリは直列が安全)
     for (const sample of SAMPLE_TICKETS) {
       await tx.tickets.create({
@@ -175,6 +183,7 @@ export async function createTenant(formData: FormData): Promise<CreateTenantResu
         tenantId: tenant.id, // 所属テナント
         status: initialStatus, // Lite は 'Open'、Pro は DB 既定 'New'
         resolutionDueAt, // 自動計算した解決期限
+        firstResponseDueAt, // 自動計算した初回応答期限
       });
     }
 

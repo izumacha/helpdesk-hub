@@ -24,7 +24,23 @@ async function seed() {
   const now = new Date();
   // テナント A・B を投入 (Lite モード)
   for (const t of [TENANT_A, TENANT_B]) {
-    store.tenants.set(t, { id: t, name: t, mode: 'lite', industry: null, inboundToken: null, slackWebhookUrl: null, subscriptionPlan: 'free' as const, stripeCustomerId: null, stripeSubscriptionId: null, stripeSubscriptionStatus: null, teamsWebhookUrl: null, chatworkApiToken: null, chatworkRoomId: null, createdAt: now });
+    store.tenants.set(t, {
+      id: t,
+      name: t,
+      mode: 'lite',
+      industry: null,
+      inboundToken: null,
+      slackWebhookUrl: null,
+      subscriptionPlan: 'free' as const,
+      stripeCustomerId: null,
+      stripeSubscriptionId: null,
+      stripeSubscriptionStatus: null,
+      trialEndsAt: null,
+      teamsWebhookUrl: null,
+      chatworkApiToken: null,
+      chatworkRoomId: null,
+      createdAt: now,
+    });
   }
   // テナント A のユーザーを 1 人投入する
   store.users.set(USER_A, {

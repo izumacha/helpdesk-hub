@@ -82,6 +82,7 @@ function seed() {
     stripeCustomerId: null,
     stripeSubscriptionId: null,
     stripeSubscriptionStatus: null,
+    trialEndsAt: null,
     teamsWebhookUrl: null,
     chatworkApiToken: null,
     chatworkRoomId: null,
@@ -215,6 +216,18 @@ describe('importTickets', () => {
       // resolutionDueAt が null でないことを確認する
       const ticket = [...store.tickets.values()][0]; // 保存されたチケットを取り出す
       expect(ticket?.resolutionDueAt).not.toBeNull(); // 期限日が保存されていることを確認する
+    });
+
+    // 回帰防止: firstResponseDueAt が配線されておらず常に null のまま起票される不備があった。
+    // CSV には対応列が無いため、期限日 (resolutionDueAt) の指定有無に関わらず優先度ベースで
+    // 常に自動算出されることを確認する
+    it('firstResponseDueAt が優先度ベースで自動算出される', async () => {
+      const importTickets = await loadAction(); // Action を動的ロードする
+      const csv = `件名\nテスト件名`; // 期限日列を持たない最小 CSV
+      const result = await importTickets(csv);
+      expect(result.imported).toBe(1);
+      const ticket = [...store.tickets.values()][0];
+      expect(ticket?.firstResponseDueAt).not.toBeNull();
     });
 
     // CSV インジェクション（=数式で始まる件名）はインポート時に加工しない。

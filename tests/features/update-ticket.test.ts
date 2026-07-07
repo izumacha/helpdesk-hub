@@ -76,6 +76,7 @@ async function seed() {
     stripeCustomerId: null,
     stripeSubscriptionId: null,
     stripeSubscriptionStatus: null,
+    trialEndsAt: null,
     teamsWebhookUrl: null,
     chatworkApiToken: null,
     chatworkRoomId: null, // Slack 通知未設定 (テスト用フィクスチャ)
@@ -533,6 +534,7 @@ describe('updateTicketAssignee (provider-agnostic)', () => {
       stripeCustomerId: null,
       stripeSubscriptionId: null,
       stripeSubscriptionStatus: null,
+      trialEndsAt: null,
       teamsWebhookUrl: null,
       chatworkApiToken: null,
       chatworkRoomId: null, // Slack 通知未設定 (テスト用フィクスチャ)

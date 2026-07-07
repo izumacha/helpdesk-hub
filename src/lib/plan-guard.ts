@@ -39,6 +39,37 @@ export const ATTACHMENT_TOTAL_SIZE_LIMIT_BYTES: Record<SubscriptionPlan, number>
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
+// トライアル (§7.2「30日間の Free trial (Standard 相当)」)
+// ─────────────────────────────────────────────────────────────────────────────
+
+// トライアル中に昇格させる先のプラン (Standard 相当)
+const TRIAL_EFFECTIVE_PLAN: SubscriptionPlan = 'standard';
+
+// トライアル期間 (30 日、ミリ秒)。テナント作成時に trialEndsAt = 作成時刻 + この値で設定する
+export const FREE_TRIAL_DURATION_MS = 30 * 24 * 60 * 60 * 1000;
+
+// テナントの実際の課金プラン (subscriptionPlan) とトライアル終了日時から、
+// 各種プランゲート判定に使う「実効プラン」を解決する純粋関数。
+// Free プランでトライアル期間中 (trialEndsAt が未来) なら Standard 相当として扱い、
+// それ以外 (トライアル対象外・終了済み・Standard 以上に課金済み) はそのまま返す。
+// Stripe で正式に課金プランへ上がった場合は subscriptionPlan 自体が更新されるため、
+// この関数の判定を経由しても実際のプランがそのまま尊重される (トライアルで上書きされない)。
+// SSO (Enterprise 限定) や LINE 連携 (Pro 以上限定) など Standard より上位のゲートは、
+// トライアルでは昇格しない (「Standard 相当」の範囲を超えるプラン限定機能は対象外)。
+export function resolveEffectivePlan(
+  subscriptionPlan: SubscriptionPlan,
+  trialEndsAt: Date | null,
+  now: Date = new Date(),
+): SubscriptionPlan {
+  // Free 以外は課金済み (またはそれ以上) なのでトライアル判定は不要
+  if (subscriptionPlan !== 'free') return subscriptionPlan;
+  // トライアル未設定、または既に終了していれば無印の Free のまま
+  if (trialEndsAt === null || trialEndsAt.getTime() <= now.getTime()) return subscriptionPlan;
+  // トライアル期間中: Standard 相当に昇格させる
+  return TRIAL_EFFECTIVE_PLAN;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // プラン機能可用性フラグ
 // ─────────────────────────────────────────────────────────────────────────────
 
