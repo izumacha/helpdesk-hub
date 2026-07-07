@@ -8,6 +8,9 @@ import { Sidebar } from '@/components/layout/Sidebar';
 import { MobileNavProvider } from '@/components/layout/MobileNavProvider';
 // 現在テナントの動作モード(lite | pro)を取得するヘルパー
 import { getCurrentTenantMode } from '@/lib/tenant';
+// §6.1 料金プラン「Free: ロゴ表示」の判定用。トライアル中の実効プランを返す
+// (Free trial 中は Standard 相当のためロゴを表示しない)
+import { resolveTenantPlan } from '@/lib/tenant-plan';
 
 // (app) Route Group の共通レイアウト (認証後の画面骨格)
 export default async function AppLayout({ children }: { children: React.ReactNode }) {
@@ -18,6 +21,9 @@ export default async function AppLayout({ children }: { children: React.ReactNod
   // テナントの動作モード (lite | pro) を取得し、メニュー出し分けに使う
   // (tenantId を渡して二重 session 読み込みを回避。未ログイン時は既定 lite)
   const mode = await getCurrentTenantMode(session?.user?.tenantId);
+  // §6.1 料金プラン表「Free: ロゴ表示」。実効プラン (トライアル昇格を含む) が free の
+  // テナントにだけ「Powered by」表記を出す (Standard 以上・トライアル中は非表示)
+  const plan = session?.user?.tenantId ? await resolveTenantPlan(session.user.tenantId) : 'free';
 
   return (
     // モバイルでのサイドバー開閉状態を Header (トグルボタン) と Sidebar (ドロワー本体) で共有する
@@ -33,6 +39,12 @@ export default async function AppLayout({ children }: { children: React.ReactNod
           <Header />
           {/* 各ページの内容 (縦スクロール可) ─ モバイルは余白を控えめにする */}
           <main className="flex-1 overflow-y-auto p-4 sm:p-6 md:p-8">{children}</main>
+          {/* §6.1 料金プラン「Free: ロゴ表示」。Free プラン (トライアル中を除く) のテナントにのみ表示する */}
+          {plan === 'free' && (
+            <footer className="shrink-0 border-t border-slate-100 bg-white px-4 py-1.5 text-center text-xs text-slate-400">
+              Powered by HelpDesk Hub
+            </footer>
+          )}
         </div>
       </div>
     </MobileNavProvider>

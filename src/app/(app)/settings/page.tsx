@@ -22,14 +22,22 @@ import { SsoConfigSection } from '@/features/settings/components/SsoConfigSectio
 import { LineConfigSection } from '@/features/settings/components/LineConfigSection';
 // テナント情報取得 (slackWebhookUrl / 拠点一覧 / プラン情報の初期値を渡すため)
 import { repos } from '@/data';
-// プランゲート: Enterprise のみ SSO、Pro/Enterprise のみ LINE 連携を表示する。
-// resolveEffectivePlan は §7.2 Free trial 中の実効プラン (Standard 相当) を解決する
-// 唯一の判定ロジック (SSOT)。トライアル中かどうかの判定をここで再実装しない
-import { isLineIntegrationAllowed, isSsoAllowed, resolveEffectivePlan } from '@/lib/plan-guard';
+// プランゲート: Enterprise のみ SSO、Pro/Enterprise のみ LINE 連携、Standard 以上のみ
+// メール取り込みを表示する。resolveEffectivePlan は §7.2 Free trial 中の実効プラン
+// (Standard 相当) を解決する唯一の判定ロジック (SSOT)。トライアル中かどうかの判定を
+// ここで再実装しない
+import {
+  isEmailInboundAllowed,
+  isLineIntegrationAllowed,
+  isSsoAllowed,
+  resolveEffectivePlan,
+} from '@/lib/plan-guard';
 // SSO の SP エンドポイント URL を組み立てるヘルパー
 import { buildSpUrls } from '@/lib/saml';
 // アプリの公開ベース URL を解決するヘルパー (SP URL の組み立てに使う)
 import { resolveAppBaseUrl } from '@/lib/app-url';
+// メール取り込み用の転送先アドレスを組み立てるヘルパー (取り込みトークン + 配信ドメイン)
+import { buildInboundAddress } from '@/lib/inbound-email';
 
 // /settings : テナント設定ページ (現状は Lite/Pro モードの切替のみ。管理者専用)
 export default async function SettingsPage() {
@@ -97,6 +105,18 @@ export default async function SettingsPage() {
   // Webhook 受信 URL (LINE Developers コンソールに登録する値)
   const lineWebhookUrl = `${resolveAppBaseUrl()}/api/inbound/line`;
 
+  // §7.1 オンボーディング「専用のメール転送先を表示する」(Standard 以上、Free trial 中も含む)。
+  // ダッシュボードの「はじめかた」案内・新規テナントのサンプルチケット本文は、この画面に転送先が
+  // 表示されている前提の文言になっているため、ここで実際に表示する (回帰防止: 監査で発見された
+  // 「案内文言はあるのに表示箇所が存在しない」不整合)
+  const emailInboundAllowed = isEmailInboundAllowed(effectivePlan);
+  // 配信ドメイン (INBOUND_EMAIL_DOMAIN) が未設定の環境では組み立てられないため null のままにする
+  const inboundEmailDomain = process.env.INBOUND_EMAIL_DOMAIN?.trim() || null;
+  const inboundEmailAddress =
+    tenant?.inboundToken && inboundEmailDomain
+      ? buildInboundAddress(tenant.inboundToken, inboundEmailDomain)
+      : null;
+
   return (
     <div className="mx-auto max-w-2xl space-y-6">
       {/* ヘッダー: タイトル + 説明文 */}
@@ -135,6 +155,42 @@ export default async function SettingsPage() {
         {/* 招待リンク発行フォーム本体 */}
         <InviteForm />
       </section>
+
+      {/* メール取り込みカード (Standard 以上。Free trial 中も実効プランで許可される)。
+          §7.1 オンボーディング手順4「専用のメール転送先を表示する」に対応する */}
+      {emailInboundAllowed && (
+        <section className="space-y-4 rounded-2xl bg-white p-6 shadow-sm ring-1 ring-slate-100">
+          <div>
+            {/* セクション見出し */}
+            <h2 className="text-base font-semibold text-slate-900">メール取り込み</h2>
+            {/* 説明: 下記アドレスへ転送するとチケット化される旨を伝える */}
+            <p className="mt-1 text-sm text-slate-500">
+              今まで使っているメールアドレス宛の問い合わせを、下記の専用アドレスへ自動転送すると
+              自動でチケットが作成されます。Gmail・Outlook の自動転送設定の手順は
+              <Link
+                href="/help/email-integration"
+                className="text-teal-700 underline underline-offset-2 hover:text-teal-800"
+              >
+                ヘルプページ
+              </Link>
+              をご覧ください。
+            </p>
+          </div>
+          {inboundEmailAddress ? (
+            // 転送先アドレス (コピーしやすいよう等幅フォントで表示。LineConfigSection の
+            // Webhook URL 表示と同じスタイルに揃える)
+            <p className="rounded bg-slate-50 px-2 py-1 font-mono text-xs break-all text-slate-700 ring-1 ring-slate-200">
+              {inboundEmailAddress}
+            </p>
+          ) : (
+            // INBOUND_EMAIL_DOMAIN が未設定の環境向けの案内 (運用者向け。秘密情報は含まない)
+            <p className="rounded-lg bg-amber-50 px-3 py-2.5 text-sm text-amber-800 ring-1 ring-amber-200">
+              メール取り込み用のドメインが未設定のため、転送先アドレスを表示できません。
+              運用者に環境変数 (INBOUND_EMAIL_DOMAIN) の設定を確認してください。
+            </p>
+          )}
+        </section>
+      )}
 
       {/* Phase 4: Slack / Teams / Chatwork 外部通知カード */}
       <section className="space-y-4 rounded-2xl bg-white p-6 shadow-sm ring-1 ring-slate-100">

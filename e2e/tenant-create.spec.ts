@@ -75,6 +75,22 @@ test.describe('テナント作成フロー', () => {
     await newPage.goto('/tickets');
     await expect(newPage.getByText('VPN に接続できない')).toHaveCount(0);
 
+    // 回帰防止 (監査で発見): 新規テナントは §7.2 Free trial 中 (Standard 相当) のため、
+    // メール取り込みセクションが設定画面に表示されること (トライアル中はメール取り込みが
+    // 解禁される)。また Free trial 中は「ロゴ表示」バッジも非表示になること (§6.1)
+    await newPage.goto('/settings');
+    await expect(newPage.getByRole('heading', { name: 'メール取り込み' })).toBeVisible();
+    await expect(newPage.getByText('Powered by HelpDesk Hub')).toHaveCount(0);
+
+    // トライアルが終了した (= 契約プランどおり Free) 状態を模し、設定画面を再読み込みすると
+    // 「ロゴ表示」バッジが表示されること (§6.1 料金プラン「Free: ロゴ表示」)
+    await prisma.tenant.updateMany({
+      where: { name: NEW_TENANT_NAME },
+      data: { trialEndsAt: null },
+    });
+    await newPage.goto('/settings');
+    await expect(newPage.getByText('Powered by HelpDesk Hub')).toBeVisible();
+
     // 後始末
     await newContext.close();
   });
