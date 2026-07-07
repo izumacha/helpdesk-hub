@@ -436,50 +436,65 @@ export async function escalateTicket(ticketId: string, reason: string) {
   // 全エージェントへ未読件数を一斉配信 (テナントを伝搬)
   await broadcastUnreadCountToMany(agentIds, tenantId);
 
-  // Phase 2「メール通知テンプレートの整備」(docs/smb-dx-pivot-plan.md §4 Phase 2):
-  // エスカレーションを操作者以外の全エージェントへメールで知らせる (ベストエフォート)。
-  // エスカレーションは全エージェントへの一斉通知という性質上、1 通の失敗が他へ波及しないよう
-  // allSettled で並行送信し、失敗は件数だけログに残す。
+  // Phase 2「メール通知テンプレートの整備」+ Phase 4「Slack/Teams/Chatwork 外部通知」:
+  // エスカレーションを操作者以外の全エージェントへメールで知らせつつ、外部チャネルにも通知する。
+  // この 2 経路は互いに依存しない独立した I/O なので、逐次実行すると外部通知 (Slack 等) が
+  // メール送信の完了を待つ形になってしまう。エスカレーションは対応漏れ防止のため一番早く
+  // 届いてほしい通知であり、Promise.allSettled で並行実行して片方の遅延/失敗が他方に
+  // 波及しないようにする。両経路とも同じ NEXTAUTH_URL に依存するため、ベース URL の解決は
+  // 1 度だけ行い結果を共有する (二重解決の無駄を避ける)。
+  let baseUrl: string | null = null;
   try {
-    // ベース URL を解決してチケットリンクを組み立てる (NEXTAUTH_URL 未設定時は例外 → 下の catch で握る)
-    const baseUrl = resolveAppBaseUrl();
-    const ticketUrl = buildTicketUrl(baseUrl, ticketId);
-    // 件名 / 本文 (Text / HTML) を純粋ヘルパーで構築
-    const { subject, text, html } = renderEscalatedEmail({
-      ticketTitle: title,
-      ticketUrl,
-      reason: trimmedReason,
-    });
-    // 操作者本人 (エスカレーションを実行したエージェント) は自分の操作を知っているため除く
-    const recipients = agents.filter((a) => a.id !== session.user.id);
-    const results = await Promise.allSettled(
-      recipients.map((a) => getEmailSender().send({ to: a.email, subject, text, html })),
-    );
-    const failedCount = results.filter((r) => r.status === 'rejected').length;
-    if (failedCount > 0) {
-      console.warn(`[escalateTicket] ${failedCount} 件のエージェント宛メール送信に失敗しました`);
-    }
+    // ベース URL を解決する (NEXTAUTH_URL 未設定時は例外 → 下の catch で握る)
+    baseUrl = resolveAppBaseUrl();
   } catch (err) {
-    // URL 解決失敗等、本文組み立て自体に失敗した場合もログのみに留める (アプリ内通知は既に成立している)
-    console.error('[escalateTicket] エージェント宛メール送信に失敗しました', err);
+    // 解決失敗はメール・外部通知の両方に共通する原因のため、この時点でまとめてログしてどちらもスキップする
+    console.error('[escalateTicket] ベース URL の解決に失敗したため通知を送信できません', err);
   }
-
-  // Phase 4: Slack/Teams/Chatwork 外部通知 (updateTicketStatus と同じパターン)。
-  // エスカレーションは対応漏れを防ぐための最重要イベントであり、チーム共有チャネルに
-  // 一番届いてほしい通知であるにもかかわらず、これまでステータス変更のみ外部通知されていた。
-  // 外部通知の失敗はチケット更新に影響させないよう try/catch で包む。
-  try {
-    // ベース URL を解決してチケットリンクを組み立てる (メール送信と別 try のため再解決)
-    const baseUrl = resolveAppBaseUrl();
-    // 外部チャネル (Slack/Teams/Chatwork) にエスカレーション発生を通知する
-    await sendOutboundNotification(tenantId, {
-      subject: `エスカレーションされました: ${title}`,
-      body: `「${title}」がエスカレーションされました。理由: ${trimmedReason}`,
-      ticketUrl: `${baseUrl}/tickets/${ticketId}`,
-    });
-  } catch (err) {
-    // 外部通知の失敗はログに記録するが、チケット更新自体は成功扱いにする
-    console.error('[escalateTicket] 外部通知の送信に失敗しました (チケット更新は完了):', err);
+  // ベース URL が解決できた場合のみ、メールと外部通知を並行送信する
+  if (baseUrl !== null) {
+    // チケット詳細ページの URL (メール本文・外部通知の両方で使い回す)
+    const ticketUrl = buildTicketUrl(baseUrl, ticketId);
+    await Promise.allSettled([
+      // 経路 1: 操作者以外の全エージェントへメール送信 (1 通の失敗が他へ波及しないよう内側でも allSettled)
+      (async () => {
+        try {
+          // 件名 / 本文 (Text / HTML) を純粋ヘルパーで構築
+          const { subject, text, html } = renderEscalatedEmail({
+            ticketTitle: title,
+            ticketUrl,
+            reason: trimmedReason,
+          });
+          // 操作者本人 (エスカレーションを実行したエージェント) は自分の操作を知っているため除く
+          const recipients = agents.filter((a) => a.id !== session.user.id);
+          const results = await Promise.allSettled(
+            recipients.map((a) => getEmailSender().send({ to: a.email, subject, text, html })),
+          );
+          const failedCount = results.filter((r) => r.status === 'rejected').length;
+          if (failedCount > 0) {
+            console.warn(
+              `[escalateTicket] ${failedCount} 件のエージェント宛メール送信に失敗しました`,
+            );
+          }
+        } catch (err) {
+          // 本文組み立て自体に失敗した場合もログのみに留める (アプリ内通知は既に成立している)
+          console.error('[escalateTicket] エージェント宛メール送信に失敗しました', err);
+        }
+      })(),
+      // 経路 2: 外部チャネル (Slack/Teams/Chatwork) へエスカレーション発生を通知する
+      (async () => {
+        try {
+          await sendOutboundNotification(tenantId, {
+            subject: `エスカレーションされました: ${title}`,
+            body: `「${title}」がエスカレーションされました。理由: ${trimmedReason}`,
+            ticketUrl,
+          });
+        } catch (err) {
+          // 外部通知の失敗はログに記録するが、チケット更新自体は成功扱いにする
+          console.error('[escalateTicket] 外部通知の送信に失敗しました (チケット更新は完了):', err);
+        }
+      })(),
+    ]);
   }
 
   // 詳細ページを再描画
