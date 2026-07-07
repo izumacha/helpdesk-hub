@@ -34,8 +34,10 @@ import { CommentForm } from '@/features/tickets/components/CommentForm';
 import { AttachmentList } from '@/features/tickets/components/AttachmentList';
 // エスカレーション操作フォーム
 import { EscalationForm } from '@/features/tickets/components/EscalationForm';
-// SLA 状態判定 + ラベル/カラー定義
-import { getSlaState, SLA_LABELS, SLA_COLORS } from '@/lib/sla';
+// SLA 状態判定 + ラベル/カラー定義。FIRST_RESPONSE_HOURS_BY_PRIORITY は初回応答 SLA の
+// 警告閾値を窓の長さに応じて計算するために使う (getSlaState の既定 24 時間閾値をそのまま
+// 使うと、4〜24 時間しかない初回応答期限では起票直後から常に warning になってしまうため)
+import { getSlaState, SLA_LABELS, SLA_COLORS, FIRST_RESPONSE_HOURS_BY_PRIORITY } from '@/lib/sla';
 // 現ステータスから許可される遷移先一覧を取得
 import { getAllowedTransitions } from '@/domain/ticket-status';
 // FAQ 候補登録フォーム
@@ -78,9 +80,18 @@ export default async function TicketDetailPage({ params }: Props) {
 
   // SLA 状態 (none/ok/warning/overdue) を計算
   const slaState = getSlaState(ticket.resolutionDueAt, ticket.resolvedAt);
-  // 初回応答 SLA 状態 (Pro モードのみ表示。Lite は「期限日」1 項目に統合する方針のため対象外)
+  // 初回応答 SLA 状態 (Pro モードのみ表示。Lite は「期限日」1 項目に統合する方針のため対象外)。
+  // 警告閾値は「窓 (優先度ごとの許容時間) の 25%」を渡す。解決期限向けの既定 24 時間閾値を
+  // そのまま使うと、High=4h/Medium=8h/Low=24h しかない初回応答期限では起票直後から
+  // ずっと warning になってしまう (回帰防止: /code-review ultra 指摘)
   const firstResponseSlaState =
-    mode === 'pro' ? getSlaState(ticket.firstResponseDueAt, ticket.firstRespondedAt) : 'none';
+    mode === 'pro'
+      ? getSlaState(
+          ticket.firstResponseDueAt,
+          ticket.firstRespondedAt,
+          FIRST_RESPONSE_HOURS_BY_PRIORITY[ticket.priority] * 0.25 * 60 * 60 * 1000,
+        )
+      : 'none';
   // エスカレーション可能か (エージェント && 現状から Escalated への遷移許可あり)
   // Pro モードの遷移表を参照する (Lite モードでは Escalated 自体が UI 上は存在しない)
   const canEscalate =

@@ -60,7 +60,7 @@ import {
 // 未読カウントを SSE で即時配信するヘルパー (新規起票後に担当者のバッジをリアルタイム更新する)
 import { broadcastUnreadCountToMany } from '@/features/notifications/notify';
 // LINE 連携機能のプランゲート (§6.1 料金プラン: Pro / Enterprise のみ利用可能)
-import { isLineIntegrationAllowed } from '@/lib/plan-guard';
+import { isLineIntegrationAllowed, resolveEffectivePlan } from '@/lib/plan-guard';
 // Phase 4: Slack/Teams/Chatwork 外部通知ヘルパー (Web フォーム・メール取り込み・CSV インポートと共有)
 import { notifyNewTicketOutbound } from '@/lib/outbound-notify';
 // Phase 4 課金: 月間チケット上限チェック (Web フォーム・CSV インポートと共有)
@@ -337,9 +337,15 @@ export async function POST(req: Request) {
   const resolutionDueAt = calculateResolutionDueAt('Medium', now);
   // 初回応答期限も同じく優先度 Medium ベースで自動算出する
   const firstResponseDueAt = calculateFirstResponseDueAt('Medium', now);
+  // §7.2 Free trial 中の実効プラン (Standard 相当への昇格を含む)。LINE 連携自体は Pro 以上限定
+  // (トライアルで昇格しない。上の isLineIntegrationAllowed は契約プランのまま判定する) だが、
+  // 月間チケット上限は他の起票経路 (Web フォーム・メール取り込み) と同じくトライアル昇格を
+  // 適用するのが一貫している。ここに到達する時点で契約プランは pro/enterprise 確定のため
+  // resolveEffectivePlan は事実上の恒等関数だが、他経路との SSOT を揃えて将来の変更に備える
+  const effectivePlan = resolveEffectivePlan(tenant.subscriptionPlan, tenant.trialEndsAt, now);
   // Phase 4 課金: 月間チケット上限の残枠を 1 度だけ取得する (Web フォーム・CSV インポートと共有)。
   // 1 リクエストに複数イベントが含まれうるため、イベントごとに ctx.quota.remaining を消費する
-  const quota = await getMonthlyTicketQuota(targetTenantId, tenant.subscriptionPlan);
+  const quota = await getMonthlyTicketQuota(targetTenantId, effectivePlan);
 
   // 1 リクエストに含まれる複数イベントを順に処理してチケットを起票する。
   // 1 件ずつの詳細処理は processLineEvent に委譲し、ここでは結果 (チケット ID) の収集に専念する。

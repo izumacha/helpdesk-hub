@@ -107,4 +107,29 @@ describe('getSlaState', () => {
   it('returns "ok" when deadline is more than 24 hours away and not resolved', () => {
     expect(getSlaState(future, null)).toBe('ok');
   });
+
+  // 回帰防止: 初回応答期限のように窓が短い SLA では、既定の 24 時間閾値をそのまま
+  // 使うと起票直後から常に warning になってしまう。warningThresholdMs を明示的に
+  // 渡すことで、窓の長さに応じた適切な閾値で判定できること
+  describe('warningThresholdMs (第3引数)', () => {
+    // High 優先度の初回応答期限 (4 時間窓) を想定: 窓の 25% = 1 時間
+    const highFirstResponseThresholdMs = 1 * 60 * 60 * 1000;
+
+    // 残り 3 時間 (閾値 1 時間より外) は "ok" (既定の 24 時間閾値なら誤って warning になる)
+    it('returns "ok" when remaining time exceeds the given threshold even if within 24 hours', () => {
+      const in3Hours = new Date(now.getTime() + 3 * 60 * 60 * 1000);
+      expect(getSlaState(in3Hours, null, highFirstResponseThresholdMs)).toBe('ok');
+    });
+
+    // 残り 30 分 (閾値 1 時間未満) は "warning"
+    it('returns "warning" when remaining time is within the given threshold', () => {
+      const in30Min = new Date(now.getTime() + 30 * 60 * 1000);
+      expect(getSlaState(in30Min, null, highFirstResponseThresholdMs)).toBe('warning');
+    });
+
+    // 第3引数を省略した場合は従来どおり既定の 24 時間閾値が使われる (後方互換)
+    it('defaults to the 24-hour threshold when warningThresholdMs is omitted', () => {
+      expect(getSlaState(soon, null)).toBe('warning');
+    });
+  });
 });
