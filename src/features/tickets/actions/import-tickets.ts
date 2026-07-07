@@ -158,6 +158,7 @@ function validateImportRow(
   // 拠点セルを取り出す (未指定なら null)。実在確認はテナントの拠点一覧を持つ呼び出し側で行う
   // (この関数は DB アクセスを持たない純粋関数のまま保つため、ここでは trim のみ)
   const locationRaw = locationIndex !== -1 ? (cells[locationIndex] ?? '').trim() : '';
+  // 空文字 (列なし、またはセルが空) の場合は「未指定」として null にフォールバックする
   const locationName = locationRaw || null;
 
   // 全バリデーション通過: バリデーション済みのデータをそのまま返す。
