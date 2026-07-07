@@ -426,6 +426,9 @@ describe('POST /api/tickets/[id]/comments', () => {
   // メールに加えて LINE Messaging API への push も行われる。
   it('pushes a LINE message to a linked requester when an agent replies', async () => {
     const { ticketId } = await seed();
+    // LINE 連携は Pro/Enterprise 限定機能 (§6.1 料金プラン) なので、seed() 既定の free から昇格させる
+    const tenant = store.tenants.get(TENANT)!;
+    store.tenants.set(TENANT, { ...tenant, subscriptionPlan: 'pro' as const });
     // 依頼者を LINE 連携済みにする
     const requester = store.users.get(REQUESTER)!;
     store.users.set(REQUESTER, { ...requester, lineUserId: REQUESTER_LINE_USER_ID });
@@ -464,6 +467,50 @@ describe('POST /api/tickets/[id]/comments', () => {
       const body = JSON.parse(init.body);
       expect(body.to).toBe(REQUESTER_LINE_USER_ID);
       expect(body.messages[0].text).toContain('対応しました');
+    } finally {
+      // 他テストへ影響しないよう fetch のスタブを必ず元に戻す
+      vi.unstubAllGlobals();
+    }
+  });
+
+  // 回帰防止: LINE 連携は Pro/Enterprise 限定機能 (§6.1 料金プラン)。TenantLineConfig 行が
+  // 残っていても、テナントがダウングレード (または未アップグレード) であれば push しないこと
+  // (受信側 Webhook の isLineIntegrationAllowed と対称のガードを返信 push 側にも掛けた回帰確認)。
+  it('does not push a LINE message when the tenant plan does not allow LINE integration', async () => {
+    const { ticketId } = await seed();
+    // seed() 既定の free プランのまま (LINE 連携を許可しないプラン)
+    // 依頼者を LINE 連携済みにする
+    const requester = store.users.get(REQUESTER)!;
+    store.users.set(REQUESTER, { ...requester, lineUserId: REQUESTER_LINE_USER_ID });
+    // テナントの LINE 連携設定自体は残っている状態を再現する (ダウングレード後も行は削除されない)
+    const now = new Date();
+    store.lineConfigs.set('line_cfg_test_free', {
+      id: 'line_cfg_test_free',
+      tenantId: TENANT,
+      channelSecret: 'irrelevant-for-push',
+      channelAccessToken: 'test-access-token',
+      botUserId: `U${'c'.repeat(32)}`,
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    // fetch をモックし、呼ばれないことを確認する
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      type: 'basic',
+      text: () => Promise.resolve('{}'),
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    try {
+      mockSession = buildSession(AGENT, 'agent', TENANT);
+      const { POST } = await import('@/app/api/tickets/[id]/comments/route');
+      const res = await POST(buildRequest('対応しました', []), makeParams(ticketId));
+      // コメント投稿自体は成功する (LINE 送信スキップはベストエフォート機能のオプトアウトに過ぎない)
+      expect(res.status).toBe(201);
+      // Free プランでは LINE push が送られない
+      expect(fetchMock).not.toHaveBeenCalled();
     } finally {
       // 他テストへ影響しないよう fetch のスタブを必ず元に戻す
       vi.unstubAllGlobals();

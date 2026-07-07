@@ -34,6 +34,8 @@ import { commentBodySchema } from '@/lib/validations/ticket';
 import { validateUploadedFiles } from '@/lib/validations/attachment';
 // MIME → 拡張子の対応表 (storageKey の組み立てで使う)
 import { MIME_TO_EXTENSION } from '@/domain/attachment';
+// LINE 連携機能のプランゲート (§6.1 料金プラン: Pro / Enterprise のみ利用可能)
+import { isLineIntegrationAllowed } from '@/lib/plan-guard';
 
 // /api/tickets/[id]/comments の動的セグメント
 type Params = { params: Promise<{ id: string }> };
@@ -324,6 +326,14 @@ async function sendReplyLineToRequester(args: {
     // LINE push を使わないので何もしない (Pro/Enterprise 限定機能の任意設定)
     const lineConfig = await repos.lineConfigs.findByTenant(tenantId);
     if (!lineConfig) return;
+
+    // プランゲート: LINE 連携は Pro/Enterprise 限定機能 (§6.1 料金プラン)。受信側 Webhook
+    // (POST /api/inbound/line) は isLineIntegrationAllowed で強制しているが、この返信 push は
+    // TenantLineConfig の存在チェックのみで、プランダウングレード後も設定行が残っていれば
+    // 送信され続けてしまっていた (Stripe Webhook はプラン変更のみで LineConfig を削除しない)。
+    // UI 非表示に頼らずここでもサーバー側で強制する (§9)。
+    const tenant = await repos.tenants.findById(tenantId);
+    if (!tenant || !isLineIntegrationAllowed(tenant.subscriptionPlan)) return;
 
     // メール内リンクと同じベース URL 解決ロジックを再利用する (single source)
     const baseUrl = resolveAppBaseUrl();
