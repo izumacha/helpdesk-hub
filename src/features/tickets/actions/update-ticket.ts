@@ -350,6 +350,29 @@ export async function updateTicketAssignee(ticketId: string, newAssigneeId: stri
     }
   }
 
+  // Phase 4: Slack/Teams/Chatwork 外部通知 (updateTicketStatus / escalateTicket と同じパターン)。
+  // 担当者アサインもステータス変更・エスカレーションと同格の重要イベントであり、
+  // チーム共有チャネルで「誰が対応することになったか」に気づけることが望ましい。
+  // 担当解除 (null) はチームの注意を引く必要が薄いため対象外にする。
+  if (newAssigneeId) {
+    try {
+      // ベース URL を解決してチケットリンクを組み立てる (NEXTAUTH_URL 未設定時は例外 → 下の catch で握る)
+      const baseUrl = resolveAppBaseUrl();
+      // 外部チャネル (Slack/Teams/Chatwork) に担当者アサインを通知する
+      await sendOutboundNotification(tenantId, {
+        subject: `担当者が割り当てられました: ${ticket.title}`,
+        body: `担当: ${newName ?? '(不明)'}`,
+        ticketUrl: buildTicketUrl(baseUrl, ticketId),
+      });
+    } catch (err) {
+      // 外部通知の失敗はログに記録するが、チケット更新自体は成功扱いにする
+      console.error(
+        '[updateTicketAssignee] 外部通知の送信に失敗しました (チケット更新は完了):',
+        err,
+      );
+    }
+  }
+
   // 詳細ページのキャッシュを無効化
   revalidatePath(`/tickets/${ticketId}`);
 }
