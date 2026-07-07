@@ -102,6 +102,7 @@ function seed() {
     stripeCustomerId: null,
     stripeSubscriptionId: null,
     stripeSubscriptionStatus: null,
+    trialEndsAt: null,
     teamsWebhookUrl: null,
     chatworkApiToken: null,
     chatworkRoomId: null, // Slack 通知未設定 (テスト用フィクスチャ)
@@ -219,6 +220,36 @@ describe('POST /api/inbound/email', () => {
     expect(store.tickets.size).toBe(0);
   });
 
+  // 回帰防止: §7.2「30日間の Free trial (Standard 相当)」中は、Free プランのままでも
+  // メール取り込みが解禁される (オンボーディングのメール転送体験を課金前でも試せるようにする)
+  it('トライアル期間中の Free プランは起票できる (トライアル昇格)', async () => {
+    const tenant = store.tenants.get(TENANT)!;
+    // Free プラン + 未来の trialEndsAt (トライアル中) に書き換える
+    store.tenants.set(TENANT, {
+      ...tenant,
+      subscriptionPlan: 'free' as const,
+      trialEndsAt: new Date(Date.now() + 10 * 24 * 60 * 60 * 1000),
+    });
+    const { POST } = await import('@/app/api/inbound/email/route');
+    const res = await POST(makeRequest(VALID_EMAIL));
+    expect(res.status).toBe(201);
+    expect(store.tickets.size).toBe(1);
+  });
+
+  // トライアル終了済みなら通常どおり Free プランとして隔離される
+  it('トライアル終了済みの Free プランは隔離される', async () => {
+    const tenant = store.tenants.get(TENANT)!;
+    store.tenants.set(TENANT, {
+      ...tenant,
+      subscriptionPlan: 'free' as const,
+      trialEndsAt: new Date(Date.now() - 24 * 60 * 60 * 1000),
+    });
+    const { POST } = await import('@/app/api/inbound/email/route');
+    const res = await POST(makeRequest(VALID_EMAIL));
+    expect(res.status).toBe(202);
+    expect(store.tickets.size).toBe(0);
+  });
+
   // テナント外 (未知) の送信者は隔離 = 202 で起票しない
   it('未知の送信者は隔離して 202 を返す', async () => {
     const { POST } = await import('@/app/api/inbound/email/route');
@@ -242,6 +273,7 @@ describe('POST /api/inbound/email', () => {
       stripeCustomerId: null,
       stripeSubscriptionId: null,
       stripeSubscriptionStatus: null,
+      trialEndsAt: null,
       teamsWebhookUrl: null,
       chatworkApiToken: null,
       chatworkRoomId: null, // Slack 通知未設定 (テスト用フィクスチャ)

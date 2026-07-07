@@ -31,6 +31,7 @@ function toTenant(row: TenantRow): Tenant {
     stripeCustomerId: row.stripeCustomerId, // Stripe Customer ID (null なら未登録)
     stripeSubscriptionId: row.stripeSubscriptionId, // Stripe Subscription ID (null なら未契約)
     stripeSubscriptionStatus: row.stripeSubscriptionStatus, // Stripe の subscription.status
+    trialEndsAt: row.trialEndsAt, // §7.2 Free trial 終了日時 (対象外/終了済みなら null)
     createdAt: row.createdAt,
   };
 }
@@ -66,6 +67,7 @@ export function makeTenantRepo(db: PrismaLike): TenantRepository {
           industry: input.industry ?? null, // 業種テンプレ識別子 (任意)
           mode: input.mode ?? 'lite', // 動作モード (既定 lite)
           inboundToken: input.inboundToken ?? null, // メール取り込みアドレスのローカルパート (任意)
+          trialEndsAt: input.trialEndsAt ?? null, // §7.2 Free trial 終了日時 (任意)
         },
       });
       // 作成行をドメイン型に変換して返す

@@ -68,6 +68,7 @@ beforeEach(() => {
     stripeCustomerId: null,
     stripeSubscriptionId: null,
     stripeSubscriptionStatus: null,
+    trialEndsAt: null,
     teamsWebhookUrl: null,
     chatworkApiToken: null,
     chatworkRoomId: null, // Slack 通知未設定 (テスト用フィクスチャ)
@@ -102,6 +103,29 @@ describe('createTenant', () => {
     const admin = [...store.users.values()].find((u) => u.email === 'newadmin@example.com');
     expect(admin?.role).toBe('admin');
     expect(admin?.tenantId).toBe(result.tenantId);
+  });
+
+  // 回帰防止: §7.2「30日間の Free trial (Standard 相当)」。新規テナントには
+  // 作成時刻からおよそ 30 日後の trialEndsAt が設定されること
+  it('trialEndsAt が作成時刻からおよそ30日後に設定される', async () => {
+    const createTenant = await loadAction();
+    const before = Date.now();
+    const result = await createTenant(
+      makeForm({
+        tenantName: '新組織',
+        industry: '',
+        adminName: '管理 太郎',
+        adminEmail: 'trial-admin@example.com',
+        adminPassword: 'password123',
+      }),
+    );
+    const tenant = store.tenants.get(result.tenantId);
+    expect(tenant?.trialEndsAt).not.toBeNull();
+    const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
+    const diff = tenant!.trialEndsAt!.getTime() - before;
+    // 実行時間の揺れを許容しつつ、およそ 30 日後であることを確認する (前後 5 秒の許容誤差)
+    expect(diff).toBeGreaterThan(THIRTY_DAYS_MS - 5000);
+    expect(diff).toBeLessThan(THIRTY_DAYS_MS + 5000);
   });
 
   // 業種テンプレートの「よくある質問」が公開済み FAQ として初期投入されること (Phase 3)

@@ -67,6 +67,9 @@ export interface Tenant {
   stripeCustomerId: string | null; // Stripe Customer ID (cu_xxx)
   stripeSubscriptionId: string | null; // Stripe Subscription ID (sub_xxx)
   stripeSubscriptionStatus: string | null; // Stripe の subscription.status 文字列
+  // §7.2「30日間の Free trial (Standard 相当)」。トライアル終了日時 (対象外/終了済みなら null)。
+  // resolveEffectivePlan() がこの期限内だけ Standard 相当としてゲート判定する
+  trialEndsAt: Date | null;
   createdAt: Date; // 作成日時
 }
 

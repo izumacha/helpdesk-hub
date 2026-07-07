@@ -16,6 +16,7 @@ export interface TenantRepository {
     industry?: string | null;
     mode?: TenantMode;
     inboundToken?: string | null;
+    trialEndsAt?: Date | null; // §7.2 Free trial の終了日時 (未指定なら null = トライアル無し)
   }): Promise<Tenant>;
   // テナントの動作モード (lite | pro) を更新し、更新後の Tenant を返す
   // id はセッション由来の tenantId のみを渡す契約 (リクエスト入力から注入しないこと = クロステナント防止)

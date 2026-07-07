@@ -127,6 +127,13 @@ model Tenant {
   stripeSubscriptionId     String? // Stripe の Subscription ID (sub_xxx)
   // Stripe 側のサブスク状態 ("active" | "trialing" | "past_due" | "canceled" | "none")
   stripeSubscriptionStatus String? // Stripe の subscription.status をそのまま格納
+  // §7.2「30日間の Free trial (Standard 相当)」。テナント作成時に now+30日で設定する。
+  // Stripe 課金を伴わない社内トライアルのため subscriptionPlan 自体は free のまま据え置き、
+  // resolveEffectivePlan() がこの期限内だけ Standard 相当としてゲート判定する (§9: 判定は
+  // 常にサーバー側の現在時刻と突き合わせる)。期限切れ後は自動的に free の制限へ戻る
+  // (追加のバッチ処理は不要)。Stripe で正式にアップグレードされれば subscriptionPlan が
+  // 直接更新されるため、このフィールドの意味は失われる (無視してよい)
+  trialEndsAt              DateTime? // トライアル終了日時 (null = トライアル対象外/終了済み)
 
   createdAt DateTime @default(now()) // 作成日時
 

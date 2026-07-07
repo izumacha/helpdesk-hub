@@ -59,6 +59,7 @@ function seedTenant(mode: 'lite' | 'pro', plan: 'free' | 'standard' | 'pro' | 'e
     stripeCustomerId: 'cus_1',
     stripeSubscriptionId: 'sub_1',
     stripeSubscriptionStatus: 'active',
+    trialEndsAt: null,
     teamsWebhookUrl: null,
     chatworkApiToken: null,
     chatworkRoomId: null,

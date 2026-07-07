@@ -56,7 +56,23 @@ async function seed() {
   const now = new Date();
   // テナント A・B を投入
   for (const t of [TENANT_A, TENANT_B]) {
-    store.tenants.set(t, { id: t, name: t, mode: 'lite', industry: null, inboundToken: null, slackWebhookUrl: null, subscriptionPlan: 'free' as const, stripeCustomerId: null, stripeSubscriptionId: null, stripeSubscriptionStatus: null, teamsWebhookUrl: null, chatworkApiToken: null, chatworkRoomId: null, createdAt: now });
+    store.tenants.set(t, {
+      id: t,
+      name: t,
+      mode: 'lite',
+      industry: null,
+      inboundToken: null,
+      slackWebhookUrl: null,
+      subscriptionPlan: 'free' as const,
+      stripeCustomerId: null,
+      stripeSubscriptionId: null,
+      stripeSubscriptionStatus: null,
+      trialEndsAt: null,
+      teamsWebhookUrl: null,
+      chatworkApiToken: null,
+      chatworkRoomId: null,
+      createdAt: now,
+    });
   }
   // ユーザーを投入する
   const users: Array<[string, 'requester' | 'agent', string]> = [
@@ -205,7 +221,7 @@ describe('GET /api/attachments/[id]', () => {
   });
 
   // 同テナント別ユーザー (requester) → 404 (チケット閲覧権限なし)
-  it('returns 404 when a requester tries to view another user\'s ticket attachment', async () => {
+  it("returns 404 when a requester tries to view another user's ticket attachment", async () => {
     const { attA } = await seed();
     // 同テナント内の別 requester (REQ_A2) が REQ_A のチケットの添付を要求
     mockSession = buildSession(REQ_A2, 'requester', TENANT_A);

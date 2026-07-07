@@ -52,6 +52,7 @@ function seed(plan: SubscriptionPlan) {
     stripeCustomerId: null,
     stripeSubscriptionId: null,
     stripeSubscriptionStatus: null,
+    trialEndsAt: null,
     teamsWebhookUrl: null,
     chatworkApiToken: null,
     chatworkRoomId: null,
@@ -80,9 +81,8 @@ describe('generateLineLinkCode_action', () => {
   // LINE 連携は Pro / Enterprise プランのみ (§6.1 料金プラン)。Free では拒否される
   it('Free プランでは拒否される', async () => {
     seed('free');
-    const { generateLineLinkCode_action } = await import(
-      '@/features/settings/actions/link-line-account'
-    );
+    const { generateLineLinkCode_action } =
+      await import('@/features/settings/actions/link-line-account');
     await expect(generateLineLinkCode_action()).rejects.toThrow(
       'LINE 連携は Pro / Enterprise プランでご利用いただけます。',
     );
@@ -93,9 +93,8 @@ describe('generateLineLinkCode_action', () => {
   // Standard プランでも拒否される (Standard は Lite フル + メール取り込みまで)
   it('Standard プランでは拒否される', async () => {
     seed('standard');
-    const { generateLineLinkCode_action } = await import(
-      '@/features/settings/actions/link-line-account'
-    );
+    const { generateLineLinkCode_action } =
+      await import('@/features/settings/actions/link-line-account');
     await expect(generateLineLinkCode_action()).rejects.toThrow(
       'LINE 連携は Pro / Enterprise プランでご利用いただけます。',
     );
@@ -104,9 +103,8 @@ describe('generateLineLinkCode_action', () => {
   // Pro プランならコードが発行される
   it('Pro プランでは発行に成功する', async () => {
     seed('pro');
-    const { generateLineLinkCode_action } = await import(
-      '@/features/settings/actions/link-line-account'
-    );
+    const { generateLineLinkCode_action } =
+      await import('@/features/settings/actions/link-line-account');
     const result = await generateLineLinkCode_action();
     // 生コードが返される
     expect(result.code.length).toBeGreaterThan(0);
@@ -117,9 +115,8 @@ describe('generateLineLinkCode_action', () => {
   // Enterprise プランでも発行に成功する
   it('Enterprise プランでは発行に成功する', async () => {
     seed('enterprise');
-    const { generateLineLinkCode_action } = await import(
-      '@/features/settings/actions/link-line-account'
-    );
+    const { generateLineLinkCode_action } =
+      await import('@/features/settings/actions/link-line-account');
     const result = await generateLineLinkCode_action();
     expect(result.code.length).toBeGreaterThan(0);
   });

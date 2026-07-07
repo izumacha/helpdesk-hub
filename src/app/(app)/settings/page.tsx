@@ -65,6 +65,13 @@ export default async function SettingsPage() {
   // sso-context.ts 参照)、設定の有無自体はプランに関わらず常に取得する。
   const ssoAllowed = isSsoAllowed(tenant?.subscriptionPlan ?? 'free');
   const lineAllowed = isLineIntegrationAllowed(tenant?.subscriptionPlan ?? 'free');
+  // §7.2 Free trial の残り日数 (対象外/終了済みなら null)。Date を Client Component へ直接
+  // 渡すのは避け、ここで日数に変換してから BillingSection に渡す
+  const now = new Date();
+  const trialDaysRemaining =
+    tenant?.subscriptionPlan === 'free' && tenant.trialEndsAt && tenant.trialEndsAt > now
+      ? Math.ceil((tenant.trialEndsAt.getTime() - now.getTime()) / (24 * 60 * 60 * 1000))
+      : null;
   const [ssoConfig, lineConfig] = await Promise.all([
     repos.ssoConfigs.findByTenant(session.user.tenantId),
     repos.lineConfigs.findByTenant(session.user.tenantId),
@@ -168,6 +175,7 @@ export default async function SettingsPage() {
           stripeStatus={tenant?.stripeSubscriptionStatus ?? null}
           hasStripeCustomer={!!tenant?.stripeCustomerId}
           currentUserCount={currentUserCount}
+          trialDaysRemaining={trialDaysRemaining}
         />
       </section>
 

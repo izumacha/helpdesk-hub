@@ -55,7 +55,7 @@ import { buildReplyMessageId, resolveMessageIdDomain } from '@/lib/email-message
 // 受付番号 (短縮 ID) の共有フォーマッタ (画面のチケット詳細ヘッダと同じ表記)
 import { formatTicketRef } from '@/lib/ticket-ref';
 // メール取り込み機能のプランゲート (§6.1 料金プラン: Free では利用不可)
-import { isEmailInboundAllowed } from '@/lib/plan-guard';
+import { isEmailInboundAllowed, resolveEffectivePlan } from '@/lib/plan-guard';
 // Phase 4: Slack/Teams/Chatwork 外部通知ヘルパー (Web フォーム・LINE 取り込み・CSV インポートと共有)
 import { notifyNewTicketOutbound } from '@/lib/outbound-notify';
 // Phase 4 課金: 月間チケット上限チェック (Web フォーム・CSV インポートと共有)
@@ -369,12 +369,16 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: '取り込み先が見つかりません' }, { status: 404 });
   }
 
+  // §7.2 Free trial 中 (Standard 相当) ならメール取り込みも解禁する。以降のプラン依存判定
+  // (このゲートと月間チケット上限) は全てこの実効プランを使う
+  const effectivePlan = resolveEffectivePlan(tenant.subscriptionPlan, tenant.trialEndsAt);
+
   // プランゲート: メール取り込みは Standard 以上のみ (Free では利用不可 §6.1 料金プラン)。
   // UI 非表示に頼らずサーバー側 (Webhook 受信口) で強制する。未知送信者と同様に隔離扱いにして
   // 202 を返し、どのテナントが対象外かをレスポンスから推測されないようにする (§9)。
-  if (!isEmailInboundAllowed(tenant.subscriptionPlan)) {
+  if (!isEmailInboundAllowed(effectivePlan)) {
     console.warn('[POST /api/inbound/email] quarantined: email inbound not allowed for plan', {
-      plan: tenant.subscriptionPlan,
+      plan: effectivePlan,
     });
     return NextResponse.json({ status: 'quarantined' }, { status: 202 });
   }
@@ -539,10 +543,10 @@ export async function POST(req: Request) {
   // (Standard 以上) は月間上限が無制限のため実害は無いが、将来 Standard に有限上限が付いた
   // 瞬間にこの入口だけ無制限の抜け道になる SSOT 違反を防ぐため、他入口と揃えておく。
   // 上限到達時は未知送信者と同じ「隔離 202」にして、プロバイダの再送ループを避ける。
-  const quota = await getMonthlyTicketQuota(tenant.id, tenant.subscriptionPlan);
+  const quota = await getMonthlyTicketQuota(tenant.id, effectivePlan);
   if (quota.limited && quota.remaining <= 0) {
     console.warn('[POST /api/inbound/email] quarantined: monthly ticket quota reached', {
-      plan: tenant.subscriptionPlan,
+      plan: effectivePlan,
     });
     return NextResponse.json({ status: 'quarantined' }, { status: 202 });
   }

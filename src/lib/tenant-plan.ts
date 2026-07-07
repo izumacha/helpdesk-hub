@@ -20,19 +20,25 @@ import {
   getMonthlyTicketLimit,
   getUserLimit,
   isUserLimitReached,
+  resolveEffectivePlan,
 } from '@/lib/plan-guard';
 // JST (日本時間) 基準の月初を計算する共通ヘルパー (endOfDayJST と同じファイルに集約)
 import { startOfMonthJST } from '@/lib/format-date';
 // バイト数を GB 表示に丸めるヘルパー (添付上限エラーメッセージ用)
 import { formatBytesAsGb } from '@/domain/attachment';
 
-// 指定テナントの現在の課金プランを返す。テナントが見つからない場合は 'free' として扱う
+// 指定テナントの現在の実効プランを返す。テナントが見つからない場合は 'free' として扱う
 // (fail-closed: 存在しない/取得できないテナントに Pro/Enterprise 限定機能を渡さない)。
+// §7.2 Free trial 中 (subscriptionPlan=free かつ trialEndsAt が未来) は Standard 相当に
+// 昇格させる (resolveEffectivePlan)。この関数を経由する呼び出し側は全てトライアルの
+// 恩恵を自動的に受ける
 export async function resolveTenantPlan(tenantId: string): Promise<SubscriptionPlan> {
   // テナントをリポジトリ経由で取得する
   const tenant = await repos.tenants.findById(tenantId);
   // 見つからなければ 'free' にフォールバックする
-  return tenant?.subscriptionPlan ?? 'free';
+  if (!tenant) return 'free';
+  // トライアル中なら Standard 相当に昇格させた実効プランを返す
+  return resolveEffectivePlan(tenant.subscriptionPlan, tenant.trialEndsAt);
 }
 
 // 月間チケット起票数の残枠を表す (Web フォーム・CSV インポート・メール/LINE 取り込みが共有する)
@@ -103,10 +109,12 @@ export async function checkSeatAvailability(
   if (!tenant) return { available: true, limit: -1 };
   // このテナントの現在のスタッフ (agent + admin) 数を数える
   const currentUserCount = await repos.users.countByTenant(tenantId);
+  // §7.2 Free trial 中なら Standard 相当のシート数を適用する
+  const effectivePlan = resolveEffectivePlan(tenant.subscriptionPlan, tenant.trialEndsAt);
   // 上限判定結果とプランの上限値を返す
   return {
-    available: !isUserLimitReached(tenant.subscriptionPlan, currentUserCount),
-    limit: getUserLimit(tenant.subscriptionPlan),
+    available: !isUserLimitReached(effectivePlan, currentUserCount),
+    limit: getUserLimit(effectivePlan),
   };
 }
 

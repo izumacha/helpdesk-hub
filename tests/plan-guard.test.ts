@@ -6,6 +6,7 @@ import {
   USER_LIMIT,
   MONTHLY_TICKET_LIMIT,
   ATTACHMENT_TOTAL_SIZE_LIMIT_BYTES,
+  FREE_TRIAL_DURATION_MS,
   isEmailInboundAllowed,
   isAuditLogAllowed,
   isLineIntegrationAllowed,
@@ -15,6 +16,7 @@ import {
   getUserLimit,
   getMonthlyTicketLimit,
   getAttachmentSizeLimit,
+  resolveEffectivePlan,
 } from '../src/lib/plan-guard';
 // プラン型 (網羅性の担保に使う)
 import type { SubscriptionPlan } from '../src/domain/types';
@@ -124,5 +126,46 @@ describe('plan-guard: 上限到達判定と表示ヘルパー', () => {
     expect(getMonthlyTicketLimit('enterprise')).toBe(-1); // 無制限は -1
     expect(getAttachmentSizeLimit('standard')).toBe(1024 * 1024 * 1024); // 有限はそのまま
     expect(getAttachmentSizeLimit('free')).toBe(-1); // 無制限は -1
+  });
+});
+
+// §7.2「30日間の Free trial (Standard 相当)」の実効プラン解決ロジック
+describe('plan-guard: resolveEffectivePlan (Free trial)', () => {
+  // 基準時刻を固定する (時差ぶれを避ける)
+  const now = new Date('2026-04-17T00:00:00Z');
+  const future = new Date(now.getTime() + 10 * 24 * 60 * 60 * 1000); // 10 日後 (トライアル中)
+  const past = new Date(now.getTime() - 1 * 24 * 60 * 60 * 1000); // 1 日前 (トライアル終了済み)
+
+  // 30 日 = FREE_TRIAL_DURATION_MS であることを固定する (create-tenant.ts が使う定数)
+  it('FREE_TRIAL_DURATION_MS は 30 日 (ミリ秒)', () => {
+    expect(FREE_TRIAL_DURATION_MS).toBe(30 * 24 * 60 * 60 * 1000);
+  });
+
+  // Free プランでトライアル期間中なら Standard に昇格する
+  it('Free プランでトライアル期間中は Standard に昇格する', () => {
+    expect(resolveEffectivePlan('free', future, now)).toBe('standard');
+  });
+
+  // トライアル終了済みなら free のまま
+  it('トライアルが終了済みなら free のまま', () => {
+    expect(resolveEffectivePlan('free', past, now)).toBe('free');
+  });
+
+  // trialEndsAt が未設定 (null) なら free のまま
+  it('trialEndsAt が null なら free のまま', () => {
+    expect(resolveEffectivePlan('free', null, now)).toBe('free');
+  });
+
+  // Free 以外のプランはトライアル判定の対象外 (課金済みプランをそのまま返す)。
+  // trialEndsAt が (Stripe 解約後の名残り等で) 未来の値のまま残っていても昇格しない
+  it('Free 以外のプランはそのまま返す (トライアル判定の対象外)', () => {
+    expect(resolveEffectivePlan('standard', future, now)).toBe('standard');
+    expect(resolveEffectivePlan('pro', future, now)).toBe('pro');
+    expect(resolveEffectivePlan('enterprise', future, now)).toBe('enterprise');
+  });
+
+  // 境界値: trialEndsAt がちょうど now と同時刻なら「終了済み」扱い (未来でなければ昇格しない)
+  it('trialEndsAt が now と同時刻なら終了済み扱い', () => {
+    expect(resolveEffectivePlan('free', now, now)).toBe('free');
   });
 });

@@ -24,7 +24,12 @@ vi.mock('@/data', () => ({
 
 // EmailSender ファクトリを差し替え。send は既定で sentMessages に記録するだけだが、
 // テストから throw に差し替えたいケースのために stub にしておく
-let sendImpl: (message: { to: string; subject: string; html: string; text: string }) => Promise<void> = async (message) => {
+let sendImpl: (message: {
+  to: string;
+  subject: string;
+  html: string;
+  text: string;
+}) => Promise<void> = async (message) => {
   sentMessages.push(message);
 };
 // ファクトリ自体が throw する設定エラーをシミュレートできるよう、フラグ経由で挙動を切替
@@ -66,7 +71,15 @@ beforeEach(() => {
     mode: 'lite',
     industry: null,
     inboundToken: null, // メール取り込み未発行 (テスト用フィクスチャ)
-      slackWebhookUrl: null, subscriptionPlan: 'free' as const, stripeCustomerId: null, stripeSubscriptionId: null, stripeSubscriptionStatus: null, teamsWebhookUrl: null, chatworkApiToken: null, chatworkRoomId: null, // Slack 通知未設定 (テスト用フィクスチャ)
+    slackWebhookUrl: null,
+    subscriptionPlan: 'free' as const,
+    stripeCustomerId: null,
+    stripeSubscriptionId: null,
+    stripeSubscriptionStatus: null,
+    trialEndsAt: null,
+    teamsWebhookUrl: null,
+    chatworkApiToken: null,
+    chatworkRoomId: null, // Slack 通知未設定 (テスト用フィクスチャ)
     createdAt: new Date(),
   });
 });
@@ -153,9 +166,7 @@ describe('requestMagicLink', () => {
   // 不正なメール形式は例外で弾かれること
   it('メール形式が不正なら例外を投げる', async () => {
     const requestMagicLink = await loadAction();
-    await expect(requestMagicLink({ email: 'not-an-email' })).rejects.toThrow(
-      /メールアドレス/,
-    );
+    await expect(requestMagicLink({ email: 'not-an-email' })).rejects.toThrow(/メールアドレス/);
   });
 
   // 本番で NEXTAUTH_URL が未設定なら、リンクが壊れるのを防ぐため起動時エラーにする
@@ -164,9 +175,7 @@ describe('requestMagicLink', () => {
     vi.stubEnv('NODE_ENV', 'production');
     vi.stubEnv('NEXTAUTH_URL', '');
     const requestMagicLink = await loadAction();
-    await expect(requestMagicLink({ email: 'agent1@example.com' })).rejects.toThrow(
-      /NEXTAUTH_URL/,
-    );
+    await expect(requestMagicLink({ email: 'agent1@example.com' })).rejects.toThrow(/NEXTAUTH_URL/);
   });
 
   // 空白だけの NEXTAUTH_URL は未指定と同じく扱う (production ならエラー)
@@ -174,9 +183,7 @@ describe('requestMagicLink', () => {
     vi.stubEnv('NODE_ENV', 'production');
     vi.stubEnv('NEXTAUTH_URL', '   ');
     const requestMagicLink = await loadAction();
-    await expect(requestMagicLink({ email: 'agent1@example.com' })).rejects.toThrow(
-      /NEXTAUTH_URL/,
-    );
+    await expect(requestMagicLink({ email: 'agent1@example.com' })).rejects.toThrow(/NEXTAUTH_URL/);
   });
 
   // NEXTAUTH_URL が壊れた形式 (scheme なし / 不正な URL) なら明示エラー
@@ -189,9 +196,7 @@ describe('requestMagicLink', () => {
     vi.stubEnv('NODE_ENV', 'test');
     vi.stubEnv('NEXTAUTH_URL', badUrl);
     const requestMagicLink = await loadAction();
-    await expect(requestMagicLink({ email: 'agent1@example.com' })).rejects.toThrow(
-      /NEXTAUTH_URL/,
-    );
+    await expect(requestMagicLink({ email: 'agent1@example.com' })).rejects.toThrow(/NEXTAUTH_URL/);
   });
 
   // 設定不備 (EMAIL_DRIVER 不正など) は列挙対策のマスクを越えて呼び出し側まで伝わる。
@@ -213,9 +218,7 @@ describe('requestMagicLink', () => {
       throw new Error('production では EMAIL_DRIVER=smtp の明示設定が必要です');
     };
     const requestMagicLink = await loadAction();
-    await expect(requestMagicLink({ email: 'a@example.com' })).rejects.toThrow(
-      /EMAIL_DRIVER/,
-    );
+    await expect(requestMagicLink({ email: 'a@example.com' })).rejects.toThrow(/EMAIL_DRIVER/);
     // 設定エラーは未登録メールでも同様に表面化する (列挙耐性が壊れないこと)
     await expect(requestMagicLink({ email: 'unknown@example.com' })).rejects.toThrow(
       /EMAIL_DRIVER/,

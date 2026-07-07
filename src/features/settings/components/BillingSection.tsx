@@ -15,10 +15,7 @@ import type { SubscriptionPlan } from '@/domain/types';
 import { USER_LIMIT, getMonthlyTicketLimit } from '@/lib/plan-guard';
 
 // 各プランの表示設定 (名称・月額・特徴)
-const PLAN_INFO: Record<
-  SubscriptionPlan,
-  { label: string; price: string; features: string[] }
-> = {
+const PLAN_INFO: Record<SubscriptionPlan, { label: string; price: string; features: string[] }> = {
   // 無料プラン: 最小構成でお試し
   free: {
     label: 'Free',
@@ -76,6 +73,9 @@ interface Props {
   hasStripeCustomer: boolean;
   // 現在のスタッフ人数 (agent/admin のみ)。Stripe ダウングレード後の上限超過検知に使う
   currentUserCount: number;
+  // §7.2 Free trial の残り日数 (トライアル対象外/終了済みなら null)。
+  // Date は RSC 境界を跨ぐ受け渡しを避けるため、サーバー側で日数に変換済みの値を受け取る
+  trialDaysRemaining: number | null;
 }
 
 // サブスクリプション管理セクション (プラン表示 + アップグレード/管理ボタン)
@@ -84,6 +84,7 @@ export function BillingSection({
   stripeStatus,
   hasStripeCustomer,
   currentUserCount,
+  trialDaysRemaining,
 }: Props) {
   // ボタン操作中のエラーメッセージ
   const [error, setError] = useState<string | null>(null);
@@ -138,8 +139,20 @@ export function BillingSection({
     <div className="space-y-4">
       {/* エラーメッセージ */}
       {error && (
-        <p role="alert" className="rounded-lg bg-rose-50 px-3 py-2.5 text-sm text-rose-700 ring-1 ring-rose-200">
+        <p
+          role="alert"
+          className="rounded-lg bg-rose-50 px-3 py-2.5 text-sm text-rose-700 ring-1 ring-rose-200"
+        >
           {error}
+        </p>
+      )}
+
+      {/* §7.2 Free trial 中の案内: Standard 相当の機能 (メール取り込み等) が利用可能なことと
+          残り日数を伝える (trialDaysRemaining は対象外/終了済みなら null で非表示) */}
+      {trialDaysRemaining !== null && (
+        <p className="rounded-lg bg-teal-50 px-3 py-2.5 text-sm text-teal-800 ring-1 ring-teal-200">
+          トライアル期間中です（残り {trialDaysRemaining} 日）。Standard
+          相当の機能（メール取り込み等）を無料でお試しいただけます。
         </p>
       )}
 
@@ -151,8 +164,8 @@ export function BillingSection({
           role="alert"
           className="rounded-lg bg-amber-50 px-3 py-2.5 text-sm text-amber-800 ring-1 ring-amber-200"
         >
-          現在のスタッフ人数 ({currentUserCount} 名) が {info.label}{' '}
-          プランの上限 ({USER_LIMIT[currentPlan]} 名) を超えています。既存メンバーはそのまま
+          現在のスタッフ人数 ({currentUserCount} 名) が {info.label} プランの上限 (
+          {USER_LIMIT[currentPlan]} 名) を超えています。既存メンバーはそのまま
           利用できますが、新規メンバーの招待はできません。プランをアップグレードするか、
           メンバーを整理してください。
         </p>
@@ -163,7 +176,9 @@ export function BillingSection({
         {/* プラン名と月額 */}
         <div className="flex items-center justify-between">
           <div>
-            <p className="text-xs font-semibold uppercase tracking-wide text-teal-600">現在のプラン</p>
+            <p className="text-xs font-semibold tracking-wide text-teal-600 uppercase">
+              現在のプラン
+            </p>
             <p className="mt-0.5 text-lg font-bold text-slate-900">{info.label}</p>
           </div>
           <p className="text-sm font-semibold text-slate-700">{info.price}</p>
@@ -173,7 +188,9 @@ export function BillingSection({
           {info.features.map((f) => (
             <li key={f} className="flex items-center gap-1.5 text-sm text-slate-600">
               {/* チェックアイコン */}
-              <span className="text-teal-500" aria-hidden="true">✓</span>
+              <span className="text-teal-500" aria-hidden="true">
+                ✓
+              </span>
               {f}
             </li>
           ))}
