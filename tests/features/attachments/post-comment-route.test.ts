@@ -586,4 +586,57 @@ describe('POST /api/tickets/[id]/comments', () => {
       }
     });
   });
+
+  // 回帰防止: 添付累計サイズがプラン上限 (Standard = 1GB) に達しているテナントは
+  // コメントへの追加添付を 422 で拒否する (§6.1 料金プラン「添付1GB」)
+  describe('添付累計サイズ上限 (Standard)', () => {
+    it('累計サイズが上限に達している Standard テナントは追加添付を 422 で拒否する', async () => {
+      const { ticketId } = await seed();
+      const tenant = store.tenants.get(TENANT)!;
+      // Standard プランへ変更 (添付累計 1GB 上限)
+      store.tenants.set(TENANT, { ...tenant, subscriptionPlan: 'standard' as const });
+      // 既存添付で上限ギリギリ (残り 100 バイト) まで積み上げておく
+      const ONE_GB = 1024 * 1024 * 1024;
+      await repos.attachments.create({
+        ticketId,
+        commentId: null,
+        uploaderId: REQUESTER,
+        tenantId: TENANT,
+        mimeType: 'image/jpeg',
+        size: ONE_GB - 100,
+        originalName: 'existing.jpg',
+        storageKey: `${TENANT}/${ticketId}/existing.jpg`,
+        storage: 'local',
+      });
+
+      mockSession = buildSession(REQUESTER, 'requester', TENANT);
+      const { POST } = await import('@/app/api/tickets/[id]/comments/route');
+      // 残り 100 バイトしかないところへ、それより大きいファイルを添付しようとする
+      const res = await POST(
+        buildRequest('容量オーバーの写真です', [
+          makeFile('big.jpg', 'image/jpeg', 'x'.repeat(200)),
+        ]),
+        makeParams(ticketId),
+      );
+      expect(res.status).toBe(422);
+      // コメントも新規添付も保存されていない
+      const comments = [...store.comments.values()].filter((c) => c.ticketId === ticketId);
+      expect(comments).toHaveLength(0);
+      expect(storage.entries.size).toBe(0);
+    });
+
+    it('残枠内に収まる添付は Standard テナントでも成功する', async () => {
+      const { ticketId } = await seed();
+      const tenant = store.tenants.get(TENANT)!;
+      store.tenants.set(TENANT, { ...tenant, subscriptionPlan: 'standard' as const });
+
+      mockSession = buildSession(REQUESTER, 'requester', TENANT);
+      const { POST } = await import('@/app/api/tickets/[id]/comments/route');
+      const res = await POST(
+        buildRequest('小さな写真です', [makeFile('small.jpg', 'image/jpeg', 'jpeg-data')]),
+        makeParams(ticketId),
+      );
+      expect(res.status).toBe(201);
+    });
+  });
 });

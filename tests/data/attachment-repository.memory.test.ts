@@ -12,7 +12,11 @@ const TENANT_A = 'tenant-a';
 const TENANT_B = 'tenant-b';
 
 // 添付作成の最低限な雛形 (個別テストで一部を上書きする)
-function makeInput(overrides: Partial<Parameters<ReturnType<typeof createMemoryContext>['repos']['attachments']['create']>[0]> = {}) {
+function makeInput(
+  overrides: Partial<
+    Parameters<ReturnType<typeof createMemoryContext>['repos']['attachments']['create']>[0]
+  > = {},
+) {
   // テナント A・チケット t-1・ユーザー u-1 を既定値とする
   return {
     ticketId: 't-1',
@@ -58,9 +62,7 @@ describe('AttachmentRepository (memory adapter)', () => {
     // 時系列を確実に分けるため 2ms 待つ (Date.now の分解能対策)
     await new Promise((r) => setTimeout(r, 2));
     const a2 = await repos.attachments.create(makeInput({ originalName: 'a2.jpg' }));
-    await repos.attachments.create(
-      makeInput({ tenantId: TENANT_B, originalName: 'b1.jpg' }),
-    );
+    await repos.attachments.create(makeInput({ tenantId: TENANT_B, originalName: 'b1.jpg' }));
 
     // テナント A から見ると 2 件 (a1, a2) のみ、古い順
     const listA = await repos.attachments.listByTicket('t-1', TENANT_A);
@@ -82,6 +84,25 @@ describe('AttachmentRepository (memory adapter)', () => {
     expect(await repos.attachments.countByTicket('t-1', TENANT_A)).toBe(2);
     // B から見ると 1 件
     expect(await repos.attachments.countByTicket('t-1', TENANT_B)).toBe(1);
+  });
+
+  // sumSizeByTenant は同テナントの添付サイズのみ合算する (添付累計サイズ上限チェック用)
+  it('sumSizeByTenant sums only same-tenant rows', async () => {
+    const { repos } = createMemoryContext();
+    // テナント A に 1000 + 2000 バイト、B に 500 バイト
+    await repos.attachments.create(makeInput({ size: 1000 }));
+    await repos.attachments.create(makeInput({ size: 2000 }));
+    await repos.attachments.create(makeInput({ tenantId: TENANT_B, size: 500 }));
+    // A から見ると 3000 バイト
+    expect(await repos.attachments.sumSizeByTenant(TENANT_A)).toBe(3000);
+    // B から見ると 500 バイト
+    expect(await repos.attachments.sumSizeByTenant(TENANT_B)).toBe(500);
+  });
+
+  // テナントに添付が 1 件も無ければ 0 を返す
+  it('sumSizeByTenant returns 0 when the tenant has no attachments', async () => {
+    const { repos } = createMemoryContext();
+    expect(await repos.attachments.sumSizeByTenant(TENANT_A)).toBe(0);
   });
 
   // delete は他テナントの ID を渡しても元行を残す

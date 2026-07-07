@@ -32,10 +32,12 @@ import { enforceRateLimit, RateLimitError } from '@/lib/rate-limit';
 import { commentBodySchema } from '@/lib/validations/ticket';
 // 添付ファイル検証ヘルパー
 import { validateUploadedFiles } from '@/lib/validations/attachment';
-// MIME → 拡張子の対応表 (storageKey の組み立てで使う)
-import { MIME_TO_EXTENSION } from '@/domain/attachment';
+// MIME → 拡張子の対応表 (storageKey の組み立てで使う)、バイト数を GB 表示に丸めるヘルパー
+import { MIME_TO_EXTENSION, formatBytesAsGb } from '@/domain/attachment';
 // LINE 連携機能のプランゲート (§6.1 料金プラン: Pro / Enterprise のみ利用可能)
 import { isLineIntegrationAllowed } from '@/lib/plan-guard';
+// Phase 4 課金: 添付累計サイズ上限チェック (チケット作成時添付と共有)
+import { getAttachmentQuota } from '@/lib/tenant-plan';
 // Phase 4: Slack/Teams/Chatwork 外部通知のベストエフォート送信共通ヘルパー
 import { notifyOutboundBestEffort } from '@/lib/outbound-notify';
 
@@ -112,6 +114,19 @@ export async function POST(req: Request, { params }: Params) {
   const attachmentValidation = await validateUploadedFiles(files);
   if (!attachmentValidation.ok) {
     return validationError(attachmentValidation.message, ['files']);
+  }
+
+  // Phase 4 課金: 添付ファイルがある場合、テナントの累計サイズ上限 (§6.1 Standard「添付1GB」) を
+  // 超えないか確認する。0 件アップロードなら DB 集計を行わずスキップする
+  if (attachmentValidation.files.length > 0) {
+    const newBytes = attachmentValidation.files.reduce((sum, f) => sum + f.size, 0);
+    const attachmentQuota = await getAttachmentQuota(tenantId);
+    if (attachmentQuota.limited && newBytes > attachmentQuota.remainingBytes) {
+      return validationError(
+        `添付ファイルの合計サイズがプランの上限 (${formatBytesAsGb(attachmentQuota.limitBytes)}GB) を超えています`,
+        ['files'],
+      );
+    }
   }
 
   // 対象チケットを tenantId スコープで取得 (他テナントは null になる)

@@ -28,6 +28,16 @@ export const MONTHLY_TICKET_LIMIT: Record<SubscriptionPlan, number> = {
   enterprise: Infinity, // Enterprise: 無制限
 };
 
+// 添付ファイルの累計サイズ上限 (バイト、プランごと)。docs/smb-dx-pivot-plan.md §6.1 で明記されて
+// いるのは Standard の「添付1GB」のみで、他プランに数値の定めは無い。MONTHLY_TICKET_LIMIT と同じ
+// 規約 (明記されたプランだけ有限値、それ以外は無制限) に揃える
+export const ATTACHMENT_TOTAL_SIZE_LIMIT_BYTES: Record<SubscriptionPlan, number> = {
+  free: Infinity, // Free: 計画書に上限の定めなし (無制限)
+  standard: 1024 * 1024 * 1024, // Standard: 1GB (§6.1 に明記)
+  pro: Infinity, // Pro: 計画書に上限の定めなし (無制限)
+  enterprise: Infinity, // Enterprise: 無制限
+};
+
 // ─────────────────────────────────────────────────────────────────────────────
 // プラン機能可用性フラグ
 // ─────────────────────────────────────────────────────────────────────────────
@@ -88,5 +98,12 @@ export function getUserLimit(plan: SubscriptionPlan): number {
 // プランの月間チケット上限値を返す (UI 表示用)。Infinity の場合は -1 を返す
 export function getMonthlyTicketLimit(plan: SubscriptionPlan): number {
   const limit = MONTHLY_TICKET_LIMIT[plan];
+  return Number.isFinite(limit) ? limit : -1;
+}
+
+// プランの添付累計サイズ上限 (バイト) を返す (UI 表示用)。Infinity の場合は -1 を返す
+// (getUserLimit / getMonthlyTicketLimit と同じ規約)
+export function getAttachmentSizeLimit(plan: SubscriptionPlan): number {
+  const limit = ATTACHMENT_TOTAL_SIZE_LIMIT_BYTES[plan];
   return Number.isFinite(limit) ? limit : -1;
 }

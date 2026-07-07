@@ -82,6 +82,17 @@ export function makeAttachmentRepo(db: PrismaLike): AttachmentRepository {
       return db.attachment.count({ where: { ticketId, tenantId } });
     },
 
+    // テナント全体の添付サイズ合計 (バイト) を返す (添付累計サイズ上限チェック用)
+    async sumSizeByTenant(tenantId) {
+      // aggregate の SUM を使い、行を取得せず集計だけ DB 側で行う
+      const result = await db.attachment.aggregate({
+        where: { tenantId },
+        _sum: { size: true },
+      });
+      // 該当行が無い場合 _sum.size は null になるため 0 にフォールバックする
+      return result._sum.size ?? 0;
+    },
+
     // ID + tenantId で 1 件削除 (他テナントの ID は 0 件削除となり no-op)
     async delete(id, tenantId) {
       // updateMany と同じく deleteMany で AND 一致のみ削除する

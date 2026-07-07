@@ -57,7 +57,14 @@ async function seed() {
     mode: 'lite',
     industry: null,
     inboundToken: null, // メール取り込み未発行 (テスト用フィクスチャ)
-      slackWebhookUrl: null, subscriptionPlan: 'free' as const, stripeCustomerId: null, stripeSubscriptionId: null, stripeSubscriptionStatus: null, teamsWebhookUrl: null, chatworkApiToken: null, chatworkRoomId: null, // Slack 通知未設定 (テスト用フィクスチャ)
+    slackWebhookUrl: null,
+    subscriptionPlan: 'free' as const,
+    stripeCustomerId: null,
+    stripeSubscriptionId: null,
+    stripeSubscriptionStatus: null,
+    teamsWebhookUrl: null,
+    chatworkApiToken: null,
+    chatworkRoomId: null, // Slack 通知未設定 (テスト用フィクスチャ)
     createdAt: now,
   });
   // 依頼者ユーザーを投入
@@ -151,10 +158,7 @@ describe('POST /api/tickets (multipart with attachments)', () => {
         body: '紙詰まりエラーが出る',
         priority: 'Medium',
       },
-      [
-        makeFile('a.jpg', 'image/jpeg', 'jpeg-bytes'),
-        makeFile('b.png', 'image/png', 'png-bytes'),
-      ],
+      [makeFile('a.jpg', 'image/jpeg', 'jpeg-bytes'), makeFile('b.png', 'image/png', 'png-bytes')],
     );
 
     // POST 実行
@@ -179,10 +183,9 @@ describe('POST /api/tickets (multipart with attachments)', () => {
   it('rejects disallowed MIME and creates nothing', async () => {
     const { POST } = await import('@/app/api/tickets/route');
 
-    const req = buildMultipartRequest(
-      { title: 't', body: 'b', priority: 'Medium' },
-      [makeFile('doc.pdf', 'application/pdf', 'pdf-bytes')],
-    );
+    const req = buildMultipartRequest({ title: 't', body: 'b', priority: 'Medium' }, [
+      makeFile('doc.pdf', 'application/pdf', 'pdf-bytes'),
+    ]);
 
     const res = await POST(req);
     expect(res.status).toBe(422);
@@ -206,13 +209,10 @@ describe('POST /api/tickets (multipart with attachments)', () => {
     });
 
     const { POST } = await import('@/app/api/tickets/route');
-    const req = buildMultipartRequest(
-      { title: 't', body: 'b', priority: 'Medium' },
-      [
-        makeFile('a.jpg', 'image/jpeg', 'jpeg-a'),
-        makeFile('b.jpg', 'image/jpeg', 'jpeg-b'),
-      ],
-    );
+    const req = buildMultipartRequest({ title: 't', body: 'b', priority: 'Medium' }, [
+      makeFile('a.jpg', 'image/jpeg', 'jpeg-a'),
+      makeFile('b.jpg', 'image/jpeg', 'jpeg-b'),
+    ]);
 
     const res = await POST(req);
     // 500 で失敗を伝える
@@ -230,10 +230,38 @@ describe('POST /api/tickets (multipart with attachments)', () => {
     const files = Array.from({ length: 6 }, (_, i) =>
       makeFile(`a${i}.jpg`, 'image/jpeg', `jpeg-${i}`),
     );
-    const req = buildMultipartRequest(
-      { title: 't', body: 'b', priority: 'Medium' },
-      files,
-    );
+    const req = buildMultipartRequest({ title: 't', body: 'b', priority: 'Medium' }, files);
+
+    const res = await POST(req);
+    expect(res.status).toBe(422);
+    expect(store.tickets.size).toBe(0);
+    expect(storage.entries.size).toBe(0);
+  });
+
+  // 回帰防止: 添付累計サイズがプラン上限 (Standard = 1GB) に達しているテナントは
+  // 新規チケット作成時の添付も 422 で拒否する (§6.1 料金プラン「添付1GB」)
+  it('rejects new attachments when the tenant already reached the Standard plan attachment quota', async () => {
+    const tenant = store.tenants.get(TENANT)!;
+    // Standard プランへ変更 (添付累計 1GB 上限)
+    store.tenants.set(TENANT, { ...tenant, subscriptionPlan: 'standard' as const });
+    // 既存の別チケットへ、上限ギリギリ (残り 100 バイト) まで積み上げておく
+    const ONE_GB = 1024 * 1024 * 1024;
+    await repos.attachments.create({
+      ticketId: 'other-ticket',
+      commentId: null,
+      uploaderId: REQUESTER,
+      tenantId: TENANT,
+      mimeType: 'image/jpeg',
+      size: ONE_GB - 100,
+      originalName: 'existing.jpg',
+      storageKey: `${TENANT}/other-ticket/existing.jpg`,
+      storage: 'local',
+    });
+
+    const { POST } = await import('@/app/api/tickets/route');
+    const req = buildMultipartRequest({ title: 't', body: 'b', priority: 'Medium' }, [
+      makeFile('big.jpg', 'image/jpeg', 'x'.repeat(200)),
+    ]);
 
     const res = await POST(req);
     expect(res.status).toBe(422);

@@ -13,8 +13,14 @@ import { repos } from '@/data';
 import type { Repos } from '@/data/ports/unit-of-work';
 // 課金プランの型
 import type { SubscriptionPlan } from '@/domain/types';
-// 月間チケット上限・スタッフ上限の判定ヘルパー (プランごとの上限値は plan-guard.ts が単一の源)
-import { getMonthlyTicketLimit, getUserLimit, isUserLimitReached } from '@/lib/plan-guard';
+// 月間チケット上限・スタッフ上限・添付累計サイズ上限の判定ヘルパー
+// (プランごとの上限値は plan-guard.ts が単一の源)
+import {
+  getAttachmentSizeLimit,
+  getMonthlyTicketLimit,
+  getUserLimit,
+  isUserLimitReached,
+} from '@/lib/plan-guard';
 // JST (日本時間) 基準の月初を計算する共通ヘルパー (endOfDayJST と同じファイルに集約)
 import { startOfMonthJST } from '@/lib/format-date';
 
@@ -99,5 +105,43 @@ export async function checkSeatAvailability(
   return {
     available: !isUserLimitReached(tenant.subscriptionPlan, currentUserCount),
     limit: getUserLimit(tenant.subscriptionPlan),
+  };
+}
+
+// 添付ファイルの累計サイズの残枠を表す (Web フォーム・コメント投稿の添付アップロードが共有する)
+export interface AttachmentQuota {
+  limited: boolean; // 上限のあるプランか (無制限プランなら false)
+  limitBytes: number; // 上限バイト数 (無制限なら -1。plan-guard.ts の規約をそのまま流用)
+  usedBytes: number; // 現在の累計バイト数 (無制限プランでは DB 集計をスキップし 0 固定)
+  remainingBytes: number; // 今すぐアップロードできる残りバイト数 (無制限なら Infinity)
+}
+
+// 指定テナントの添付ファイル累計サイズの残枠を取得する。
+// POST /api/tickets (チケット作成時添付) と POST /api/tickets/[id]/comments (コメント添付) の
+// 両方が同じ判定を使うための共通ヘルパー (§6.1 料金プラン Standard「添付1GB」)。
+// plan を既に把握している呼び出し側は渡せる (二重の tenant 取得を避ける)。
+//
+// getMonthlyTicketQuota と同じく best-effort な上限であり、DB レベルの原子性は持たない
+// (check-then-act。同時並行アップロードでは合計が上限をわずかに超えうる)。
+export async function getAttachmentQuota(
+  tenantId: string,
+  plan?: SubscriptionPlan,
+): Promise<AttachmentQuota> {
+  // プラン未指定なら解決する
+  const resolvedPlan = plan ?? (await resolveTenantPlan(tenantId));
+  // このプランの添付累計サイズ上限を取得する (-1 = 無制限)
+  const limitBytes = getAttachmentSizeLimit(resolvedPlan);
+  // 無制限プランは DB 集計を行わず即座に返す (不要なクエリを避ける)
+  if (limitBytes === -1) {
+    return { limited: false, limitBytes: -1, usedBytes: 0, remainingBytes: Infinity };
+  }
+  // 現在の累計サイズをテナントスコープで集計する
+  const usedBytes = await repos.attachments.sumSizeByTenant(tenantId);
+  // 残枠は 0 未満にならないようクランプする
+  return {
+    limited: true,
+    limitBytes,
+    usedBytes,
+    remainingBytes: Math.max(0, limitBytes - usedBytes),
   };
 }
