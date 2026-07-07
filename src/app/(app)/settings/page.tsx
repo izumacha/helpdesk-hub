@@ -173,7 +173,7 @@ export default async function SettingsPage() {
 
       {/* Phase 4 Enterprise: SAML SSO 設定カード (Enterprise プランで表示。プラン降格後も
           既存設定が残っていれば削除だけできるよう表示を続ける) */}
-      {(ssoAllowed || ssoConfig) && spUrls && (
+      {spUrls && (
         <section className="space-y-4 rounded-2xl bg-white p-6 shadow-sm ring-1 ring-slate-100">
           <div>
             {/* セクション見出し */}

@@ -23,6 +23,8 @@ import {
 } from '@/lib/plan-guard';
 // JST (日本時間) 基準の月初を計算する共通ヘルパー (endOfDayJST と同じファイルに集約)
 import { startOfMonthJST } from '@/lib/format-date';
+// バイト数を GB 表示に丸めるヘルパー (添付上限エラーメッセージ用)
+import { formatBytesAsGb } from '@/domain/attachment';
 
 // 指定テナントの現在の課金プランを返す。テナントが見つからない場合は 'free' として扱う
 // (fail-closed: 存在しない/取得できないテナントに Pro/Enterprise 限定機能を渡さない)。
@@ -144,4 +146,31 @@ export async function getAttachmentQuota(
     usedBytes,
     remainingBytes: Math.max(0, limitBytes - usedBytes),
   };
+}
+
+// 添付アップロードの残枠チェック結果 (超過時のみ日本語メッセージを持つ)
+export type AttachmentQuotaCheck = { ok: true } | { ok: false; message: string };
+
+// アップロードしようとしているファイル群の合計サイズが、テナントの添付累計上限を
+// 超えないかを判定する。POST /api/tickets と POST /api/tickets/[id]/comments の
+// 両方が同じ判定 + 同じエラーメッセージを使うための共通ヘルパー (§6 DRY)。
+// newBytesTotal が 0 (添付なし) なら DB 集計を行わず即座に許可する。
+export async function checkAttachmentQuota(
+  tenantId: string,
+  newBytesTotal: number,
+  plan?: SubscriptionPlan,
+): Promise<AttachmentQuotaCheck> {
+  // 添付が無いアップロードは常に許可 (不要なクエリを避ける)
+  if (newBytesTotal <= 0) return { ok: true };
+  // 現在の残枠を取得する
+  const quota = await getAttachmentQuota(tenantId, plan);
+  // 上限のあるプランで、今回の合計サイズが残枠を超えるなら拒否メッセージを返す
+  if (quota.limited && newBytesTotal > quota.remainingBytes) {
+    return {
+      ok: false,
+      message: `添付ファイルの合計サイズがプランの上限 (${formatBytesAsGb(quota.limitBytes)}GB) を超えています`,
+    };
+  }
+  // 残枠内なので許可
+  return { ok: true };
 }

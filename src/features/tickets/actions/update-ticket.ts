@@ -232,26 +232,17 @@ export async function updateTicketPriority(ticketId: string, newPriority: Priori
     windowMs: 10_000,
   });
 
-  // コミット後の broadcastUnreadCount に渡す「通知を実際に書き込んだ起票者 ID」を保持する
-  // (updateTicketStatus と同じパターン。自己更新では通知を作らないため null のままにする)
-  let notifiedCreatorId: string | null = null;
-  // メール送信・Slack 通知に必要なチケット情報を uow.run 外で参照するために宣言する
-  // null のままなら送らない (自己更新 or チケット未取得 or 変更なし)
-  let ticketSnapshot: { creatorId: string; title: string } | null = null;
-  // 優先度変更前の値 (メール本文でラベルを出すために外側で保持する)
-  let oldPriority: Priority | null = null;
-
-  // 1 トランザクションで更新と履歴記録・通知作成を実行
-  await uow.run(async (r) => {
+  // 1 トランザクションで更新と履歴記録・通知作成を実行し、トランザクション外の後続処理
+  // (SSE配信・メール・Slack) に必要な情報を戻り値としてそのまま受け取る。
+  // (updateTicketStatus は外側 let 変数 + as キャストでクロージャの外へ持ち出しているが、
+  // async 関数の戻り値は TSC が通常どおり narrow できるため、こちらはキャスト不要にできる)
+  const result = await uow.run(async (r) => {
     // チケットを tenantId スコープで取得
     const ticket = await r.tickets.findById(ticketId, tenantId);
     // 無ければエラー
     if (!ticket) throw new Error('チケットが見つかりません');
-    // 変更無しならスキップ
-    if (ticket.priority === newPriority) return;
-    // 変更前の優先度と件名/起票者をトランザクション外の通知処理に伝えるため外側変数に保存する
-    oldPriority = ticket.priority;
-    ticketSnapshot = { creatorId: ticket.creatorId, title: ticket.title };
+    // 変更無しなら何もせず null を返す (冪等)
+    if (ticket.priority === newPriority) return null;
 
     // 優先度を更新 (tenantId スコープで where に注入)
     await r.tickets.updatePriority(ticketId, newPriority, tenantId);
@@ -263,56 +254,69 @@ export async function updateTicketPriority(ticketId: string, newPriority: Priori
       oldValue: ticket.priority,
       newValue: newPriority,
     });
+    // 自分以外の起票者にのみ通知を送るため、まず未通知 (null) で用意しておく
+    let notifiedCreatorId: string | null = null;
     // 自分以外の起票者にのみ通知を送る (updateTicketStatus と同じく自己操作では自己通知しない)
     if (ticket.creatorId !== session.user.id) {
+      // 起票者に優先度変更通知を DB に書き込む
       await r.notifications.create({
         userId: ticket.creatorId, // 通知の受信者は起票者
-        type: 'priorityChanged',
-        message: `チケット「${ticket.title}」の優先度が「${PRIORITY_LABELS[newPriority] ?? newPriority}」に変更されました`,
-        ticketId,
+        type: 'priorityChanged', // 通知の種類: 優先度変更
+        // getStatusLabel と同じく、優先度も日本語ラベルに変換して表示文言に埋め込む
+        message: `チケット「${ticket.title}」の優先度が「${PRIORITY_LABELS[newPriority] ?? newPriority}」に変更されました`, // 表示文言
+        ticketId, // 関連チケット ID
         tenantId: ticket.tenantId, // テナントスコープ (クロステナント漏洩防止)
       });
-      // 通知を書き込んだ起票者 ID を外側変数に渡す (コミット後の SSE 配信に使う)
+      // 通知を書き込んだ起票者 ID を記録する (コミット後の SSE 配信に使う)
       notifiedCreatorId = ticket.creatorId;
     }
+    // トランザクション外の後続処理に必要な情報をまとめて返す
+    return {
+      creatorId: ticket.creatorId, // 起票者 ID (メール宛先取得・自己操作判定に使う)
+      title: ticket.title, // 件名 (メール・Slack 本文に使う)
+      oldPriority: ticket.priority, // 変更前の優先度 (メールのラベル変換に使う)
+      notifiedCreatorId, // 通知を書き込んだ起票者 ID (null なら自己操作で未通知)
+    };
   });
 
-  // 通知を実際に書き込んだ場合のみ、起票者の未読件数を SSE でリアルタイム配信する
-  if (notifiedCreatorId) await broadcastUnreadCount(notifiedCreatorId, tenantId);
-
-  // Phase 2: 優先度変更を依頼者へメールで通知する (ベストエフォート)。
-  // let 変数は async クロージャを跨ぐと TSC の CFA が never に絞り込むため、
-  // updateTicketStatus と同じく宣言型アサーションで const に取り出してから null チェックする
-  const snapForMail = ticketSnapshot as { creatorId: string; title: string } | null;
-  const oldPriorityForMail = oldPriority as Priority | null;
-  if (
-    snapForMail !== null &&
-    oldPriorityForMail !== null &&
-    snapForMail.creatorId !== session.user.id
-  ) {
-    await sendPriorityChangedEmailToRequester({
-      ticketId,
-      ticketTitle: snapForMail.title,
-      creatorId: snapForMail.creatorId,
-      oldPriority: oldPriorityForMail,
-      newPriority,
-    });
+  // 変更が無かった (冪等スキップ) 場合はキャッシュ無効化だけ行って終了する
+  if (!result) {
+    revalidatePath(`/tickets/${ticketId}`);
+    return;
   }
 
-  // Phase 4: Slack/Teams/Chatwork 外部通知 (updateTicketStatus と同じパターン)。
-  // チームの共有チャネル宛の「見える化」目的なので、自己更新でも送る。
-  const snapForSlack = ticketSnapshot as { creatorId: string; title: string } | null;
-  if (snapForSlack !== null) {
-    await notifyOutboundBestEffort(
+  // 通知を実際に書き込んだ場合のみ、起票者の未読件数を SSE でリアルタイム配信する
+  if (result.notifiedCreatorId) await broadcastUnreadCount(result.notifiedCreatorId, tenantId);
+
+  // 優先度の日本語ラベル (メール・Slack 本文の両方で使うため 1 度だけ変換する)
+  const newPriorityLabel = PRIORITY_LABELS[newPriority] ?? newPriority;
+
+  // Phase 2 メール通知 + Phase 4 Slack/Teams/Chatwork 外部通知: この 2 経路は互いに依存しない
+  // 独立した I/O なので、escalateTicket と同じく Promise.allSettled で並行実行し、片方の遅延/失敗が
+  // 他方に波及しないようにする。メールは自分以外の起票者にのみ送るが (個人宛の通知のため)、
+  // Slack はチームの共有チャネル宛の「見える化」目的なので自己更新でも送る。
+  await Promise.allSettled([
+    // 経路 1: 起票者へメール送信 (自己操作なら送らない)
+    result.creatorId !== session.user.id
+      ? sendPriorityChangedEmailToRequester({
+          ticketId,
+          ticketTitle: result.title,
+          creatorId: result.creatorId,
+          oldPriority: result.oldPriority,
+          newPriority,
+        })
+      : Promise.resolve(),
+    // 経路 2: Slack/Teams/Chatwork へ優先度変更を通知する
+    notifyOutboundBestEffort(
       tenantId,
       (baseUrl) => ({
-        subject: `優先度が変更されました: ${snapForSlack.title}`,
-        body: `「${snapForSlack.title}」の優先度が「${PRIORITY_LABELS[newPriority] ?? newPriority}」に変更されました。`,
+        subject: `優先度が変更されました: ${result.title}`,
+        body: `「${result.title}」の優先度が「${newPriorityLabel}」に変更されました。`,
         ticketUrl: buildTicketUrl(baseUrl, ticketId),
       }),
       '[updateTicketPriority]',
-    );
-  }
+    ),
+  ]);
 
   // 詳細ページのキャッシュ無効化
   revalidatePath(`/tickets/${ticketId}`);
