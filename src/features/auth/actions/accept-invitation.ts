@@ -23,6 +23,10 @@ import { repos, uow } from '@/data';
 import { hashInviteToken } from '@/lib/invite';
 // 受諾フォームの入力検証スキーマと、ユーザー入力メールの検証・正規化スキーマ
 import { acceptInvitationSchema, emailSchema } from '@/lib/validations/invite';
+// Phase 4 課金: プランごとのスタッフ (agent/admin) 上限チェック。
+// 発行時 (create-invitation.ts) だけでなく受諾時にも再確認しないと、
+// admin が余裕を持って複数リンクを事前発行 → 後から一斉受諾で上限を突破できてしまう
+import { getUserLimit, isUserLimitReached } from '@/lib/plan-guard';
 
 // accept の戻り値型。作成に使ったメールを返し、クライアントがそのままログインに使う
 export interface AcceptInvitationResult {
@@ -58,7 +62,9 @@ export async function acceptInvitation(
     const emailParsed = emailSchema.safeParse(rawInputEmail);
     // 形式不正・過大長ならユーザー向け日本語メッセージで throw (消費前に弾く)
     if (!emailParsed.success) {
-      throw new Error(emailParsed.error.issues[0]?.message ?? '正しいメールアドレスを入力してください');
+      throw new Error(
+        emailParsed.error.issues[0]?.message ?? '正しいメールアドレスを入力してください',
+      );
     }
     // 検証済みの正規化メール
     inputEmail = emailParsed.data;
@@ -84,6 +90,25 @@ export async function acceptInvitation(
     // どちらも無ければメール必須エラー
     if (!finalEmail) {
       throw new Error('メールアドレスは必須です');
+    }
+
+    // Phase 4 課金: スタッフ (agent) 招待はシートを消費するため、受諾の瞬間にも上限を再確認する。
+    // 発行時 (create-invitation.ts) のチェックだけでは、admin が上限に余裕がある間に
+    // 複数の招待リンクを事前発行しておき、後から一斉受諾させることでシート上限を
+    // 突破できてしまう (requester はシートを消費しないため対象外)。
+    if (invitation.role === 'agent') {
+      // 招待先テナントの現在プランを取得する (同一トランザクション内で読み、消費と同じ視点にする)
+      const tenant = await tx.tenants.findById(invitation.tenantId);
+      if (tenant) {
+        // このテナントの現在のスタッフ (agent + admin) 数を数える
+        const currentUserCount = await tx.users.countByTenant(invitation.tenantId);
+        // 上限に達していれば受諾を拒否する (例外で consumeValidToken もロールバックされ、招待は再利用可能なまま残る)
+        if (isUserLimitReached(tenant.subscriptionPlan, currentUserCount)) {
+          throw new Error(
+            `このプランのメンバー上限 (${getUserLimit(tenant.subscriptionPlan)} 名) に達しているため、招待を受諾できません。管理者にお問い合わせください。`,
+          );
+        }
+      }
     }
 
     // 既存ユーザーとの重複を事前チェック (@unique 制約より親切な日本語エラーを返すため)

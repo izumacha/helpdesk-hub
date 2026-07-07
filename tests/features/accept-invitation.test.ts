@@ -45,7 +45,22 @@ beforeEach(() => {
     [TENANT_A, 'A 組織'],
     [TENANT_B, 'B 組織'],
   ] as const) {
-    store.tenants.set(id, { id, name, mode: 'lite', industry: null, inboundToken: null, slackWebhookUrl: null, subscriptionPlan: 'free' as const, stripeCustomerId: null, stripeSubscriptionId: null, stripeSubscriptionStatus: null, teamsWebhookUrl: null, chatworkApiToken: null, chatworkRoomId: null, createdAt: now });
+    store.tenants.set(id, {
+      id,
+      name,
+      mode: 'lite',
+      industry: null,
+      inboundToken: null,
+      slackWebhookUrl: null,
+      subscriptionPlan: 'free' as const,
+      stripeCustomerId: null,
+      stripeSubscriptionId: null,
+      stripeSubscriptionStatus: null,
+      teamsWebhookUrl: null,
+      chatworkApiToken: null,
+      chatworkRoomId: null,
+      createdAt: now,
+    });
   }
 });
 
@@ -90,7 +105,10 @@ describe('acceptInvitation', () => {
     });
     // 受諾アクションを実行 (氏名 + パスワードのみ。tenantId は一切渡さない)
     const acceptInvitation = await loadAction();
-    const result = await acceptInvitation(rawToken, makeForm({ name: '招待 太郎', password: 'password123' }));
+    const result = await acceptInvitation(
+      rawToken,
+      makeForm({ name: '招待 太郎', password: 'password123' }),
+    );
 
     // 戻り値のメールは招待行のメール
     expect(result.email).toBe('invitee@example.com');
@@ -138,7 +156,11 @@ describe('acceptInvitation', () => {
   // 同じ招待リンクは 2 回使えないこと (単回使用)
   it('同じ招待リンクは 2 回受諾できない', async () => {
     // 有効な招待を用意する
-    const rawToken = await seedInvitation({ tenantId: TENANT_B, role: 'requester', email: 'once@example.com' });
+    const rawToken = await seedInvitation({
+      tenantId: TENANT_B,
+      role: 'requester',
+      email: 'once@example.com',
+    });
     const acceptInvitation = await loadAction();
     // 1 回目は成功
     await acceptInvitation(rawToken, makeForm({ name: '一回目', password: 'password123' }));
@@ -164,6 +186,67 @@ describe('acceptInvitation', () => {
     ).rejects.toThrow(/無効|使用/);
   });
 
+  // Phase 4 課金: スタッフ (agent) 上限に達したテナントでは、agent 招待の受諾を拒否すること。
+  // 発行時 (create-invitation.ts) だけでなく受諾時にも再確認しないと、admin が上限に余裕がある間に
+  // 複数の招待リンクを事前発行しておき、後から一斉受諾させることでシート上限を突破できてしまう。
+  it('スタッフ上限 (Free: 3名) に達したテナントでは agent 招待の受諾を拒否する', async () => {
+    // Free プラン (上限 3 名) の状態で、既に agent を 3 名投入しておく
+    for (let i = 0; i < 3; i += 1) {
+      await repos.users.create({
+        email: `existing-agent-${i}@example.com`,
+        name: `既存担当者${i}`,
+        passwordHash: 'x',
+        role: 'agent',
+        tenantId: TENANT_B,
+      });
+    }
+    // 上限到達後に発行された agent 招待 (発行自体はシートに余裕がある間に行われた想定)
+    const rawToken = await seedInvitation({
+      tenantId: TENANT_B,
+      role: 'agent',
+      email: 'overflow-agent@example.com',
+    });
+    const tokenHash = await hashInviteToken(rawToken);
+    const acceptInvitation = await loadAction();
+    // 上限超過のため拒否される
+    await expect(
+      acceptInvitation(rawToken, makeForm({ name: '溢れた担当者', password: 'password123' })),
+    ).rejects.toThrow(/上限/);
+    // 招待はロールバックで未消費のまま残る (シートが空けば再度受諾できる)
+    const invitation = await repos.invitations.findByTokenHash(tokenHash);
+    expect(invitation?.consumedAt).toBeNull();
+    // ユーザーも作成されていない
+    expect([...store.users.values()].some((u) => u.email === 'overflow-agent@example.com')).toBe(
+      false,
+    );
+  });
+
+  // requester はシートを消費しないため、agent 上限に達していても受諾できること
+  it('requester 招待はスタッフ上限に達していても受諾できる (シートを消費しないため)', async () => {
+    // Free プラン (上限 3 名) の状態で、既に agent を 3 名投入しておく
+    for (let i = 0; i < 3; i += 1) {
+      await repos.users.create({
+        email: `existing-agent2-${i}@example.com`,
+        name: `既存担当者${i}`,
+        passwordHash: 'x',
+        role: 'agent',
+        tenantId: TENANT_B,
+      });
+    }
+    // requester 招待は agent 上限とは無関係に受諾できるはず
+    const rawToken = await seedInvitation({
+      tenantId: TENANT_B,
+      role: 'requester',
+      email: 'member@example.com',
+    });
+    const acceptInvitation = await loadAction();
+    const result = await acceptInvitation(
+      rawToken,
+      makeForm({ name: '一般メンバー', password: 'password123' }),
+    );
+    expect(result.email).toBe('member@example.com');
+  });
+
   // メール重複時はエラーになり、招待が消費されない (トランザクションでロールバック) こと
   it('メール重複時は招待を消費せずエラーにする (ロールバック)', async () => {
     // 既存ユーザーを先に登録しておく (同じメール)
@@ -175,7 +258,11 @@ describe('acceptInvitation', () => {
       tenantId: TENANT_A,
     });
     // 同じメール宛の招待を用意する
-    const rawToken = await seedInvitation({ tenantId: TENANT_B, role: 'requester', email: 'dup@example.com' });
+    const rawToken = await seedInvitation({
+      tenantId: TENANT_B,
+      role: 'requester',
+      email: 'dup@example.com',
+    });
     const tokenHash = await hashInviteToken(rawToken);
     const acceptInvitation = await loadAction();
     // 重複のため拒否される
