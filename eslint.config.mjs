@@ -8,11 +8,11 @@ const config = [
   {
     // Lint 対象から除外するパス (生成物・依存・成果物)
     ignores: [
-      '.next/**',              // Next.js のビルド出力
-      'node_modules/**',       // npm の依存パッケージ
-      'src/generated/**',      // Prisma の生成物
-      'playwright-report/**',  // Playwright のレポート
-      'test-results/**',       // E2E のスクリーンショット等
+      '.next/**', // Next.js のビルド出力
+      'node_modules/**', // npm の依存パッケージ
+      'src/generated/**', // Prisma の生成物
+      'playwright-report/**', // Playwright のレポート
+      'test-results/**', // E2E のスクリーンショット等
     ],
   },
   // Next 推奨ルールを展開してマージ
@@ -29,8 +29,8 @@ const config = [
       '@typescript-eslint/no-unused-vars': [
         'warn',
         {
-          argsIgnorePattern: '^_',       // 関数引数の _ プレフィックスを無視
-          varsIgnorePattern: '^_',       // 変数宣言の _ プレフィックスを無視
+          argsIgnorePattern: '^_', // 関数引数の _ プレフィックスを無視
+          varsIgnorePattern: '^_', // 変数宣言の _ プレフィックスを無視
           destructuredArrayIgnorePattern: '^_', // 分割代入の _ プレフィックスを無視
         },
       ],
@@ -43,7 +43,29 @@ const config = [
               // Prisma の生成物 (@/generated/prisma 配下) への直接 import を禁止対象にする
               group: ['@/generated/prisma', '@/generated/prisma/*'],
               // 違反したときに開発者へ表示するメッセージ (代わりに使うべき場所を案内)
-              message: 'Prisma 生成物の直接 import は禁止。enum/型は正準である @/domain/types を使うこと。',
+              message:
+                'Prisma 生成物の直接 import は禁止。enum/型は正準である @/domain/types を使うこと。',
+            },
+          ],
+        },
+      ],
+    },
+  },
+  {
+    // src/lib/tenant-cache.ts と src/lib/tenant-plan.ts は @/lib/auth (next-auth) に依存しては
+    // いけない。依存すると @/lib/tenant-plan を importOriginal() で部分モックする既存テスト
+    // (tests/features/inbound-line-route.test.ts 等) が next-auth 内部依存の解決に失敗して壊れる
+    // (回帰防止: コメントだけでなく lint でも機械的に検知できるようにする)
+    files: ['src/lib/tenant-cache.ts', 'src/lib/tenant-plan.ts'],
+    rules: {
+      'no-restricted-imports': [
+        'error',
+        {
+          patterns: [
+            {
+              group: ['@/lib/auth'],
+              message:
+                'このファイルは @/lib/auth (next-auth) に依存できない。importOriginal() で部分モックする既存テストが next-auth 内部依存の解決に失敗して壊れるため (src/lib/tenant-cache.ts のコメント参照)。',
             },
           ],
         },

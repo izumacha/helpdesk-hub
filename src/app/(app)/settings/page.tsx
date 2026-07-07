@@ -1,7 +1,5 @@
 // 現在のセッション (ログイン情報) を取得
 import { auth } from '@/lib/auth';
-// 現在ログイン中のテナントの動作モード (lite | pro) を取得するヘルパー
-import { getCurrentTenantMode } from '@/lib/tenant';
 // tenantId → Tenant のリクエストスコープ共有キャッシュ。(app)/layout.tsx 等と同じキャッシュ
 // 経由でテナント本体を取得し、同一リクエスト内での冗長な Tenant SELECT を避ける
 import { getCachedTenant } from '@/lib/tenant-cache';
@@ -59,8 +57,6 @@ export default async function SettingsPage() {
     );
   }
 
-  // 現在のテナントモード (lite | pro) を取得してフォームの初期値にする
-  const mode = await getCurrentTenantMode(session.user.tenantId);
   // Phase 4: テナント情報・拠点一覧・現在のスタッフ人数を並列取得する
   const [tenant, locations, currentUserCount] = await Promise.all([
     // テナント情報 (slackWebhookUrl / プラン / Stripe 情報の現在値を取得)。共有キャッシュ経由
@@ -72,6 +68,10 @@ export default async function SettingsPage() {
     // 超えていないかを BillingSection で警告表示するために使う
     repos.users.countByTenant(session.user.tenantId),
   ]);
+  // 現在のテナントモード (lite | pro)。上で既に取得済みの tenant から導出する
+  // (getCurrentTenantMode を別途呼ぶと同じ Tenant 行を再取得する不要な関数呼び出しになるため、
+  // このページでは他のテナント項目 (subscriptionPlan 等) と同じ ?? フォールバック方式に揃える)
+  const mode = tenant?.mode ?? 'lite';
 
   // Phase 4 Enterprise: SSO は Enterprise プランのみ、Phase 2 フォローアップ: LINE 連携は
   // Pro / Enterprise プランのみ新規設定・再設定が可能。ただし既存設定はプラン降格後も
