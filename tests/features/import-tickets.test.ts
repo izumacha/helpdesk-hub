@@ -216,6 +216,68 @@ describe('importTickets', () => {
     });
   });
 
+  // ── Phase 4 多拠点: 「拠点」列の名前解決 ──────────────────
+  // CSV エクスポート (GET /api/tickets/export) が「拠点」列を出力するのに、
+  // インポート側には対応する読み取りが存在せず、既存 Excel から一括取り込むと
+  // 拠点情報が消えてしまっていた不備の回帰テスト。
+  describe('拠点列 (Phase 4 多拠点)', () => {
+    // テナントに拠点を 1 件登録しておくヘルパー
+    async function seedLocation(name: string): Promise<string> {
+      const location = await repos.locations.create({ tenantId: TENANT, name });
+      return location.id;
+    }
+
+    // 「拠点」列の値が既存の拠点名と一致すれば locationId が解決されて保存される
+    it('拠点名が一致すれば locationId が解決されて保存される', async () => {
+      const locationId = await seedLocation('渋谷本店');
+      const importTickets = await loadAction();
+      const csv = `件名,拠点\n複合機の紙詰まり,渋谷本店`;
+      const result = await importTickets(csv);
+
+      expect(result.imported).toBe(1);
+      expect(result.errors).toHaveLength(0);
+      const ticket = [...store.tickets.values()][0];
+      expect(ticket?.locationId).toBe(locationId);
+    });
+
+    // テナントに存在しない拠点名 (タイポ等) はエラーとして記録され、無言で拠点未設定にはならない
+    it('存在しない拠点名はエラーとして記録され起票されない', async () => {
+      await seedLocation('渋谷本店');
+      const importTickets = await loadAction();
+      const csv = `件名,拠点\n複合機の紙詰まり,存在しない拠点`;
+      const result = await importTickets(csv);
+
+      expect(result.imported).toBe(0);
+      expect(result.errors).toHaveLength(1);
+      expect(result.errors[0].message).toContain('拠点が見つかりません');
+      expect(store.tickets.size).toBe(0);
+    });
+
+    // 「拠点」列自体が無ければ従来どおり locationId は null のまま (後方互換)
+    it('拠点列が無ければ locationId は null のまま取り込まれる', async () => {
+      const importTickets = await loadAction();
+      const csv = `件名\n複合機の紙詰まり`;
+      const result = await importTickets(csv);
+
+      expect(result.imported).toBe(1);
+      const ticket = [...store.tickets.values()][0];
+      expect(ticket?.locationId).toBeNull();
+    });
+
+    // 拠点列があっても空セルなら未指定として扱い、エラーにはしない
+    it('拠点セルが空なら未指定として扱いエラーにしない', async () => {
+      await seedLocation('渋谷本店');
+      const importTickets = await loadAction();
+      const csv = `件名,拠点\n複合機の紙詰まり,`;
+      const result = await importTickets(csv);
+
+      expect(result.imported).toBe(1);
+      expect(result.errors).toHaveLength(0);
+      const ticket = [...store.tickets.values()][0];
+      expect(ticket?.locationId).toBeNull();
+    });
+  });
+
   // ── Phase 4 課金: 月間チケット上限 (プランゲート) ──────────────────
   describe('月間チケット上限 (§6.1 料金プラン)', () => {
     // Free プランは月 50 件まで。CSV インポートも Web フォームと同じ上限を守ることを確認する

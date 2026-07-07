@@ -32,6 +32,7 @@ type ColumnMapping = {
   内容: string; // 「内容」フィールドに対応する CSV 列名 (任意。空文字は使わない)
   期限日: string; // 「期限日」フィールドに対応する CSV 列名 (任意。空文字は使わない)
   優先度: string; // 「優先度」フィールドに対応する CSV 列名 (任意。空文字は使わない)
+  拠点: string; // 「拠点」フィールドに対応する CSV 列名 (任意。空文字は使わない。Phase 4 多拠点)
 };
 
 // プレビューテーブルの 1 行を表す型 (マッピング後の固定システムフィールド)
@@ -40,6 +41,7 @@ interface PreviewRow {
   内容: string; // 内容セル (省略可)
   期限日: string; // 期限日セル (省略可)
   優先度: string; // 優先度セル (省略可)
+  拠点: string; // 拠点セル (省略可)
 }
 
 // マッピング設定フォームに表示するシステムフィールドの定義一覧
@@ -49,6 +51,7 @@ const SYSTEM_FIELDS = [
   { key: '内容' as const, label: '内容（任意）', required: false }, // 任意フィールド
   { key: '期限日' as const, label: '期限日（任意）', required: false }, // 任意フィールド
   { key: '優先度' as const, label: '優先度（任意）', required: false }, // 任意フィールド
+  { key: '拠点' as const, label: '拠点（任意）', required: false }, // 任意フィールド
 ] as const;
 
 // ウィザードのステップ情報一覧 (ステップインジケーターの表示に使う)
@@ -89,8 +92,9 @@ function applyMapping(csvText: string, mapping: ColumnMapping): string {
   const bodyIdx = mapping.内容 ? headers.indexOf(mapping.内容) : -1; // 内容列のインデックス
   const dueIdx = mapping.期限日 ? headers.indexOf(mapping.期限日) : -1; // 期限日列のインデックス
   const priIdx = mapping.優先度 ? headers.indexOf(mapping.優先度) : -1; // 優先度列のインデックス
+  const locIdx = mapping.拠点 ? headers.indexOf(mapping.拠点) : -1; // 拠点列のインデックス
   // 出力 CSV のヘッダ行: サーバーアクションが期待する固定列名で上書きする
-  const outLines: string[] = ['件名,内容,期限日,優先度'];
+  const outLines: string[] = ['件名,内容,期限日,優先度,拠点'];
   // データ行を 1 行ずつ変換する
   for (const line of lines.slice(1)) {
     // RFC 4180 パーサで元のセル値を取り出す
@@ -108,6 +112,7 @@ function applyMapping(csvText: string, mapping: ColumnMapping): string {
       escapeCsvCell(bodyIdx !== -1 ? (cells[bodyIdx] ?? '') : ''), // 内容セル
       escapeCsvCell(dueIdx !== -1 ? (cells[dueIdx] ?? '') : ''), // 期限日セル
       escapeCsvCell(priIdx !== -1 ? (cells[priIdx] ?? '') : ''), // 優先度セル
+      escapeCsvCell(locIdx !== -1 ? (cells[locIdx] ?? '') : ''), // 拠点セル
     ];
     // カンマ区切りで 1 行にして出力リストに追加する
     outLines.push(row.join(','));
@@ -129,12 +134,13 @@ function buildPreview(mappedCsvText: string): PreviewRow[] {
   return dataLines.map((line) => {
     // RFC 4180 パーサで各セルを取り出す
     const cells = parseCsvLine(line);
-    // applyMapping が出力した列順: 件名[0], 内容[1], 期限日[2], 優先度[3]
+    // applyMapping が出力した列順: 件名[0], 内容[1], 期限日[2], 優先度[3], 拠点[4]
     return {
       件名: cells[0] ?? '', // 件名セル
       内容: cells[1] ?? '', // 内容セル
       期限日: cells[2] ?? '', // 期限日セル
       優先度: cells[3] ?? '', // 優先度セル
+      拠点: cells[4] ?? '', // 拠点セル
     };
   });
 }
@@ -150,6 +156,7 @@ function buildAutoMapping(headers: string[]): ColumnMapping {
     内容: find('内容'), // 「内容」列が CSV にあれば自動対応
     期限日: find('期限日'), // 「期限日」列が CSV にあれば自動対応
     優先度: find('優先度'), // 「優先度」列が CSV にあれば自動対応
+    拠点: find('拠点'), // 「拠点」列が CSV にあれば自動対応 (自社の CSV エクスポート結果をそのまま再取込しやすくする)
   };
 }
 
@@ -163,7 +170,13 @@ export function CsvImportForm(_props: CsvImportFormProps) {
   // CSV から解析したヘッダ列名の配列 (マッピング設定ステップのドロップダウンに使う)
   const [csvHeaders, setCsvHeaders] = useState<string[]>([]);
   // 現在の列マッピング設定 (システムフィールド → CSV 列名)
-  const [mapping, setMapping] = useState<ColumnMapping>({ 件名: '', 内容: '', 期限日: '', 優先度: '' });
+  const [mapping, setMapping] = useState<ColumnMapping>({
+    件名: '',
+    内容: '',
+    期限日: '',
+    優先度: '',
+    拠点: '',
+  });
   // マッピングを適用した変換後の CSV テキスト (サーバーアクションへ渡す)
   const [mappedCsvText, setMappedCsvText] = useState<string | null>(null);
   // プレビューテーブルに表示する先頭 5 行のデータ (マッピング後)
@@ -183,7 +196,7 @@ export function CsvImportForm(_props: CsvImportFormProps) {
     if (!file) {
       setCsvText(null); // 生 CSV テキストをクリア
       setCsvHeaders([]); // ヘッダ一覧をクリア
-      setMapping({ 件名: '', 内容: '', 期限日: '', 優先度: '' }); // マッピングをクリア
+      setMapping({ 件名: '', 内容: '', 期限日: '', 優先度: '', 拠点: '' }); // マッピングをクリア
       setMappedCsvText(null); // 変換後 CSV をクリア
       setPreview([]); // プレビューをクリア
       setResult(null); // 結果をクリア
@@ -196,7 +209,7 @@ export function CsvImportForm(_props: CsvImportFormProps) {
       // エラーを表示しつつ、以前のファイルに由来する状態をすべてリセットして不整合を防ぐ
       setCsvText(null); // 前回の生 CSV テキストをクリア
       setCsvHeaders([]); // 前回のヘッダ一覧をクリア
-      setMapping({ 件名: '', 内容: '', 期限日: '', 優先度: '' }); // 前回のマッピングをクリア
+      setMapping({ 件名: '', 内容: '', 期限日: '', 優先度: '', 拠点: '' }); // 前回のマッピングをクリア
       setMappedCsvText(null); // 前回の変換後 CSV をクリア
       setPreview([]); // 前回のプレビューをクリア
       setResult(null); // 前回の結果をクリア
@@ -293,7 +306,10 @@ export function CsvImportForm(_props: CsvImportFormProps) {
   return (
     <div className="space-y-6">
       {/* ウィザードのステップインジケーター: 現在・完了・未来で色分けする */}
-      <ol className="flex items-center gap-0 text-xs font-medium text-slate-400" aria-label="インポートの手順">
+      <ol
+        className="flex items-center gap-0 text-xs font-medium text-slate-400"
+        aria-label="インポートの手順"
+      >
         {WIZARD_STEPS.map(({ key, label }, idx) => (
           <li key={key} className="flex items-center">
             {/* ステップ番号バッジ: 現在は teal、完了は淡い teal、未来は slate */}
@@ -400,16 +416,23 @@ export function CsvImportForm(_props: CsvImportFormProps) {
           </div>
 
           {/* 入力値フォーマットのヒント: ユーザーが誤った形式でインポートしてサーバーエラーになるのを防ぐ */}
-          <div className="rounded-lg bg-amber-50 p-3 ring-1 ring-amber-100 text-xs text-amber-800 space-y-0.5">
+          <div className="space-y-0.5 rounded-lg bg-amber-50 p-3 text-xs text-amber-800 ring-1 ring-amber-100">
             <p className="font-semibold">入力値の形式について</p>
             {/* 期限日のフォーマット説明 */}
             <p>
-              <span className="font-medium">期限日:</span> YYYY-MM-DD 形式（例: 2026-03-31）で入力してください。
+              <span className="font-medium">期限日:</span> YYYY-MM-DD 形式（例:
+              2026-03-31）で入力してください。
             </p>
             {/* 優先度の選択肢説明 */}
             <p>
-              <span className="font-medium">優先度:</span> <code>高</code>・<code>中</code>・<code>低</code>
+              <span className="font-medium">優先度:</span> <code>高</code>・<code>中</code>・
+              <code>低</code>
               のいずれかを入力してください。空欄の場合は「中」になります。
+            </p>
+            {/* 拠点のフォーマット説明: 事前に設定画面で登録した拠点名と完全一致させる必要がある */}
+            <p>
+              <span className="font-medium">拠点:</span>{' '}
+              設定画面で登録済みの拠点名と完全に一致する文字列を入力してください。一致しない場合はエラーになります。
             </p>
           </div>
 
@@ -472,6 +495,10 @@ export function CsvImportForm(_props: CsvImportFormProps) {
                     <th className="px-4 py-2 text-left text-xs font-semibold text-slate-500">
                       優先度
                     </th>
+                    {/* ヘッダセル: 拠点 */}
+                    <th className="px-4 py-2 text-left text-xs font-semibold text-slate-500">
+                      拠点
+                    </th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
@@ -488,6 +515,8 @@ export function CsvImportForm(_props: CsvImportFormProps) {
                       <td className="px-4 py-2 text-slate-500">{row.期限日 || '―'}</td>
                       {/* 優先度セル: 未設定は「中」で表示する (サーバー側のデフォルトと合わせる) */}
                       <td className="px-4 py-2 text-slate-500">{row.優先度 || '中'}</td>
+                      {/* 拠点セル: 未設定は「―」で表示する */}
+                      <td className="px-4 py-2 text-slate-500">{row.拠点 || '―'}</td>
                     </tr>
                   ))}
                 </tbody>
