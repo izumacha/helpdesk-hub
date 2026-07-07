@@ -69,6 +69,17 @@ export function makeAttachmentRepo(store: Store): AttachmentRepository {
       return count;
     },
 
+    // テナント全体の添付サイズ合計 (バイト) を返す (添付累計サイズ上限チェック用)
+    async sumSizeByTenant(tenantId) {
+      // 走査してサイズを積算する
+      let total = 0;
+      for (const row of store.attachments.values()) {
+        if (row.tenantId !== tenantId) continue;
+        total += row.size;
+      }
+      return total;
+    },
+
     // ID + tenantId で 1 件削除 (他テナントの ID は no-op)
     async delete(id, tenantId) {
       // 取り出してテナント一致のみ削除する

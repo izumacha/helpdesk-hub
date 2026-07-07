@@ -20,8 +20,8 @@ import {
 } from '@/domain/ticket-status';
 // セッションの tenantId からテナント mode (lite | pro) を取得するヘルパー
 import { getCurrentTenantMode } from '@/lib/tenant';
-// ステータス・優先度などの一元管理ラベル取得関数
-import { getStatusLabel } from '@/lib/constants';
+// ステータス・優先度などの一元管理ラベル取得関数/定数
+import { getStatusLabel, PRIORITY_LABELS } from '@/lib/constants';
 // 型のみインポート (優先度/ステータス)
 import type { Priority, TicketStatus } from '@/domain/types';
 // レート制限 (連打防止) の共通ヘルパー
@@ -33,6 +33,7 @@ import type { Session } from 'next-auth';
 // ステータス変更・担当者割当・エスカレーションのメール本文を生成する純粋ヘルパー (Phase 2)
 import {
   renderTicketStatusChangedEmail,
+  renderPriorityChangedEmail,
   renderAssignedEmail,
   renderEscalatedEmail,
   buildTicketUrl,
@@ -231,14 +232,17 @@ export async function updateTicketPriority(ticketId: string, newPriority: Priori
     windowMs: 10_000,
   });
 
-  // 1 トランザクションで更新と履歴記録
-  await uow.run(async (r) => {
+  // 1 トランザクションで更新と履歴記録・通知作成を実行し、トランザクション外の後続処理
+  // (SSE配信・メール・Slack) に必要な情報を戻り値としてそのまま受け取る。
+  // (updateTicketStatus は外側 let 変数 + as キャストでクロージャの外へ持ち出しているが、
+  // async 関数の戻り値は TSC が通常どおり narrow できるため、こちらはキャスト不要にできる)
+  const result = await uow.run(async (r) => {
     // チケットを tenantId スコープで取得
     const ticket = await r.tickets.findById(ticketId, tenantId);
     // 無ければエラー
     if (!ticket) throw new Error('チケットが見つかりません');
-    // 変更無しならスキップ
-    if (ticket.priority === newPriority) return;
+    // 変更無しなら何もせず null を返す (冪等)
+    if (ticket.priority === newPriority) return null;
 
     // 優先度を更新 (tenantId スコープで where に注入)
     await r.tickets.updatePriority(ticketId, newPriority, tenantId);
@@ -250,10 +254,106 @@ export async function updateTicketPriority(ticketId: string, newPriority: Priori
       oldValue: ticket.priority,
       newValue: newPriority,
     });
+    // 自分以外の起票者にのみ通知を送るため、まず未通知 (null) で用意しておく
+    let notifiedCreatorId: string | null = null;
+    // 自分以外の起票者にのみ通知を送る (updateTicketStatus と同じく自己操作では自己通知しない)
+    if (ticket.creatorId !== session.user.id) {
+      // 起票者に優先度変更通知を DB に書き込む
+      await r.notifications.create({
+        userId: ticket.creatorId, // 通知の受信者は起票者
+        type: 'priorityChanged', // 通知の種類: 優先度変更
+        // getStatusLabel と同じく、優先度も日本語ラベルに変換して表示文言に埋め込む
+        message: `チケット「${ticket.title}」の優先度が「${PRIORITY_LABELS[newPriority] ?? newPriority}」に変更されました`, // 表示文言
+        ticketId, // 関連チケット ID
+        tenantId: ticket.tenantId, // テナントスコープ (クロステナント漏洩防止)
+      });
+      // 通知を書き込んだ起票者 ID を記録する (コミット後の SSE 配信に使う)
+      notifiedCreatorId = ticket.creatorId;
+    }
+    // トランザクション外の後続処理に必要な情報をまとめて返す
+    return {
+      creatorId: ticket.creatorId, // 起票者 ID (メール宛先取得・自己操作判定に使う)
+      title: ticket.title, // 件名 (メール・Slack 本文に使う)
+      oldPriority: ticket.priority, // 変更前の優先度 (メールのラベル変換に使う)
+      notifiedCreatorId, // 通知を書き込んだ起票者 ID (null なら自己操作で未通知)
+    };
   });
+
+  // 変更が無かった (冪等スキップ) 場合はキャッシュ無効化だけ行って終了する
+  if (!result) {
+    revalidatePath(`/tickets/${ticketId}`);
+    return;
+  }
+
+  // 通知を実際に書き込んだ場合のみ、起票者の未読件数を SSE でリアルタイム配信する
+  if (result.notifiedCreatorId) await broadcastUnreadCount(result.notifiedCreatorId, tenantId);
+
+  // 優先度の日本語ラベル (メール・Slack 本文の両方で使うため 1 度だけ変換する)
+  const newPriorityLabel = PRIORITY_LABELS[newPriority] ?? newPriority;
+
+  // Phase 2 メール通知 + Phase 4 Slack/Teams/Chatwork 外部通知: この 2 経路は互いに依存しない
+  // 独立した I/O なので、escalateTicket と同じく Promise.allSettled で並行実行し、片方の遅延/失敗が
+  // 他方に波及しないようにする。メールは自分以外の起票者にのみ送るが (個人宛の通知のため)、
+  // Slack はチームの共有チャネル宛の「見える化」目的なので自己更新でも送る。
+  await Promise.allSettled([
+    // 経路 1: 起票者へメール送信 (自己操作なら送らない)
+    result.creatorId !== session.user.id
+      ? sendPriorityChangedEmailToRequester({
+          ticketId,
+          ticketTitle: result.title,
+          creatorId: result.creatorId,
+          oldPriority: result.oldPriority,
+          newPriority,
+        })
+      : Promise.resolve(),
+    // 経路 2: Slack/Teams/Chatwork へ優先度変更を通知する
+    notifyOutboundBestEffort(
+      tenantId,
+      (baseUrl) => ({
+        subject: `優先度が変更されました: ${result.title}`,
+        body: `「${result.title}」の優先度が「${newPriorityLabel}」に変更されました。`,
+        ticketUrl: buildTicketUrl(baseUrl, ticketId),
+      }),
+      '[updateTicketPriority]',
+    ),
+  ]);
 
   // 詳細ページのキャッシュ無効化
   revalidatePath(`/tickets/${ticketId}`);
+}
+
+// 優先度変更を依頼者へメールで通知する内部ヘルパー (ベストエフォート / 副作用は send のみ)。
+// sendStatusChangedEmailToRequester と同じく、例外は呼び出し側に伝播させずログに残して握り潰す。
+async function sendPriorityChangedEmailToRequester(args: {
+  ticketId: string; // 対象チケット ID (URL 構築用)
+  ticketTitle: string; // チケット件名 (メール本文用)
+  creatorId: string; // 起票者ユーザー ID (メールアドレス取得用)
+  oldPriority: Priority; // 変更前の優先度 (ラベル変換用)
+  newPriority: Priority; // 変更後の優先度 (ラベル変換用)
+}): Promise<void> {
+  const { ticketId, ticketTitle, creatorId, oldPriority, newPriority } = args;
+  try {
+    // 起票者 (依頼者) のメールアドレスをユーザーリポジトリから引く
+    const creator = await repos.users.findById(creatorId);
+    // 依頼者が見つからない / メール未設定なら送りようがないのでスキップ
+    if (!creator?.email) return;
+    // ベース URL を解決する (production で NEXTAUTH_URL 未設定なら throw → 下で握る)
+    const baseUrl = resolveAppBaseUrl();
+    // チケット詳細ページへの導線 URL を組み立てる
+    const ticketUrl = buildTicketUrl(baseUrl, ticketId);
+    // 優先度変更メールの件名 / テキスト / HTML を純粋ヘルパーで生成する
+    const { subject, text, html } = renderPriorityChangedEmail({
+      ticketTitle,
+      ticketUrl,
+      oldPriorityLabel: PRIORITY_LABELS[oldPriority] ?? oldPriority,
+      newPriorityLabel: PRIORITY_LABELS[newPriority] ?? newPriority,
+    });
+    // 設定された EmailSender (console / smtp) 経由でメール送信
+    await getEmailSender().send({ to: creator.email, subject, text, html });
+  } catch (err) {
+    // 送信失敗はサーバログに残すだけ (アプリ内通知は既に成立している)
+    console.error('[updateTicketPriority] 依頼者宛優先度変更メール送信に失敗しました', err);
+  }
 }
 
 // チケットの担当者を割当/解除するサーバーアクション

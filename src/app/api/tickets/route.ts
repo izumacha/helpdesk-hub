@@ -22,8 +22,9 @@ import { initialStatusForMode } from '@/domain/ticket-status';
 import { getCurrentTenantMode } from '@/lib/tenant';
 // 'YYYY-MM-DD' を JST 終端 Date に変換するヘルパー (サーバ TZ 非依存)
 import { endOfDayJST } from '@/lib/format-date';
-// Phase 4 課金: プランごとの月間チケット上限チェック (CSV インポート・メール/LINE 取り込みと共有)
-import { getMonthlyTicketQuota } from '@/lib/tenant-plan';
+// Phase 4 課金: プランごとの月間チケット上限・添付累計サイズ上限チェック
+// (月間上限は CSV インポート・メール/LINE 取り込みと共有、添付上限はコメント投稿と共有)
+import { checkAttachmentQuota, getMonthlyTicketQuota, resolveTenantPlan } from '@/lib/tenant-plan';
 // Phase 4: Slack/Teams/Chatwork 外部通知ヘルパー (失敗してもチケット作成は止めない。
 // メール取り込み・LINE 取り込み・CSV インポートと共有する)
 import { notifyNewTicketOutbound } from '@/lib/outbound-notify';
@@ -120,6 +121,18 @@ export async function POST(req: Request) {
     return validationError(attachmentValidation.message, ['files']);
   }
 
+  // Phase 4 課金: このリクエスト内で月間チケット上限・添付累計サイズ上限の両方を確認するため、
+  // プランを 1 度だけ解決して使い回す (それぞれが個別にテナントを取得する二重フェッチを避ける)
+  const plan = await resolveTenantPlan(tenantId);
+
+  // 添付ファイルがある場合、テナントの累計サイズ上限 (§6.1 Standard「添付1GB」) を超えないか確認する。
+  // チケット作成・コメント投稿の両方の添付アップロード経路が共有するヘルパー (tenant-plan.ts)
+  const newAttachmentBytes = attachmentValidation.files.reduce((sum, f) => sum + f.size, 0);
+  const attachmentQuotaCheck = await checkAttachmentQuota(tenantId, newAttachmentBytes, plan);
+  if (!attachmentQuotaCheck.ok) {
+    return validationError(attachmentQuotaCheck.message, ['files']);
+  }
+
   // 検証済みの値を分解 (body は変数名衝突を避けてリネーム)
   const { title, body: ticketBody, priority, categoryId, dueDate } = parsed.data;
 
@@ -149,8 +162,9 @@ export async function POST(req: Request) {
     }
   }
 
-  // Phase 4 課金: テナントの当月チケット起票の残枠を確認する (§6.1 料金プランの月間上限)
-  const quota = await getMonthlyTicketQuota(tenantId);
+  // Phase 4 課金: テナントの当月チケット起票の残枠を確認する (§6.1 料金プランの月間上限)。
+  // plan は上の添付上限チェックで既に解決済みのものを渡し、テナントの二重取得を避ける
+  const quota = await getMonthlyTicketQuota(tenantId, plan);
   // 残枠が無い (上限のあるプランで使い切った) 場合は 429 でプランアップグレードを促す
   if (quota.limited && quota.remaining <= 0) {
     return NextResponse.json(

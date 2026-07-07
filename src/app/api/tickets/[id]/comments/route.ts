@@ -36,6 +36,8 @@ import { validateUploadedFiles } from '@/lib/validations/attachment';
 import { MIME_TO_EXTENSION } from '@/domain/attachment';
 // LINE 連携機能のプランゲート (§6.1 料金プラン: Pro / Enterprise のみ利用可能)
 import { isLineIntegrationAllowed } from '@/lib/plan-guard';
+// Phase 4 課金: 添付累計サイズ上限チェック (チケット作成時添付と共有)
+import { checkAttachmentQuota } from '@/lib/tenant-plan';
 // Phase 4: Slack/Teams/Chatwork 外部通知のベストエフォート送信共通ヘルパー
 import { notifyOutboundBestEffort } from '@/lib/outbound-notify';
 
@@ -112,6 +114,14 @@ export async function POST(req: Request, { params }: Params) {
   const attachmentValidation = await validateUploadedFiles(files);
   if (!attachmentValidation.ok) {
     return validationError(attachmentValidation.message, ['files']);
+  }
+
+  // Phase 4 課金: 添付ファイルがある場合、テナントの累計サイズ上限 (§6.1 Standard「添付1GB」) を
+  // 超えないか確認する。チケット作成時添付と同じ判定ヘルパーを共有する (tenant-plan.ts)
+  const newAttachmentBytes = attachmentValidation.files.reduce((sum, f) => sum + f.size, 0);
+  const attachmentQuotaCheck = await checkAttachmentQuota(tenantId, newAttachmentBytes);
+  if (!attachmentQuotaCheck.ok) {
+    return validationError(attachmentQuotaCheck.message, ['files']);
   }
 
   // 対象チケットを tenantId スコープで取得 (他テナントは null になる)

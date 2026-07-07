@@ -35,6 +35,12 @@ export function isAllowedImageMimeType(mime: string): mime is AllowedImageMimeTy
   return (ALLOWED_IMAGE_MIME_TYPES as readonly string[]).includes(mime);
 }
 
+// バイト数を GB に丸めて文字列化する (プランの添付累計上限を UI/エラーメッセージへ出す用途)
+export function formatBytesAsGb(bytes: number): string {
+  // 小数第 2 位までに丸める (例: 1.00GB)
+  return (bytes / (1024 * 1024 * 1024)).toFixed(2);
+}
+
 // 添付ファイル 1 件分のドメイン表現 (画面表示・API 配信で使う最小情報)
 export interface Attachment {
   id: string; // 添付 ID (主キー)

@@ -36,6 +36,7 @@ export type NotificationType =
   | 'escalated' // エスカレーション通知
   | 'commented' // コメント追加通知
   | 'statusChanged' // ステータス変更通知
+  | 'priorityChanged' // 優先度変更通知
   | 'imported'; // CSV・メール一括取り込みで複数チケットが追加された通知
 
 // テナントの動作モード (Lite=SMB 既定 / Pro=現行フル機能)

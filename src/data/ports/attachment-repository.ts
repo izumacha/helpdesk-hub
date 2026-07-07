@@ -35,6 +35,8 @@ export interface AttachmentRepository {
   listByTicket(ticketId: string, tenantId: string): Promise<Attachment[]>;
   // チケットに紐づく添付の件数を返す (5 枚上限チェック用)
   countByTicket(ticketId: string, tenantId: string): Promise<number>;
+  // テナント全体の添付サイズ合計 (バイト) を返す (Phase 4 課金: 添付累計サイズ上限チェック用)
+  sumSizeByTenant(tenantId: string): Promise<number>;
   // ID + tenantId で 1 件削除 (StoragePort.delete のロールバック相互運用に使う)。
   // 物理ファイルは別途 storage.delete を呼ぶこと
   delete(id: string, tenantId: string): Promise<void>;

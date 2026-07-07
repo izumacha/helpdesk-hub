@@ -60,16 +60,19 @@ export default async function SettingsPage() {
   ]);
 
   // Phase 4 Enterprise: SSO は Enterprise プランのみ、Phase 2 フォローアップ: LINE 連携は
-  // Pro / Enterprise プランのみ表示・設定可能。それぞれ独立したクエリなので Promise.all で
-  // 並列に取得する (非対象テナントには Promise.resolve(null) で余計なクエリを投げない)。
+  // Pro / Enterprise プランのみ新規設定・再設定が可能。ただし既存設定はプラン降格後も
+  // 削除だけはできる必要があるため (プラン不問の削除ゲート。line-config-context.ts /
+  // sso-context.ts 参照)、設定の有無自体はプランに関わらず常に取得する。
   const ssoAllowed = isSsoAllowed(tenant?.subscriptionPlan ?? 'free');
   const lineAllowed = isLineIntegrationAllowed(tenant?.subscriptionPlan ?? 'free');
   const [ssoConfig, lineConfig] = await Promise.all([
-    ssoAllowed ? repos.ssoConfigs.findByTenant(session.user.tenantId) : Promise.resolve(null),
-    lineAllowed ? repos.lineConfigs.findByTenant(session.user.tenantId) : Promise.resolve(null),
+    repos.ssoConfigs.findByTenant(session.user.tenantId),
+    repos.lineConfigs.findByTenant(session.user.tenantId),
   ]);
-  // SP の各 URL を組み立てる (Enterprise のときだけ使う)
-  const spUrls = ssoAllowed ? buildSpUrls(resolveAppBaseUrl(), session.user.tenantId) : null;
+  // SP の各 URL を組み立てる (Enterprise のとき、またはプラン降格後も既存設定の削除
+  // 画面を出すために ssoConfig が残っているときに使う)
+  const spUrls =
+    ssoAllowed || ssoConfig ? buildSpUrls(resolveAppBaseUrl(), session.user.tenantId) : null;
   // Webhook 受信 URL (LINE Developers コンソールに登録する値)
   const lineWebhookUrl = `${resolveAppBaseUrl()}/api/inbound/line`;
 
@@ -155,8 +158,8 @@ export default async function SettingsPage() {
           <h2 className="text-base font-semibold text-slate-900">課金プラン</h2>
           {/* 説明: 現在プランの確認とアップグレードを案内する */}
           <p className="mt-1 text-sm text-slate-500">
-            現在の料金プランを確認し、アップグレードや解約の管理ができます。
-            Standard・Pro へのアップグレードは Stripe の安全な決済ページに移動します。
+            現在の料金プランを確認し、アップグレードや解約の管理ができます。 Standard・Pro
+            へのアップグレードは Stripe の安全な決済ページに移動します。
           </p>
         </div>
         {/* プラン情報と操作ボタン */}
@@ -168,12 +171,15 @@ export default async function SettingsPage() {
         />
       </section>
 
-      {/* Phase 4 Enterprise: SAML SSO 設定カード (Enterprise プランのみ表示) */}
-      {ssoAllowed && spUrls && (
+      {/* Phase 4 Enterprise: SAML SSO 設定カード (Enterprise プランで表示。プラン降格後も
+          既存設定が残っていれば削除だけできるよう表示を続ける) */}
+      {spUrls && (
         <section className="space-y-4 rounded-2xl bg-white p-6 shadow-sm ring-1 ring-slate-100">
           <div>
             {/* セクション見出し */}
-            <h2 className="text-base font-semibold text-slate-900">シングルサインオン (SAML SSO)</h2>
+            <h2 className="text-base font-semibold text-slate-900">
+              シングルサインオン (SAML SSO)
+            </h2>
             {/* 説明: Enterprise 向けの SSO 設定であることを伝える */}
             <p className="mt-1 text-sm text-slate-500">
               社内の IdP (Okta・Microsoft Entra ID・Google Workspace など) と SAML 連携し、
@@ -181,7 +187,8 @@ export default async function SettingsPage() {
               ログインできるのは、組織に既に登録済みのメンバーのみです。
             </p>
           </div>
-          {/* SSO 設定フォームと SP 情報 (現在の設定と SP URL を渡す) */}
+          {/* SSO 設定フォームと SP 情報 (現在の設定と SP URL を渡す)。プラン降格後は
+              planAllowed=false を渡し、再設定フォームを隠して削除だけ可能にする */}
           <SsoConfigSection
             config={
               ssoConfig
@@ -194,12 +201,14 @@ export default async function SettingsPage() {
                 : null
             }
             sp={spUrls}
+            planAllowed={ssoAllowed}
           />
         </section>
       )}
 
-      {/* Phase 2 フォローアップ: LINE 公式アカウント連携設定カード (Pro/Enterprise プランのみ表示) */}
-      {lineAllowed && (
+      {/* Phase 2 フォローアップ: LINE 公式アカウント連携設定カード (Pro/Enterprise プランで表示。
+          プラン降格後も既存設定が残っていれば削除だけできるよう表示を続ける) */}
+      {(lineAllowed || lineConfig) && (
         <section className="space-y-4 rounded-2xl bg-white p-6 shadow-sm ring-1 ring-slate-100">
           <div>
             {/* セクション見出し */}
@@ -210,10 +219,12 @@ export default async function SettingsPage() {
               へ届けます。LINE Developers コンソールで発行したチャネル情報を設定してください。
             </p>
           </div>
-          {/* LINE 連携設定フォーム (秘密情報は渡さず botUserId のみ渡す。§9 参照) */}
+          {/* LINE 連携設定フォーム (秘密情報は渡さず botUserId のみ渡す。§9 参照)。プラン降格後は
+              planAllowed=false を渡し、再設定フォームを隠して削除だけ可能にする */}
           <LineConfigSection
             config={lineConfig ? { botUserId: lineConfig.botUserId } : null}
             webhookUrl={lineWebhookUrl}
+            planAllowed={lineAllowed}
           />
         </section>
       )}

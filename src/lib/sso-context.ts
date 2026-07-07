@@ -5,14 +5,14 @@
 // すべて満たすときだけ SAML SP 構築に必要な情報を返す (fail-closed)。
 // いずれかの条件を欠く場合は理由付きで失敗を返し、呼び出し側がエラーリダイレクトに変換する。
 
-// 現在のセッション取得
-import { auth } from '@/lib/auth';
 // データ層の Composition Root
 import { repos } from '@/data';
 // プラン別の SSO 可否ゲート (Enterprise のみ)
 import { isSsoAllowed } from '@/lib/plan-guard';
 // アプリの公開ベース URL を解決するヘルパー
 import { resolveAppBaseUrl } from '@/lib/app-url';
+// 「ログイン済み・admin・自テナント」の共通プリミティブ (line-config-context.ts と共有)
+import { assertTenantAdmin } from '@/lib/tenant-admin-gate';
 // ドメイン型
 import type { Tenant, TenantSsoConfig } from '@/domain/types';
 
@@ -38,32 +38,32 @@ export async function loadEnabledSsoContext(tenantId: string): Promise<SsoContex
 }
 
 // SSO 設定の作成/更新/削除 Server Action が共有する認可ゲートの結果
-export type SsoAdminGate =
-  | { ok: true; tenantId: string }
-  | { ok: false; error: string };
+export type SsoAdminGate = { ok: true; tenantId: string } | { ok: false; error: string };
 
 // SSO 設定変更の前提 (ログイン済み・admin・Enterprise プラン) をまとめて検証する。
 // update/delete-sso-config の両 Server Action で重複していた認可チェックを 1 か所に集約し、
 // セキュリティ上重要な「admin かつ Enterprise」ゲートの実装ドリフトを防ぐ。
 export async function assertSsoConfigAdmin(): Promise<SsoAdminGate> {
-  // セッション取得と認証チェック
-  const session = await auth();
-  // 未ログインまたは tenantId 不在は拒否
-  if (!session?.user?.id || !session.user.tenantId) {
-    return { ok: false, error: '認証が必要です' };
-  }
-  // 管理者以外は設定変更不可 (UI 非表示に頼らずサーバー側で強制)
-  if (session.user.role !== 'admin') {
-    return { ok: false, error: 'この操作は管理者のみ実行できます' };
-  }
-  // セッション由来の tenantId のみ使う (クロステナント設定防止)
-  const tenantId = session.user.tenantId;
+  // 共通プリミティブで「ログイン済み・admin・自テナント」を検証する
+  const gate = await assertTenantAdmin();
+  // 不通過ならその理由をそのまま返す
+  if (!gate.ok) return gate;
   // テナントを取得してプランが SSO を許可するか確認する (Enterprise のみ)
-  const tenant = await repos.tenants.findById(tenantId);
+  const tenant = await repos.tenants.findById(gate.tenantId);
   if (!tenant) return { ok: false, error: 'テナント情報の取得に失敗しました' };
   if (!isSsoAllowed(tenant.subscriptionPlan)) {
     return { ok: false, error: 'SSO は Enterprise プランでのみ利用できます。' };
   }
   // すべて満たしたので tenantId を返す
-  return { ok: true, tenantId };
+  return { ok: true, tenantId: gate.tenantId };
+}
+
+// SSO 設定の削除専用ゲート: 「ログイン済み・admin・自テナント」のみを検証し、プランチェックは
+// 行わない。プラン降格後に既存設定が削除できなくなる不具合を防ぐため (assertSsoConfigAdmin は
+// 新規作成/更新など「これから SSO を使う」操作向けのゲートで、「もう使わない設定を消す」削除
+// 操作には本来不要なプラン要件まで課してしまっていた)。loadEnabledSsoContext がログイン時に
+// 独立してプランを検証しているため、削除ゲートを緩めても SSO ログインの fail-closed には影響しない。
+export async function assertSsoConfigOwner(): Promise<SsoAdminGate> {
+  // プランチェックが不要な分、共通プリミティブの結果をそのまま返す
+  return assertTenantAdmin();
 }

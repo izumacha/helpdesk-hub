@@ -179,6 +179,55 @@ export function renderTicketStatusChangedEmail(input: {
   return { subject, text, html };
 }
 
+// 優先度変更を依頼者に知らせるメール本文を生成する純粋関数 (副作用なし)
+// Phase 2 メール通知テンプレート整備 (docs/smb-dx-pivot-plan.md §4 Phase 2)。
+// renderTicketStatusChangedEmail と同じ「変更前後を並べる」構成に揃える
+export function renderPriorityChangedEmail(input: {
+  ticketTitle: string; // 問い合わせの件名
+  ticketUrl: string; // チケット詳細ページの URL
+  oldPriorityLabel: string; // 変更前優先度の日本語ラベル (例: 「中」)
+  newPriorityLabel: string; // 変更後優先度の日本語ラベル (例: 「高」)
+}): { subject: string; text: string; html: string } {
+  // 件名: 接頭辞 + 変更前後の優先度を明示する。ヘッダインジェクション防止のためサニタイズする
+  const subject = sanitizeSubject(
+    `${SUBJECT_PREFIX} 問い合わせ「${input.ticketTitle}」の優先度が「${input.oldPriorityLabel}」から「${input.newPriorityLabel}」に変わりました`,
+  );
+
+  // テキスト本文 (HTML 非対応クライアント向けフォールバック)
+  const text = [
+    `お問い合わせ「${input.ticketTitle}」の優先度が変更されました。`,
+    '',
+    `変更前: ${input.oldPriorityLabel}`,
+    `変更後: ${input.newPriorityLabel}`,
+    '',
+    '詳細の確認は、下のリンクから行えます。',
+    `${input.ticketUrl}`,
+    '',
+    'このメールに心当たりがない場合は破棄してください。',
+  ].join('\n');
+
+  // HTML 本文に差し込む外部由来文字列を個別にエスケープする (XSS / 文面崩れ防止)
+  const escapedTitle = escapeHtml(input.ticketTitle);
+  const escapedOld = escapeHtml(input.oldPriorityLabel);
+  const escapedNew = escapeHtml(input.newPriorityLabel);
+  const escapedUrl = escapeHtml(input.ticketUrl);
+
+  // HTML 本文 (変更前後を並べて表示し、続きはボタンでアプリへ誘導する)
+  const html = `
+    <p>お問い合わせ「${escapedTitle}」の優先度が変更されました。</p>
+    <blockquote style="margin:0 0 16px;padding:12px 16px;border-left:4px solid #0f766e;background:#f1f5f9;color:#0f172a;">
+      変更前: <strong>${escapedOld}</strong><br>
+      変更後: <strong>${escapedNew}</strong>
+    </blockquote>
+    <p><a href="${escapedUrl}" style="display:inline-block;padding:10px 16px;background:#0f766e;color:#ffffff;border-radius:6px;text-decoration:none;font-weight:600;">問い合わせを開く</a></p>
+    <p style="font-size:13px;color:#475569;">うまく開けない場合はこちらの URL をブラウザに貼り付けてください:<br><span style="word-break:break-all;">${escapedUrl}</span></p>
+    <p style="font-size:13px;color:#64748b;">このメールに心当たりがない場合は破棄してください。</p>
+  `.trim();
+
+  // 3 点セットを返す
+  return { subject, text, html };
+}
+
 // 担当者割当を担当者に知らせるメール本文を生成する純粋関数 (副作用なし)
 // Phase 2 メール通知テンプレート整備 (docs/smb-dx-pivot-plan.md §4 Phase 2)
 export function renderAssignedEmail(input: {
