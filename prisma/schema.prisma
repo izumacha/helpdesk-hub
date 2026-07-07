@@ -65,6 +65,7 @@ enum NotificationType {
   escalated // エスカレーション通知
   commented // コメント追加通知
   statusChanged // ステータス変更通知
+  priorityChanged // 優先度変更通知
   imported // CSV・メール一括取り込みによる複数チケット追加通知
 }
 

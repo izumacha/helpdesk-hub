@@ -124,6 +124,7 @@ export const NOTIFICATION_TYPE_LABELS: Record<string, string> = {
   escalated: 'エスカレーション',
   commented: 'コメント',
   statusChanged: 'ステータス変更',
+  priorityChanged: '優先度変更',
   imported: '一括取り込み', // CSV・メール一括インポートで複数チケットが追加されたことを通知する
 };
 

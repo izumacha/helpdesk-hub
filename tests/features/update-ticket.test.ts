@@ -234,6 +234,86 @@ describe('updateTicketStatus (provider-agnostic)', () => {
   });
 });
 
+// 回帰防止: updateTicketPriority は以前 DB/SSE/メール通知を一切発行しない「完全に無音」の
+// アクションだった (updateTicketStatus / updateTicketAssignee 等の兄弟アクションと不整合)。
+// ここでは「起票者への通知が作られる」「自己操作では通知しない」「メールが送られる」を検証する。
+describe('updateTicketPriority (provider-agnostic)', () => {
+  // 正常系: 優先度が更新され、履歴が 1 件残り、起票者以外が操作すると通知とメールが発生する
+  it('updates priority, records history, notifies the creator, and sends an email', async () => {
+    const { ticketId } = await seed();
+    const { updateTicketPriority } = await import('@/features/tickets/actions/update-ticket');
+
+    await updateTicketPriority(ticketId, 'High');
+
+    // 優先度が反映されている
+    const t = await repos.tickets.findById(ticketId, TENANT);
+    expect(t?.priority).toBe('High');
+    // 履歴が 1 件残る (priority / Medium → High)
+    const histories = [...store.histories.values()].filter((h) => h.ticketId === ticketId);
+    expect(histories).toHaveLength(1);
+    expect(histories[0].field).toBe('priority');
+    expect(histories[0].oldValue).toBe('Medium');
+    expect(histories[0].newValue).toBe('High');
+    // 起票者 (u-req-1) 宛に通知が 1 件作られている
+    const notifications = [...store.notifications.values()].filter((n) => n.ticketId === ticketId);
+    expect(notifications).toHaveLength(1);
+    expect(notifications[0].userId).toBe('u-req-1');
+    expect(notifications[0].type).toBe('priorityChanged');
+    expect(notifications[0].message).toContain('高');
+    // 起票者宛にメールが送られている
+    expect(sentEmails).toHaveLength(1);
+    expect(sentEmails[0].to).toBe('u-req-1@example.com');
+  });
+
+  // 変更なし (同じ優先度) なら履歴も通知も作られない (冪等)
+  it('does nothing when the priority is unchanged', async () => {
+    const { ticketId } = await seed();
+    const { updateTicketPriority } = await import('@/features/tickets/actions/update-ticket');
+
+    await updateTicketPriority(ticketId, 'Medium');
+
+    const histories = [...store.histories.values()].filter((h) => h.ticketId === ticketId);
+    expect(histories).toHaveLength(0);
+    const notifications = [...store.notifications.values()].filter((n) => n.ticketId === ticketId);
+    expect(notifications).toHaveLength(0);
+    expect(sentEmails).toHaveLength(0);
+  });
+
+  // 起票者自身 (エージェントが自分で起票したチケット) が操作した場合は自己通知しない
+  // (updateTicketStatus の「自己更新ではメールを送らない」と同じ方針)
+  it('does not notify or email the creator when they change the priority themselves', async () => {
+    await seed();
+    // 起票者が操作者 (u-agt-1) 自身のチケットを作る
+    const own = await repos.tickets.create({
+      title: '自分で起票した件',
+      body: 'x',
+      priority: 'Medium',
+      creatorId: 'u-agt-1',
+      categoryId: 'cat-1',
+      tenantId: TENANT,
+    });
+    const { updateTicketPriority } = await import('@/features/tickets/actions/update-ticket');
+
+    await updateTicketPriority(own.id, 'High');
+
+    const notifications = [...store.notifications.values()].filter((n) => n.ticketId === own.id);
+    expect(notifications).toHaveLength(0);
+    expect(sentEmails).toHaveLength(0);
+  });
+
+  // requester (エージェント以外) は実行できない
+  it('refuses when caller is not an agent', async () => {
+    const { ticketId } = await seed();
+    sessionUserId = 'u-req-1';
+    sessionRole = 'requester';
+    const { updateTicketPriority } = await import('@/features/tickets/actions/update-ticket');
+
+    await expect(updateTicketPriority(ticketId, 'High')).rejects.toThrow(
+      /エージェントまたは管理者/,
+    );
+  });
+});
+
 // Lite モード (mode: 'lite') のテナントから呼び出した場合の遷移検証
 // (UI の StatusSelect が見せる選択肢とサーバ側検証が一致することを確認)
 describe('updateTicketStatus (Lite mode)', () => {
