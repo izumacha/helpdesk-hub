@@ -316,6 +316,9 @@ export function makeTicketRepo(store: Store): TicketRepository {
     async markFirstResponded(id, at, tenantId) {
       const t = store.tickets.get(id);
       if (!t || t.tenantId !== tenantId) return;
+      // 既に初回応答済みなら上書きしない (Prisma アダプタの where firstRespondedAt: null と
+      // 同じ規約に揃える。呼び出し側のスナップショット判定が古くても、ここで最終防衛する)
+      if (t.firstRespondedAt) return;
       store.tickets.set(id, { ...t, firstRespondedAt: at, updatedAt: new Date() });
     },
 

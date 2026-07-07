@@ -161,6 +161,26 @@ describe('createTenant', () => {
     );
   });
 
+  // 回帰防止: サンプルチケットに firstResponseDueAt (初回応答期限) が配線されておらず
+  // 常に null のまま投入される不備があった (品質メトリクス「平均初回応答時間」の集計対象から
+  // サンプルチケットが漏れてしまう)
+  it('サンプルチケットに firstResponseDueAt が設定される', async () => {
+    const createTenant = await loadAction();
+    const result = await createTenant(
+      makeForm({
+        tenantName: '新組織',
+        industry: '',
+        adminName: '管理 太郎',
+        adminEmail: 'sample-admin@example.com',
+        adminPassword: 'password123',
+      }),
+    );
+    // サンプルチケットは全て firstResponseDueAt が設定されている (null のまま放置されない)
+    const sampleTickets = [...store.tickets.values()].filter((t) => t.tenantId === result.tenantId);
+    expect(sampleTickets.length).toBeGreaterThan(0);
+    expect(sampleTickets.every((t) => t.firstResponseDueAt !== null)).toBe(true);
+  });
+
   // admin 以外は拒否されること (RBAC)
   it('admin 以外は拒否される', async () => {
     // 権限を agent に下げる

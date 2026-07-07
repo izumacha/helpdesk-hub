@@ -497,6 +497,35 @@ export function runTicketRepositoryContract(
       expect(fresh?.firstRespondedAt?.getTime()).toBe(respondedAt.getTime());
     });
 
+    // 回帰防止: markFirstResponded は既に初回応答済みの行を上書きしないこと (TOCTOU 対策)。
+    // POST /api/tickets/[id]/comments はトランザクション開始前に取得したチケットの
+    // firstRespondedAt スナップショットで「まだ未応答か」を判定するため、ほぼ同時に届いた
+    // 2 件目以降のコメントが古いスナップショットのまま markFirstResponded を呼んでしまいうる。
+    // その場合でも「最初の」応答時刻が後勝ちで上書きされてはならない
+    it('markFirstResponded does not overwrite an already-recorded response time', async () => {
+      const { requester, categoryId } = await ctx.seedBasicFixture();
+      const ticket = await ctx.repos.tickets.create({
+        title: '初回応答済み',
+        body: 'b',
+        priority: 'Medium',
+        creatorId: requester.id,
+        categoryId,
+        tenantId: TENANT_ID,
+      });
+
+      // 1 件目の応答 (これが「最初の応答」として記録されるべき)
+      const firstAt = new Date();
+      await ctx.repos.tickets.markFirstResponded(ticket.id, firstAt, TENANT_ID);
+
+      // 2 件目の応答 (古いスナップショット判定に基づく呼び出しを模した、後から来た呼び出し)
+      const secondAt = new Date(firstAt.getTime() + 60_000);
+      await ctx.repos.tickets.markFirstResponded(ticket.id, secondAt, TENANT_ID);
+
+      // firstRespondedAt は 1 件目の時刻のまま (2 件目で上書きされない)
+      const fresh = await ctx.repos.tickets.findById(ticket.id, TENANT_ID);
+      expect(fresh?.firstRespondedAt?.getTime()).toBe(firstAt.getTime());
+    });
+
     // dashboardStats が他テナントのチケットを集計に含めないこと
     it('dashboardStats scopes aggregates to the given tenant', async () => {
       const { requester: rA, categoryId: catA } = await ctx.seedBasicFixture();

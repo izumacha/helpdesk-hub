@@ -27,18 +27,37 @@ import { startOfMonthJST } from '@/lib/format-date';
 // バイト数を GB 表示に丸めるヘルパー (添付上限エラーメッセージ用)
 import { formatBytesAsGb } from '@/domain/attachment';
 
-// 指定テナントの現在の実効プランを返す。テナントが見つからない場合は 'free' として扱う
+// 契約プラン (rawPlan) と実効プラン (effectivePlan、トライアル昇格後) の両方を表す。
+// ほとんどのプランゲートは昇格後の実効プランを使うべきだが、添付累計サイズ上限
+// (ATTACHMENT_TOTAL_SIZE_LIMIT_BYTES) だけは Free=無制限 / Standard=1GB と、上位プランほど
+// 上限が緩くなるとは限らない唯一のテーブルのため、トライアル中に rawPlan='free' を
+// effectivePlan='standard' へ昇格させると逆に上限が厳しくなってしまう。
+// そのため添付上限を扱う getAttachmentQuota/checkAttachmentQuota は rawPlan を使う
+export interface TenantPlanResolution {
+  rawPlan: SubscriptionPlan; // テナントの契約プランそのもの (トライアル未適用)
+  effectivePlan: SubscriptionPlan; // トライアル昇格を適用した実効プラン
+}
+
+// 指定テナントの契約プランと実効プランを 1 回のテナント取得で両方解決する。
+// テナントが見つからない場合は両方とも 'free' として扱う
 // (fail-closed: 存在しない/取得できないテナントに Pro/Enterprise 限定機能を渡さない)。
-// §7.2 Free trial 中 (subscriptionPlan=free かつ trialEndsAt が未来) は Standard 相当に
-// 昇格させる (resolveEffectivePlan)。この関数を経由する呼び出し側は全てトライアルの
-// 恩恵を自動的に受ける
-export async function resolveTenantPlan(tenantId: string): Promise<SubscriptionPlan> {
+export async function resolveTenantPlanDetail(tenantId: string): Promise<TenantPlanResolution> {
   // テナントをリポジトリ経由で取得する
   const tenant = await repos.tenants.findById(tenantId);
   // 見つからなければ 'free' にフォールバックする
-  if (!tenant) return 'free';
-  // トライアル中なら Standard 相当に昇格させた実効プランを返す
-  return resolveEffectivePlan(tenant.subscriptionPlan, tenant.trialEndsAt);
+  if (!tenant) return { rawPlan: 'free', effectivePlan: 'free' };
+  // 契約プランそのままの値と、トライアル中なら Standard 相当に昇格させた実効プランを返す
+  return {
+    rawPlan: tenant.subscriptionPlan,
+    effectivePlan: resolveEffectivePlan(tenant.subscriptionPlan, tenant.trialEndsAt),
+  };
+}
+
+// 指定テナントの現在の実効プランを返す。§7.2 Free trial 中 (subscriptionPlan=free かつ
+// trialEndsAt が未来) は Standard 相当に昇格させる。この関数を経由する呼び出し側は全て
+// トライアルの恩恵を自動的に受ける (添付累計サイズ上限を除く。上の解説を参照)
+export async function resolveTenantPlan(tenantId: string): Promise<SubscriptionPlan> {
+  return (await resolveTenantPlanDetail(tenantId)).effectivePlan;
 }
 
 // 月間チケット起票数の残枠を表す (Web フォーム・CSV インポート・メール/LINE 取り込みが共有する)
@@ -130,6 +149,9 @@ export interface AttachmentQuota {
 // POST /api/tickets (チケット作成時添付) と POST /api/tickets/[id]/comments (コメント添付) の
 // 両方が同じ判定を使うための共通ヘルパー (§6.1 料金プラン Standard「添付1GB」)。
 // plan を既に把握している呼び出し側は渡せる (二重の tenant 取得を避ける)。
+// 渡す plan は必ず rawPlan (契約プランそのまま) を使うこと。Free trial 中の
+// effectivePlan (Standard 相当への昇格後) を渡すと、Free=無制限 → Standard=1GB へ
+// 上限が厳しくなる逆転が起きてしまう (TenantPlanResolution のコメント参照)。
 //
 // getMonthlyTicketQuota と同じく best-effort な上限であり、DB レベルの原子性は持たない
 // (check-then-act。同時並行アップロードでは合計が上限をわずかに超えうる)。
@@ -137,8 +159,9 @@ export async function getAttachmentQuota(
   tenantId: string,
   plan?: SubscriptionPlan,
 ): Promise<AttachmentQuota> {
-  // プラン未指定なら解決する
-  const resolvedPlan = plan ?? (await resolveTenantPlan(tenantId));
+  // プラン未指定なら rawPlan (トライアル未適用の契約プラン) を解決する。
+  // resolveTenantPlan (トライアル昇格あり) を使うと上の理由で上限が逆転するため使わない
+  const resolvedPlan = plan ?? (await resolveTenantPlanDetail(tenantId)).rawPlan;
   // このプランの添付累計サイズ上限を取得する (-1 = 無制限)
   const limitBytes = getAttachmentSizeLimit(resolvedPlan);
   // 無制限プランは DB 集計を行わず即座に返す (不要なクエリを避ける)

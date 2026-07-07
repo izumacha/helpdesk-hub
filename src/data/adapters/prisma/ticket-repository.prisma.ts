@@ -263,7 +263,14 @@ export function makeTicketRepo(db: PrismaLike): TicketRepository {
 
     // 初回応答日時を記録する (tenantId スコープ)
     async markFirstResponded(id, at, tenantId) {
-      await db.ticket.updateMany({ where: { id, tenantId }, data: { firstRespondedAt: at } });
+      // where に firstRespondedAt: null も含めることで、既に初回応答済みの行には書き込まない
+      // ようにする (呼び出し側の !ticket.firstRespondedAt 判定はトランザクション開始前に取得した
+      // スナップショットに基づくため、ほぼ同時に届いた 2 件目以降のコメントが最初の応答時刻を
+      // 後から上書きしてしまう競合を防ぐ。2 件目以降は対象行が 0 件になり安全な no-op になる)
+      await db.ticket.updateMany({
+        where: { id, tenantId, firstRespondedAt: null },
+        data: { firstRespondedAt: at },
+      });
     },
 
     // 品質メトリクスを算出して返す (issue-backlog #25)
