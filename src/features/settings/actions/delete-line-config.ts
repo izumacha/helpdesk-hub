@@ -1,15 +1,17 @@
 'use server';
 
 // Phase 2 フォローアップ: テナント単位の LINE 公式アカウント連携設定を削除する Server Action。
-// Pro / Enterprise プランの管理者のみ実行可能。削除すると LINE Webhook 取り込み・push が無効化される。
+// 自テナントの admin であれば実行可能 (プラン不問)。削除すると LINE Webhook 取り込み・push が
+// 無効化される。プラン降格後に既存設定を削除できなくなる不具合を避けるため、削除はプラン非依存の
+// 軽量ゲートで検証する (作成/更新の assertLineConfigAdmin とは異なる。line-config-context.ts 参照)。
 // docs/smb-dx-pivot-plan.md §4 Phase 2.1。
 
 // Next.js のキャッシュ無効化
 import { revalidatePath } from 'next/cache';
 // データリポジトリ
 import { repos } from '@/data';
-// LINE 連携設定変更の共有認可ゲート (ログイン済み・admin・Pro/Enterprise)
-import { assertLineConfigAdmin } from '@/lib/line-config-context';
+// LINE 連携設定削除の共有認可ゲート (ログイン済み・admin・自テナント。プラン不問)
+import { assertLineConfigOwner } from '@/lib/line-config-context';
 
 // 削除結果型 (useActionState 互換)
 export interface DeleteLineConfigState {
@@ -22,8 +24,8 @@ export async function deleteLineConfig(
   _prevState: DeleteLineConfigState,
   _formData: FormData,
 ): Promise<DeleteLineConfigState> {
-  // 共有ゲートで「ログイン済み・admin・Pro/Enterprise」をまとめて検証する
-  const gate = await assertLineConfigAdmin();
+  // 共有ゲートで「ログイン済み・admin・自テナント」をまとめて検証する (プラン不問)
+  const gate = await assertLineConfigOwner();
   // ゲート不通過ならその理由をそのまま返す
   if (!gate.ok) return { error: gate.error };
   // 検証済みの tenantId (セッション由来)

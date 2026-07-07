@@ -38,9 +38,7 @@ export async function loadEnabledSsoContext(tenantId: string): Promise<SsoContex
 }
 
 // SSO 設定の作成/更新/削除 Server Action が共有する認可ゲートの結果
-export type SsoAdminGate =
-  | { ok: true; tenantId: string }
-  | { ok: false; error: string };
+export type SsoAdminGate = { ok: true; tenantId: string } | { ok: false; error: string };
 
 // SSO 設定変更の前提 (ログイン済み・admin・Enterprise プラン) をまとめて検証する。
 // update/delete-sso-config の両 Server Action で重複していた認可チェックを 1 か所に集約し、
@@ -66,4 +64,24 @@ export async function assertSsoConfigAdmin(): Promise<SsoAdminGate> {
   }
   // すべて満たしたので tenantId を返す
   return { ok: true, tenantId };
+}
+
+// SSO 設定の削除専用ゲート: 「ログイン済み・admin・自テナント」のみを検証し、プランチェックは
+// 行わない。プラン降格後に既存設定が削除できなくなる不具合を防ぐため (assertSsoConfigAdmin は
+// 新規作成/更新など「これから SSO を使う」操作向けのゲートで、「もう使わない設定を消す」削除
+// 操作には本来不要なプラン要件まで課してしまっていた)。loadEnabledSsoContext がログイン時に
+// 独立してプランを検証しているため、削除ゲートを緩めても SSO ログインの fail-closed には影響しない。
+export async function assertSsoConfigOwner(): Promise<SsoAdminGate> {
+  // セッション取得と認証チェック
+  const session = await auth();
+  // 未ログインまたは tenantId 不在は拒否
+  if (!session?.user?.id || !session.user.tenantId) {
+    return { ok: false, error: '認証が必要です' };
+  }
+  // 管理者以外は設定削除不可 (UI 非表示に頼らずサーバー側で強制)
+  if (session.user.role !== 'admin') {
+    return { ok: false, error: 'この操作は管理者のみ実行できます' };
+  }
+  // セッション由来の tenantId のみ使う (クロステナント設定防止)。プランは問わない
+  return { ok: true, tenantId: session.user.tenantId };
 }

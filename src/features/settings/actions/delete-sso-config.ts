@@ -1,15 +1,17 @@
 'use server';
 
 // Phase 4 Enterprise: SAML SSO 設定を削除する Server Action。
-// Enterprise プランの管理者のみ実行可能。削除すると SSO ログインが無効化される。
+// 自テナントの admin であれば実行可能 (プラン不問)。削除すると SSO ログインが無効化される。
+// プラン降格後に既存設定を削除できなくなる不具合を避けるため、削除はプラン非依存の軽量ゲートで
+// 検証する (作成/更新の assertSsoConfigAdmin とは異なる。sso-context.ts 参照)。
 // docs/smb-dx-pivot-plan.md §6.1 Enterprise「SSO(SAML)」。
 
 // Next.js のキャッシュ無効化
 import { revalidatePath } from 'next/cache';
 // データリポジトリ
 import { repos } from '@/data';
-// SSO 設定変更の共有認可ゲート (ログイン済み・admin・Enterprise)
-import { assertSsoConfigAdmin } from '@/lib/sso-context';
+// SSO 設定削除の共有認可ゲート (ログイン済み・admin・自テナント。プラン不問)
+import { assertSsoConfigOwner } from '@/lib/sso-context';
 
 // 削除結果型 (useActionState 互換)
 export interface DeleteSsoConfigState {
@@ -22,8 +24,8 @@ export async function deleteSsoConfig(
   _prevState: DeleteSsoConfigState,
   _formData: FormData,
 ): Promise<DeleteSsoConfigState> {
-  // 共有ゲートで「ログイン済み・admin・Enterprise」をまとめて検証する
-  const gate = await assertSsoConfigAdmin();
+  // 共有ゲートで「ログイン済み・admin・自テナント」をまとめて検証する (プラン不問)
+  const gate = await assertSsoConfigOwner();
   // ゲート不通過ならその理由をそのまま返す
   if (!gate.ok) return { error: gate.error };
   // 検証済みの tenantId (セッション由来)

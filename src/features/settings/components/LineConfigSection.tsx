@@ -22,6 +22,7 @@ interface LineConfigView {
 interface Props {
   config: LineConfigView | null; // 現在の LINE 連携設定 (botUserId のみ)
   webhookUrl: string; // Webhook 受信 URL
+  planAllowed: boolean; // 現在のプランが LINE 連携を許可するか (false ならプラン降格後で削除のみ可能)
 }
 
 // 入力フィールド共通の Tailwind クラス
@@ -33,7 +34,7 @@ const labelClass = 'block text-sm font-medium text-slate-700';
 const helpClass = 'mt-1 text-xs text-slate-500';
 
 // LINE 連携設定セクション本体
-export function LineConfigSection({ config, webhookUrl }: Props) {
+export function LineConfigSection({ config, webhookUrl, planAllowed }: Props) {
   // 設定保存アクションの状態
   const [saveState, saveAction] = useActionState(updateLineConfig, {});
   // 設定削除アクションの状態
@@ -61,6 +62,42 @@ export function LineConfigSection({ config, webhookUrl }: Props) {
     }
     // 空の FormData でアクションを呼ぶ
     startTransition(() => deleteAction(new FormData()));
+  }
+
+  // プラン降格後 (現在のプランでは LINE 連携を利用できない) は、既存設定の削除だけを
+  // 案内する簡易表示にする。再設定フォームを出すと「保存」時にサーバー側のプランゲートで
+  // 弾かれてしまい紛らわしいため、削除ボタンのみ表示する
+  if (!planAllowed) {
+    return (
+      <div className="space-y-4">
+        <p className="text-sm text-slate-600">
+          現在のプランでは LINE 連携をご利用いただけません。既存の設定を削除できます
+          （再設定するにはプランのアップグレードが必要です）。
+        </p>
+        {/* 削除結果メッセージ */}
+        {deleteState.error && (
+          <p role="alert" className="text-sm text-rose-700">
+            {deleteState.error}
+          </p>
+        )}
+        {deleteState.success && (
+          <p role="status" aria-live="polite" className="text-sm text-teal-700">
+            LINE 連携設定を削除しました。
+          </p>
+        )}
+        {/* 削除ボタン (設定が存在する場合のみ表示) */}
+        {config && (
+          <button
+            type="button"
+            onClick={handleDelete}
+            disabled={isPending}
+            className="rounded-lg px-4 py-2 text-sm font-medium text-rose-600 transition hover:bg-rose-50 disabled:opacity-50"
+          >
+            設定を削除
+          </button>
+        )}
+      </div>
+    );
   }
 
   return (

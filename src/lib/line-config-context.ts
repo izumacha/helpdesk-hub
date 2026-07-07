@@ -35,3 +35,22 @@ export async function assertLineConfigAdmin(): Promise<LineConfigAdminGate> {
   // すべて満たしたので tenantId を返す
   return { ok: true, tenantId };
 }
+
+// LINE 連携設定の削除専用ゲート: 「ログイン済み・admin・自テナント」のみを検証し、
+// プランチェックは行わない。プラン降格後に既存設定が削除できなくなる不具合を防ぐため
+// (assertLineConfigAdmin は新規作成/更新など「これから LINE 連携を使う」操作向けのゲートで、
+// 「もう使わない設定を消す」削除操作には本来不要なプラン要件まで課してしまっていた)。
+export async function assertLineConfigOwner(): Promise<LineConfigAdminGate> {
+  // セッション取得と認証チェック
+  const session = await auth();
+  // 未ログインまたは tenantId 不在は拒否
+  if (!session?.user?.id || !session.user.tenantId) {
+    return { ok: false, error: '認証が必要です' };
+  }
+  // 管理者以外は設定削除不可 (UI 非表示に頼らずサーバー側で強制)
+  if (session.user.role !== 'admin') {
+    return { ok: false, error: 'この操作は管理者のみ実行できます' };
+  }
+  // セッション由来の tenantId のみ使う (クロステナント設定防止)。プランは問わない
+  return { ok: true, tenantId: session.user.tenantId };
+}
