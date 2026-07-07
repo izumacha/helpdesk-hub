@@ -9,6 +9,8 @@ import type { Repos, UnitOfWork } from '@/data/ports/unit-of-work';
 import { hashLineLinkCode, normalizeLineLinkCode } from '@/lib/line-link';
 // レート制限バケットをテスト間で初期化するためのヘルパー (グローバル Map の汚染を防ぐ)
 import { __resetRateLimits } from '@/lib/rate-limit';
+// 連携コード冪等化 Map をテスト間で初期化・検査するためのヘルパー
+import { __resetLineLinkCodeDedup, __getLineLinkCodeDedupSize } from '@/lib/line-link-code-dedup';
 
 // 外部通知 (Slack/Teams/Chatwork) テスト用の Slack Webhook URL (実際には送信されない)
 const SLACK_WEBHOOK_URL = 'https://hooks.slack.com/services/T000/B000/xxx';
@@ -138,7 +140,7 @@ function makeRequest(
 }
 
 describe('POST /api/inbound/line', () => {
-  beforeEach(async () => {
+  beforeEach(() => {
     const ctx = createMemoryContext();
     store = ctx.store;
     repos = ctx.repos;
@@ -148,7 +150,6 @@ describe('POST /api/inbound/line', () => {
     __resetRateLimits();
     // 連携コード冪等化 Map もモジュールグローバルなので、固定 messageId ('m1') を使う
     // 他テストの記録が残らないよう初期化する (route モジュールはテスト間でキャッシュされる)
-    const { __resetLineLinkCodeDedup } = await import('@/app/api/inbound/line/route');
     __resetLineLinkCodeDedup();
   });
 
@@ -322,7 +323,7 @@ describe('POST /api/inbound/line', () => {
           lineLinkCodeExpiresAt: new Date(Date.now() + 3_600_000),
         });
       }
-      const { POST, __getLineLinkCodeDedupSize } = await import('@/app/api/inbound/line/route');
+      const { POST } = await import('@/app/api/inbound/line/route');
       // 3 件、それぞれ異なる messageId で連携成功させる (二度と再送されない想定の messageId)
       for (let i = 0; i < rawCodes.length; i += 1) {
         const res = await POST(
