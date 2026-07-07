@@ -63,6 +63,8 @@ import { broadcastUnreadCountToMany } from '@/features/notifications/notify';
 import { isLineIntegrationAllowed } from '@/lib/plan-guard';
 // Phase 4: Slack/Teams/Chatwork 外部通知ヘルパー (Web フォーム・メール取り込み・CSV インポートと共有)
 import { notifyNewTicketOutbound } from '@/lib/outbound-notify';
+// Phase 4 課金: 月間チケット上限チェック (Web フォーム・CSV インポートと共有)
+import { getMonthlyTicketQuota, type MonthlyTicketQuota } from '@/lib/tenant-plan';
 
 // このルートは Node ランタイムで動かす (node:crypto / Prisma を使うため Edge では動かない)
 export const runtime = 'nodejs';
@@ -79,6 +81,44 @@ const LINE_UNAUTHENTICATED_RATE_LIMIT = { limit: 600, windowMs: 60_000 } as cons
 // (シークレット漏洩時のスパムを抑える)。lineConfig.tenantId は DB 由来の信頼できる値
 // (botUserId の @unique 制約でテナントと 1:1) なので、これをキーにする。
 const LINE_RATE_LIMIT = { limit: 120, windowMs: 60_000 } as const;
+
+// 連携コード処理 (紐付け成功/競合) の冪等化用 TTL。LINE の再送窓 (5 分) に余裕を持たせる
+const LINK_CODE_DEDUP_TTL_MS = 10 * 60 * 1000;
+// 直近「連携コードとして処理済み」の LINE メッセージ ID を憶えておく、インプロセスの Map。
+// 既知の制約 (docs/smb-dx-pivot-plan.md §5.3 コメント参照): 連携成功時は起票を伴わないため
+// lineMessages 対応表 (createTicketIdempotent が使う DB 冪等化) の対象外になる。連携成功直後に
+// Webhook 応答が遅延して LINE が同一メッセージを再送すると、2 回目はコードが既に消費済みで
+// invalid になり、コード文字列そのものが本文の問い合わせとして誤起票され得た。
+// このメモリ上の Map で「直近に連携コードとして処理済みの messageId」を記憶し、再送時は
+// 連携ロジックへ進まず即座にスキップする。sse-subscribers.ts / rate-limit.ts と同じ
+// 「インプロセス Map」の制約 (水平スケール未対応) を受け入れる。
+const recentlyLinkedMessageIds = new Map<string, number>(); // messageId -> 処理時刻 (ms)
+
+// messageId が直近 (TTL 以内) に連携コードとして処理済みかを判定する。期限切れエントリは掃除する
+function wasRecentlyProcessedAsLinkCode(messageId: string): boolean {
+  // 記録が無ければ未処理
+  const processedAt = recentlyLinkedMessageIds.get(messageId);
+  if (processedAt === undefined) return false;
+  // TTL を過ぎていれば期限切れとして削除し、未処理扱いにする (Map の無限増加を防ぐ)
+  if (Date.now() - processedAt > LINK_CODE_DEDUP_TTL_MS) {
+    recentlyLinkedMessageIds.delete(messageId);
+    return false;
+  }
+  // TTL 内なので処理済み
+  return true;
+}
+
+// messageId を「連携コードとして処理済み」として記録する
+function markProcessedAsLinkCode(messageId: string): void {
+  recentlyLinkedMessageIds.set(messageId, Date.now());
+}
+
+// テスト専用: recentlyLinkedMessageIds をクリアする (src/lib/rate-limit.ts の
+// __resetRateLimits と同じ理由。この route モジュールはテスト間で import キャッシュが
+// 共有されるため、固定の messageId ('m1' 等) を使う別テストの記録が漏れ込むのを防ぐ)
+export function __resetLineLinkCodeDedup(): void {
+  recentlyLinkedMessageIds.clear();
+}
 
 // レート制限を適用し、超過していれば 429 レスポンスを返す共通ヘルパー。
 // 超過なしなら null を返し、呼び出し側はそのまま処理を続行する。
@@ -158,6 +198,7 @@ interface LineEventContext {
   now: Date; // 起票時刻 (SLA 期限計算の基準)
   initialStatus: ReturnType<typeof initialStatusForMode>; // 初期ステータス (mode 依存)
   resolutionDueAt: ReturnType<typeof calculateResolutionDueAt>; // 優先度 Medium ベースの解決期限
+  quota: MonthlyTicketQuota; // 月間チケット上限の残枠 (イベントごとに消費するミュータブルなカウンタ)
 }
 
 // LINE Webhook の署名を検証する関数 (LINE Developers ドキュメント準拠)
@@ -325,6 +366,9 @@ export async function POST(req: Request) {
   const initialStatus = initialStatusForMode(tenant.mode);
   // メッセージには期限指定が無いため優先度 Medium ベースで解決期限を算出する
   const resolutionDueAt = calculateResolutionDueAt('Medium', now);
+  // Phase 4 課金: 月間チケット上限の残枠を 1 度だけ取得する (Web フォーム・CSV インポートと共有)。
+  // 1 リクエストに複数イベントが含まれうるため、イベントごとに ctx.quota.remaining を消費する
+  const quota = await getMonthlyTicketQuota(targetTenantId, tenant.subscriptionPlan);
 
   // 1 リクエストに含まれる複数イベントを順に処理してチケットを起票する。
   // 1 件ずつの詳細処理は processLineEvent に委譲し、ここでは結果 (チケット ID) の収集に専念する。
@@ -335,6 +379,7 @@ export async function POST(req: Request) {
     now, // 起票時刻 (SLA 期限計算の基準)
     initialStatus, // 初期ステータス (mode 依存)
     resolutionDueAt, // 優先度 Medium ベースの解決期限
+    quota, // 月間チケット上限の残枠
   };
   const ticketIds: string[] = [];
   for (const event of body.events) {
@@ -344,9 +389,9 @@ export async function POST(req: Request) {
   }
 
   // LINE サーバーはレスポンスを所定時間内に受信しないと再送するため、必ず 200 を返す。
-  // 冪等化 (メッセージ ID による重複排除) は createTicketIdempotent の Serializable
-  // トランザクションで、起票を伴う通常メッセージについて実施済み (連携コード分岐の既知の制約は
-  // 上のコメント参照)。
+  // 冪等化 (メッセージ ID による重複排除) は、起票を伴う通常メッセージは createTicketIdempotent
+  // の Serializable トランザクションで、連携コード処理 (起票を伴わない) は上の
+  // recentlyLinkedMessageIds によるインプロセス Map でそれぞれ担保している。
   return NextResponse.json({ ticketIds }, { status: 200 });
 }
 
@@ -412,6 +457,15 @@ async function processLineEvent(
     // 受信テキストを正規化 (ハイフン・空白除去 + 大文字化) してコードの形か軽く判定する
     const normalizedCode = normalizeLineLinkCode(trimmedText);
     if (looksLikeLineLinkCode(normalizedCode)) {
+      // 連携コード処理は起票を伴わないため lineMessages 対応表の冪等化対象外になる。
+      // 直近この messageId を連携コードとして処理済みなら、再度 linkLineUserByCode を
+      // 呼ばずに即座にスキップする (再送で「コードは消費済み → invalid → 誤起票」になるのを防ぐ)
+      if (messageId && wasRecentlyProcessedAsLinkCode(messageId)) {
+        console.info(
+          `[POST /api/inbound/line] duplicate link-code message, skipping: ${messageId}`,
+        );
+        return null;
+      }
       // 形が一致したらハッシュ化し、有効な発行行があれば原子的に紐付ける
       const codeHash = await hashLineLinkCode(normalizedCode);
       const link = await repos.users.linkLineUserByCode({
@@ -427,13 +481,12 @@ async function processLineEvent(
           `[POST /api/inbound/line] line link ${link.status} for tenant`,
           targetTenantId,
         );
+        // この messageId を「連携コードとして処理済み」に記録する (再送時の誤起票防止)
+        if (messageId) markProcessedAsLinkCode(messageId);
         return null;
       }
-      // invalid (コードの形だが有効な発行行が無い) は通常の問い合わせとして下の起票へ進む。
-      // 既知の制約: この分岐は起票を伴わないため、上のメッセージ ID 冪等化 (register) の対象外。
-      // 連携成功直後に応答が遅延して LINE が同一メッセージを再送すると、2 回目はコードが
-      // 消費済みで invalid になり、コード文字列を本文とする問い合わせが起票され得る
-      // (Webhook 応答の高速化で再送自体を減らすのが現実的な対策。将来課題)
+      // invalid (コードの形だが有効な発行行が無い) は通常の問い合わせとして下の起票へ進む
+      // (typo 等の本来の invalid はメッセージ ID 冪等化の対象になるため再送で二重起票しない)
     }
   }
 
@@ -460,6 +513,17 @@ async function processLineEvent(
 
   // チケット本文: LINE ユーザー ID と全メッセージテキストを含める (担当者が手動連絡できるよう)
   const ticketBody = `[LINE 経由の問い合わせ]\nLINE ユーザー ID: ${lineUserId}\n\n${safeText}`;
+
+  // Phase 4 課金: 月間チケット上限チェック (Web フォーム・CSV インポート・メール取り込みと共有)。
+  // tenant-plan.ts のコメントで「全ての起票入口で共有する」と明記されているにもかかわらず、
+  // LINE 取り込みだけこのチェックを呼んでいなかった。現状 LINE 連携が使えるプラン (Pro 以上) は
+  // 月間上限が無制限のため実害は無いが、将来上限が付いた瞬間にこの入口だけ無制限の抜け道に
+  // なる SSOT 違反を防ぐため、他入口と揃えておく。1 リクエストに複数イベントが含まれうるため、
+  // ctx.quota (POST 側で 1 度だけ取得) の残枠をイベントごとに消費する簡易カウンタとして扱う。
+  if (ctx.quota.limited && ctx.quota.remaining <= 0) {
+    console.warn(`[POST /api/inbound/line] ignored: monthly ticket quota reached: ${messageId}`);
+    return null;
+  }
 
   // 新規チケットを起票する (Web フォーム・メール取り込みと同じ PORT 経由)。
   // 1 件の起票失敗で全体を 500 にすると LINE がバッチ全体を再送し、既に起票済みのチケットが
@@ -490,6 +554,9 @@ async function processLineEvent(
       console.info(`[POST /api/inbound/line] resolved write conflict as duplicate: ${messageId}`);
       return ticketId;
     }
+    // 上限のあるプランでは残枠を消費する (無制限プランは remaining が Infinity のため減算不要だが、
+    // 明示的にガードして意図を示す。CSV インポートと同じパターン)
+    if (ctx.quota.limited) ctx.quota.remaining -= 1;
     // 起票成功後に担当者全員へ「新しい問い合わせが届きました」通知を送る (ベストエフォート)。
     // 失敗してもチケット起票自体は確定済みのため、ログを残して続行する (§9 fail-safe)。
     try {

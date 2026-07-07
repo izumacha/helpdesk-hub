@@ -25,6 +25,18 @@ vi.mock('undici', async (importOriginal) => {
   };
 });
 
+// getMonthlyTicketQuota だけ差し替え可能にする (実装は既定で本物を使い、上限到達テストでのみ
+// 上書きする)。Pro プランは現状無制限 (Infinity) のため、実際のプラン設定だけでは
+// 上限到達を再現できず、この関数の呼び出し配線自体を検証する必要があるため
+const { getMonthlyTicketQuotaMock } = vi.hoisted(() => ({
+  getMonthlyTicketQuotaMock: vi.fn(),
+}));
+vi.mock('@/lib/tenant-plan', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/lib/tenant-plan')>();
+  getMonthlyTicketQuotaMock.mockImplementation(actual.getMonthlyTicketQuota);
+  return { ...actual, getMonthlyTicketQuota: getMonthlyTicketQuotaMock };
+});
+
 const SECRET = 'test-line-channel-secret';
 const TENANT = 'default-tenant';
 const AGENT_ID = 'u-agent-1';
@@ -121,7 +133,7 @@ function makeRequest(text: string, userId: string, destination: string = BOT_USE
 }
 
 describe('POST /api/inbound/line', () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     const ctx = createMemoryContext();
     store = ctx.store;
     repos = ctx.repos;
@@ -129,6 +141,10 @@ describe('POST /api/inbound/line', () => {
     seed();
     // レート制限バケットはモジュールグローバルなので、他ファイルのテストの影響を受けないよう初期化する
     __resetRateLimits();
+    // 連携コード冪等化 Map もモジュールグローバルなので、固定 messageId ('m1') を使う
+    // 他テストの記録が残らないよう初期化する (route モジュールはテスト間でキャッシュされる)
+    const { __resetLineLinkCodeDedup } = await import('@/app/api/inbound/line/route');
+    __resetLineLinkCodeDedup();
   });
 
   afterEach(() => {
@@ -238,6 +254,42 @@ describe('POST /api/inbound/line', () => {
     expect(store.users.get(MEMBER_ID)?.lineUserId).toBe(LINE_ID_NEW);
     // 発行中コードは消費済み
     expect(store.users.get(MEMBER_ID)?.lineLinkCodeHash).toBeNull();
+  });
+
+  // 回帰防止: 連携成功直後に Webhook 応答が遅延して LINE が同一メッセージを再送すると、
+  // 2 回目はコードが既に消費済み (invalid) になり、コード文字列そのものが本文の問い合わせ
+  // として誤起票され得た (既知の制約として明記されていたエッジケース)。
+  // 同一 messageId の連携コード処理は冪等化され、再送では起票されないことを確認する。
+  it('連携コード成功後の同一メッセージ ID 再送では誤起票しない', async () => {
+    const now = new Date();
+    const rawCode = 'AB7K-9QF2';
+    const codeHash = await hashLineLinkCode(normalizeLineLinkCode(rawCode));
+    store.users.set(MEMBER_ID, {
+      id: MEMBER_ID,
+      email: 'member@example.com',
+      name: '依頼 花子',
+      passwordHash: 'x',
+      role: 'requester',
+      tenantId: TENANT,
+      createdAt: now,
+      updatedAt: now,
+      lineLinkCodeHash: codeHash,
+      lineLinkCodeExpiresAt: new Date(Date.now() + 60_000),
+    });
+    const { POST } = await import('@/app/api/inbound/line/route');
+    // 1 回目: 連携が成立し、コードが消費される (チケットは作られない)
+    const req = () => makeRequest('ab7k9qf2', LINE_ID_NEW);
+    const first = await POST(req());
+    expect(first.status).toBe(200);
+    expect(store.tickets.size).toBe(0);
+    expect(store.users.get(MEMBER_ID)?.lineUserId).toBe(LINE_ID_NEW);
+
+    // 2 回目: 同一 messageId ('m1') の再送 (LINE の at-least-once 再送を模す)。
+    // 冪等化が無ければコードが消費済みで invalid 判定になり、"ab7k9qf2" が本文の問い合わせとして
+    // 誤起票されてしまう。冪等化により再送はスキップされ、チケットは作られない。
+    const second = await POST(req());
+    expect(second.status).toBe(200);
+    expect(store.tickets.size).toBe(0);
   });
 
   // コードの形だが発行行が無いテキストは通常の問い合わせとして起票する
@@ -423,6 +475,27 @@ describe('POST /api/inbound/line', () => {
       expect(res.status).toBe(200);
       expect(store.tickets.size).toBe(0);
       expect(fetchMock).not.toHaveBeenCalled();
+    });
+  });
+
+  // 回帰防止: 月間チケット上限 (§6.1 料金プラン)。Web フォーム・CSV インポート・メール取り込みと
+  // 共有する getMonthlyTicketQuota が、LINE 取り込みからも呼ばれることを確認する。
+  // Pro プランは現状無制限のため、この関数自体をモックして上限到達を再現する。
+  describe('月間チケット上限 (§6.1 料金プラン)', () => {
+    it('上限到達済みなら起票せず 200 を返す', async () => {
+      getMonthlyTicketQuotaMock.mockResolvedValueOnce({ limited: true, limit: 10, remaining: 0 });
+      const { POST } = await import('@/app/api/inbound/line/route');
+      const res = await POST(makeRequest('プリンターが動きません', LINE_ID_UNLINKED));
+      expect(res.status).toBe(200);
+      expect(store.tickets.size).toBe(0);
+    });
+
+    it('残枠があれば通常どおり起票する', async () => {
+      getMonthlyTicketQuotaMock.mockResolvedValueOnce({ limited: true, limit: 10, remaining: 3 });
+      const { POST } = await import('@/app/api/inbound/line/route');
+      const res = await POST(makeRequest('プリンターが動きません', LINE_ID_UNLINKED));
+      expect(res.status).toBe(200);
+      expect(store.tickets.size).toBe(1);
     });
   });
 });
