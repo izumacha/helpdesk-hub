@@ -39,9 +39,11 @@ export default async function AppLayout({ children }: { children: React.ReactNod
           <Header />
           {/* 各ページの内容 (縦スクロール可) ─ モバイルは余白を控えめにする */}
           <main className="flex-1 overflow-y-auto p-4 sm:p-6 md:p-8">{children}</main>
-          {/* §6.1 料金プラン「Free: ロゴ表示」。Free プラン (トライアル中を除く) のテナントにのみ表示する */}
+          {/* §6.1 料金プラン「Free: ロゴ表示」。Free プラン (トライアル中を除く) のテナントにのみ表示する。
+              text-slate-500 (背景 white 比でコントラスト比 約4.6:1) で WCAG AA (通常文 4.5:1) を満たす
+              (slate-400 は約2.56:1 で未達だったため修正) */}
           {plan === 'free' && (
-            <footer className="shrink-0 border-t border-slate-100 bg-white px-4 py-1.5 text-center text-xs text-slate-400">
+            <footer className="shrink-0 border-t border-slate-100 bg-white px-4 py-1.5 text-center text-xs text-slate-500">
               Powered by HelpDesk Hub
             </footer>
           )}

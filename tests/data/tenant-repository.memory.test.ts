@@ -154,6 +154,50 @@ describe('TenantRepository.findByInboundToken (memory)', () => {
   });
 });
 
+// メール取り込み用トークンの (再)発行 updateInboundToken の単体テスト。
+// 未発行テナントへの初回発行、既存トークンからの再発行 (ローテーション)、
+// テナント分離、存在しない ID の fail-closed を確認する。
+describe('TenantRepository.updateInboundToken (memory)', () => {
+  // 各テストの前にメモリ context を作り直してテナント A・B を投入する
+  beforeEach(() => {
+    const ctx = createMemoryContext();
+    store = ctx.store;
+    repos = ctx.repos;
+    seed();
+  });
+
+  // 未発行 (null) のテナントに新しいトークンを発行できる
+  it('未発行テナントにトークンを発行できる', async () => {
+    const updated = await repos.tenants.updateInboundToken(TENANT_A, 'newtoken123');
+    expect(updated.inboundToken).toBe('newtoken123');
+    // 再取得しても永続化されている
+    const reloaded = await repos.tenants.findById(TENANT_A);
+    expect(reloaded?.inboundToken).toBe('newtoken123');
+  });
+
+  // 既存トークンを新しい値へ差し替えられる (漏洩時のローテーション用途)
+  it('既存トークンを新しい値に再発行できる', async () => {
+    await repos.tenants.updateInboundToken(TENANT_A, 'oldtoken111');
+    const updated = await repos.tenants.updateInboundToken(TENANT_A, 'newtoken222');
+    expect(updated.inboundToken).toBe('newtoken222');
+    // 旧トークンではもうテナントを特定できない
+    const byOldToken = await repos.tenants.findByInboundToken('oldtoken111');
+    expect(byOldToken).toBeNull();
+  });
+
+  // 分離: あるテナントの再発行が他テナントに波及しない
+  it('他テナントの inboundToken には影響しない', async () => {
+    await repos.tenants.updateInboundToken(TENANT_A, 'tokenfora001');
+    const tenantB = await repos.tenants.findById(TENANT_B);
+    expect(tenantB?.inboundToken).toBeNull();
+  });
+
+  // 異常系: 存在しないテナント ID はエラーになる (fail-closed)
+  it('存在しないテナント ID はエラーになる', async () => {
+    await expect(repos.tenants.updateInboundToken('no-such-tenant', 'x')).rejects.toThrow();
+  });
+});
+
 // Phase 4: 外部通知チャネル設定の部分更新 updateNotificationChannels の単体テスト。
 // 渡したフィールドだけ更新し、undefined のフィールドは現状維持することを確認する
 // (port の「部分更新 / undefined = skip」契約を memory アダプタで担保する)。

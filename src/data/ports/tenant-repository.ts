@@ -21,6 +21,10 @@ export interface TenantRepository {
   // テナントの動作モード (lite | pro) を更新し、更新後の Tenant を返す
   // id はセッション由来の tenantId のみを渡す契約 (リクエスト入力から注入しないこと = クロステナント防止)
   updateMode(id: string, mode: TenantMode): Promise<Tenant>;
+  // メール取り込み用の inboundToken を (再)発行する。マイグレーション前から存在し未発行のままの
+  // テナントへの初回発行、および漏洩・スパム混入時の再発行 (ローテーション) の両方に使う。
+  // id はセッション由来の tenantId のみを渡す契約 (クロステナント防止)
+  updateInboundToken(id: string, token: string): Promise<Tenant>;
   // Phase 4: 外部通知チャネル (Slack / Teams / Chatwork) の設定をまとめて更新する。
   // 渡したフィールドだけ更新し、undefined のフィールドは現状維持する (部分更新)。
   // null を渡すと該当チャネルの通知を無効化する (設定画面の「削除」操作に対応)。
