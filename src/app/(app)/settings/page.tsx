@@ -1,7 +1,8 @@
 // 現在のセッション (ログイン情報) を取得
 import { auth } from '@/lib/auth';
-// 現在ログイン中のテナントの動作モード (lite | pro) を取得するヘルパー
-import { getCurrentTenantMode } from '@/lib/tenant';
+// tenantId → Tenant のリクエストスコープ共有キャッシュ。(app)/layout.tsx 等と同じキャッシュ
+// 経由でテナント本体を取得し、同一リクエスト内での冗長な Tenant SELECT を避ける
+import { getCachedTenant } from '@/lib/tenant-cache';
 // クライアント遷移付きリンク (テナント作成画面への導線)
 import Link from 'next/link';
 // モードの日本語ラベル (現在値の表示に使う)
@@ -22,14 +23,22 @@ import { SsoConfigSection } from '@/features/settings/components/SsoConfigSectio
 import { LineConfigSection } from '@/features/settings/components/LineConfigSection';
 // テナント情報取得 (slackWebhookUrl / 拠点一覧 / プラン情報の初期値を渡すため)
 import { repos } from '@/data';
-// プランゲート: Enterprise のみ SSO、Pro/Enterprise のみ LINE 連携を表示する。
-// resolveEffectivePlan は §7.2 Free trial 中の実効プラン (Standard 相当) を解決する
-// 唯一の判定ロジック (SSOT)。トライアル中かどうかの判定をここで再実装しない
-import { isLineIntegrationAllowed, isSsoAllowed, resolveEffectivePlan } from '@/lib/plan-guard';
+// プランゲート: Enterprise のみ SSO、Pro/Enterprise のみ LINE 連携、Standard 以上のみ
+// メール取り込みを表示する。resolveEffectivePlan は §7.2 Free trial 中の実効プラン
+// (Standard 相当) を解決する唯一の判定ロジック (SSOT)。トライアル中かどうかの判定を
+// ここで再実装しない
+import {
+  isEmailInboundAllowed,
+  isLineIntegrationAllowed,
+  isSsoAllowed,
+  resolveEffectivePlan,
+} from '@/lib/plan-guard';
 // SSO の SP エンドポイント URL を組み立てるヘルパー
 import { buildSpUrls } from '@/lib/saml';
 // アプリの公開ベース URL を解決するヘルパー (SP URL の組み立てに使う)
 import { resolveAppBaseUrl } from '@/lib/app-url';
+// メール取り込み用の転送先アドレスを組み立てるヘルパー (取り込みトークン + 配信ドメイン)
+import { buildInboundAddress } from '@/lib/inbound-email';
 
 // /settings : テナント設定ページ (現状は Lite/Pro モードの切替のみ。管理者専用)
 export default async function SettingsPage() {
@@ -48,18 +57,21 @@ export default async function SettingsPage() {
     );
   }
 
-  // 現在のテナントモード (lite | pro) を取得してフォームの初期値にする
-  const mode = await getCurrentTenantMode(session.user.tenantId);
   // Phase 4: テナント情報・拠点一覧・現在のスタッフ人数を並列取得する
   const [tenant, locations, currentUserCount] = await Promise.all([
-    // テナント情報 (slackWebhookUrl / プラン / Stripe 情報の現在値を取得)
-    repos.tenants.findById(session.user.tenantId),
+    // テナント情報 (slackWebhookUrl / プラン / Stripe 情報の現在値を取得)。共有キャッシュ経由
+    // にすることで、同一リクエスト内の (app)/layout.tsx (mode/plan 解決) と Tenant SELECT を共有する
+    getCachedTenant(session.user.tenantId),
     // 拠点一覧 (LocationsSection の初期値として渡す)
     repos.locations.listByTenant(session.user.tenantId),
     // 現在のスタッフ人数 (agent/admin のみ)。Stripe ダウングレード後にプラン上限を
     // 超えていないかを BillingSection で警告表示するために使う
     repos.users.countByTenant(session.user.tenantId),
   ]);
+  // 現在のテナントモード (lite | pro)。上で既に取得済みの tenant から導出する
+  // (getCurrentTenantMode を別途呼ぶと同じ Tenant 行を再取得する不要な関数呼び出しになるため、
+  // このページでは他のテナント項目 (subscriptionPlan 等) と同じ ?? フォールバック方式に揃える)
+  const mode = tenant?.mode ?? 'lite';
 
   // Phase 4 Enterprise: SSO は Enterprise プランのみ、Phase 2 フォローアップ: LINE 連携は
   // Pro / Enterprise プランのみ新規設定・再設定が可能。ただし既存設定はプラン降格後も
@@ -96,6 +108,29 @@ export default async function SettingsPage() {
     ssoAllowed || ssoConfig ? buildSpUrls(resolveAppBaseUrl(), session.user.tenantId) : null;
   // Webhook 受信 URL (LINE Developers コンソールに登録する値)
   const lineWebhookUrl = `${resolveAppBaseUrl()}/api/inbound/line`;
+
+  // §7.1 オンボーディング「専用のメール転送先を表示する」(Standard 以上、Free trial 中も含む)。
+  // ダッシュボードの「はじめかた」案内・新規テナントのサンプルチケット本文は、この画面に転送先が
+  // 表示されている前提の文言になっているため、ここで実際に表示する (回帰防止: 監査で発見された
+  // 「案内文言はあるのに表示箇所が存在しない」不整合)
+  const emailInboundAllowed = isEmailInboundAllowed(effectivePlan);
+  // 配信ドメイン (INBOUND_EMAIL_DOMAIN) が未設定の環境では組み立てられないため null のままにする
+  const inboundEmailDomain = process.env.INBOUND_EMAIL_DOMAIN?.trim() || null;
+  // テナント固有の inboundToken と配信ドメインが両方揃ったときだけ転送先アドレスを組み立てる
+  // (どちらか一方でも欠けていれば表示できないので null のままにする)
+  const inboundEmailAddress =
+    tenant?.inboundToken && inboundEmailDomain
+      ? buildInboundAddress(tenant.inboundToken, inboundEmailDomain)
+      : null;
+  // アドレスが組み立てられない場合の原因は 2 通りある (このテナント固有の inboundToken 未発行 か、
+  // 環境側の INBOUND_EMAIL_DOMAIN 未設定か) ので、案内メッセージを取り違えないよう区別する。
+  // inboundToken は新規テナント作成時 (create-tenant.ts) にのみ自動発行され、それ以前に作成された
+  // テナントには自動付与されない (20260619000000_add_tenant_inbound_token マイグレーション参照) ため
+  // 実運用でも起こりうる。'domain' | 'token' の型は下の三項演算子の分岐だけで使う一時的なラベルの
+  // ため、他ファイルと共有する定数化はせずリテラル型のまま扱う (§6 の「共有すべき値」には該当しない)
+  const inboundEmailUnavailableReason: 'domain' | 'token' = tenant?.inboundToken
+    ? 'domain' // トークンはあるがドメイン未設定
+    : 'token'; // このテナントにトークン自体が未発行
 
   return (
     <div className="mx-auto max-w-2xl space-y-6">
@@ -135,6 +170,48 @@ export default async function SettingsPage() {
         {/* 招待リンク発行フォーム本体 */}
         <InviteForm />
       </section>
+
+      {/* メール取り込みカード (Standard 以上。Free trial 中も実効プランで許可される)。
+          §7.1 オンボーディング手順4「専用のメール転送先を表示する」に対応する */}
+      {emailInboundAllowed && (
+        <section className="space-y-4 rounded-2xl bg-white p-6 shadow-sm ring-1 ring-slate-100">
+          <div>
+            {/* セクション見出し */}
+            <h2 className="text-base font-semibold text-slate-900">メール取り込み</h2>
+            {/* 説明: 下記アドレスへ転送するとチケット化される旨を伝える */}
+            <p className="mt-1 text-sm text-slate-500">
+              今まで使っているメールアドレス宛の問い合わせを、下記の専用アドレスへ自動転送すると
+              自動でチケットが作成されます。Gmail・Outlook の自動転送設定の手順は
+              <Link
+                href="/help/email-integration"
+                className="text-teal-700 underline underline-offset-2 hover:text-teal-800"
+              >
+                ヘルプページ
+              </Link>
+              をご覧ください。
+            </p>
+          </div>
+          {inboundEmailAddress ? (
+            // 転送先アドレス (コピーしやすいよう等幅フォントで表示。LineConfigSection の
+            // Webhook URL 表示と同じスタイルに揃える)
+            <p className="rounded bg-slate-50 px-2 py-1 font-mono text-xs break-all text-slate-700 ring-1 ring-slate-200">
+              {inboundEmailAddress}
+            </p>
+          ) : inboundEmailUnavailableReason === 'domain' ? (
+            // INBOUND_EMAIL_DOMAIN が未設定の環境向けの案内 (運用者向け。秘密情報は含まない)
+            <p className="rounded-lg bg-amber-50 px-3 py-2.5 text-sm text-amber-800 ring-1 ring-amber-200">
+              メール取り込み用のドメインが未設定のため、転送先アドレスを表示できません。
+              運用者に環境変数 (INBOUND_EMAIL_DOMAIN) の設定を確認してください。
+            </p>
+          ) : (
+            // このテナントに inboundToken が未発行の場合の案内 (マイグレーション前から存在する
+            // テナント等、create-tenant.ts の自動発行を経ていないケース)
+            <p className="rounded-lg bg-amber-50 px-3 py-2.5 text-sm text-amber-800 ring-1 ring-amber-200">
+              このテナントには転送先アドレスが未発行です。サポートまでお問い合わせください。
+            </p>
+          )}
+        </section>
+      )}
 
       {/* Phase 4: Slack / Teams / Chatwork 外部通知カード */}
       <section className="space-y-4 rounded-2xl bg-white p-6 shadow-sm ring-1 ring-slate-100">

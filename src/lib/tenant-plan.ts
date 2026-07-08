@@ -7,8 +7,20 @@
 // DB 参照を伴うこのヘルパーは別ファイルに分離する
 // (src/lib/sso-context.ts が isSsoAllowed の上にテナント参照を重ねているのと同じ考え方)。
 
+// React の cache() で「同一リクエスト内の同じ tenantId での呼び出し」をメモ化する。
+// (app)/layout.tsx が全ページ共通でこの経由のプラン解決を呼ぶため、同一リクエスト内で
+// 他の呼び出し (Server Action 等) と重複しても Tenant への冗長な SELECT を避けられる
+// (src/lib/tenant.ts の getCurrentTenantMode と同じ考え方)
+import { cache } from 'react';
 // データ層の Composition Root (Prisma 直叩きを避ける入口)
 import { repos } from '@/data';
+// tenantId → Tenant のリクエストスコープ共有キャッシュ (getCurrentTenantMode と同じ Tenant 行を
+// 取りに行くため、ここでも同じキャッシュ経由にして冗長な SELECT を避ける)。
+// @/lib/tenant ではなく @/lib/tenant-cache から直接 import する: @/lib/tenant は
+// @/lib/auth (next-auth) に依存しており、経由すると @/lib/tenant-plan を importOriginal() で
+// 部分モックする既存テスト (inbound-line-route.test.ts 等) が next-auth の内部依存解決に
+// 巻き込まれて壊れるため
+import { getCachedTenant } from '@/lib/tenant-cache';
 // リポジトリ束の型 (トランザクション内の tx / 非トランザクションの repos のどちらも受け取れるようにする)
 import type { Repos } from '@/data/ports/unit-of-work';
 // 課金プランの型
@@ -41,17 +53,19 @@ export interface TenantPlanResolution {
 // 指定テナントの契約プランと実効プランを 1 回のテナント取得で両方解決する。
 // テナントが見つからない場合は両方とも 'free' として扱う
 // (fail-closed: 存在しない/取得できないテナントに Pro/Enterprise 限定機能を渡さない)。
-export async function resolveTenantPlanDetail(tenantId: string): Promise<TenantPlanResolution> {
-  // テナントをリポジトリ経由で取得する
-  const tenant = await repos.tenants.findById(tenantId);
-  // 見つからなければ 'free' にフォールバックする
-  if (!tenant) return { rawPlan: 'free', effectivePlan: 'free' };
-  // 契約プランそのままの値と、トライアル中なら Standard 相当に昇格させた実効プランを返す
-  return {
-    rawPlan: tenant.subscriptionPlan,
-    effectivePlan: resolveEffectivePlan(tenant.subscriptionPlan, tenant.trialEndsAt),
-  };
-}
+export const resolveTenantPlanDetail = cache(
+  async (tenantId: string): Promise<TenantPlanResolution> => {
+    // Tenant を共有キャッシュ経由で取得する (getCurrentTenantMode 等と同一リクエスト内で共有)
+    const tenant = await getCachedTenant(tenantId);
+    // 見つからなければ 'free' にフォールバックする
+    if (!tenant) return { rawPlan: 'free', effectivePlan: 'free' };
+    // 契約プランそのままの値と、トライアル中なら Standard 相当に昇格させた実効プランを返す
+    return {
+      rawPlan: tenant.subscriptionPlan,
+      effectivePlan: resolveEffectivePlan(tenant.subscriptionPlan, tenant.trialEndsAt),
+    };
+  },
+);
 
 // 指定テナントの現在の実効プランを返す。§7.2 Free trial 中 (subscriptionPlan=free かつ
 // trialEndsAt が未来) は Standard 相当に昇格させる。この関数を経由する呼び出し側は全て

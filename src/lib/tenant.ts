@@ -2,10 +2,12 @@
 import { cache } from 'react';
 // セッションからログインユーザーの tenantId を取得するための NextAuth 関数
 import { auth } from '@/lib/auth';
-// Composition Root からテナント取得用リポジトリ束を取り込む
-import { repos } from '@/data';
 // テナントモード型 (lite | pro) をドメイン層から取り込む
 import type { TenantMode } from '@/domain/types';
+// tenantId → Tenant のリクエストスコープ共有キャッシュ (tenant-plan.ts と共有する。
+// このファイルから re-export すると @/lib/auth への依存ごと引き込んでしまうため、
+// tenant-cache.ts を直接 import する側で使う)
+import { getCachedTenant } from '@/lib/tenant-cache';
 
 // 現在ログイン中のテナントの mode (lite | pro) を取得するヘルパー
 // - 引数 tenantId が渡されればその値で Tenant を引く (page で既に session を取っているケース向けの最適化)
@@ -25,8 +27,8 @@ export const getCurrentTenantMode = cache(async (tenantId?: string): Promise<Ten
     // セッションから取り出した tenantId を以降の処理で利用する
     resolvedTenantId = session.user.tenantId;
   }
-  // Tenant リポジトリ (port 経由) で tenantId から Tenant 本体を取得
-  const tenant = await repos.tenants.findById(resolvedTenantId);
+  // Tenant リポジトリを共有キャッシュ経由で取得する (getCachedTenant が同一リクエスト内の重複を吸収)
+  const tenant = await getCachedTenant(resolvedTenantId);
   // Tenant が見つからなければ既定 mode (lite) にフォールバック (削除/不整合への防御)
   return tenant?.mode ?? 'lite';
 });
