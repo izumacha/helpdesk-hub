@@ -82,6 +82,13 @@ export function makeTenantRepo(db: PrismaLike): TenantRepository {
       return toTenant(row);
     },
 
+    // メール取り込み用の inboundToken を (再)発行する。主キーで対象テナントを特定し列のみ更新する
+    async updateInboundToken(id, token) {
+      const row = await db.tenant.update({ where: { id }, data: { inboundToken: token } });
+      // 更新後の行をドメイン型に詰め替えて返す
+      return toTenant(row);
+    },
+
     // Phase 4: 外部通知チャネル (Slack / Teams / Chatwork) の設定を部分更新する (null で無効化)
     async updateNotificationChannels(id, data) {
       // 主キーで対象テナントを特定する。undefined のフィールドは Prisma が skip するため現状維持

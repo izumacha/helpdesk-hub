@@ -69,6 +69,18 @@ export function makeTenantRepo(store: Store): TenantRepository {
       return { ...updated };
     },
 
+    // メール取り込み用の inboundToken を (再)発行する
+    async updateInboundToken(id, token) {
+      // 対象テナントを Map から取得 (存在しなければエラー)
+      const t = store.tenants.get(id);
+      if (!t) throw new Error('テナントが見つかりません');
+      // inboundToken だけ差し替えた新しいオブジェクトを作り Map に書き戻す
+      const updated = { ...t, inboundToken: token };
+      store.tenants.set(id, updated);
+      // 防御的コピーを返す
+      return { ...updated };
+    },
+
     // Phase 4: 外部通知チャネル (Slack / Teams / Chatwork) の設定を部分更新する (null で無効化)
     async updateNotificationChannels(id, data) {
       // 対象テナントを Map から取得 (存在しなければエラー)

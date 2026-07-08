@@ -21,6 +21,8 @@ import { BillingSection } from '@/features/settings/components/BillingSection';
 import { SsoConfigSection } from '@/features/settings/components/SsoConfigSection';
 // Phase 2 フォローアップ: テナント単位の LINE 連携設定セクション (Client Component)
 import { LineConfigSection } from '@/features/settings/components/LineConfigSection';
+// Phase 2 フォローアップ: メール取り込み転送先アドレスの (再)発行ボタン (Client Component)
+import { RegenerateInboundTokenButton } from '@/features/settings/components/RegenerateInboundTokenButton';
 // テナント情報取得 (slackWebhookUrl / 拠点一覧 / プラン情報の初期値を渡すため)
 import { repos } from '@/data';
 // プランゲート: Enterprise のみ SSO、Pro/Enterprise のみ LINE 連携、Standard 以上のみ
@@ -192,11 +194,15 @@ export default async function SettingsPage() {
             </p>
           </div>
           {inboundEmailAddress ? (
-            // 転送先アドレス (コピーしやすいよう等幅フォントで表示。LineConfigSection の
-            // Webhook URL 表示と同じスタイルに揃える)
-            <p className="rounded bg-slate-50 px-2 py-1 font-mono text-xs break-all text-slate-700 ring-1 ring-slate-200">
-              {inboundEmailAddress}
-            </p>
+            <>
+              {/* 転送先アドレス (コピーしやすいよう等幅フォントで表示。LineConfigSection の
+                  Webhook URL 表示と同じスタイルに揃える) */}
+              <p className="rounded bg-slate-50 px-2 py-1 font-mono text-xs break-all text-slate-700 ring-1 ring-slate-200">
+                {inboundEmailAddress}
+              </p>
+              {/* 漏洩・スパム混入時に管理者自身でアドレスを再発行できるようにする */}
+              <RegenerateInboundTokenButton hasExisting />
+            </>
           ) : inboundEmailUnavailableReason === 'domain' ? (
             // INBOUND_EMAIL_DOMAIN が未設定の環境向けの案内 (運用者向け。秘密情報は含まない)
             <p className="rounded-lg bg-amber-50 px-3 py-2.5 text-sm text-amber-800 ring-1 ring-amber-200">
@@ -204,11 +210,15 @@ export default async function SettingsPage() {
               運用者に環境変数 (INBOUND_EMAIL_DOMAIN) の設定を確認してください。
             </p>
           ) : (
-            // このテナントに inboundToken が未発行の場合の案内 (マイグレーション前から存在する
-            // テナント等、create-tenant.ts の自動発行を経ていないケース)
-            <p className="rounded-lg bg-amber-50 px-3 py-2.5 text-sm text-amber-800 ring-1 ring-amber-200">
-              このテナントには転送先アドレスが未発行です。サポートまでお問い合わせください。
-            </p>
+            <div className="space-y-2">
+              {/* このテナントに inboundToken が未発行の場合の案内 (マイグレーション前から存在する
+                  テナント等、create-tenant.ts の自動発行を経ていないケース)。管理者自身がこの場で
+                  発行できるようにし、サポート問い合わせを不要にする */}
+              <p className="rounded-lg bg-amber-50 px-3 py-2.5 text-sm text-amber-800 ring-1 ring-amber-200">
+                このテナントには転送先アドレスがまだ発行されていません。下のボタンから発行できます。
+              </p>
+              <RegenerateInboundTokenButton hasExisting={false} />
+            </div>
           )}
         </section>
       )}
