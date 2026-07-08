@@ -116,6 +116,8 @@ export default async function SettingsPage() {
   const emailInboundAllowed = isEmailInboundAllowed(effectivePlan);
   // 配信ドメイン (INBOUND_EMAIL_DOMAIN) が未設定の環境では組み立てられないため null のままにする
   const inboundEmailDomain = process.env.INBOUND_EMAIL_DOMAIN?.trim() || null;
+  // テナント固有の inboundToken と配信ドメインが両方揃ったときだけ転送先アドレスを組み立てる
+  // (どちらか一方でも欠けていれば表示できないので null のままにする)
   const inboundEmailAddress =
     tenant?.inboundToken && inboundEmailDomain
       ? buildInboundAddress(tenant.inboundToken, inboundEmailDomain)
@@ -124,8 +126,9 @@ export default async function SettingsPage() {
   // 環境側の INBOUND_EMAIL_DOMAIN 未設定か) ので、案内メッセージを取り違えないよう区別する。
   // inboundToken は新規テナント作成時 (create-tenant.ts) にのみ自動発行され、それ以前に作成された
   // テナントには自動付与されない (20260619000000_add_tenant_inbound_token マイグレーション参照) ため
-  // 実運用でも起こりうる
-  const inboundEmailUnavailableReason = tenant?.inboundToken
+  // 実運用でも起こりうる。'domain' | 'token' の型は下の三項演算子の分岐だけで使う一時的なラベルの
+  // ため、他ファイルと共有する定数化はせずリテラル型のまま扱う (§6 の「共有すべき値」には該当しない)
+  const inboundEmailUnavailableReason: 'domain' | 'token' = tenant?.inboundToken
     ? 'domain' // トークンはあるがドメイン未設定
     : 'token'; // このテナントにトークン自体が未発行
 
