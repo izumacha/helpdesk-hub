@@ -54,8 +54,12 @@ export default async function TicketDetailPage({ params }: Props) {
   const { id } = await params;
   // セッション取得
   const session = await auth();
-  // 未ログインなら描画しない
-  if (!session?.user?.id) return null;
+  // 未ログイン or tenantId 不在なら描画しない。tenantId が undefined のまま下の
+  // findByIdWithDetail に渡すと、Prisma が where から tenantId 条件を脱落させ
+  // (undefined 条件を無視する仕様)、全テナントのチケットに一致してしまう。
+  // 他の認証済みページ (tickets/page.tsx, notifications/page.tsx 等) と同じく
+  // ここでも tenantId を明示チェックしてクロステナント漏洩を多層防御で防ぐ (CLAUDE.md §3/§9)。
+  if (!session?.user?.id || !session.user.tenantId) return null;
 
   // ロール判定
   const isAgent = checkIsAgent(session.user.role);
