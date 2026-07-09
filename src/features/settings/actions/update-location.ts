@@ -4,14 +4,12 @@
 // 管理者のみが拠点を編集できる。
 // docs/smb-dx-pivot-plan.md §5.2「多店舗・多拠点対応」
 
-// セッション取得
-import { auth } from '@/lib/auth';
 // データリポジトリ
 import { repos } from '@/data';
 // 設定ページのキャッシュを無効化するための Next.js キャッシュ関数
 import { revalidatePath } from 'next/cache';
-// 管理者権限を強制する共通アサーション (組織設定系で共有)
-import { assertAdminSession } from '@/lib/role';
+// 「ログイン済み・admin・自テナント」を検証する共有ゲート (throw せず {ok,error} を返す契約)
+import { assertTenantAdmin } from '@/lib/tenant-admin-gate';
 // 連打防止のための共通レート制限ヘルパー
 import { enforceRateLimit } from '@/lib/rate-limit';
 
@@ -28,17 +26,19 @@ export async function updateLocation(
   locationId: string,
   formData: FormData,
 ): Promise<UpdateLocationResult> {
-  // セッション取得
-  const session = await auth();
-  // 管理者権限の確認とレート制限を行う。このアクションは throw せず常に {error} を返す契約
-  // (呼び出し元の LocationsSection.tsx が try/catch を持たないため) なので、
-  // 共有ヘルパーが投げる例外をここで捕まえて変換する
+  // 共有ゲートで「ログイン済み・admin・自テナント」をまとめて検証する
+  const gate = await assertTenantAdmin();
+  // ゲート不通過ならその理由をそのまま返す
+  if (!gate.ok) return { error: gate.error };
+  // 検証済みの tenantId (セッション由来)
+  const tenantId = gate.tenantId;
+
   try {
-    assertAdminSession(session);
-    // 拠点更新の連打を抑制 (60 秒あたり 10 回まで、ユーザー単位)
-    enforceRateLimit(`location-update:${session.user.id}`, { limit: 10, windowMs: 60_000 });
+    // 拠点の作成・更新・削除の連打を抑制 (60 秒あたり 10 回まで、テナント単位・
+    // create/update/delete で共有。create-location.ts のコメント参照)
+    enforceRateLimit(`location-mutate:${tenantId}`, { limit: 10, windowMs: 60_000 });
   } catch (err) {
-    return { error: err instanceof Error ? err.message : 'この操作は管理者のみ実行できます' };
+    return { error: err instanceof Error ? err.message : 'しばらく時間をおいて再度お試しください' };
   }
 
   // 更新後の名前と説明を取り出す
@@ -58,7 +58,7 @@ export async function updateLocation(
 
   try {
     // tenantId をスコープに含めて更新 (他テナントの拠点を変更できないよう保護)
-    await repos.locations.update(locationId, session.user.tenantId, { name, description });
+    await repos.locations.update(locationId, tenantId, { name, description });
     // 設定ページのキャッシュを無効化して更新結果がすぐ反映されるようにする
     revalidatePath('/settings');
     // 成功を返す

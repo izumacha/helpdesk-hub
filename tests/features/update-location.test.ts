@@ -13,7 +13,8 @@ const USER_ID = 'u-admin-1';
 
 let repos: Repos;
 let sessionRole: Role = 'admin';
-let sessionTenantId: string = TENANT_ID;
+// 未ログイン (tenantId 不在) の分岐を再現するために可変にする
+let sessionTenantId: string | null = TENANT_ID;
 
 vi.mock('@/data', () => ({
   get repos() {
@@ -72,6 +73,20 @@ describe('updateLocation', () => {
     const { updateLocation } = await import('@/features/settings/actions/update-location');
     const result = await updateLocation(location.id, makeForm('新名称'));
     expect(result.error).toBe('この操作は管理者のみ実行できます');
+  });
+
+  // 未ログイン (tenantId 不在) は拒否される。他の設定系アクションと同じ「認証が必要です」で揃える
+  it('tenantIdが無いセッションは拒否される', async () => {
+    const location = await repos.locations.create({
+      tenantId: TENANT_ID,
+      name: '拠点',
+      description: null,
+    });
+    sessionTenantId = null;
+    const { updateLocation } = await import('@/features/settings/actions/update-location');
+    const result = await updateLocation(location.id, makeForm('新名称'));
+    expect(result.error).toBe('認証が必要です');
+    expect(result.success).toBeUndefined();
   });
 
   // 他テナントの拠点は更新できない (クロステナント防止)

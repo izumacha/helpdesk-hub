@@ -14,7 +14,8 @@ const USER_ID = 'u-admin-1';
 let store: Store;
 let repos: Repos;
 let sessionRole: Role = 'admin';
-let sessionTenantId: string = TENANT_ID;
+// 未ログイン (tenantId 不在) の分岐を再現するために可変にする
+let sessionTenantId: string | null = TENANT_ID;
 
 vi.mock('@/data', () => ({
   get repos() {
@@ -67,6 +68,23 @@ describe('deleteLocation', () => {
     const { deleteLocation } = await import('@/features/settings/actions/delete-location');
     const result = await deleteLocation(location.id);
     expect(result.error).toBe('この操作は管理者のみ実行できます');
+    // 削除されていないこと
+    const reloaded = await repos.locations.findById(location.id, TENANT_ID);
+    expect(reloaded).not.toBeNull();
+  });
+
+  // 未ログイン (tenantId 不在) は拒否される。他の設定系アクションと同じ「認証が必要です」で揃える
+  it('tenantIdが無いセッションは拒否される', async () => {
+    const location = await repos.locations.create({
+      tenantId: TENANT_ID,
+      name: '拠点',
+      description: null,
+    });
+    sessionTenantId = null;
+    const { deleteLocation } = await import('@/features/settings/actions/delete-location');
+    const result = await deleteLocation(location.id);
+    expect(result.error).toBe('認証が必要です');
+    expect(result.success).toBeUndefined();
     // 削除されていないこと
     const reloaded = await repos.locations.findById(location.id, TENANT_ID);
     expect(reloaded).not.toBeNull();
