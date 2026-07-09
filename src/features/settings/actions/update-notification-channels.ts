@@ -12,6 +12,8 @@ import { auth } from '@/lib/auth';
 import { repos } from '@/data';
 // SSRF 対策ガード (プライベート IP / ループバック / IPv6-mapped などを拒否する)
 import { isUnsafeUrl } from '@/lib/ssrf-guard';
+// 連打防止のための共通レート制限ヘルパー
+import { checkRateLimit } from '@/lib/rate-limit';
 
 // Chatwork API トークンの最大長 (常識的な上限。これを超える入力は不正として弾く)
 const CHATWORK_TOKEN_MAX_LENGTH = 200;
@@ -58,6 +60,16 @@ export async function updateNotificationChannels(
   if (session.user.role !== 'admin') {
     return { error: 'この操作は管理者のみ実行できます' };
   }
+  // 検証済みの tenantId (セッション由来)
+  const tenantId = session.user.tenantId;
+
+  // 通知チャネル設定変更の連打を抑制 (60 秒あたり 10 回まで、テナント単位。
+  // create/update/delete-location.ts と同じ上限・キー粒度の方針)
+  const rateLimitError = checkRateLimit(`notification-channels-mutate:${tenantId}`, {
+    limit: 10,
+    windowMs: 60_000,
+  });
+  if (rateLimitError) return { error: rateLimitError };
 
   // ── Slack / Teams Webhook URL の検証 ────────────────────────────────────────
   // フォームから各チャネルの入力値を取り出す (未入力は空文字列)
@@ -91,7 +103,7 @@ export async function updateNotificationChannels(
   const chatworkRoomId = hasRoomId ? chatworkRoomIdRaw : null;
 
   // テナントの通知チャネル設定を一括更新する (セッション由来の tenantId のみ使用してクロステナント防止)
-  await repos.tenants.updateNotificationChannels(session.user.tenantId, {
+  await repos.tenants.updateNotificationChannels(tenantId, {
     slackWebhookUrl: slackResult.value,
     teamsWebhookUrl: teamsResult.value,
     chatworkApiToken,

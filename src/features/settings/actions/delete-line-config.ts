@@ -12,6 +12,8 @@ import { revalidatePath } from 'next/cache';
 import { repos } from '@/data';
 // LINE 連携設定削除の共有認可ゲート (ログイン済み・admin・自テナント。プラン不問)
 import { assertLineConfigOwner } from '@/lib/line-config-context';
+// 連打防止のための共通レート制限ヘルパー
+import { checkRateLimit } from '@/lib/rate-limit';
 
 // 削除結果型 (useActionState 互換)
 export interface DeleteLineConfigState {
@@ -30,6 +32,14 @@ export async function deleteLineConfig(
   if (!gate.ok) return { error: gate.error };
   // 検証済みの tenantId (セッション由来)
   const tenantId = gate.tenantId;
+
+  // LINE 連携設定の作成・更新・削除の連打を抑制 (60 秒あたり 10 回まで、テナント単位で
+  // update-line-config.ts と共有する)
+  const rateLimitError = checkRateLimit(`line-config-mutate:${tenantId}`, {
+    limit: 10,
+    windowMs: 60_000,
+  });
+  if (rateLimitError) return { error: rateLimitError };
 
   try {
     // LINE 連携設定を削除する (tenantId スコープ)

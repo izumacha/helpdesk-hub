@@ -10,6 +10,8 @@ import { createMemoryContext, type Store } from '@/data/adapters/memory';
 import type { Repos } from '@/data/ports/unit-of-work';
 // 課金プランの型 (フィクスチャ切替に使う)
 import type { SubscriptionPlan } from '@/domain/types';
+// レート制限バケットをテスト間で初期化するヘルパー
+import { __resetRateLimits } from '@/lib/rate-limit';
 
 const TENANT_ID = 'tenant-1';
 const ADMIN_ID = 'u-admin-1';
@@ -78,6 +80,7 @@ describe('updateLineConfig', () => {
     const ctx = createMemoryContext();
     store = ctx.store;
     repos = ctx.repos;
+    __resetRateLimits();
   });
 
   // Standard プランでは LINE 連携自体が使えない (§6.1 料金プラン)
@@ -171,5 +174,25 @@ describe('updateLineConfig', () => {
       makeForm({ channelSecret: 's1', channelAccessToken: 't1', botUserId: BOT_USER_ID_A }),
     );
     expect(result.error).toBe('この Bot User ID は既に別のテナントで登録されています');
+  });
+
+  // レート制限: 60秒あたり10回を超える連打は拒否される (create/update/delete-location.ts と
+  // 同じ「テナント単位で共有」の方針。update-sso-config.test.ts も参照)
+  it('60秒あたり10回を超える連打は拒否される', async () => {
+    seedTenant('pro');
+    const { updateLineConfig } = await import('@/features/settings/actions/update-line-config');
+    for (let i = 0; i < 10; i++) {
+      const result = await updateLineConfig(
+        {},
+        makeForm({ channelSecret: 's1', channelAccessToken: 't1', botUserId: BOT_USER_ID_A }),
+      );
+      expect(result.error).toBeUndefined();
+    }
+    const result = await updateLineConfig(
+      {},
+      makeForm({ channelSecret: 's1', channelAccessToken: 't1', botUserId: BOT_USER_ID_A }),
+    );
+    expect(result.error).toEqual(expect.any(String));
+    expect(result.success).toBeUndefined();
   });
 });
