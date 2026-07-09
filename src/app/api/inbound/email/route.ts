@@ -42,8 +42,8 @@ import {
 } from '@/lib/inbound-email';
 // エージェント権限判定 (スレッド追記の RBAC に使用)
 import { isAgent } from '@/lib/role';
-// 公開エンドポイントの流量制限 (§9: DoS / リソース枯渇防止)
-import { enforceRateLimit, RateLimitError } from '@/lib/rate-limit';
+// 公開エンドポイントの流量制限 (§9: DoS / リソース枯渇防止。Route Handler 向け共通ラッパー)
+import { checkRouteRateLimit } from '@/lib/route-rate-limit';
 // 優先度から解決期限を計算する SLA ヘルパー (Web フォーム起票と同じ既定値に揃える)
 import { calculateFirstResponseDueAt, calculateResolutionDueAt } from '@/lib/sla';
 // 受領自動返信 (メンバー改善 #1) のための送信基盤・本文生成・リンク組み立てヘルパー
@@ -385,18 +385,12 @@ export async function POST(req: Request) {
 
   // テナント単位で取り込み流量を制限する (シークレット漏洩時の起票スパムを抑える §9)。
   // 超過時は 429 + Retry-After で返し、プロバイダの後刻リトライに委ねる
-  try {
-    enforceRateLimit(`inbound-email:${tenant.id}`, INBOUND_RATE_LIMIT);
-  } catch (err) {
-    // 流量超過専用エラーだけを 429 にマップ。それ以外は想定外なので上位へ投げる
-    if (err instanceof RateLimitError) {
-      return NextResponse.json(
-        { error: '取り込みが混み合っています' },
-        { status: 429, headers: { 'Retry-After': String(err.retryAfterSec) } },
-      );
-    }
-    throw err;
-  }
+  const rateLimitResponse = checkRouteRateLimit(
+    `inbound-email:${tenant.id}`,
+    INBOUND_RATE_LIMIT,
+    '取り込みが混み合っています',
+  );
+  if (rateLimitResponse) return rateLimitResponse;
 
   // 送信元ドメイン認証 (SPF/DKIM/DMARC) の検証 (§8 リスク表「送信元ドメイン検証」)。
   // プロバイダが算出した結果を消費し、ポリシーが 'enforce' のとき明示 'fail' なら隔離する。

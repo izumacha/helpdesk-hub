@@ -29,8 +29,8 @@ import { createSamlInstance, validateSamlResponse } from '@/lib/saml';
 import { generateMagicLinkToken, hashMagicLinkToken } from '@/lib/magic-link';
 // HTML 属性への安全な埋め込み用エスケープ (確認ページのトークン埋め込みに使う)
 import { escapeHtml } from '@/lib/html-escape';
-// 連打防止のための共通レート制限ヘルパー
-import { enforceRateLimit, RateLimitError } from '@/lib/rate-limit';
+// Route Handler 向け共通レート制限ラッパー (inbound-email/inbound-line と共有)
+import { checkRouteRateLimit } from '@/lib/route-rate-limit';
 
 // SSO ハンドオフトークンの有効期限 (2 分)。ACS → コールバックの即時引き渡し専用なので短くする
 const SSO_HANDOFF_TTL_MS = 2 * 60 * 1000;
@@ -46,23 +46,6 @@ const SSO_ACS_UNAUTHENTICATED_RATE_LIMIT = { limit: 60, windowMs: 60_000 } as co
 //  - テナントが実在し SSO が有効だと確認できた後は、tenantId (DB 由来で信頼できる値) を
 //    キーにしたテナント単位の制限も適用する (1 テナントからの異常な連打を抑える)。
 const SSO_ACS_TENANT_RATE_LIMIT = { limit: 20, windowMs: 60_000 } as const;
-
-// レート制限を適用し、超過していれば 429 レスポンスを返す共通ヘルパー。
-// 超過なしなら null を返し、呼び出し側はそのまま処理を続行する (inbound-line/route.ts と同じ方針)。
-function checkRateLimit(key: string, options: { limit: number; windowMs: number }) {
-  try {
-    enforceRateLimit(key, options);
-    return null;
-  } catch (err) {
-    if (err instanceof RateLimitError) {
-      return NextResponse.json(
-        { error: 'しばらく時間をおいて再度お試しください' },
-        { status: 429, headers: { 'Retry-After': String(err.retryAfterSec) } },
-      );
-    }
-    throw err;
-  }
-}
 
 // 動的セグメント (tenantId) の型
 type Params = { params: Promise<{ tenantId: string }> };
@@ -82,9 +65,10 @@ export async function POST(req: Request, { params }: Params) {
 
   // 固定キーの全体レート制限を適用する (テナント解決より前に置き、URL の tenantId を
   // 変え続けることでのレート制限回避・DB 負荷増大を防ぐ。詳細は定数の定義コメント参照)
-  const unauthLimitResponse = checkRateLimit(
+  const unauthLimitResponse = checkRouteRateLimit(
     'sso-acs:unauthenticated',
     SSO_ACS_UNAUTHENTICATED_RATE_LIMIT,
+    'しばらく時間をおいて再度お試しください',
   );
   if (unauthLimitResponse) return unauthLimitResponse;
 
@@ -95,7 +79,11 @@ export async function POST(req: Request, { params }: Params) {
   // テナントが実在し SSO が有効だと確認できたので、ここからは信頼できる tenantId を
   // キーにしたテナント単位のレート制限を適用する (この後の XML パース・署名検証は
   // CPU コストが高いため、その前に弾く)
-  const tenantLimitResponse = checkRateLimit(`sso-acs:${tenantId}`, SSO_ACS_TENANT_RATE_LIMIT);
+  const tenantLimitResponse = checkRouteRateLimit(
+    `sso-acs:${tenantId}`,
+    SSO_ACS_TENANT_RATE_LIMIT,
+    'しばらく時間をおいて再度お試しください',
+  );
   if (tenantLimitResponse) return tenantLimitResponse;
 
   // POST ボディ (application/x-www-form-urlencoded) から SAMLResponse を取り出す
