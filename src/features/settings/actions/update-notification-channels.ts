@@ -110,6 +110,9 @@ export async function updateNotificationChannels(
     chatworkRoomId,
   });
 
+  // 設定ページを再レンダリングして最新値を反映する (監査ログの成否に関わらず必ず実行する)
+  revalidatePath('/settings');
+
   // §4.2 フォローアップ: 監査ログに「誰が通知チャネル設定を更新したか」を記録する
   // (chatworkApiToken 等の秘匿情報は記録しない。アクション名のみ)。
   // try/catch で囲む理由: 設定は既に保存済みなので、監査ログの書き込みだけが失敗しても
@@ -124,9 +127,6 @@ export async function updateNotificationChannels(
   } catch (auditErr) {
     console.error('[update-notification-channels] 監査ログの記録に失敗しました:', auditErr);
   }
-
-  // 設定ページを再レンダリングして最新値を反映する
-  revalidatePath('/settings');
 
   // 成功を返す (UI でサクセストーストを出す)
   return { success: true };

@@ -135,6 +135,21 @@ describe('updateSsoConfig', () => {
     expect(auditLogs[0].action).toBe('sso_config_update');
   });
 
+  // /code-review ultra 指摘の回帰テスト: 監査ログの書き込みが失敗しても、
+  // SSO 設定自体は既に保存済みなので「保存に失敗した」という誤ったエラーを返さない
+  // (settingsAudit.record の失敗は独立した try/catch でログに残すだけに留める設計)
+  it('監査ログの書き込みが失敗しても保存自体は成功として扱われる', async () => {
+    seedTenant('enterprise');
+    vi.spyOn(repos.settingsAudit, 'record').mockRejectedValueOnce(new Error('DB down'));
+    const { updateSsoConfig } = await import('@/features/settings/actions/update-sso-config');
+    const result = await updateSsoConfig({}, makeForm({ enabled: true }));
+    expect(result.success).toBe(true);
+    expect(result.error).toBeUndefined();
+    // 監査ログは書き込めなかったが、SSO 設定自体は保存されている
+    const saved = await repos.ssoConfigs.findByTenant(TENANT_ID);
+    expect(saved?.enabled).toBe(true);
+  });
+
   // https 以外の SSO URL は拒否される (ブラウザのリダイレクト先になるため)
   it('httpsで始まらないSSO URLは拒否される', async () => {
     seedTenant('enterprise');
