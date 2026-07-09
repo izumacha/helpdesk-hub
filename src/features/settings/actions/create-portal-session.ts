@@ -13,6 +13,8 @@ import { repos } from '@/data';
 import { getStripeClient } from '@/lib/stripe';
 // アプリの外部公開 URL を取得するヘルパー
 import { resolveAppBaseUrl } from '@/lib/app-url';
+// 連打防止のための共通レート制限ヘルパー
+import { checkRateLimit } from '@/lib/rate-limit';
 
 // ポータルセッション作成の戻り値型
 interface CreatePortalResult {
@@ -39,6 +41,16 @@ export async function createPortalSession(): Promise<CreatePortalResult> {
     // Stripe Customer ID がない場合はポータルを開けない (有料プランに未登録)
     return { error: '課金情報が見つかりません。まず有料プランにご登録ください。' };
   }
+
+  // Stripe Customer Portal セッション作成 (実際に Stripe API を呼ぶ直前) の連打を抑制する
+  // (60 秒あたり 10 回まで、テナント単位。create-checkout-session.ts と同じ上限・キー粒度の
+  // 方針)。Stripe Customer ID 未登録などバリデーション段階で弾かれるリクエストは Stripe API を
+  // 一切呼ばないため、ここより前ではクォータを消費させない
+  const rateLimitError = checkRateLimit(`stripe-portal-session:${session.user.tenantId}`, {
+    limit: 10,
+    windowMs: 60_000,
+  });
+  if (rateLimitError) return { error: rateLimitError };
 
   // アプリの公開 URL を取得する (ポータルからの戻り先に必要)
   const baseUrl = resolveAppBaseUrl();

@@ -13,6 +13,8 @@ import { createMemoryContext, type Store } from '@/data/adapters/memory';
 import type { Repos } from '@/data/ports/unit-of-work';
 // 権限型 (テストごとにロールを切り替える)
 import type { Role } from '@/domain/types';
+// レート制限バケットをテスト間で初期化するヘルパー
+import { __resetRateLimits } from '@/lib/rate-limit';
 
 const TENANT_ID = 'default-tenant';
 const USER_ID = 'u-admin-1';
@@ -100,9 +102,23 @@ beforeEach(() => {
   stripeApiState.shouldThrow = false;
   sessionRole = 'admin';
   sessionTenantId = TENANT_ID;
+  __resetRateLimits();
 });
 
 describe('createPortalSession', () => {
+  // 監査で発見したギャップ対応: 60秒あたり10回を超える連打は拒否される (テナント単位)
+  it('60秒あたり10回を超える連打は拒否される', async () => {
+    seedTenant('cus_test123');
+    const createPortalSession = await loadAction();
+    for (let i = 0; i < 10; i++) {
+      const result = await createPortalSession();
+      expect(result.error).toBeUndefined();
+    }
+    const result = await createPortalSession();
+    expect(result.error).toEqual(expect.any(String));
+    expect(result.url).toBeUndefined();
+  });
+
   // 正常系: Stripe Customer ID を持つテナントならポータル URL を返す
   it('stripeCustomerId を Customer Portal に渡し URL を返す', async () => {
     seedTenant('cus_test123');

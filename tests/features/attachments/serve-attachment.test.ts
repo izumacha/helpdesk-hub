@@ -171,6 +171,9 @@ beforeEach(() => {
   repos = ctx.repos;
   storage = createMemoryStorage();
   mockSession = null;
+  // 動的 import のたびに @/lib/rate-limit を含む依存を再解決させ、バケット Map も
+  // テストごとに空の状態から始まるようにする (__resetRateLimits() は静的 import された
+  // 別モジュールインスタンスを操作するだけで無意味になるため、ここでは使わない)
   vi.resetModules();
 });
 
@@ -248,5 +251,38 @@ describe('GET /api/attachments/[id]', () => {
     const { GET } = await import('@/app/api/attachments/[id]/route');
     const res = await GET(buildRequest(), makeParams(attA.id));
     expect(res.status).toBe(404);
+  });
+
+  // 監査で発見したギャップ対応: ユーザー単位で 60 秒あたり 300 回を超える連打は 429 になる
+  it('returns 429 once the per-user download rate limit is exceeded', async () => {
+    const { attA } = await seed();
+    mockSession = buildSession(REQ_A, 'requester', TENANT_A);
+    const { GET } = await import('@/app/api/attachments/[id]/route');
+    // 上限 (300回) までは通常どおり 200 を返す
+    for (let i = 0; i < 300; i++) {
+      const res = await GET(buildRequest(), makeParams(attA.id));
+      expect(res.status).toBe(200);
+    }
+    // 301 回目は 429 になる
+    const res = await GET(buildRequest(), makeParams(attA.id));
+    expect(res.status).toBe(429);
+    expect(res.headers.get('Retry-After')).toEqual(expect.any(String));
+  });
+
+  // 分離: 別ユーザーのダウンロードは独立してカウントされる (他人の連打で自分が巻き込まれない)
+  it('tracks the rate limit independently per user', async () => {
+    const { attA } = await seed();
+    const { GET } = await import('@/app/api/attachments/[id]/route');
+    // AGENT_A が上限まで叩く (最後の 1 回は 429 になっていることも確認する)
+    mockSession = buildSession(AGENT_A, 'agent', TENANT_A);
+    for (let i = 0; i < 300; i++) {
+      await GET(buildRequest(), makeParams(attA.id));
+    }
+    const agentOverLimitRes = await GET(buildRequest(), makeParams(attA.id));
+    expect(agentOverLimitRes.status).toBe(429);
+    // REQ_A はまだ 1 回も叩いていないので 200 のまま (AGENT_A の連打に巻き込まれない)
+    mockSession = buildSession(REQ_A, 'requester', TENANT_A);
+    const res = await GET(buildRequest(), makeParams(attA.id));
+    expect(res.status).toBe(200);
   });
 });

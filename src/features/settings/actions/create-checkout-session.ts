@@ -15,6 +15,8 @@ import { getStripeClient, STRIPE_PRICE_IDS } from '@/lib/stripe';
 import { resolveAppBaseUrl } from '@/lib/app-url';
 // 課金プラン型
 import type { SubscriptionPlan } from '@/domain/types';
+// 連打防止のための共通レート制限ヘルパー
+import { checkRateLimit } from '@/lib/rate-limit';
 
 // チェックアウトセッション作成の戻り値型
 interface CreateCheckoutResult {
@@ -36,6 +38,8 @@ export async function createCheckoutSession(
   if (session.user.role !== 'admin') {
     return { error: 'この操作は管理者のみ実行できます' };
   }
+  // 検証済みの tenantId (セッション由来)
+  const tenantId = session.user.tenantId;
 
   // Free プランへのアップグレードはチェックアウト不要 (Webhook のキャンセル処理が担当)
   if (targetPlan === 'free') {
@@ -64,6 +68,16 @@ export async function createCheckoutSession(
   if (!tenant) {
     return { error: 'テナント情報の取得に失敗しました' };
   }
+
+  // Stripe Checkout セッション作成 (実際に Stripe API を呼ぶ直前) の連打を抑制する
+  // (60 秒あたり 10 回まで、テナント単位。create-location.ts 等と同じ上限・キー粒度の方針)。
+  // targetPlan が無効・Price ID 未設定・テナント不明などバリデーション段階で弾かれる
+  // リクエストは Stripe API を一切呼ばないため、ここより前ではクォータを消費させない
+  const rateLimitError = checkRateLimit(`stripe-checkout-session:${tenantId}`, {
+    limit: 10,
+    windowMs: 60_000,
+  });
+  if (rateLimitError) return { error: rateLimitError };
 
   // アプリの公開 URL を取得する (Stripe の success/cancel URL に必要)
   const baseUrl = resolveAppBaseUrl();
