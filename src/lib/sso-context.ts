@@ -12,7 +12,7 @@ import { isSsoAllowed } from '@/lib/plan-guard';
 // アプリの公開ベース URL を解決するヘルパー
 import { resolveAppBaseUrl } from '@/lib/app-url';
 // 「ログイン済み・admin・自テナント」の共通プリミティブ (line-config-context.ts と共有)
-import { assertTenantAdmin } from '@/lib/tenant-admin-gate';
+import { assertTenantAdmin, type TenantAdminGate } from '@/lib/tenant-admin-gate';
 // ドメイン型
 import type { Tenant, TenantSsoConfig } from '@/domain/types';
 
@@ -37,8 +37,10 @@ export async function loadEnabledSsoContext(tenantId: string): Promise<SsoContex
   return { ok: true, tenant, config, baseUrl: resolveAppBaseUrl() };
 }
 
-// SSO 設定の作成/更新/削除 Server Action が共有する認可ゲートの結果
-export type SsoAdminGate = { ok: true; tenantId: string } | { ok: false; error: string };
+// SSO 設定の作成/更新/削除 Server Action が共有する認可ゲートの結果。
+// TenantAdminGate と全く同じ形状 (ok/tenantId/userId or ok:false/error) なので、
+// 個別に再宣言せず型エイリアスにして将来のドリフト (片方だけ更新し忘れる) を防ぐ
+export type SsoAdminGate = TenantAdminGate;
 
 // SSO 設定変更の前提 (ログイン済み・admin・Enterprise プラン) をまとめて検証する。
 // update/delete-sso-config の両 Server Action で重複していた認可チェックを 1 か所に集約し、
@@ -54,8 +56,8 @@ export async function assertSsoConfigAdmin(): Promise<SsoAdminGate> {
   if (!isSsoAllowed(tenant.subscriptionPlan)) {
     return { ok: false, error: 'SSO は Enterprise プランでのみ利用できます。' };
   }
-  // すべて満たしたので tenantId を返す
-  return { ok: true, tenantId: gate.tenantId };
+  // すべて満たしたので tenantId / userId を返す
+  return { ok: true, tenantId: gate.tenantId, userId: gate.userId };
 }
 
 // SSO 設定の削除専用ゲート: 「ログイン済み・admin・自テナント」のみを検証し、プランチェックは

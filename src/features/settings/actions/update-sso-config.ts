@@ -122,6 +122,22 @@ export async function updateSsoConfig(
     });
     // 設定ページのキャッシュを無効化して結果をすぐ反映する
     revalidatePath('/settings');
+
+    // §4.2 フォローアップ: 監査ログに「誰が SSO 設定を更新したか」を記録する
+    // (idpX509Cert 等の秘匿情報は記録しない。アクション名のみ)。
+    // 上の try に含めず独立した try/catch にする理由: SSO 設定は既に保存済みなので、
+    // 監査ログの書き込みだけが失敗しても管理者に「保存に失敗した」という誤った
+    // エラーを見せてはいけない (update-ticket.ts の外部通知失敗時と同じ方針)
+    try {
+      await repos.settingsAudit.record({
+        tenantId,
+        actorId: gate.userId,
+        action: 'sso_config_update',
+      });
+    } catch (auditErr) {
+      console.error('[update-sso-config] 監査ログの記録に失敗しました:', auditErr);
+    }
+
     // 成功を返す
     return { success: true };
   } catch (err) {

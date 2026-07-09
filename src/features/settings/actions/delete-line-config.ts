@@ -46,6 +46,21 @@ export async function deleteLineConfig(
     await repos.lineConfigs.delete(tenantId);
     // 設定ページのキャッシュを無効化する
     revalidatePath('/settings');
+
+    // §4.2 フォローアップ: 監査ログに「誰が LINE 連携設定を削除したか」を記録する。
+    // 上の try に含めず独立した try/catch にする理由: 削除は既に完了しているので、
+    // 監査ログの書き込みだけが失敗しても管理者に「削除に失敗した」という誤った
+    // エラーを見せてはいけない (update-ticket.ts の外部通知失敗時と同じ方針)
+    try {
+      await repos.settingsAudit.record({
+        tenantId,
+        actorId: gate.userId,
+        action: 'line_config_delete',
+      });
+    } catch (auditErr) {
+      console.error('[delete-line-config] 監査ログの記録に失敗しました:', auditErr);
+    }
+
     // 成功を返す
     return { success: true };
   } catch (err) {

@@ -10,6 +10,7 @@ import type { LineMessageRepository } from './line-message-repository';
 import type { LocationRepository } from './location-repository';
 import type { MagicLinkRepository } from './magic-link-repository';
 import type { NotificationRepository } from './notification-repository';
+import type { SettingsAuditLogRepository } from './settings-audit-log-repository';
 import type { SsoConfigRepository } from './sso-config-repository';
 import type { TenantRepository } from './tenant-repository';
 import type { TicketCommentRepository } from './ticket-comment-repository';
@@ -36,6 +37,7 @@ export interface Repos {
   locations: LocationRepository; // Phase 4 多拠点: テナント内の店舗・拠点
   ssoConfigs: SsoConfigRepository; // Phase 4 Enterprise: テナント単位の SAML SSO 設定
   lineConfigs: LineConfigRepository; // Phase 2 フォローアップ: テナント単位の LINE 連携設定
+  settingsAudit: SettingsAuditLogRepository; // §4.2 フォローアップ: 設定変更監査ログ
 }
 
 // run() のオプション

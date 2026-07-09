@@ -120,6 +120,10 @@ describe('updateLineConfig', () => {
     expect(saved?.channelSecret).toBe('s1');
     expect(saved?.channelAccessToken).toBe('t1');
     expect(saved?.botUserId).toBe(BOT_USER_ID_A);
+    // §4.2 フォローアップ: 監査ログに記録されること
+    const auditLogs = await repos.settingsAudit.findAllByTenant({ tenantId: TENANT_ID });
+    expect(auditLogs).toHaveLength(1);
+    expect(auditLogs[0].action).toBe('line_config_update');
   });
 
   // 書き込み専用フィールドの中核仕様: 既存設定がある状態で channelSecret / channelAccessToken を

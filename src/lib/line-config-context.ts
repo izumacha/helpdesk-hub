@@ -7,10 +7,11 @@ import { repos } from '@/data';
 // LINE 連携機能のプランゲート (Pro / Enterprise のみ)
 import { isLineIntegrationAllowed } from '@/lib/plan-guard';
 // 「ログイン済み・admin・自テナント」の共通プリミティブ (sso-context.ts と共有)
-import { assertTenantAdmin } from '@/lib/tenant-admin-gate';
+import { assertTenantAdmin, type TenantAdminGate } from '@/lib/tenant-admin-gate';
 
-// LINE 連携設定変更の前提検証結果
-export type LineConfigAdminGate = { ok: true; tenantId: string } | { ok: false; error: string };
+// LINE 連携設定変更の前提検証結果。TenantAdminGate と全く同じ形状なので、
+// 個別に再宣言せず型エイリアスにして将来のドリフト (片方だけ更新し忘れる) を防ぐ
+export type LineConfigAdminGate = TenantAdminGate;
 
 // LINE 連携設定変更の前提 (ログイン済み・admin・Pro/Enterprise プラン) をまとめて検証する。
 export async function assertLineConfigAdmin(): Promise<LineConfigAdminGate> {
@@ -24,8 +25,8 @@ export async function assertLineConfigAdmin(): Promise<LineConfigAdminGate> {
   if (!isLineIntegrationAllowed(tenant.subscriptionPlan)) {
     return { ok: false, error: 'LINE 連携は Pro / Enterprise プランでのみ利用できます。' };
   }
-  // すべて満たしたので tenantId を返す
-  return { ok: true, tenantId: gate.tenantId };
+  // すべて満たしたので tenantId / userId を返す
+  return { ok: true, tenantId: gate.tenantId, userId: gate.userId };
 }
 
 // LINE 連携設定の削除専用ゲート: 「ログイン済み・admin・自テナント」のみを検証し、

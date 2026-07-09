@@ -52,6 +52,18 @@ enum HistoryField {
   escalation // エスカレーション (理由付き)
 }
 
+// 設定変更監査ログ (SettingsAuditLog) の対象アクション種別。
+// 値の変更前後 (oldValue/newValue) は記録しない設計 (下記 SettingsAuditLog のコメント参照) ため、
+// 「何をしたか」を表す粒度の粗いアクション名だけを列挙する。追加時はここと HISTORY_FIELD_LABELS
+// 相当の日本語ラベル (src/lib/constants.ts の SETTINGS_AUDIT_ACTION_LABELS) を必ず両方更新する
+enum SettingsAuditAction {
+  sso_config_update // SSO 設定の作成・更新
+  sso_config_delete // SSO 設定の削除
+  line_config_update // LINE 連携設定の作成・更新
+  line_config_delete // LINE 連携設定の削除
+  notification_channels_update // 通知チャネル (Slack/Teams/Chatwork) 設定の更新
+}
+
 // FAQ 候補の状態
 enum FaqStatus {
   Candidate // 候補 (未公開)
@@ -144,18 +156,19 @@ model Tenant {
   createdAt DateTime @default(now()) // 作成日時
 
   // 配下のリソース (テナント削除で連鎖削除)
-  users           User[]
-  categories      Category[]
-  tickets         Ticket[]
-  faqCandidates   FaqCandidate[]
-  notifications   Notification[]
-  attachments     Attachment[] // 添付ファイル (テナント境界の保持に必須)
-  invitations     Invitation[] // メンバー招待リンク (発行〜受諾までのワンタイムトークン)
-  emailThreadRefs EmailThreadRef[] // メールスレッド継続用の Message-ID 対応表 (Phase 2)
-  lineMessageRefs LineMessageRef[] // LINE メッセージ ID → チケット 対応表 (取り込みの冪等化 / Phase 2)
-  locations       Location[] // Phase 4 多拠点: テナント内の店舗・拠点
-  ssoConfig       TenantSsoConfig? // Phase 4 Enterprise: SAML SSO 設定 (1 テナント 1 件・未設定なら null)
-  lineConfig      TenantLineConfig? // Phase 2 フォローアップ: LINE 公式アカウント連携設定 (1 テナント 1 件・未設定なら null)
+  users             User[]
+  categories        Category[]
+  tickets           Ticket[]
+  faqCandidates     FaqCandidate[]
+  notifications     Notification[]
+  attachments       Attachment[] // 添付ファイル (テナント境界の保持に必須)
+  invitations       Invitation[] // メンバー招待リンク (発行〜受諾までのワンタイムトークン)
+  emailThreadRefs   EmailThreadRef[] // メールスレッド継続用の Message-ID 対応表 (Phase 2)
+  lineMessageRefs   LineMessageRef[] // LINE メッセージ ID → チケット 対応表 (取り込みの冪等化 / Phase 2)
+  locations         Location[] // Phase 4 多拠点: テナント内の店舗・拠点
+  ssoConfig         TenantSsoConfig? // Phase 4 Enterprise: SAML SSO 設定 (1 テナント 1 件・未設定なら null)
+  lineConfig        TenantLineConfig? // Phase 2 フォローアップ: LINE 公式アカウント連携設定 (1 テナント 1 件・未設定なら null)
+  settingsAuditLogs SettingsAuditLog[] // 設定変更監査ログ (SSO/LINE/通知チャネル設定の変更履歴)
 }
 
 // Phase 4 Enterprise: テナント単位の SAML シングルサインオン (SSO) 設定。
@@ -226,13 +239,14 @@ model User {
   tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
 
   // Relations
-  createdTickets      Ticket[]        @relation("TicketCreator") // このユーザーが作ったチケット
-  assignedTickets     Ticket[]        @relation("TicketAssignee") // このユーザーが担当のチケット
+  createdTickets      Ticket[]           @relation("TicketCreator") // このユーザーが作ったチケット
+  assignedTickets     Ticket[]           @relation("TicketAssignee") // このユーザーが担当のチケット
   comments            TicketComment[] // このユーザーが投稿したコメント
   histories           TicketHistory[] // このユーザーが起こした履歴イベント
   faqCandidates       FaqCandidate[] // このユーザーが作成した FAQ 候補
   notifications       Notification[] // このユーザー宛の通知
   uploadedAttachments Attachment[] // このユーザーがアップロードした添付ファイル
+  settingsAuditLogs   SettingsAuditLog[] // このユーザーが行った設定変更の監査ログ
 
   @@unique([tenantId, lineUserId]) // テナント内で 1 LINE ユーザー = 1 メンバー (NULL は重複可)
   @@index([tenantId]) // テナントスコープ検索用
@@ -446,6 +460,32 @@ model TicketHistory {
 
   ticket    Ticket @relation(fields: [ticketId], references: [id], onDelete: Cascade) // 親チケット削除時に履歴も削除
   changedBy User   @relation(fields: [changedById], references: [id]) // 変更者
+}
+
+// ─────────────────────────────────────────────
+// SettingsAuditLog (チケット以外の設定変更の監査ログ)
+// ─────────────────────────────────────────────
+// 監査で発見したギャップ (docs/smb-dx-pivot-plan.md §4.2 フォローアップ): 監査ログ画面
+// (/audit, Pro/Enterprise 限定) は TicketHistory (チケットの状態/優先度/担当者/エスカレーション
+// 変更) しか表示しておらず、SSO 設定・LINE 連携設定・通知チャネル設定の変更 (誰が IdP 証明書を
+// 差し替えたか、誰が Webhook URL を変更したか等) が監査対象から漏れていた。
+//
+// TicketHistory と異なり oldValue/newValue は記録しない設計にする: これらの設定は
+// channelSecret (LINE) / idpX509Cert (SSO) / chatworkApiToken (通知チャネル) のような
+// 秘匿情報を含み、変更前後の値をログに残すこと自体が §9 の「秘密情報をログに残さない」
+// 方針に反するため。「誰が・いつ・何をしたか (action)」だけを記録する粒度に留める。
+model SettingsAuditLog {
+  id        String              @id @default(cuid()) // 主キー
+  action    SettingsAuditAction // 実行された操作の種別
+  createdAt DateTime            @default(now()) // 操作日時
+
+  tenantId String // 対象テナント (クロステナント漏洩防止のスコープ)
+  actorId  String // 操作を行ったユーザー
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade) // テナント削除で監査ログも削除
+  actor  User   @relation(fields: [actorId], references: [id]) // 操作者
+
+  @@index([tenantId, createdAt]) // 監査ログ一覧 (テナントスコープ・新しい順) の検索用
 }
 
 // ─────────────────────────────────────────────
