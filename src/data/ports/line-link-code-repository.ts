@@ -3,8 +3,7 @@
 // docs/smb-dx-pivot-plan.md §4 Phase 2.1 フォローアップ。連携コード送信での紐付け成立は
 // 起票を伴わないため、lineMessages (LineMessageRef) 対応表の対象外になる。連携成功直後に
 // Webhook 応答が遅延して LINE が同一メッセージを再送すると、2 回目はコードが既に消費済みで
-// invalid になり、コード文字列そのものが本文の問い合わせとして誤起票され得た
-// (src/lib/line-link-code-dedup.ts のコメント参照)。
+// invalid になり、コード文字列そのものが本文の問い合わせとして誤起票され得た。
 //
 // /code-review ultra 指摘対応: 従来はインプロセス Map (TTL 10分) で冪等化していたが、
 // 連携成功直後 (TTL 以内) にプロセス再起動/デプロイが挟まると水平スケール前でも
