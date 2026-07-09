@@ -315,3 +315,33 @@ describe('TenantRepository.listActiveTrials (memory)', () => {
     expect(result).toHaveLength(2);
   });
 });
+
+// §7.2.1 Free trial 終了リマインダーの冪等化フラグ updateTrialReminderLastSent の単体テスト。
+describe('TenantRepository.updateTrialReminderLastSent (memory)', () => {
+  beforeEach(() => {
+    const ctx = createMemoryContext();
+    store = ctx.store;
+    repos = ctx.repos;
+    seed();
+  });
+
+  // マイルストーンを永続化できる
+  it('マイルストーンを永続化できる', async () => {
+    const updated = await repos.tenants.updateTrialReminderLastSent(TENANT_A, 5);
+    expect(updated.trialReminderLastSentDaysBefore).toBe(5);
+    const reloaded = await repos.tenants.findById(TENANT_A);
+    expect(reloaded?.trialReminderLastSentDaysBefore).toBe(5);
+  });
+
+  // 分離: あるテナントの更新が他テナントに波及しない
+  it('他テナントのフラグには影響しない', async () => {
+    await repos.tenants.updateTrialReminderLastSent(TENANT_A, 5);
+    const tenantB = await repos.tenants.findById(TENANT_B);
+    expect(tenantB?.trialReminderLastSentDaysBefore ?? null).toBeNull();
+  });
+
+  // 異常系: 存在しないテナント ID はエラーになる (fail-closed)
+  it('存在しないテナント ID はエラーになる', async () => {
+    await expect(repos.tenants.updateTrialReminderLastSent('no-such-tenant', 5)).rejects.toThrow();
+  });
+});

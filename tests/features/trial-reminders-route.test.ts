@@ -57,11 +57,12 @@ function makeRequest(token?: string): Request {
   });
 }
 
-// 指定の trialEndsAt / subscriptionPlan でテナントをシードする
+// 指定の trialEndsAt / subscriptionPlan / 送信済みマイルストーンでテナントをシードする
 function seedTenant(
   id: string,
   trialEndsAt: Date | null,
   subscriptionPlan: 'free' | 'standard' = 'free',
+  trialReminderLastSentDaysBefore: number | null = null,
 ) {
   store.tenants.set(id, {
     id,
@@ -75,6 +76,7 @@ function seedTenant(
     stripeSubscriptionId: null,
     stripeSubscriptionStatus: null,
     trialEndsAt,
+    trialReminderLastSentDaysBefore,
     teamsWebhookUrl: null,
     chatworkApiToken: null,
     chatworkRoomId: null,
@@ -154,15 +156,47 @@ describe('POST /api/internal/trial-reminders', () => {
     expect(sentMessages[0].to).toBe('admin@example.com');
   });
 
-  // リマインダー対象日でなければ送信しない
-  it('対象日でなければ送信しない', async () => {
-    seedTenant('t1', new Date(Date.now() + 3 * 24 * 60 * 60 * 1000));
+  // まだどのマイルストーンにも達していなければ送信しない
+  it('マイルストーン未到達なら送信しない', async () => {
+    seedTenant('t1', new Date(Date.now() + 6 * 24 * 60 * 60 * 1000));
     seedAdmin('t1', 'admin@example.com');
     const POST = await loadRoute();
     const res = await POST(makeRequest());
     const body = await res.json();
     expect(body.remindersSent).toBe(0);
     expect(sentMessages).toHaveLength(0);
+  });
+
+  // 既に同じマイルストーンを送信済みなら再送しない (workflow_dispatch の手動再実行や
+  // 同日の複数回実行での二重送信防止)
+  it('送信済みのマイルストーンは再送しない', async () => {
+    seedTenant('t1', new Date(Date.now() + 5 * 24 * 60 * 60 * 1000), 'free', 5);
+    seedAdmin('t1', 'admin@example.com');
+    const POST = await loadRoute();
+    const res = await POST(makeRequest());
+    const body = await res.json();
+    expect(body.remindersSent).toBe(0);
+    expect(sentMessages).toHaveLength(0);
+  });
+
+  // 5日のマイルストーンを送信済みでも、1日のマイルストーンに新たに到達すれば送信する
+  it('次のマイルストーンには送信する', async () => {
+    seedTenant('t1', new Date(Date.now() + 1 * 24 * 60 * 60 * 1000), 'free', 5);
+    seedAdmin('t1', 'admin@example.com');
+    const POST = await loadRoute();
+    const res = await POST(makeRequest());
+    const body = await res.json();
+    expect(body.remindersSent).toBe(1);
+    expect(sentMessages).toHaveLength(1);
+  });
+
+  // 送信成功後は trialReminderLastSentDaysBefore が永続化されること
+  it('送信成功後にマイルストーンを永続化する', async () => {
+    seedTenant('t1', new Date(Date.now() + 5 * 24 * 60 * 60 * 1000));
+    seedAdmin('t1', 'admin@example.com');
+    const POST = await loadRoute();
+    await POST(makeRequest());
+    expect(store.tenants.get('t1')?.trialReminderLastSentDaysBefore).toBe(5);
   });
 
   // standard プラン (トライアル対象外) には送信しない
@@ -204,5 +238,9 @@ describe('POST /api/internal/trial-reminders', () => {
     // 失敗したテナントはカウントされないが、成功したテナントは送信済みになる
     expect(body.remindersSent).toBe(1);
     expect(sentMessages.map((m) => m.to)).toEqual(['ok@example.com']);
+    // 失敗したテナントはマイルストーンを永続化しない (次回実行時に再試行できるようにする)
+    expect(store.tenants.get('t-fail')?.trialReminderLastSentDaysBefore).toBeNull();
+    // 成功したテナントは永続化される
+    expect(store.tenants.get('t-ok')?.trialReminderLastSentDaysBefore).toBe(5);
   });
 });

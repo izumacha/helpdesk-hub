@@ -332,10 +332,13 @@ src/data/adapters/inbound/line-bot.ts        # 新規 (Phase 2)
   `UserRepository.listAdminEmails`（admin 限定。課金操作が admin 限定なのと同じ理由）へ送る。
 - `POST /api/internal/trial-reminders` を共有シークレット (`TRIAL_REMINDER_CRON_SECRET`) 認証の
   内部エンドポイントとして実装し、`.github/workflows/trial-reminders.yml` が毎日 1 回叩く
-  （`scripts/backup-db.sh` + `backup.yml` と同じ「daily cron」設計に揃える）。
-- 送信済みフラグを DB に持たず、「残り日数がちょうど 5 日 / 1 日の日だけ送る」ことで
-  1 日 1 回の cron 実行を前提に冪等性を担保する（cron が確実に毎日動く前提。将来複数回/日
-  実行するようになった場合は送信済みフラグの追加を検討する）。
+  （`scripts/backup-db.sh` + `backup.yml` と同じ「daily cron」設計をベースにする）。
+- `/code-review ultra` 指摘対応: 当初「残り日数がちょうど 5 日 / 1 日の日だけ送る」設計だったが、
+  GitHub Actions の cron は手動再実行 (`workflow_dispatch`)・遅延・欠落がありうる best-effort な
+  実行であるため、ちょうどの日を通り過ぎて取りこぼしたり、手動再実行で同日に二重送信したりする
+  恐れがあった。`Tenant.trialReminderLastSentDaysBefore` に直近送信済みのマイルストーンを永続化し、
+  「まだ送っていない最も緊急なマイルストーンに達していれば送る」方式 (`resolveTrialReminderMilestone`)
+  に変更することで、cron が何度・いつ叩かれても二重送信・取りこぼしの両方を防ぐ。
 
 ---
 

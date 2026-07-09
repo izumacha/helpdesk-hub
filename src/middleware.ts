@@ -23,9 +23,15 @@ export default auth((req) => {
   // ルート側で HMAC 署名検証 (stripe.webhooks.constructEvent) を行うため、
   // セッション認証ガードの対象外にする (Phase 4 課金)。
   const isApiWebhook = req.nextUrl.pathname.startsWith('/api/webhooks/');
+  // 内部 cron 専用エンドポイント (例: trial-reminders) はブラウザセッションを持たず、
+  // GitHub Actions 等の定期実行ジョブから共有シークレット (Authorization: Bearer) で
+  // 叩かれる。ルート側で timingSafeEqual による検証を行うため、ここでは
+  // isApiInbound / isApiWebhook と同じ理由でセッション認証ガードの対象外にする
+  // (§7.2.1 Free trial 終了リマインダー)。
+  const isApiInternal = req.nextUrl.pathname.startsWith('/api/internal/');
   const isApiRoute = req.nextUrl.pathname.startsWith('/api/');
 
-  if (isApiAuth || isApiInbound || isApiWebhook) return NextResponse.next();
+  if (isApiAuth || isApiInbound || isApiWebhook || isApiInternal) return NextResponse.next();
 
   if (isApiRoute) {
     if (!isLoggedIn) {

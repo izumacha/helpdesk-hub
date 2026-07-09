@@ -70,6 +70,10 @@ export interface Tenant {
   // §7.2「30日間の Free trial (Standard 相当)」。トライアル終了日時 (対象外/終了済みなら null)。
   // resolveEffectivePlan() がこの期限内だけ Standard 相当としてゲート判定する
   trialEndsAt: Date | null;
+  // §7.2.1 Free trial 終了リマインダーの冪等化フラグ (直近に送信済みのマイルストーン。未送信は null)。
+  // 既存フィクスチャ・呼び出しを壊さないよう任意 (optional) とし、アダプタは常に null か値で埋める
+  // (User.lineUserId と同じパターン)
+  trialReminderLastSentDaysBefore?: number | null;
   createdAt: Date; // 作成日時
 }
 

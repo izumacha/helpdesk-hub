@@ -55,4 +55,8 @@ export interface TenantRepository {
   // 持たせる)。呼び出し側 (定期実行のリマインダー処理) が各テナントの残り日数からリマインド
   // 要否を判定する (このメソッド自体はリマインダー送信要否を判定しない)
   listActiveTrials(now: Date, limit: number): Promise<Tenant[]>;
+  // §7.2.1 Free trial 終了リマインダーの冪等化フラグを更新する。cron の手動再実行 (workflow_dispatch)・
+  // 遅延・欠落があっても同じマイルストーン (5 | 1) を二重送信しないよう、送信成功後に呼ぶ。
+  // id はセッション/cron由来のテナント ID のみを渡すこと (クロステナント更新防止)
+  updateTrialReminderLastSent(id: string, daysBefore: number): Promise<Tenant>;
 }
