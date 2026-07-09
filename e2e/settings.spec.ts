@@ -10,19 +10,27 @@ import { test, expect, Page } from '@playwright/test';
 
 // 共通ログイン手順 (他の e2e spec と同じパターン)
 async function login(page: Page, email: string) {
+  // ログインページへ遷移する
   await page.goto('/login');
+  // メールアドレスを入力する
   await page.getByLabel(/メールアドレス|Email/i).fill(email);
+  // 共通パスワードを入力する
   await page.getByLabel(/パスワード|Password/i).fill('password123');
+  // ログインボタンを押下する
   await page.getByRole('button', { name: /ログイン/i }).click();
+  // ロールに応じたリダイレクト先まで待機する
   await page.waitForURL(/\/dashboard|\/tickets/);
 }
 
 test.describe('/settings 設定ページ', () => {
   // 管理者 (admin@example.com) は設定ハブの主要セクションを閲覧できる
   test('管理者は設定ページの主要セクションを閲覧できる', async ({ page }) => {
+    // 管理者としてログインする
     await login(page, 'admin@example.com');
+    // 設定画面へ移動する
     await page.goto('/settings');
 
+    // ページタイトルが表示される
     await expect(page.getByRole('heading', { name: '設定', exact: true })).toBeVisible();
     // 動作モード (Lite/Pro 切替) セクション
     await expect(page.getByRole('heading', { name: '動作モード' })).toBeVisible();
@@ -34,20 +42,28 @@ test.describe('/settings 設定ページ', () => {
 
   // 依頼者 (requester) は管理者専用メッセージのみ表示され、設定セクションは見えない
   test('依頼者は設定ページを閲覧できず管理者専用メッセージが表示される', async ({ page }) => {
+    // 依頼者としてログインする
     await login(page, 'requester1@example.com');
+    // 設定画面へ移動する
     await page.goto('/settings');
 
+    // 管理者専用メッセージが表示される
     await expect(page.getByText('この画面は管理者のみ利用できます。')).toBeVisible();
+    // 設定セクションは表示されない
     await expect(page.getByRole('heading', { name: '動作モード' })).toHaveCount(0);
   });
 
   // エージェント (agent) も admin 専用であり、isAgent(role) ではなく role==='admin' の
   // 直接比較を採用している設計を検証する
   test('エージェントも管理者専用メッセージが表示され閲覧できない', async ({ page }) => {
+    // エージェントとしてログインする
     await login(page, 'agent1@example.com');
+    // 設定画面へ移動する
     await page.goto('/settings');
 
+    // 管理者専用メッセージが表示される
     await expect(page.getByText('この画面は管理者のみ利用できます。')).toBeVisible();
+    // 設定セクションは表示されない
     await expect(page.getByRole('heading', { name: '動作モード' })).toHaveCount(0);
   });
 
@@ -55,7 +71,9 @@ test.describe('/settings 設定ページ', () => {
   test('未認証で /settings にアクセスするとログインページへリダイレクトされる', async ({
     page,
   }) => {
+    // 未認証のまま設定画面へアクセスする
     await page.goto('/settings');
+    // ログインページへリダイレクトされるまで待機する
     await page.waitForURL(/\/login/);
   });
 });
