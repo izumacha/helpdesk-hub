@@ -35,6 +35,13 @@ export type SettingsAuditAction =
   | 'line_config_delete' // LINE 連携設定の削除
   | 'notification_channels_update'; // 通知チャネル設定の更新
 
+// Phase 4 外部通知チャネルの識別キー (Tenant.<channel>WebhookUrl 等・
+// <channel>LastFailureAt/Message 列に対応)。src/data/ports/tenant-repository.ts
+// (recordOutboundChannelResult) と src/lib/outbound-notify.ts の唯一の参照元。
+// 値を追加したら両アダプタの switch (tenant-repository.{prisma,memory}.ts) と
+// outbound-notify.ts の channelHasRecordedFailure・settings 画面も更新すること
+export type OutboundChannelKey = 'slack' | 'teams' | 'chatwork';
+
 // FAQ 候補の公開状態 (候補/公開中/却下)
 export type FaqStatus = 'Candidate' | 'Published' | 'Rejected';
 
@@ -72,6 +79,15 @@ export interface Tenant {
   chatworkApiToken: string | null;
   // Phase 4: 外部通知チャネル。投稿先の Chatwork ルーム ID (数字文字列。null なら通知無効)
   chatworkRoomId: string | null;
+  // 外部通知チャネルの直近送信失敗 (履歴は持たず直近 1 件のみ。成功したら null に戻る)。
+  // 既存フィクスチャ・呼び出しを壊さないよう任意 (optional) とし、アダプタは常に null か値で埋める
+  // (trialReminderLastSentDaysBefore と同じパターン)
+  slackLastFailureAt?: Date | null;
+  slackLastFailureMessage?: string | null;
+  teamsLastFailureAt?: Date | null;
+  teamsLastFailureMessage?: string | null;
+  chatworkLastFailureAt?: Date | null;
+  chatworkLastFailureMessage?: string | null;
   // Phase 4 課金: Stripe Billing 連携フィールド
   subscriptionPlan: SubscriptionPlan; // 現在の課金プラン (既定: free)
   stripeCustomerId: string | null; // Stripe Customer ID (cu_xxx)

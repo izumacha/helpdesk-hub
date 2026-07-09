@@ -1,5 +1,5 @@
-// ドメイン層の Tenant 型とテナントモード・課金プラン型を参照
-import type { SubscriptionPlan, Tenant, TenantMode } from '@/domain/types';
+// ドメイン層の Tenant 型とテナントモード・課金プラン型・外部通知チャネルキー型を参照
+import type { OutboundChannelKey, SubscriptionPlan, Tenant, TenantMode } from '@/domain/types';
 
 // Tenant 操作の契約 (port)。取得系に加え、Lite/Pro モード切替の更新系を提供する
 export interface TenantRepository {
@@ -59,4 +59,13 @@ export interface TenantRepository {
   // 遅延・欠落があっても同じマイルストーン (5 | 1) を二重送信しないよう、送信成功後に呼ぶ。
   // id はセッション/cron由来のテナント ID のみを渡すこと (クロステナント更新防止)
   updateTrialReminderLastSent(id: string, daysBefore: number): Promise<Tenant>;
+  // Phase 4: 外部通知チャネル (Slack/Teams/Chatwork) 1 件の送信結果を記録する。
+  // failure に { message, at } を渡すと直近の失敗として記録し、null を渡すと直近の失敗記録を
+  // クリアする (次の送信が成功したとき呼ぶ)。履歴は持たず直近 1 件のみを保持する設計 (§6 一元管理)。
+  // id はセッション/内部呼び出し由来の tenantId のみを渡すこと (クロステナント更新防止)
+  recordOutboundChannelResult(
+    id: string,
+    channel: OutboundChannelKey,
+    failure: { message: string; at: Date } | null,
+  ): Promise<Tenant>;
 }

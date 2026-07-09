@@ -159,5 +159,35 @@ export function makeTenantRepo(store: Store): TenantRepository {
       // 防御的コピーを返す
       return { ...updated };
     },
+
+    // Phase 4: 外部通知チャネル 1 件の送信結果を記録する (失敗時は日時+メッセージ、成功時は null でクリア)
+    async recordOutboundChannelResult(id, channel, failure) {
+      // 対象テナントを Map から取得 (存在しなければエラー)
+      const t = store.tenants.get(id);
+      if (!t) throw new Error('テナントが見つかりません');
+      // 失敗時は日時とメッセージを、成功 (クリア) 時は両方 null にする
+      const at = failure ? failure.at : null;
+      const message = failure ? failure.message : null;
+      // 更新後のテナント (チャネルに応じて書き換えるフィールドが変わる)
+      let updated: Tenant;
+      // チャネルキーで分岐する (3 種類のみなので switch で列挙する)
+      switch (channel) {
+        case 'slack':
+          // Slack 用の 2 フィールドだけを差し替えた新しいオブジェクトを作る
+          updated = { ...t, slackLastFailureAt: at, slackLastFailureMessage: message };
+          break; // 他のケースに落ちないよう抜ける
+        case 'teams':
+          // Teams 用の 2 フィールドだけを差し替えた新しいオブジェクトを作る
+          updated = { ...t, teamsLastFailureAt: at, teamsLastFailureMessage: message };
+          break; // 他のケースに落ちないよう抜ける
+        case 'chatwork':
+          // Chatwork 用の 2 フィールドだけを差し替えた新しいオブジェクトを作る
+          updated = { ...t, chatworkLastFailureAt: at, chatworkLastFailureMessage: message };
+          break; // 他のケースに落ちないよう抜ける
+      }
+      store.tenants.set(id, updated);
+      // 防御的コピーを返す
+      return { ...updated };
+    },
   };
 }

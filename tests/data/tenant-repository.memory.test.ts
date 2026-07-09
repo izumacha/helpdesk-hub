@@ -345,3 +345,60 @@ describe('TenantRepository.updateTrialReminderLastSent (memory)', () => {
     await expect(repos.tenants.updateTrialReminderLastSent('no-such-tenant', 5)).rejects.toThrow();
   });
 });
+
+// 監査で発見したギャップ対応: 外部通知チャネルの直近送信結果を記録する
+// recordOutboundChannelResult の単体テスト。チャネルごとのカラム分離・テナント分離・
+// 失敗記録のクリアを確認する。
+describe('TenantRepository.recordOutboundChannelResult (memory)', () => {
+  beforeEach(() => {
+    const ctx = createMemoryContext();
+    store = ctx.store;
+    repos = ctx.repos;
+    seed();
+  });
+
+  // Slack の失敗を記録できる (Teams/Chatwork には影響しない)
+  it('指定チャネルの失敗だけを記録し他チャネルには影響しない', async () => {
+    const at = new Date('2026-07-09T12:00:00Z');
+    const updated = await repos.tenants.recordOutboundChannelResult(TENANT_A, 'slack', {
+      message: 'HTTP 404',
+      at,
+    });
+    expect(updated.slackLastFailureAt).toEqual(at);
+    expect(updated.slackLastFailureMessage).toBe('HTTP 404');
+    // Teams/Chatwork は未記録のまま
+    expect(updated.teamsLastFailureAt ?? null).toBeNull();
+    expect(updated.chatworkLastFailureAt ?? null).toBeNull();
+  });
+
+  // null を渡すと失敗記録がクリアされる (次回送信成功時の呼び出しを想定)
+  it('null を渡すと失敗記録がクリアされる', async () => {
+    await repos.tenants.recordOutboundChannelResult(TENANT_A, 'teams', {
+      message: 'timeout',
+      at: new Date(),
+    });
+    const cleared = await repos.tenants.recordOutboundChannelResult(TENANT_A, 'teams', null);
+    expect(cleared.teamsLastFailureAt ?? null).toBeNull();
+    expect(cleared.teamsLastFailureMessage ?? null).toBeNull();
+  });
+
+  // 分離: あるテナントの記録が他テナントに波及しない
+  it('他テナントの記録には影響しない', async () => {
+    await repos.tenants.recordOutboundChannelResult(TENANT_A, 'chatwork', {
+      message: 'HTTP 401',
+      at: new Date(),
+    });
+    const tenantB = await repos.tenants.findById(TENANT_B);
+    expect(tenantB?.chatworkLastFailureAt ?? null).toBeNull();
+  });
+
+  // 異常系: 存在しないテナント ID はエラーになる (fail-closed)
+  it('存在しないテナント ID はエラーになる', async () => {
+    await expect(
+      repos.tenants.recordOutboundChannelResult('no-such-tenant', 'slack', {
+        message: 'x',
+        at: new Date(),
+      }),
+    ).rejects.toThrow();
+  });
+});

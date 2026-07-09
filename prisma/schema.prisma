@@ -131,6 +131,17 @@ model Tenant {
   chatworkApiToken String? // Chatwork API トークン (null=通知無効)
   chatworkRoomId   String? // 投稿先の Chatwork ルーム ID (数字文字列。null=通知無効)
 
+  // 監査で発見したギャップ: 外部通知チャネルの送信失敗はこれまでサーバーログにしか残らず、
+  // 管理者は Webhook URL の失効・トークン失効に気づく手段が無かった (docs/smb-dx-pivot-plan.md
+  // §4 Phase 4)。チャネルごとに直近の失敗日時・メッセージだけを保持し (履歴は持たない)、
+  // 次の送信が成功したら null に戻す (settings 画面での「⚠️ 最終送信失敗」表示に使う)。
+  slackLastFailureAt         DateTime? // Slack 直近送信失敗日時 (成功後は null に戻る)
+  slackLastFailureMessage    String? // Slack 直近送信失敗の概要メッセージ
+  teamsLastFailureAt         DateTime? // Teams 直近送信失敗日時 (成功後は null に戻る)
+  teamsLastFailureMessage    String? // Teams 直近送信失敗の概要メッセージ
+  chatworkLastFailureAt      DateTime? // Chatwork 直近送信失敗日時 (成功後は null に戻る)
+  chatworkLastFailureMessage String? // Chatwork 直近送信失敗の概要メッセージ
+
   // Phase 4 課金: Stripe Billing 連携フィールド。
   // Stripe ダッシュボードと連携して Free/Standard/Pro のサブスクを管理する。
   // subscriptionPlan は課金状態に応じて Stripe Webhook 受信時に自動更新される。

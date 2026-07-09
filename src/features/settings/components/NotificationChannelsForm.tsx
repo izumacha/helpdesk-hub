@@ -4,6 +4,14 @@
 import { useActionState, useTransition } from 'react';
 // 外部通知チャネル設定を更新するサーバーアクション
 import { updateNotificationChannels } from '@/features/settings/actions/update-notification-channels';
+// 日本時間 (Asia/Tokyo) を明示してフォーマットする共通関数 (ブラウザのタイムゾーンに依存させない §6 一元管理)
+import { formatDateTimeJP } from '@/lib/format-date';
+
+// 1 チャネル分の直近送信失敗情報 (未発生なら null)
+interface ChannelFailure {
+  at: Date; // 直近の失敗日時
+  message: string; // 失敗の概要メッセージ (Webhook/API のエラー応答由来)
+}
 
 // フォームが受け取る props (現在設定済みの各チャネル値)
 interface Props {
@@ -11,6 +19,26 @@ interface Props {
   teamsWebhookUrl: string | null; // 現在の Teams Incoming Webhook URL (未設定なら null)
   chatworkApiToken: string | null; // 現在の Chatwork API トークン (未設定なら null)
   chatworkRoomId: string | null; // 現在の Chatwork ルーム ID (未設定なら null)
+  // 監査で発見したギャップ対応: 各チャネルの直近送信失敗 (Tenant.*LastFailureAt/Message から)。
+  // 未発生・既にクリア済みなら null
+  slackFailure: ChannelFailure | null;
+  teamsFailure: ChannelFailure | null;
+  chatworkFailure: ChannelFailure | null;
+}
+
+// 直近送信失敗の警告バッジ。色だけでなく「⚠️」と文言でも状態を伝える (§7 a11y)。
+// role="alert" は付けない: これは初回表示 (SSR) から存在する静的な状態表示であり、
+// フォーム送信後に動的に現れる state.error/state.success (下記) とは異なり
+// 「即時に読み上げてほしい変化」ではないため (CLAUDE.md §7 aria-live の使いどころ)
+function ChannelFailureBadge({ failure }: { failure: ChannelFailure | null }) {
+  // 失敗記録が無ければ何も表示しない (正常系)
+  if (!failure) return null;
+  return (
+    <p className="mt-1 text-xs text-rose-700">
+      {/* JST を明示するフォーマッタで統一する (ブラウザのタイムゾーンに依存させない) */}
+      ⚠️ 最終送信失敗: {formatDateTimeJP(failure.at)}（{failure.message}）
+    </p>
+  );
 }
 
 // 入力フィールド共通の Tailwind クラス (見た目を一元管理する)
@@ -28,6 +56,9 @@ export function NotificationChannelsForm({
   teamsWebhookUrl,
   chatworkApiToken,
   chatworkRoomId,
+  slackFailure,
+  teamsFailure,
+  chatworkFailure,
 }: Props) {
   // Server Action のレスポンス状態 (error / success) を管理する
   const [state, formAction] = useActionState(updateNotificationChannels, {});
@@ -63,6 +94,7 @@ export function NotificationChannelsForm({
           autoComplete="off"
           className={fieldClass}
         />
+        <ChannelFailureBadge failure={slackFailure} />
       </div>
 
       {/* ── Microsoft Teams ─────────────────────────────────── */}
@@ -82,6 +114,7 @@ export function NotificationChannelsForm({
           autoComplete="off"
           className={fieldClass}
         />
+        <ChannelFailureBadge failure={teamsFailure} />
       </div>
 
       {/* ── Chatwork ────────────────────────────────────────── */}
@@ -122,6 +155,7 @@ export function NotificationChannelsForm({
             />
           </div>
         </div>
+        <ChannelFailureBadge failure={chatworkFailure} />
       </div>
 
       {/* エラーメッセージ (入力エラーまたは送信失敗) */}
