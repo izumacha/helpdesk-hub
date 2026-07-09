@@ -91,7 +91,9 @@ export function LocationsSection({ locations: initialLocations }: Props) {
   // 削除ハンドラ
   async function handleDelete(locationId: string, locationName: string) {
     // 確認ダイアログを出して誤操作を防ぐ
-    if (!confirm(`「${locationName}」を削除しますか？\n紐づく問い合わせの拠点情報は空になります。`)) {
+    if (
+      !confirm(`「${locationName}」を削除しますか？\n紐づく問い合わせの拠点情報は空になります。`)
+    ) {
       return;
     }
     clearMessages();
@@ -112,13 +114,20 @@ export function LocationsSection({ locations: initialLocations }: Props) {
     <div className="space-y-4">
       {/* エラーメッセージ */}
       {error && (
-        <p role="alert" className="rounded-lg bg-rose-50 px-3 py-2.5 text-sm text-rose-700 ring-1 ring-rose-200">
+        <p
+          role="alert"
+          className="rounded-lg bg-rose-50 px-3 py-2.5 text-sm text-rose-700 ring-1 ring-rose-200"
+        >
           {error}
         </p>
       )}
       {/* 成功メッセージ */}
       {successMsg && (
-        <p role="status" aria-live="polite" className="rounded-lg bg-teal-50 px-3 py-2.5 text-sm text-teal-700 ring-1 ring-teal-200">
+        <p
+          role="status"
+          aria-live="polite"
+          className="rounded-lg bg-teal-50 px-3 py-2.5 text-sm text-teal-700 ring-1 ring-teal-200"
+        >
           {successMsg}
         </p>
       )}
@@ -126,7 +135,7 @@ export function LocationsSection({ locations: initialLocations }: Props) {
       {/* 登録済み拠点の一覧 */}
       {locations.length === 0 ? (
         // 拠点が未登録の場合は空状態を表示
-        <p className="text-sm text-slate-400">拠点はまだ登録されていません。</p>
+        <p className="text-sm text-slate-500">拠点はまだ登録されていません。</p>
       ) : (
         <ul className="space-y-2">
           {locations.map((loc) => (
@@ -185,7 +194,7 @@ export function LocationsSection({ locations: initialLocations }: Props) {
                     )}
                   </div>
                   {/* 操作ボタン: 編集 / 削除 */}
-                  <div className="flex items-center gap-1.5 shrink-0">
+                  <div className="flex shrink-0 items-center gap-1.5">
                     <button
                       type="button"
                       onClick={() => {
@@ -215,7 +224,10 @@ export function LocationsSection({ locations: initialLocations }: Props) {
       {/* 新規追加フォーム / 追加ボタン */}
       {showAddForm ? (
         // 追加フォームを表示中
-        <form onSubmit={handleCreate} className="space-y-3 rounded-lg border border-teal-200 bg-teal-50/40 p-4">
+        <form
+          onSubmit={handleCreate}
+          className="space-y-3 rounded-lg border border-teal-200 bg-teal-50/40 p-4"
+        >
           <p className="text-sm font-medium text-slate-700">新しい拠点を追加</p>
           {/* 拠点名入力 */}
           <input
