@@ -13,6 +13,8 @@ import { repos } from '@/data';
 import { getStripeClient } from '@/lib/stripe';
 // アプリの外部公開 URL を取得するヘルパー
 import { resolveAppBaseUrl } from '@/lib/app-url';
+// 連打防止のための共通レート制限ヘルパー
+import { checkRateLimit } from '@/lib/rate-limit';
 
 // ポータルセッション作成の戻り値型
 interface CreatePortalResult {
@@ -32,6 +34,14 @@ export async function createPortalSession(): Promise<CreatePortalResult> {
   if (session.user.role !== 'admin') {
     return { error: 'この操作は管理者のみ実行できます' };
   }
+
+  // Stripe Customer Portal セッション作成の連打を抑制する (60 秒あたり 10 回まで、テナント単位。
+  // create-checkout-session.ts と同じ上限・キー粒度の方針。Stripe API 呼び出しコスト対策)
+  const rateLimitError = checkRateLimit(`stripe-portal-session:${session.user.tenantId}`, {
+    limit: 10,
+    windowMs: 60_000,
+  });
+  if (rateLimitError) return { error: rateLimitError };
 
   // テナントの Stripe Customer ID を取得する
   const tenant = await repos.tenants.findById(session.user.tenantId);

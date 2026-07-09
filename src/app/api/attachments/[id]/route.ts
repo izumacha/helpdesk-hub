@@ -8,9 +8,17 @@ import { repos } from '@/data';
 import { storage } from '@/data/storage';
 // エージェント権限の判定 (agent | admin で true)
 import { isAgent } from '@/lib/role';
+// Route Handler 向け共通レート制限ラッパー (inbound-email/inbound-line/sso-acs と共有)
+import { checkRouteRateLimit } from '@/lib/route-rate-limit';
 
 // /api/attachments/[id] の動的セグメントを受け取るためのパラメータ型
 type Params = { params: Promise<{ id: string }> };
+
+// 監査で発見したギャップ: 添付ファイル ID は cuid で推測困難だが、他の認可済みルートと
+// 一貫性を取り、総当たりダウンロード試行に対する多層防御としてレート制限を掛ける
+// (CLAUDE.md §9 DoS/リソース枯渇防止)。認証済みユーザー単位で、通常のブラウジング
+// (1 チケットに最大 5 枚の添付を連続表示する程度) を妨げない緩めの上限にする
+const ATTACHMENT_DOWNLOAD_RATE_LIMIT = { limit: 120, windowMs: 60_000 } as const;
 
 // GET /api/attachments/[id] : 認可されたユーザーに添付ファイルのバイト列を返すエンドポイント。
 // 必要な権限チェック:
@@ -35,6 +43,14 @@ export async function GET(_req: Request, { params }: Params) {
   const tenantId = session.user.tenantId;
   const userId = session.user.id;
   const isAgentRole = isAgent(session.user.role);
+
+  // ユーザー単位でダウンロード頻度を制限する (他の Route Handler と同じ 429 契約)
+  const rateLimitResponse = checkRouteRateLimit(
+    `attachment-download:${userId}`,
+    ATTACHMENT_DOWNLOAD_RATE_LIMIT,
+    'リクエストが多すぎます。しばらく時間をおいて再度お試しください',
+  );
+  if (rateLimitResponse) return rateLimitResponse;
 
   // 添付メタを tenantId スコープで取得 (他テナントの ID は null → 404 で握りつぶす)
   const attachment = await repos.attachments.findById(id, tenantId);

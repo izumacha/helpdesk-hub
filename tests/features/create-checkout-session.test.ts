@@ -11,6 +11,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { createMemoryContext, type Store } from '@/data/adapters/memory';
 // リポジトリ束 / UnitOfWork の型
 import type { Repos, UnitOfWork } from '@/data/ports/unit-of-work';
+// レート制限バケットをテスト間で初期化するヘルパー
+import { __resetRateLimits } from '@/lib/rate-limit';
 
 // 各テスト前に書き換える依存。Action import 前に getter で参照させる
 let store: Store;
@@ -86,9 +88,22 @@ beforeEach(() => {
     chatworkRoomId: null,
     createdAt: new Date(),
   });
+  __resetRateLimits();
 });
 
 describe('createCheckoutSession', () => {
+  // 監査で発見したギャップ対応: 60秒あたり10回を超える連打は拒否される (テナント単位)
+  it('60秒あたり10回を超える連打は拒否される', async () => {
+    const createCheckoutSession = await loadAction();
+    for (let i = 0; i < 10; i++) {
+      const result = await createCheckoutSession('standard');
+      expect(result.error).toBeUndefined();
+    }
+    const result = await createCheckoutSession('standard');
+    expect(result.error).toEqual(expect.any(String));
+    expect(result.url).toBeUndefined();
+  });
+
   // 回帰防止: インボイス制度対応 (tax_id_collection) が Checkout セッション作成時に
   // 有効化されていること
   it('tax_id_collection を有効にして Checkout セッションを作成する', async () => {
