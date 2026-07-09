@@ -13,6 +13,8 @@ import { revalidatePath } from 'next/cache';
 import { assertTenantAdmin } from '@/lib/tenant-admin-gate';
 // 連打防止のための共通レート制限ヘルパー
 import { checkRateLimit } from '@/lib/rate-limit';
+// 設定変更監査ログへの記録を共通化するヘルパー
+import { recordSettingsAudit } from '@/lib/settings-audit';
 
 // 作成結果の戻り値型
 export interface CreateLocationResult {
@@ -67,6 +69,15 @@ export async function createLocation(formData: FormData): Promise<CreateLocation
     });
     // 設定ページのキャッシュを無効化して新しい拠点がすぐ反映されるようにする
     revalidatePath('/settings');
+
+    // §4.3 フォローアップ: 監査ログに「誰が拠点を作成したか」を記録する
+    await recordSettingsAudit({
+      tenantId,
+      actorId: gate.userId,
+      action: 'location_create',
+      logPrefix: '[create-location]',
+    });
+
     // 作成された拠点 ID を返す
     return { locationId: location.id };
   } catch (err) {

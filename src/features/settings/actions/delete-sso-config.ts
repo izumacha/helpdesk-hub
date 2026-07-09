@@ -14,6 +14,8 @@ import { repos } from '@/data';
 import { assertSsoConfigOwner } from '@/lib/sso-context';
 // 連打防止のための共通レート制限ヘルパー
 import { checkRateLimit } from '@/lib/rate-limit';
+// 設定変更監査ログへの記録を共通化するヘルパー
+import { recordSettingsAudit } from '@/lib/settings-audit';
 
 // 削除結果型 (useActionState 互換)
 export interface DeleteSsoConfigState {
@@ -47,19 +49,13 @@ export async function deleteSsoConfig(
     // 設定ページのキャッシュを無効化する
     revalidatePath('/settings');
 
-    // §4.2 フォローアップ: 監査ログに「誰が SSO 設定を削除したか」を記録する。
-    // 上の try に含めず独立した try/catch にする理由: 削除は既に完了しているので、
-    // 監査ログの書き込みだけが失敗しても管理者に「削除に失敗した」という誤った
-    // エラーを見せてはいけない (update-ticket.ts の外部通知失敗時と同じ方針)
-    try {
-      await repos.settingsAudit.record({
-        tenantId,
-        actorId: gate.userId,
-        action: 'sso_config_delete',
-      });
-    } catch (auditErr) {
-      console.error('[delete-sso-config] 監査ログの記録に失敗しました:', auditErr);
-    }
+    // §4.2 フォローアップ: 監査ログに「誰が SSO 設定を削除したか」を記録する
+    await recordSettingsAudit({
+      tenantId,
+      actorId: gate.userId,
+      action: 'sso_config_delete',
+      logPrefix: '[delete-sso-config]',
+    });
 
     // 成功を返す
     return { success: true };

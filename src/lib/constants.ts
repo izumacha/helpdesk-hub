@@ -1,5 +1,6 @@
-// チケット状態型・テナントモード型 (lite | pro)・権限型を正準のドメイン型から 1 本でインポート
-import type { TicketStatus, TenantMode, Role } from '@/domain/types';
+// チケット状態型・テナントモード型 (lite | pro)・権限型・設定監査アクション型を
+// 正準のドメイン型から 1 本でインポート
+import type { TicketStatus, TenantMode, Role, SettingsAuditAction } from '@/domain/types';
 // Lite モードの 3 値型と型ガード関数を取り込み、mode-aware ラベル関数で使う
 import { isLiteStatus, type LiteStatus } from '@/domain/ticket-status';
 
@@ -120,12 +121,18 @@ export const HISTORY_FIELD_LABELS: Record<string, string> = {
 // 設定変更監査ログのアクション種別に対応する日本語表示ラベル。
 // SettingsAuditAction 型 (src/domain/types.ts) / SettingsAuditAction enum (prisma/schema.prisma)
 // に値を追加したらここも更新する (§4.2 フォローアップ)
-export const SETTINGS_AUDIT_ACTION_LABELS: Record<string, string> = {
+export const SETTINGS_AUDIT_ACTION_LABELS: Record<SettingsAuditAction, string> = {
   sso_config_update: 'SSO 設定を更新',
   sso_config_delete: 'SSO 設定を削除',
   line_config_update: 'LINE 連携設定を更新',
   line_config_delete: 'LINE 連携設定を削除',
   notification_channels_update: '通知チャネル設定を更新',
+  // §4.3 フォローアップ
+  tenant_mode_update: '動作モードを変更',
+  location_create: '拠点を作成',
+  location_update: '拠点を更新',
+  location_delete: '拠点を削除',
+  inbound_token_regenerate: 'メール転送先アドレスを再発行',
 };
 
 // 通知種別の英語キーに対応する日本語表示ラベル

@@ -56,6 +56,25 @@ describe('createLocation', () => {
     expect(result.error).toBeUndefined();
   });
 
+  // §4.3 フォローアップ: 作成成功時に監査ログへ記録されること
+  it('作成成功時に監査ログへ記録される', async () => {
+    const { createLocation } = await import('@/features/settings/actions/create-location');
+    await createLocation(makeForm('渋谷本店'));
+    const auditLogs = await repos.settingsAudit.findAllByTenant({ tenantId: TENANT_ID });
+    expect(auditLogs).toHaveLength(1);
+    expect(auditLogs[0].action).toBe('location_create');
+    expect(auditLogs[0].actorId).toBe(USER_ID);
+  });
+
+  // §4.2/§4.3 の共通方針: 監査ログの書き込みが失敗しても拠点作成自体は成功として扱われる
+  it('監査ログの書き込みが失敗しても作成自体は成功として扱われる', async () => {
+    vi.spyOn(repos.settingsAudit, 'record').mockRejectedValueOnce(new Error('DB down'));
+    const { createLocation } = await import('@/features/settings/actions/create-location');
+    const result = await createLocation(makeForm('渋谷本店'));
+    expect(result.locationId).toEqual(expect.any(String));
+    expect(result.error).toBeUndefined();
+  });
+
   // admin 以外 (agent) は拒否される
   it('agent ロールは拒否される', async () => {
     sessionRole = 'agent';

@@ -110,6 +110,17 @@ describe('updateTenantMode', () => {
     expect(store.tenants.get(TENANT_ID)?.mode).toBe('pro');
   });
 
+  // §4.3 フォローアップ: モード変更成功時に監査ログへ記録されること
+  it('モード変更成功時に監査ログへ記録される', async () => {
+    seedTenant('pro');
+    const { updateTenantMode } = await import('@/features/settings/actions/update-tenant-mode');
+    await updateTenantMode(makeForm('pro'));
+    const auditLogs = await repos.settingsAudit.findAllByTenant({ tenantId: TENANT_ID });
+    expect(auditLogs).toHaveLength(1);
+    expect(auditLogs[0].action).toBe('tenant_mode_update');
+    expect(auditLogs[0].actorId).toBe(ADMIN_ID);
+  });
+
   // Enterprise プランでも Pro への切替が成功する
   it('Enterprise プランでは Pro への切替が成功する', async () => {
     seedTenant('enterprise');

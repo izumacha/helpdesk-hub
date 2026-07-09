@@ -33,7 +33,14 @@ export type SettingsAuditAction =
   | 'sso_config_delete' // SSO 設定の削除
   | 'line_config_update' // LINE 連携設定の作成・更新
   | 'line_config_delete' // LINE 連携設定の削除
-  | 'notification_channels_update'; // 通知チャネル設定の更新
+  | 'notification_channels_update' // 通知チャネル設定の更新
+  // §4.3 フォローアップ: SSO/LINE/通知チャネルと同じ「管理者による設定変更」でありながら
+  // 監査対象から漏れていた操作
+  | 'tenant_mode_update' // テナントの Lite/Pro モード切替
+  | 'location_create' // 拠点の新規作成
+  | 'location_update' // 拠点の更新
+  | 'location_delete' // 拠点の削除
+  | 'inbound_token_regenerate'; // メール取り込み用転送先アドレスの (再)発行
 
 // Phase 4 外部通知チャネルの識別キー (Tenant.<channel>WebhookUrl 等・
 // <channel>LastFailureAt/Message 列に対応)。src/data/ports/tenant-repository.ts

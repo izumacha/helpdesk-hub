@@ -13,6 +13,8 @@ import { assertLineConfigAdmin } from '@/lib/line-config-context';
 import { LINE_USER_ID_PATTERN } from '@/lib/line-link';
 // 連打防止のための共通レート制限ヘルパー
 import { checkRateLimit } from '@/lib/rate-limit';
+// 設定変更監査ログへの記録を共通化するヘルパー
+import { recordSettingsAudit } from '@/lib/settings-audit';
 
 // 入力長の上限 (DoS・異常入力対策)
 const CHANNEL_SECRET_MAX = 256; // チャネルシークレットの最大長
@@ -93,19 +95,13 @@ export async function updateLineConfig(
     revalidatePath('/settings');
 
     // §4.2 フォローアップ: 監査ログに「誰が LINE 連携設定を更新したか」を記録する
-    // (channelSecret 等の秘匿情報は記録しない。アクション名のみ)。
-    // 上の try に含めず独立した try/catch にする理由: 設定は既に保存済みなので、
-    // 監査ログの書き込みだけが失敗しても管理者に「保存に失敗した」という誤った
-    // エラーを見せてはいけない (update-ticket.ts の外部通知失敗時と同じ方針)
-    try {
-      await repos.settingsAudit.record({
-        tenantId,
-        actorId: gate.userId,
-        action: 'line_config_update',
-      });
-    } catch (auditErr) {
-      console.error('[update-line-config] 監査ログの記録に失敗しました:', auditErr);
-    }
+    // (channelSecret 等の秘匿情報は記録しない。アクション名のみ)
+    await recordSettingsAudit({
+      tenantId,
+      actorId: gate.userId,
+      action: 'line_config_update',
+      logPrefix: '[update-line-config]',
+    });
 
     // 成功を返す
     return { success: true };

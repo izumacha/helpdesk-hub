@@ -16,6 +16,8 @@ import { tenantModeSchema } from '@/lib/validations/tenant';
 import { isProModeAllowed } from '@/lib/plan-guard';
 // テナントの現在プランを解決する共通ヘルパー (複数箇所での重複を避ける)
 import { resolveTenantPlan } from '@/lib/tenant-plan';
+// 設定変更監査ログへの記録を共通化するヘルパー
+import { recordSettingsAudit } from '@/lib/settings-audit';
 
 // テナントの動作モード (lite | pro) を切り替えるサーバーアクション
 export async function updateTenantMode(formData: FormData): Promise<void> {
@@ -54,4 +56,12 @@ export async function updateTenantMode(formData: FormData): Promise<void> {
   revalidatePath('/settings');
   revalidatePath('/tickets');
   revalidatePath('/dashboard');
+
+  // §4.3 フォローアップ: 監査ログに「誰がモードを変更したか」を記録する
+  await recordSettingsAudit({
+    tenantId,
+    actorId: session.user.id,
+    action: 'tenant_mode_update',
+    logPrefix: '[update-tenant-mode]',
+  });
 }

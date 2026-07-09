@@ -99,6 +99,18 @@ describe('regenerateInboundToken', () => {
     expect(updated?.inboundToken).not.toBe('old-token-value');
   });
 
+  // §4.3 フォローアップ: 再発行成功時に監査ログへ記録されること
+  it('再発行成功時に監査ログへ記録される', async () => {
+    seedTenant(null);
+    const { regenerateInboundToken } =
+      await import('@/features/settings/actions/regenerate-inbound-token');
+    await regenerateInboundToken();
+    const auditLogs = await repos.settingsAudit.findAllByTenant({ tenantId: TENANT_ID });
+    expect(auditLogs).toHaveLength(1);
+    expect(auditLogs[0].action).toBe('inbound_token_regenerate');
+    expect(auditLogs[0].actorId).toBe(DEFAULT_USER_ID);
+  });
+
   // admin 以外 (agent) は拒否される (組織設定は管理者専用 §9)
   it('agent ロールは拒否される', async () => {
     seedTenant(null);
