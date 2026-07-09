@@ -319,4 +319,23 @@ describe('POST /api/tickets (multipart with attachments)', () => {
     // 優先度 High は 4 時間後 (FIRST_RESPONSE_HOURS_BY_PRIORITY.High)
     expect(ticket.firstResponseDueAt).not.toBeNull();
   });
+
+  // 監査で発見したギャップ対応: ユーザー単位で 60 秒あたり 20 件を超える連打は 429 になる
+  // (ticket-comment と同じ閾値)
+  it('returns 429 with Retry-After once the per-user creation rate limit is exceeded', async () => {
+    const { POST } = await import('@/app/api/tickets/route');
+    // JSON ボディで軽量に 21 回投稿する (添付なし。レート制限だけを検証したいため)
+    const buildJsonRequest = () =>
+      new Request('http://localhost/api/tickets', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title: 't', body: 'b', priority: 'Medium' }),
+      });
+    let last: Response | undefined;
+    for (let i = 0; i < 21; i += 1) {
+      last = await POST(buildJsonRequest());
+    }
+    expect(last?.status).toBe(429);
+    expect(Number(last?.headers.get('Retry-After'))).toBeGreaterThanOrEqual(0);
+  });
 });

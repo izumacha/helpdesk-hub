@@ -34,6 +34,14 @@ import {
 import { notifyNewTicketOutbound } from '@/lib/outbound-notify';
 // 新規作成されたチケットの型 (通知本文の組み立てに使う最小限のフィールドのみ参照)
 import type { Ticket } from '@/domain/types';
+// Route Handler 向け共通レート制限ラッパー (ticket-comment 等と同じ 429 契約)
+import { checkRouteRateLimit } from '@/lib/route-rate-limit';
+
+// 監査で発見したギャップ: POST /api/tickets/[id]/comments (ticket-comment) や CSV インポート
+// (csv-import) 等、他の全てのチケット関連ミューテーションはレート制限済みだったが、
+// 最も利用頻度が高くファイル添付・外部通知まで引き起こすチケット作成だけが未対応だった
+// (CLAUDE.md §8/§9 DoS・スパム防止)。コメント投稿と同じ閾値 (60 秒 20 件) に揃える
+const TICKET_CREATE_RATE_LIMIT = { limit: 20, windowMs: 60_000 } as const;
 
 // 422 (バリデーションエラー) を共通フォーマットで返すヘルパー
 function validationError(message: string, path: (string | number)[]) {
@@ -64,6 +72,14 @@ export async function POST(req: Request) {
   const tenantId = session.user.tenantId;
   // 起票者 ID (添付メタの uploaderId にも使う)
   const userId = session.user.id;
+
+  // ユーザー単位でチケット作成頻度を制限する (ticket-comment と同じ 429 契約)
+  const rateLimitResponse = checkRouteRateLimit(
+    `ticket-create:${userId}`,
+    TICKET_CREATE_RATE_LIMIT,
+    'リクエストが多すぎます。しばらく時間をおいて再度お試しください',
+  );
+  if (rateLimitResponse) return rateLimitResponse;
 
   // 入力値とアップロードされた File 配列を保持する変数
   let rawInput: Record<string, unknown>;
