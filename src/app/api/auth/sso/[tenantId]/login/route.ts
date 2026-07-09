@@ -18,6 +18,20 @@ import { loadEnabledSsoContext } from '@/lib/sso-context';
 import { createSamlInstance, getSsoLoginUrl } from '@/lib/saml';
 // 信頼できるアプリケーションベース URL の解決 (NEXTAUTH_URL 優先・req.url の Host ヘッダに依存しない)
 import { resolveAppBaseUrl } from '@/lib/app-url';
+// Route Handler 向け共通レート制限ラッパー (acs/route.ts と共有)
+import { checkRouteRateLimit } from '@/lib/route-rate-limit';
+// SSO エンドポイント群 (acs/login/metadata) が共有するレート制限の定数とメッセージ
+import {
+  SSO_UNAUTHENTICATED_RATE_LIMIT,
+  SSO_TENANT_RATE_LIMIT,
+  SSO_RATE_LIMIT_MESSAGE,
+} from '@/lib/sso-rate-limit';
+
+// 監査で発見したギャップ: 同じ SSO エンドポイント群のうち acs/route.ts だけがレート制限済みで、
+// この /login エンドポイントには無かった。未認証で到達でき、有効な SSO であれば
+// AuthnRequest 生成 (createSamlInstance + getSsoLoginUrl) という相応のコストがかかる処理を
+// 都度行うため、acs/route.ts と同じ二段構えの制限を適用する (制限値・理由は
+// src/lib/sso-rate-limit.ts のコメント参照)。
 
 // 動的セグメント (tenantId) の型 (Next.js 15 では params は Promise)
 type Params = { params: Promise<{ tenantId: string }> };
@@ -33,9 +47,30 @@ export async function GET(_req: Request, { params }: Params) {
   const errorRedirect = () =>
     NextResponse.redirect(new URL('/login?error=sso-unavailable', baseUrl), 303);
 
+  // 固定キーの全体レート制限を適用する (テナント解決より前に置き、URL の tenantId を
+  // 変え続けることでのレート制限回避・DB 負荷増大を防ぐ)
+  const unauthLimitResponse = checkRouteRateLimit(
+    'sso-login:unauthenticated',
+    SSO_UNAUTHENTICATED_RATE_LIMIT,
+    SSO_RATE_LIMIT_MESSAGE,
+  );
+  // 制限超過なら 429 をそのまま返す (超過なしなら null が返り後続処理を続ける)
+  if (unauthLimitResponse) return unauthLimitResponse;
+
   // SSO が利用可能か検証する (不可ならログイン画面へ)
   const ctx = await loadEnabledSsoContext(tenantId);
+  // 無効な SSO 設定・テナント不在ならエラーリダイレクトで打ち切る
   if (!ctx.ok) return errorRedirect();
+
+  // テナントが実在し SSO が有効だと確認できたので、信頼できる tenantId をキーにした
+  // テナント単位のレート制限を、この後の AuthnRequest 生成の前に適用する
+  const tenantLimitResponse = checkRouteRateLimit(
+    `sso-login:${tenantId}`,
+    SSO_TENANT_RATE_LIMIT,
+    SSO_RATE_LIMIT_MESSAGE,
+  );
+  // テナント単位の制限超過なら 429 をそのまま返す
+  if (tenantLimitResponse) return tenantLimitResponse;
 
   try {
     // テナントの SSO 設定から SAML SP インスタンスを構築する

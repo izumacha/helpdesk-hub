@@ -17,12 +17,39 @@ import { isSsoAllowed } from '@/lib/plan-guard';
 import { resolveAppBaseUrl } from '@/lib/app-url';
 // SP メタデータ XML 生成 (純粋関数)
 import { buildSpMetadataXml } from '@/lib/saml';
+// Route Handler 向け共通レート制限ラッパー (login/acs の各 route.ts と共有)
+import { checkRouteRateLimit } from '@/lib/route-rate-limit';
+// SSO エンドポイント群 (acs/login/metadata) が共有するレート制限の定数とメッセージ
+import {
+  SSO_UNAUTHENTICATED_RATE_LIMIT,
+  SSO_TENANT_RATE_LIMIT,
+  SSO_RATE_LIMIT_MESSAGE,
+} from '@/lib/sso-rate-limit';
+
+// 監査で発見したギャップ: 同じ SSO エンドポイント群のうち login/acs はレート制限済みで、
+// このエンドポイントには無かった。未認証で到達でき、リクエストごとに DB 参照
+// (tenants.findById) が発生するため、login/acs と同じ二段構えの制限を適用する
+// (制限値・理由は src/lib/sso-rate-limit.ts のコメント参照)。
+// /code-review ultra 指摘対応: 当初はテナント単位の第二段を省略していたが、それでは
+// 有効な 1 テナントだけで固定キーの共有予算 (60秒60回) を独占でき、login/acs が持つ
+// 「1 テナントからの連打を抑える」という保護がこのエンドポイントだけ欠けてしまうため、
+// login/acs と同じ二段構えに揃えた。
 
 // 動的セグメント (tenantId) の型
 type Params = { params: Promise<{ tenantId: string }> };
 
 // GET ハンドラ: SP メタデータ XML を返す
 export async function GET(_req: Request, { params }: Params) {
+  // 固定キーの全体レート制限を適用する (DB 参照より前に置き、URL の tenantId を
+  // 変え続けることでのレート制限回避・DB 負荷増大を防ぐ)
+  const unauthLimitResponse = checkRouteRateLimit(
+    'sso-metadata:unauthenticated',
+    SSO_UNAUTHENTICATED_RATE_LIMIT,
+    SSO_RATE_LIMIT_MESSAGE,
+  );
+  // 制限超過なら 429 をそのまま返す (超過なしなら null が返り後続処理を続ける)
+  if (unauthLimitResponse) return unauthLimitResponse;
+
   // URL の tenantId を取り出す
   const { tenantId } = await params;
   // テナントを取得する
@@ -31,6 +58,18 @@ export async function GET(_req: Request, { params }: Params) {
   if (!tenant || !isSsoAllowed(tenant.subscriptionPlan)) {
     return new NextResponse('SSO はこのテナントでは利用できません。', { status: 404 });
   }
+
+  // テナントが実在し SSO (Enterprise プラン) が有効だと確認できたので、信頼できる
+  // tenantId をキーにしたテナント単位のレート制限も適用する (1 テナントが固定キーの
+  // 共有予算を独占してしまうのを防ぐ)
+  const tenantLimitResponse = checkRouteRateLimit(
+    `sso-metadata:${tenantId}`,
+    SSO_TENANT_RATE_LIMIT,
+    SSO_RATE_LIMIT_MESSAGE,
+  );
+  // テナント単位の制限超過なら 429 をそのまま返す
+  if (tenantLimitResponse) return tenantLimitResponse;
+
   // SP メタデータ XML を組み立てる (秘密情報を含まない SP の URL のみ)
   const xml = buildSpMetadataXml(resolveAppBaseUrl(), tenantId);
   // XML として返す
