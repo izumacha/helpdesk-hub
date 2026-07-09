@@ -525,6 +525,21 @@ model LineMessageRef {
 }
 
 // ─────────────────────────────────────────────
+// LineLinkCodeRef (LINE 連携コード処理の冪等化記録 / Phase 2.1 フォローアップ)
+// ─────────────────────────────────────────────
+// docs/smb-dx-pivot-plan.md §4 Phase 2.1。連携コード送信での紐付け成立は起票を伴わないため
+// LineMessageRef の対象外。/code-review ultra 指摘対応: 従来のインプロセス Map (TTL 10分) は
+// 連携成功直後にプロセス再起動/デプロイが挟まると冪等化が効かず、再送されたコード文字列が
+// 本文の問い合わせとして誤起票され得た。この永続記録に切り替えて解消する。
+// LINE メッセージ ID はプラットフォーム全体で一意なため tenantId スコープは不要
+// (LineMessageRef / EmailThreadRef と異なりテナント単位の一意制約を持たない)。
+model LineLinkCodeRef {
+  id            String   @id @default(cuid()) // 主キー
+  lineMessageId String   @unique // LINE メッセージ ID (連携コードとして処理済み)
+  createdAt     DateTime @default(now()) // 記録日時
+}
+
+// ─────────────────────────────────────────────
 // Location (店舗・拠点 / Phase 4 多拠点対応)
 // ─────────────────────────────────────────────
 // docs/smb-dx-pivot-plan.md Phase 4「多店舗・多拠点対応（テナント内サブグループ）」。

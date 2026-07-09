@@ -60,6 +60,10 @@ export interface Store {
   attachments: Map<string, Attachment>; // 添付ファイルのメタ情報 (画像)
   emailThreadRefs: Map<string, EmailThreadRefRow>; // メール Message-ID → チケット 対応表 (Phase 2)
   lineMessageRefs: Map<string, LineMessageRefRow>; // LINE メッセージ ID → チケット 対応表 (Phase 2 冪等化)
+  // LINE 連携コード処理 (紐付け成功/競合) の冪等化記録。起票を伴わないため lineMessageRefs
+  // の対象外になる連携コード処理の再送検出用 (§4 Phase 2.1 フォローアップ)。
+  // messageId はプラットフォーム全体で一意なため Set のみで十分 (tenantId スコープ不要)
+  lineLinkCodeRefs: Set<string>;
   locations: Map<string, Location>; // Phase 4 多拠点: テナント内の店舗・拠点
   ssoConfigs: Map<string, TenantSsoConfig>; // Phase 4 Enterprise: テナント単位の SAML SSO 設定
   lineConfigs: Map<string, TenantLineConfig>; // Phase 2 フォローアップ: テナント単位の LINE 連携設定
@@ -83,6 +87,7 @@ export function createEmptyStore(): Store {
     attachments: new Map(),
     emailThreadRefs: new Map(),
     lineMessageRefs: new Map(),
+    lineLinkCodeRefs: new Set(),
     locations: new Map(), // Phase 4 多拠点: テナント内の店舗・拠点
     ssoConfigs: new Map(), // Phase 4 Enterprise: SAML SSO 設定
     lineConfigs: new Map(), // Phase 2 フォローアップ: テナント単位の LINE 連携設定
@@ -107,6 +112,7 @@ export function cloneStore(src: Store): Store {
     attachments: new Map(src.attachments),
     emailThreadRefs: new Map(src.emailThreadRefs),
     lineMessageRefs: new Map(src.lineMessageRefs),
+    lineLinkCodeRefs: new Set(src.lineLinkCodeRefs),
     locations: new Map(src.locations), // Phase 4 多拠点
     ssoConfigs: new Map(src.ssoConfigs), // Phase 4 Enterprise: SAML SSO 設定
     lineConfigs: new Map(src.lineConfigs), // Phase 2 フォローアップ: テナント単位の LINE 連携設定
@@ -130,6 +136,7 @@ export function overwriteStore(dst: Store, src: Store): void {
   dst.attachments = new Map(src.attachments);
   dst.emailThreadRefs = new Map(src.emailThreadRefs);
   dst.lineMessageRefs = new Map(src.lineMessageRefs);
+  dst.lineLinkCodeRefs = new Set(src.lineLinkCodeRefs);
   dst.locations = new Map(src.locations); // Phase 4 多拠点
   dst.ssoConfigs = new Map(src.ssoConfigs); // Phase 4 Enterprise: SAML SSO 設定
   dst.lineConfigs = new Map(src.lineConfigs); // Phase 2 フォローアップ: テナント単位の LINE 連携設定

@@ -9,8 +9,6 @@ import type { Repos, UnitOfWork } from '@/data/ports/unit-of-work';
 import { hashLineLinkCode, normalizeLineLinkCode } from '@/lib/line-link';
 // レート制限バケットをテスト間で初期化するためのヘルパー (グローバル Map の汚染を防ぐ)
 import { __resetRateLimits } from '@/lib/rate-limit';
-// 連携コード冪等化 Map をテスト間で初期化・検査するためのヘルパー
-import { __resetLineLinkCodeDedup, __getLineLinkCodeDedupSize } from '@/lib/line-link-code-dedup';
 
 // 外部通知 (Slack/Teams/Chatwork) テスト用の Slack Webhook URL (実際には送信されない)
 const SLACK_WEBHOOK_URL = 'https://hooks.slack.com/services/T000/B000/xxx';
@@ -149,9 +147,8 @@ describe('POST /api/inbound/line', () => {
     seed();
     // レート制限バケットはモジュールグローバルなので、他ファイルのテストの影響を受けないよう初期化する
     __resetRateLimits();
-    // 連携コード冪等化 Map もモジュールグローバルなので、固定 messageId ('m1') を使う
-    // 他テストの記録が残らないよう初期化する (route モジュールはテスト間でキャッシュされる)
-    __resetLineLinkCodeDedup();
+    // 連携コード冪等化は DB (lineLinkCodeRefs) 永続化に切り替わったため、createMemoryContext() で
+    // 毎回新しい空ストアが作られる時点で自動的に初期化される (グローバル Map のリセットは不要)
   });
 
   afterEach(() => {
@@ -301,64 +298,49 @@ describe('POST /api/inbound/line', () => {
     expect(store.tickets.size).toBe(0);
   });
 
-  // 回帰防止: 連携コード冪等化 Map (recentlyLinkedMessageIds) が無制限に増加しないこと。
-  // 二度と再送されない (= 大多数の) messageId も、TTL 経過後の別呼び出しに便乗した
-  // 「ながら掃除」で削除されることを検証する (src/lib/rate-limit.ts の sweepStaleBuckets と同じ)。
-  it('連携コード冪等化 Map は TTL 超過エントリを掃除し無制限に増加しない', async () => {
+  // 回帰防止 (/code-review ultra 指摘対応): 連携コード処理の冪等化記録が DB 永続化
+  // (lineLinkCodeRefs) されていること。旧インプロセス Map 実装は TTL (10分) 経過後に
+  // エントリを掃除していたため、TTL 経過後にプロセス再起動/デプロイが挟まらなくても、
+  // 長時間後の再送では冪等化が効かず「コードは消費済み → invalid → 誤起票」が再現し得た。
+  // DB 永続化では TTL を持たないため、長時間経過後の再送でも確実にスキップされることを確認する。
+  it('連携コード処理は長時間経過後の再送でも冪等化により誤起票されない', async () => {
+    const rawCode = 'A1B2C3D0';
+    const codeHash = await hashLineLinkCode(normalizeLineLinkCode(rawCode));
+    const now = new Date();
+    store.users.set('u-member-0', {
+      id: 'u-member-0',
+      email: 'member0@example.com',
+      name: '会員0',
+      passwordHash: 'x',
+      role: 'requester',
+      tenantId: TENANT,
+      createdAt: now,
+      updatedAt: now,
+      lineLinkCodeHash: codeHash,
+      lineLinkCodeExpiresAt: new Date(Date.now() + 3_600_000),
+    });
+    const { POST } = await import('@/app/api/inbound/line/route');
+    const messageId = 'link-resend-test';
+    const lineUserId = `U${'1'.repeat(32)}`;
+
+    // 1 回目: 連携が成功する (起票は伴わない)
+    const first = await POST(makeRequest(rawCode, lineUserId, BOT_USER_ID, messageId));
+    expect(first.status).toBe(200);
+    expect(store.tickets.size).toBe(0);
+    // 処理済みとして DB に永続化されていること
+    expect(store.lineLinkCodeRefs.has(messageId)).toBe(true);
+
+    // 旧 TTL (10分) を大幅に超える期間が経過しても、DB 永続化なら記録は消えない
     vi.useFakeTimers();
     try {
-      const now = new Date();
-      // LINE_LINK_CODE_LENGTH(8) かつ CODE_ALPHABET (0-9, I/L/O/U を除く A-Z) に収まる
-      // ユニークなコードを 3 件用意する (それぞれ別の messageId で連携させるため)
-      const rawCodes = ['A1B2C3D0', 'A1B2C3D1', 'A1B2C3D2'];
-      for (let i = 0; i < rawCodes.length; i += 1) {
-        const codeHash = await hashLineLinkCode(normalizeLineLinkCode(rawCodes[i]!));
-        store.users.set(`u-member-${i}`, {
-          id: `u-member-${i}`,
-          email: `member${i}@example.com`,
-          name: `会員${i}`,
-          passwordHash: 'x',
-          role: 'requester',
-          tenantId: TENANT,
-          createdAt: now,
-          updatedAt: now,
-          lineLinkCodeHash: codeHash,
-          lineLinkCodeExpiresAt: new Date(Date.now() + 3_600_000),
-        });
-      }
-      const { POST } = await import('@/app/api/inbound/line/route');
-      // 3 件、それぞれ異なる messageId で連携成功させる (二度と再送されない想定の messageId)
-      for (let i = 0; i < rawCodes.length; i += 1) {
-        const res = await POST(
-          makeRequest(rawCodes[i]!, `U${'1'.repeat(31)}${i}`, BOT_USER_ID, `link-${i}`),
-        );
-        expect(res.status).toBe(200);
-      }
-      expect(__getLineLinkCodeDedupSize()).toBe(3);
+      vi.setSystemTime(new Date(Date.now() + 24 * 60 * 60 * 1000)); // 24時間後
 
-      // TTL (10分) を超えて時計を進める
-      vi.setSystemTime(new Date(Date.now() + 11 * 60 * 1000));
-
-      // 4 件目の連携成功イベント (新しい messageId) がながら掃除のトリガーになる
-      const rawCode4 = 'A1B2C3D4';
-      const codeHash4 = await hashLineLinkCode(normalizeLineLinkCode(rawCode4));
-      store.users.set('u-member-4', {
-        id: 'u-member-4',
-        email: 'member4@example.com',
-        name: '会員4',
-        passwordHash: 'x',
-        role: 'requester',
-        tenantId: TENANT,
-        createdAt: now,
-        updatedAt: now,
-        lineLinkCodeHash: codeHash4,
-        lineLinkCodeExpiresAt: new Date(Date.now() + 3_600_000),
-      });
-      const res4 = await POST(makeRequest(rawCode4, `U${'2'.repeat(32)}`, BOT_USER_ID, 'link-4'));
-      expect(res4.status).toBe(200);
-
-      // 期限切れの 3 件は掃除され、直近の 1 件だけが残る (4 件のまま溜まり続けない)
-      expect(__getLineLinkCodeDedupSize()).toBe(1);
+      // 2 回目 (同一 messageId の再送): コードは既に消費済みなので、DB 永続化された
+      // 冪等化が無ければコード文字列がそのまま問い合わせ本文として誤起票されてしまう
+      const second = await POST(makeRequest(rawCode, lineUserId, BOT_USER_ID, messageId));
+      expect(second.status).toBe(200);
+      // 誤起票されていないこと (これが本テストの主眼)
+      expect(store.tickets.size).toBe(0);
     } finally {
       vi.useRealTimers();
     }

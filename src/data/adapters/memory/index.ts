@@ -7,6 +7,7 @@ import { makeEmailThreadRepo } from './email-thread-repository.memory';
 import { makeFaqRepo } from './faq-repository.memory';
 import { makeInvitationRepo } from './invitation-repository.memory';
 import { makeLineConfigRepo } from './line-config-repository.memory';
+import { makeLineLinkCodeRepo } from './line-link-code-repository.memory';
 import { makeLineMessageRepo } from './line-message-repository.memory';
 import { makeLocationRepo } from './location-repository.memory';
 import { makeMagicLinkRepo } from './magic-link-repository.memory';
@@ -40,6 +41,7 @@ export function buildMemoryRepos(store: Store): Repos {
     attachments: makeAttachmentRepo(store),
     emailThreads: makeEmailThreadRepo(store),
     lineMessages: makeLineMessageRepo(store), // LINE 取り込みの冪等化 (Phase 2)
+    lineLinkCodes: makeLineLinkCodeRepo(store), // LINE 連携コード処理の冪等化 (Phase 2.1 フォローアップ)
     locations: makeLocationRepo(store), // Phase 4 多拠点
     ssoConfigs: makeSsoConfigRepo(store), // Phase 4 Enterprise: SAML SSO 設定
     lineConfigs: makeLineConfigRepo(store), // Phase 2 フォローアップ: テナント単位の LINE 連携設定
