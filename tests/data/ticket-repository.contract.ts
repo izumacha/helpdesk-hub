@@ -365,6 +365,97 @@ export function runTicketRepositoryContract(
       expect(mine.slaOverdue).toBe(1);
     });
 
+    // Phase 4 多拠点: dashboardStats / qualityMetrics が locationId で絞り込めること
+    // (ダッシュボードの拠点フィルタ機能フォローアップ)
+    it('dashboardStats and qualityMetrics scope aggregates to the given locationId', async () => {
+      const { requester, categoryId } = await ctx.seedBasicFixture();
+      // 拠点を 2 つ作成する
+      const locationA = await ctx.repos.locations.create({ tenantId: TENANT_ID, name: '拠点A' });
+      const locationB = await ctx.repos.locations.create({ tenantId: TENANT_ID, name: '拠点B' });
+
+      // 拠点A: New 2 件 (うち 1 件を解決済みにして品質メトリクスの母数にする)
+      const a1 = await ctx.repos.tickets.create({
+        title: 'a1',
+        body: 'b',
+        priority: 'Low',
+        creatorId: requester.id,
+        categoryId,
+        locationId: locationA.id,
+        tenantId: TENANT_ID,
+      });
+      await ctx.repos.tickets.updateStatus(a1.id, 'Resolved', new Date(), TENANT_ID);
+      await ctx.repos.tickets.create({
+        title: 'a2',
+        body: 'b',
+        priority: 'Low',
+        creatorId: requester.id,
+        categoryId,
+        locationId: locationA.id,
+        tenantId: TENANT_ID,
+      });
+      // 拠点B: New 1 件
+      await ctx.repos.tickets.create({
+        title: 'b1',
+        body: 'b',
+        priority: 'Low',
+        creatorId: requester.id,
+        categoryId,
+        locationId: locationB.id,
+        tenantId: TENANT_ID,
+      });
+      // 拠点未設定: New 1 件 (locationId 未指定のフィルタには含まれるが、
+      // 拠点A/Bどちらのフィルタにも含まれないことを確認する対象)
+      await ctx.repos.tickets.create({
+        title: 'no-location',
+        body: 'b',
+        priority: 'Low',
+        creatorId: requester.id,
+        categoryId,
+        tenantId: TENANT_ID,
+      });
+
+      // locationId 未指定 (全拠点対象) なら 4 件すべてが対象
+      const allStats = await ctx.repos.tickets.dashboardStats({
+        now: new Date(),
+        excludeStatusesForWorkload: ['Resolved', 'Closed'],
+        tenantId: TENANT_ID,
+      });
+      expect(allStats.byStatus.New + allStats.byStatus.Resolved).toBe(4);
+
+      // 拠点A 指定なら 2 件 (New 1 + Resolved 1) だけが対象
+      const statsA = await ctx.repos.tickets.dashboardStats({
+        now: new Date(),
+        excludeStatusesForWorkload: ['Resolved', 'Closed'],
+        tenantId: TENANT_ID,
+        locationId: locationA.id,
+      });
+      expect(statsA.byStatus.New).toBe(1);
+      expect(statsA.byStatus.Resolved).toBe(1);
+
+      // 拠点B 指定なら 1 件 (New) だけが対象
+      const statsB = await ctx.repos.tickets.dashboardStats({
+        now: new Date(),
+        excludeStatusesForWorkload: ['Resolved', 'Closed'],
+        tenantId: TENANT_ID,
+        locationId: locationB.id,
+      });
+      expect(statsB.byStatus.New).toBe(1);
+      expect(statsB.byStatus.Resolved).toBe(0);
+
+      // qualityMetrics も同様に拠点A指定なら resolvedCount が 1 件 (a1 のみ) になる
+      const metricsA = await ctx.repos.tickets.qualityMetrics({
+        tenantId: TENANT_ID,
+        locationId: locationA.id,
+      });
+      expect(metricsA.resolvedCount).toBe(1);
+      // 拠点B指定なら解決済みチケットが無いので resolvedCount は 0
+      const metricsB = await ctx.repos.tickets.qualityMetrics({
+        tenantId: TENANT_ID,
+        locationId: locationB.id,
+      });
+      expect(metricsB.resolvedCount).toBe(0);
+    });
+
     // --- ここからクロステナント回帰テスト (Phase 0 仕上げ PR で追加) ---
 
     // テナント A のチケットがテナント B からは findById で取れないこと

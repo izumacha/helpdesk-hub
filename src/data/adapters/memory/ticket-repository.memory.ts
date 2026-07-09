@@ -199,7 +199,7 @@ export function makeTicketRepo(store: Store): TicketRepository {
     },
 
     // ダッシュボード一括取得 (status 別件数 / SLA 超過 / 担当者別ワークロード、tenantId スコープ)
-    async dashboardStats({ creatorId, now, excludeStatusesForWorkload, tenantId }) {
+    async dashboardStats({ creatorId, now, excludeStatusesForWorkload, tenantId, locationId }) {
       // 状態別件数を 0 で初期化 (該当なしも 0 として返す)
       const byStatus: Record<TicketStatus, number> = {
         New: 0,
@@ -218,6 +218,8 @@ export function makeTicketRepo(store: Store): TicketRepository {
       for (const t of store.tickets.values()) {
         // 当該テナント以外は集計対象外
         if (t.tenantId !== tenantId) continue;
+        // locationId 指定時は当該拠点以外を集計対象外にする (未指定なら全拠点対象)
+        if (locationId !== undefined && t.locationId !== locationId) continue;
         // byStatus: 起票者フィルタ (creatorId 指定時のみ) を満たす場合に集計
         if (creatorId === undefined || t.creatorId === creatorId) {
           byStatus[t.status] += 1;
@@ -323,10 +325,13 @@ export function makeTicketRepo(store: Store): TicketRepository {
     },
 
     // 品質メトリクスを算出して返す (tenantId スコープ。since 指定時はその日時以降作成分のみ)
-    async qualityMetrics({ tenantId, since }) {
-      // テナントスコープ + since 条件でチケットを絞り込む
+    async qualityMetrics({ tenantId, since, locationId }) {
+      // テナントスコープ + since 条件 + locationId 条件 (指定時のみ) でチケットを絞り込む
       const allTickets = [...store.tickets.values()].filter(
-        (t) => t.tenantId === tenantId && (!since || t.createdAt >= since),
+        (t) =>
+          t.tenantId === tenantId &&
+          (!since || t.createdAt >= since) &&
+          (locationId === undefined || t.locationId === locationId),
       );
 
       // 初回応答済みチケット (firstRespondedAt が設定されているもの) を抽出する

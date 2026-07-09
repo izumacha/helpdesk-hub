@@ -46,8 +46,18 @@ const GETTING_STARTED_STEPS = [
 // 初期サンプルチケット 2 件を含む。小規模なインポート (数件程度) までは表示し続けるため 10 に設定
 const TUTORIAL_TICKET_THRESHOLD = 10;
 
+// /dashboard ページの props 型 (URL の検索クエリを受け取る)
+interface Props {
+  searchParams: Promise<{
+    // Phase 4 多拠点: 集計を拠点で絞り込む (未指定は全拠点対象)
+    locationId?: string;
+  }>;
+}
+
 // /dashboard : 集計ダッシュボード (テナント mode と役割で表示が変わる)
-export default async function DashboardPage() {
+export default async function DashboardPage({ searchParams }: Props) {
+  // searchParams は Promise なので await して取り出す
+  const sp = await searchParams;
   // セッション取得
   const session = await auth();
   // 未ログイン、または tenantId が取得できない場合は何も描画しない。
@@ -83,6 +93,14 @@ export default async function DashboardPage() {
   }
 
   // 以降は Pro モードの従来ダッシュボード (情シス向けのフル集計)
+  // Phase 4 多拠点: テナントの拠点一覧を取得する (フィルタ UI の表示要否・選択肢に使う)
+  const locations = await repos.locations.listByTenant(tenantId);
+  // URL の locationId は当該テナントの拠点一覧に実在するものだけを有効とみなす
+  // (存在しない ID や他テナントの ID をそのまま渡しても集計スコープは tenantId が守るため
+  // 危険はないが、UI 上「フィルタが効いていないのに URL だけ残る」事故を避けるため検証する)
+  const selectedLocationId =
+    sp.locationId && locations.some((l) => l.id === sp.locationId) ? sp.locationId : undefined;
+
   // ダッシュボード用 3 指標 + 品質メトリクスを並列取得する
   // - byStatus: 7 状態それぞれの件数 (依頼者なら自身のチケットに限定)
   // - slaOverdue / workload: 当該テナント内全件対象 (表示は呼び出し側で role 制御)
@@ -98,10 +116,14 @@ export default async function DashboardPage() {
       excludeStatusesForWorkload: ['Resolved', 'Closed'],
       // テナントスコープ (クロステナント漏洩防止)
       tenantId,
+      // 拠点フィルタ (選択されていれば当該拠点のみ集計)
+      locationId: selectedLocationId,
     }),
     // 品質メトリクスはエージェントにのみ表示する重い全件集計クエリ。
     // 依頼者には不要なため取得も省略し、DB 負荷を抑える (§8 パフォーマンス)。
-    isAgent ? repos.tickets.qualityMetrics({ tenantId }) : Promise.resolve(null),
+    isAgent
+      ? repos.tickets.qualityMetrics({ tenantId, locationId: selectedLocationId })
+      : Promise.resolve(null),
   ]);
 
   // SLA 超過件数 (依頼者には表示しないので 0 にしておく)
@@ -143,6 +165,40 @@ export default async function DashboardPage() {
           現在の対応状況と各担当者の負荷を一目で把握できます。
         </p>
       </div>
+
+      {/* Phase 4 多拠点: 拠点フィルタ (拠点が 1 つも登録されていないテナントには表示しない) */}
+      {locations.length > 0 && (
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="text-xs font-semibold tracking-wider text-slate-500 uppercase">
+            拠点で絞り込み
+          </span>
+          {/* 「すべての拠点」ピル (未選択状態) */}
+          <Link
+            href="/dashboard"
+            className={`rounded-full px-3 py-1 text-xs font-medium transition ${
+              selectedLocationId === undefined
+                ? 'bg-teal-700 text-white'
+                : 'bg-white text-slate-600 ring-1 ring-slate-200 hover:bg-slate-50'
+            }`}
+          >
+            すべての拠点
+          </Link>
+          {/* 拠点ごとのピル */}
+          {locations.map((location) => (
+            <Link
+              key={location.id}
+              href={`/dashboard?locationId=${location.id}`}
+              className={`rounded-full px-3 py-1 text-xs font-medium transition ${
+                selectedLocationId === location.id
+                  ? 'bg-teal-700 text-white'
+                  : 'bg-white text-slate-600 ring-1 ring-slate-200 hover:bg-slate-50'
+              }`}
+            >
+              {location.name}
+            </Link>
+          ))}
+        </div>
+      )}
 
       {/* ステータス別件数カード群 */}
       <section>
@@ -253,7 +309,9 @@ export default async function DashboardPage() {
           {metrics.avgFirstResponseMs == null &&
           metrics.avgResolutionMs == null &&
           metrics.reopenRate == null ? (
-            <p className="text-sm text-slate-400">対応済みのチケットが蓄積されると指標が表示されます。</p>
+            <p className="text-sm text-slate-400">
+              対応済みのチケットが蓄積されると指標が表示されます。
+            </p>
           ) : (
             <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
               {/* 平均初回応答時間 (分母: 初回応答済みチケット数) */}
@@ -277,9 +335,7 @@ export default async function DashboardPage() {
               {/* 再オープン率 (分母: totalCount = 全チケット数。resolvedCount ではない) */}
               <div className="rounded-2xl bg-white p-5 shadow-sm ring-1 ring-slate-100">
                 <p className="text-2xl font-bold text-slate-900">
-                  {metrics.reopenRate != null
-                    ? `${Math.round(metrics.reopenRate * 100)} %`
-                    : '—'}
+                  {metrics.reopenRate != null ? `${Math.round(metrics.reopenRate * 100)} %` : '—'}
                 </p>
                 <p className="mt-1 text-xs text-slate-500">
                   再オープン率{' '}
@@ -413,7 +469,7 @@ async function LiteDashboard({
           </h2>
           {/* ステップカード列 (スマホ縦積み → sm 以上で 3 列) */}
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-            {GETTING_STARTED_STEPS.map(({ step, title, description, href }) => (
+            {GETTING_STARTED_STEPS.map(({ step, title, description, href }) =>
               // ステップカード: リンクがあればクリッカブルに、なければ静的カードにする
               href ? (
                 <Link
@@ -431,10 +487,7 @@ async function LiteDashboard({
                   <p className="mt-1 text-xs text-slate-500">{description}</p>
                 </Link>
               ) : (
-                <div
-                  key={step}
-                  className="rounded-2xl bg-slate-50 p-5 ring-1 ring-slate-200"
-                >
+                <div key={step} className="rounded-2xl bg-slate-50 p-5 ring-1 ring-slate-200">
                   {/* ステップ番号バッジ (リンクなし版) */}
                   <span className="inline-flex h-6 w-6 items-center justify-center rounded-full bg-teal-100 text-xs font-bold text-teal-700">
                     {step}
@@ -444,13 +497,16 @@ async function LiteDashboard({
                   {/* ステップの補足説明 */}
                   <p className="mt-1 text-xs text-slate-500">{description}</p>
                 </div>
-              )
-            ))}
+              ),
+            )}
           </div>
           {/* チュートリアルガイドへの誘導 (ヘルプセンターの 30 分スタートガイドを案内する) */}
           <p className="mt-3 text-xs text-slate-400">
             詳しい手順は
-            <Link href="/help/getting-started" className="mx-1 text-teal-700 underline hover:text-teal-800">
+            <Link
+              href="/help/getting-started"
+              className="mx-1 text-teal-700 underline hover:text-teal-800"
+            >
               30 分で運用開始するガイド
             </Link>
             をご覧ください。

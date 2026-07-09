@@ -156,9 +156,11 @@ export function makeTicketRepo(db: PrismaLike): TicketRepository {
     },
 
     // ダッシュボード一括取得 (status 別件数 / SLA 超過 / 担当者別ワークロード、tenantId スコープ)
-    async dashboardStats({ creatorId, now, excludeStatusesForWorkload, tenantId }) {
-      // ベース where: テナントを必ず固定し、起票者フィルタは byStatus 用にだけ適用
-      const baseWhere: Prisma.TicketWhereInput = { tenantId };
+    async dashboardStats({ creatorId, now, excludeStatusesForWorkload, tenantId, locationId }) {
+      // ベース where: テナントを必ず固定し、locationId 指定時は拠点でも絞る
+      // (指定が無ければ全拠点対象。起票者フィルタは byStatus 用にだけ適用)
+      const baseWhere: Prisma.TicketWhereInput =
+        locationId !== undefined ? { tenantId, locationId } : { tenantId };
       // 起票者フィルタを追加した where (byStatus 専用)
       const byStatusWhere: Prisma.TicketWhereInput =
         creatorId !== undefined ? { ...baseWhere, creatorId } : baseWhere;
@@ -277,10 +279,13 @@ export function makeTicketRepo(db: PrismaLike): TicketRepository {
     // 平均初回応答時間・平均解決時間・再オープン率を 3 本の SQL で並列取得する。
     // Prisma ORM では日時間隔の AVG を直接計算できないため $queryRaw で PostgreSQL の
     // EXTRACT(EPOCH FROM ...) 関数を使う。
-    async qualityMetrics({ tenantId, since }) {
+    async qualityMetrics({ tenantId, since, locationId }) {
       // 期間フィルタの境界値。since が指定されない場合は全期間が対象
       // (Prisma は tagged template の型安全性を保持するため引数型に null を使う)
       const sinceValue: Date | null = since ?? null;
+      // 拠点フィルタの境界値。locationId が指定されない場合は全拠点が対象
+      // (sinceValue と同じ「NULL なら条件を無視する」パターン)
+      const locationIdValue: string | null = locationId ?? null;
 
       // 3 本の SQL クエリを並列実行する (直列だと合計レイテンシが 3 倍になるため)。
       // クエリ間に依存がないため Promise.all で安全に並列化できる。
@@ -297,6 +302,7 @@ export function makeTicketRepo(db: PrismaLike): TicketRepository {
           WHERE "tenantId" = ${tenantId}
             AND "firstRespondedAt" IS NOT NULL
             AND (${sinceValue}::timestamptz IS NULL OR "createdAt" >= ${sinceValue}::timestamptz)
+            AND (${locationIdValue}::text IS NULL OR "locationId" = ${locationIdValue})
         `,
         // ── クエリ 2: 平均解決時間 ──
         // resolvedAt - createdAt の平均をミリ秒で返す。
@@ -309,6 +315,7 @@ export function makeTicketRepo(db: PrismaLike): TicketRepository {
           WHERE "tenantId" = ${tenantId}
             AND "resolvedAt" IS NOT NULL
             AND (${sinceValue}::timestamptz IS NULL OR "createdAt" >= ${sinceValue}::timestamptz)
+            AND (${locationIdValue}::text IS NULL OR "locationId" = ${locationIdValue})
         `,
         // ── クエリ 3: 再オープン率 ──
         // 全チケット数のうち、「Resolved または Closed → Open への遷移履歴」を持つ
@@ -327,6 +334,7 @@ export function makeTicketRepo(db: PrismaLike): TicketRepository {
             AND th."oldValue" IN ('Resolved', 'Closed')
           WHERE t."tenantId" = ${tenantId}
             AND (${sinceValue}::timestamptz IS NULL OR t."createdAt" >= ${sinceValue}::timestamptz)
+            AND (${locationIdValue}::text IS NULL OR t."locationId" = ${locationIdValue})
         `,
       ]);
 
