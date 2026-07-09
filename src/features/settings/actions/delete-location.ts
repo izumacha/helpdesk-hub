@@ -4,12 +4,14 @@
 // 管理者のみが拠点を削除できる。削除すると紐づくチケットの locationId が null になる。
 // docs/smb-dx-pivot-plan.md §5.2「多店舗・多拠点対応」
 
-// セッション取得
-import { auth } from '@/lib/auth';
 // データリポジトリ
 import { repos } from '@/data';
 // 設定ページのキャッシュを無効化するための Next.js キャッシュ関数
 import { revalidatePath } from 'next/cache';
+// 「ログイン済み・admin・自テナント」を検証する共有ゲート (throw せず {ok,error} を返す契約)
+import { assertTenantAdmin } from '@/lib/tenant-admin-gate';
+// 連打防止のための共通レート制限ヘルパー
+import { enforceRateLimit } from '@/lib/rate-limit';
 
 // 削除結果の戻り値型
 export interface DeleteLocationResult {
@@ -21,20 +23,24 @@ export interface DeleteLocationResult {
 
 // 拠点を削除するサーバーアクション (紐づくチケットの locationId は SetNull)
 export async function deleteLocation(locationId: string): Promise<DeleteLocationResult> {
-  // セッション取得と認証チェック
-  const session = await auth();
-  // 未ログインまたは tenantId 不在は拒否
-  if (!session?.user?.id || !session.user.tenantId) {
-    return { error: '認証が必要です' };
-  }
-  // 管理者のみが拠点を削除できる
-  if (session.user.role !== 'admin') {
-    return { error: 'この操作は管理者のみ実行できます' };
+  // 共有ゲートで「ログイン済み・admin・自テナント」をまとめて検証する
+  const gate = await assertTenantAdmin();
+  // ゲート不通過ならその理由をそのまま返す
+  if (!gate.ok) return { error: gate.error };
+  // 検証済みの tenantId (セッション由来)
+  const tenantId = gate.tenantId;
+
+  try {
+    // 拠点の作成・更新・削除の連打を抑制 (60 秒あたり 10 回まで、テナント単位・
+    // create/update/delete で共有。create-location.ts のコメント参照)
+    enforceRateLimit(`location-mutate:${tenantId}`, { limit: 10, windowMs: 60_000 });
+  } catch (err) {
+    return { error: err instanceof Error ? err.message : 'しばらく時間をおいて再度お試しください' };
   }
 
   try {
     // tenantId をスコープに含めて削除 (他テナントの拠点を削除できないよう保護)
-    await repos.locations.delete(locationId, session.user.tenantId);
+    await repos.locations.delete(locationId, tenantId);
     // 設定ページのキャッシュを無効化して削除結果がすぐ反映されるようにする
     revalidatePath('/settings');
     // 成功を返す

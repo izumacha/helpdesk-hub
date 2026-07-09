@@ -4,12 +4,15 @@
 // 管理者のみが拠点を追加できる (拠点はテナント全体の設定)。
 // docs/smb-dx-pivot-plan.md §5.2「多店舗・多拠点対応」
 
-// セッション取得
-import { auth } from '@/lib/auth';
 // データリポジトリ
 import { repos } from '@/data';
 // 設定ページのキャッシュを無効化するための Next.js キャッシュ関数
 import { revalidatePath } from 'next/cache';
+// 「ログイン済み・admin・自テナント」を検証する共有ゲート (throw せず {ok,error} を返す契約。
+// line-config-context.ts / sso-context.ts と同じ非throw系アクションで共有する)
+import { assertTenantAdmin } from '@/lib/tenant-admin-gate';
+// 連打防止のための共通レート制限ヘルパー
+import { enforceRateLimit } from '@/lib/rate-limit';
 
 // 作成結果の戻り値型
 export interface CreateLocationResult {
@@ -21,15 +24,23 @@ export interface CreateLocationResult {
 
 // 拠点を新規作成するサーバーアクション
 export async function createLocation(formData: FormData): Promise<CreateLocationResult> {
-  // セッション取得と認証チェック
-  const session = await auth();
-  // 未ログインまたは tenantId 不在は拒否
-  if (!session?.user?.id || !session.user.tenantId) {
-    return { error: '認証が必要です' };
-  }
-  // 管理者のみが拠点を作成できる
-  if (session.user.role !== 'admin') {
-    return { error: 'この操作は管理者のみ実行できます' };
+  // 共有ゲートで「ログイン済み・admin・自テナント」をまとめて検証する
+  const gate = await assertTenantAdmin();
+  // ゲート不通過ならその理由をそのまま返す
+  if (!gate.ok) return { error: gate.error };
+  // 検証済みの tenantId (セッション由来)
+  const tenantId = gate.tenantId;
+
+  try {
+    // 拠点の作成・更新・削除の連打を抑制 (60 秒あたり 10 回まで、テナント単位で共有)。
+    // ユーザー単位ではなくテナント単位にする理由: 拠点は「テナント全体の設定」であり、
+    // 同一テナントの複数管理者が個別の枠を持つと合計の操作回数が管理者数倍になり、
+    // 制限の意図 (拠点乱造の抑止) を損なう (regenerate-inbound-token.ts と同じ方針)。
+    // create/update/delete で同じキーを共有するのも同じ理由 (アクション別に分けると
+    // 実質の上限が action 数倍になってしまう)
+    enforceRateLimit(`location-mutate:${tenantId}`, { limit: 10, windowMs: 60_000 });
+  } catch (err) {
+    return { error: err instanceof Error ? err.message : 'しばらく時間をおいて再度お試しください' };
   }
 
   // フォームデータから入力値を取り出す
@@ -50,7 +61,7 @@ export async function createLocation(formData: FormData): Promise<CreateLocation
   try {
     // 拠点を DB に作成する (tenantId はセッション由来のみを使いクロステナント防止)
     const location = await repos.locations.create({
-      tenantId: session.user.tenantId,
+      tenantId,
       name,
       description,
     });
@@ -62,7 +73,11 @@ export async function createLocation(formData: FormData): Promise<CreateLocation
     // 拠点名の重複エラーをユーザー向けメッセージに変換する
     const message = err instanceof Error ? err.message : '';
     // Prisma の一意制約違反 (P2002) または memory アダプタのエラーを検出する
-    if (message.includes('Unique constraint') || message.includes('already exists') || message.includes('P2002')) {
+    if (
+      message.includes('Unique constraint') ||
+      message.includes('already exists') ||
+      message.includes('P2002')
+    ) {
       return { error: 'この拠点名はすでに使用されています' };
     }
     // その他のエラーはログに残して汎用メッセージを返す

@@ -251,12 +251,12 @@ export function BillingSection({
         )}
       </div>
       {/* 注記: Free プランへのダウングレードは Stripe ポータルから解約する */}
-      <p className="text-xs text-slate-400">
+      <p className="text-xs text-slate-500">
         プランのダウングレードまたは解約は「プランを管理」から行ってください。
       </p>
       {/* Enterprise の案内 (Enterprise 以外のテナントに向けたアップセル導線) */}
       {currentPlan !== 'enterprise' && (
-        <p className="text-xs text-slate-400">
+        <p className="text-xs text-slate-500">
           無制限のメンバー・SSO (SAML)・監査強化が必要な場合は Enterprise プラン (個別見積) を
           ご検討ください。導入のご相談はサポートまでお問い合わせください。
         </p>

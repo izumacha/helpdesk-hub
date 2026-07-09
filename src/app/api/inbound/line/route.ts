@@ -67,13 +67,6 @@ import { isLineIntegrationAllowed, resolveEffectivePlan } from '@/lib/plan-guard
 import { notifyNewTicketOutbound } from '@/lib/outbound-notify';
 // Phase 4 課金: 月間チケット上限チェック (Web フォーム・CSV インポートと共有)
 import { getMonthlyTicketQuota, type MonthlyTicketQuota } from '@/lib/tenant-plan';
-// 連携コード処理 (紐付け成功/競合) の冪等化ヘルパー。route.ts は Next.js の Route Handler
-// 制約により GET/POST/config/runtime 以外の export を持てないため、状態を別モジュールに分離している
-import {
-  markProcessedAsLinkCode,
-  wasRecentlyProcessedAsLinkCode,
-} from '@/lib/line-link-code-dedup';
-
 // このルートは Node ランタイムで動かす (node:crypto / Prisma を使うため Edge では動かない)
 export const runtime = 'nodejs';
 
@@ -365,8 +358,8 @@ export async function POST(req: Request) {
 
   // LINE サーバーはレスポンスを所定時間内に受信しないと再送するため、必ず 200 を返す。
   // 冪等化 (メッセージ ID による重複排除) は、起票を伴う通常メッセージは createTicketIdempotent
-  // の Serializable トランザクションで、連携コード処理 (起票を伴わない) は上の
-  // recentlyLinkedMessageIds によるインプロセス Map でそれぞれ担保している。
+  // の Serializable トランザクションで、連携コード処理 (起票を伴わない) は repos.lineLinkCodes
+  // (LineLinkCodeRef テーブルへの DB 永続化) でそれぞれ担保している。
   return NextResponse.json({ ticketIds }, { status: 200 });
 }
 
@@ -441,9 +434,9 @@ async function processLineEvent(
     const normalizedCode = normalizeLineLinkCode(trimmedText);
     if (looksLikeLineLinkCode(normalizedCode)) {
       // 連携コード処理は起票を伴わないため lineMessages 対応表の冪等化対象外になる。
-      // 直近この messageId を連携コードとして処理済みなら、再度 linkLineUserByCode を
+      // この messageId を連携コードとして処理済みなら、再度 linkLineUserByCode を
       // 呼ばずに即座にスキップする (再送で「コードは消費済み → invalid → 誤起票」になるのを防ぐ)
-      if (messageId && wasRecentlyProcessedAsLinkCode(messageId)) {
+      if (messageId && (await repos.lineLinkCodes.wasProcessed(messageId))) {
         console.info(
           `[POST /api/inbound/line] duplicate link-code message, skipping: ${messageId}`,
         );
@@ -464,17 +457,15 @@ async function processLineEvent(
           `[POST /api/inbound/line] line link ${link.status} for tenant`,
           targetTenantId,
         );
-        // この messageId を「連携コードとして処理済み」に記録する (再送時の誤起票防止)
-        if (messageId) markProcessedAsLinkCode(messageId);
+        // この messageId を「連携コードとして処理済み」に記録する (再送時の誤起票防止)。
+        // /code-review ultra 指摘対応: DB 永続化 (lineLinkCodes) に切り替えたことで、
+        // 連携成功直後にプロセス再起動/デプロイが挟まっても記録が失われず、単一インスタンスの
+        // 場合はもちろん、複数インスタンス間でも共有される (水平スケール環境でも安全)
+        if (messageId) await repos.lineLinkCodes.markProcessed(messageId);
         return null;
       }
       // invalid (コードの形だが有効な発行行が無い) は通常の問い合わせとして下の起票へ進む
       // (typo 等の本来の invalid はメッセージ ID 冪等化の対象になるため再送で二重起票しない)。
-      // 残存する既知の制約: recentlyLinkedMessageIds はインプロセス Map のため、
-      // (a) 連携成功直後の再送が別インスタンスに振られる水平スケール環境、
-      // (b) 連携成功直後 (TTL 10分以内) にプロセス再起動/デプロイが挟まる場合は、
-      // この冪等化が効かず本コメント冒頭の誤起票が再現し得る (水平スケール前提の解決には
-      // sse-subscribers.ts と同様 Redis 等の共有ストアへの置き換えが必要)。
     }
   }
 
