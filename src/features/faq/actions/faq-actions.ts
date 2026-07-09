@@ -8,8 +8,11 @@ import { repos } from '@/data';
 import { auth } from '@/lib/auth';
 // 「エージェント権限を持つか」を判定するヘルパー
 import { isAgent } from '@/lib/role';
-// FAQ 候補化を許可する状態一覧を mode (lite/pro) に応じて返す関数
-import { getFaqEligibleStatuses } from '@/lib/constants';
+// 「完了」とみなすステータス集合を mode (lite/pro) に応じて返す関数 (唯一の源。update-ticket.ts と共有)
+import { getCompletionStatuses } from '@/domain/ticket-status';
+// 「FAQ 候補」機能自体の呼称を mode に応じて切り替える定数 (エラーメッセージも Lite では
+// 「よくある質問」と呼ぶ。§6 一元管理)
+import { FAQ_TERM_LABELS } from '@/lib/constants';
 // テナントの動作モード (lite | pro) を取得するヘルパー
 import { getCurrentTenantMode } from '@/lib/tenant';
 // レート制限 (連打防止) の共通関数
@@ -29,6 +32,12 @@ export async function createFaqCandidate(ticketId: string, question: string, ans
   }
   // セッションから tenantId を取り出して以降の where 句注入に使う
   const tenantId = session.user.tenantId;
+  // テナントの動作モード (lite | pro) を取得する。完了扱いの状態集合の判定だけでなく、
+  // 以降のエラーメッセージの呼称 (Lite:「よくある質問」/ Pro:「FAQ候補」) にも使うため、
+  // 早い段階で 1 度だけ取得しておく (§1.1 フォローアップ)
+  const mode = await getCurrentTenantMode(tenantId);
+  // この機能の呼称 (エラーメッセージも画面表示と揃える)
+  const termLabel = FAQ_TERM_LABELS[mode];
   // ユーザー単位で 60 秒あたり最大 10 件までに制限 (連打防止)
   enforceRateLimit(`faq-create:${session.user.id}`, { limit: 10, windowMs: 60_000 });
 
@@ -36,19 +45,16 @@ export async function createFaqCandidate(ticketId: string, question: string, ans
   const parsed = faqCandidateSchema.safeParse({ question, answer });
   // 検証失敗ならメッセージを日本語エラーとして投げる
   if (!parsed.success) {
-    throw new Error(parsed.error.issues[0]?.message ?? 'FAQ候補の入力値が不正です');
+    throw new Error(parsed.error.issues[0]?.message ?? `${termLabel}の入力値が不正です`);
   }
 
   // 対象チケットを tenantId スコープで取得 (port 経由)
   const ticket = await repos.tickets.findById(ticketId, tenantId);
   // 無ければエラー
   if (!ticket) throw new Error('チケットが見つかりません');
-  // テナントの動作モード (lite | pro) を取得し、完了扱いの状態集合を切り替える
-  // (§1.1 フォローアップ: Lite の「完了」は Closed であり Resolved 固定では判定できない)
-  const mode = await getCurrentTenantMode(tenantId);
   // 完了扱いの状態でなければ FAQ 化不可
-  if (!getFaqEligibleStatuses(mode).includes(ticket.status)) {
-    throw new Error('完了済みチケットのみFAQ候補に変換できます');
+  if (!getCompletionStatuses(mode).includes(ticket.status)) {
+    throw new Error(`完了済みチケットのみ${termLabel}に変換できます`);
   }
 
   // FAQ 候補を新規作成 (初期ステータスは Adapter 側の既定値 Candidate)
@@ -79,13 +85,15 @@ export async function updateFaqStatus(faqId: string, status: 'Published' | 'Reje
   }
   // セッションから tenantId を取り出して以降の where 句注入に使う
   const tenantId = session.user.tenantId;
+  // この機能の呼称 (エラーメッセージも画面表示と揃える)
+  const termLabel = FAQ_TERM_LABELS[await getCurrentTenantMode(tenantId)];
   // 60 秒あたり 20 回までに制限
   enforceRateLimit(`faq-update:${session.user.id}`, { limit: 20, windowMs: 60_000 });
 
   // 対象 FAQ 候補を tenantId スコープで取得 (port 経由)
   const faq = await repos.faq.findById(faqId, tenantId);
   // 見つからない or 他テナントの ID ならエラー
-  if (!faq) throw new Error('FAQ候補が見つかりません');
+  if (!faq) throw new Error(`${termLabel}が見つかりません`);
   // 既に公開/却下済みのものは対象外
   if (faq.status !== 'Candidate') {
     throw new Error('候補ステータスのFAQのみ公開・却下できます');

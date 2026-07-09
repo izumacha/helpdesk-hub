@@ -14,6 +14,7 @@ import { isAgent } from '@/lib/role';
 // および Lite モード専用の遷移表ガード / Lite ステータス型ガード
 import {
   getAllowedLiteTransitions,
+  getCompletionStatuses,
   isLiteStatus,
   isValidTransition,
   type LiteStatus,
@@ -120,18 +121,15 @@ export async function updateTicketStatus(ticketId: string, newStatus: TicketStat
       );
     }
 
-    // 「完了」とみなすステータス集合を mode に応じて決定する
-    // - Pro: ['Resolved'] (従来どおり「解決済み」が完了扱い)
-    // - Lite: ['Closed', 'Resolved'] — Lite UI の「完了」は Closed に対応するが、Lite 遷移表が
-    //   Lite 非対応ステータス (例: 旧 Pro データの Resolved) から Pro 表へフォールバックするため、
-    //   Lite テナントでも Resolved が残っている可能性がある。両方を完了扱いにしておくことで、
-    //   ・新規完了 (Closed) で resolvedAt をセット
+    // 「完了」とみなすステータス集合を mode に応じて決定する (getCompletionStatuses が唯一の源。
+    // FAQ 候補化可否判定 (§1.1 フォローアップ) もこの関数を共有し、「完了」の定義が
+    // 呼び出し箇所ごとに食い違わないようにしている)。
+    //   ・新規完了 (Lite: Closed) で resolvedAt をセット
     //   ・旧 Resolved データの再オープン (Resolved → Open) で resolvedAt をクリア
     //   の両方を一貫して扱える。
     // これがズレると Lite 完了済みチケットでも resolvedAt=null のまま (SLA 期限切れ表示)、
     // または再オープン後も resolvedAt が残る (SLA 解決済み表示) などの不整合が起きる。
-    const completionStatuses: TicketStatus[] =
-      mode === 'lite' ? ['Closed', 'Resolved'] : ['Resolved'];
+    const completionStatuses = getCompletionStatuses(mode);
     // 完了集合に入る遷移なら現在時刻に、完了集合から離れる場合はクリア、それ以外は据え置き
     const resolvedAt = completionStatuses.includes(newStatus)
       ? new Date()

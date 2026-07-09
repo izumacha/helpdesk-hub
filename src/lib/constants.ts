@@ -4,19 +4,6 @@ import type { TicketStatus, TenantMode, Role, SettingsAuditAction } from '@/doma
 // Lite モードの 3 値型と型ガード関数を取り込み、mode-aware ラベル関数で使う
 import { isLiteStatus, type LiteStatus } from '@/domain/ticket-status';
 
-// FAQ 候補化を許可するチケット状態一覧を mode に応じて返す関数。
-// - Pro: ['Resolved'] (従来どおり「解決済み」のみ候補化可能)
-// - Lite: ['Closed', 'Resolved'] — Lite の「完了」は Closed に対応するが、Lite 遷移表は
-//   Lite 非対応ステータス (旧 Pro データの Resolved) から Pro 表へフォールバックするため、
-//   Lite テナントでも Resolved が残っている可能性がある。update-ticket.ts の
-//   completionStatuses と同じ考え方で両方を候補化可能にする。
-// (§1.1 フォローアップ: 以前は Pro 固定の ['Resolved'] だったため、Lite テナントの
-//  チケットは Lite 遷移表上 Resolved に到達できず FAQ 候補化が事実上使えなかった)
-export function getFaqEligibleStatuses(mode: TenantMode): readonly TicketStatus[] {
-  // Lite なら Closed (Lite の「完了」) と旧データの Resolved の両方を候補化可能にする
-  return mode === 'lite' ? ['Closed', 'Resolved'] : ['Resolved'];
-}
-
 // チケット状態の英語キーに対応する日本語表示ラベル (Pro モード、現行 7 値)
 export const STATUS_LABELS: Record<string, string> = {
   New: '新規',

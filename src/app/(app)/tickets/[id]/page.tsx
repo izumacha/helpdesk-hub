@@ -15,7 +15,6 @@ import {
   PRIORITY_COLORS,
   HISTORY_FIELD_LABELS,
   formatHistoryValue,
-  getFaqEligibleStatuses,
   FAQ_TERM_LABELS,
 } from '@/lib/constants';
 // 現在ログイン中のテナントの動作モード (lite | pro) を取得するヘルパー
@@ -41,7 +40,7 @@ import { EscalationForm } from '@/features/tickets/components/EscalationForm';
 // 使うと、4〜24 時間しかない初回応答期限では起票直後から常に warning になってしまうため)
 import { getSlaState, SLA_LABELS, SLA_COLORS, FIRST_RESPONSE_HOURS_BY_PRIORITY } from '@/lib/sla';
 // 現ステータスから許可される遷移先一覧を取得
-import { getAllowedTransitions } from '@/domain/ticket-status';
+import { getAllowedTransitions, getCompletionStatuses } from '@/domain/ticket-status';
 // FAQ 候補登録フォーム
 import { FaqCandidateForm } from '@/features/faq/components/FaqCandidateForm';
 
@@ -105,7 +104,7 @@ export default async function TicketDetailPage({ params }: Props) {
   // FAQ 候補化可能か (エージェント && mode-aware な完了状態 && 既存 FAQ 候補なし)
   // (§1.1 フォローアップ: Resolved 固定だと Lite テナントのチケットは常に false になっていた)
   const canAddFaq =
-    isAgent && getFaqEligibleStatuses(mode).includes(ticket.status) && !ticket.faqCandidate;
+    isAgent && getCompletionStatuses(mode).includes(ticket.status) && !ticket.faqCandidate;
 
   return (
     <div className="mx-auto max-w-4xl space-y-6">

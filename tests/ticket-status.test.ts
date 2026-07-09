@@ -5,6 +5,7 @@ import { describe, expect, it } from 'vitest';
 import {
   getAllowedLiteTransitions,
   getAllowedTransitions,
+  getCompletionStatuses,
   isLiteStatus,
   isValidLiteTransition,
   isValidTransition,
@@ -186,5 +187,19 @@ describe('Lite mode target restriction invariants', () => {
         expect(isLiteStatus(to)).toBe(true);
       }
     }
+  });
+});
+
+// getCompletionStatuses: update-ticket.ts の resolvedAt 判定と FAQ 候補化可否判定
+// (§1.1 フォローアップ) が共有する「完了」の単一定義
+describe('getCompletionStatuses', () => {
+  // Pro は従来どおり Resolved のみを完了扱いとする
+  it('Pro では Resolved のみを完了扱いとする', () => {
+    expect(getCompletionStatuses('pro')).toEqual(['Resolved']);
+  });
+
+  // Lite は Closed (Lite の「完了」) と旧 Pro データの Resolved の両方を完了扱いとする
+  it('Lite では Closed と旧データの Resolved を完了扱いとする', () => {
+    expect(getCompletionStatuses('lite')).toEqual(['Closed', 'Resolved']);
   });
 });
