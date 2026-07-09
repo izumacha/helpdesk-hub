@@ -10,6 +10,10 @@ import { auth } from '@/lib/auth';
 import { repos } from '@/data';
 // 設定ページのキャッシュを無効化するための Next.js キャッシュ関数
 import { revalidatePath } from 'next/cache';
+// 管理者権限を強制する共通アサーション (組織設定系で共有)
+import { assertAdminSession } from '@/lib/role';
+// 連打防止のための共通レート制限ヘルパー
+import { enforceRateLimit } from '@/lib/rate-limit';
 
 // 作成結果の戻り値型
 export interface CreateLocationResult {
@@ -21,15 +25,17 @@ export interface CreateLocationResult {
 
 // 拠点を新規作成するサーバーアクション
 export async function createLocation(formData: FormData): Promise<CreateLocationResult> {
-  // セッション取得と認証チェック
+  // セッション取得
   const session = await auth();
-  // 未ログインまたは tenantId 不在は拒否
-  if (!session?.user?.id || !session.user.tenantId) {
-    return { error: '認証が必要です' };
-  }
-  // 管理者のみが拠点を作成できる
-  if (session.user.role !== 'admin') {
-    return { error: 'この操作は管理者のみ実行できます' };
+  // 管理者権限の確認とレート制限を行う。このアクションは throw せず常に {error} を返す契約
+  // (呼び出し元の LocationsSection.tsx が try/catch を持たないため) なので、
+  // 共有ヘルパーが投げる例外をここで捕まえて変換する
+  try {
+    assertAdminSession(session);
+    // 拠点作成の連打を抑制 (60 秒あたり 10 回まで、ユーザー単位。update-tenant-mode.ts と同じ上限)
+    enforceRateLimit(`location-create:${session.user.id}`, { limit: 10, windowMs: 60_000 });
+  } catch (err) {
+    return { error: err instanceof Error ? err.message : 'この操作は管理者のみ実行できます' };
   }
 
   // フォームデータから入力値を取り出す
@@ -62,7 +68,11 @@ export async function createLocation(formData: FormData): Promise<CreateLocation
     // 拠点名の重複エラーをユーザー向けメッセージに変換する
     const message = err instanceof Error ? err.message : '';
     // Prisma の一意制約違反 (P2002) または memory アダプタのエラーを検出する
-    if (message.includes('Unique constraint') || message.includes('already exists') || message.includes('P2002')) {
+    if (
+      message.includes('Unique constraint') ||
+      message.includes('already exists') ||
+      message.includes('P2002')
+    ) {
       return { error: 'この拠点名はすでに使用されています' };
     }
     // その他のエラーはログに残して汎用メッセージを返す

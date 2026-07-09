@@ -10,6 +10,10 @@ import { auth } from '@/lib/auth';
 import { repos } from '@/data';
 // 設定ページのキャッシュを無効化するための Next.js キャッシュ関数
 import { revalidatePath } from 'next/cache';
+// 管理者権限を強制する共通アサーション (組織設定系で共有)
+import { assertAdminSession } from '@/lib/role';
+// 連打防止のための共通レート制限ヘルパー
+import { enforceRateLimit } from '@/lib/rate-limit';
 
 // 更新結果の戻り値型
 export interface UpdateLocationResult {
@@ -24,15 +28,17 @@ export async function updateLocation(
   locationId: string,
   formData: FormData,
 ): Promise<UpdateLocationResult> {
-  // セッション取得と認証チェック
+  // セッション取得
   const session = await auth();
-  // 未ログインまたは tenantId 不在は拒否
-  if (!session?.user?.id || !session.user.tenantId) {
-    return { error: '認証が必要です' };
-  }
-  // 管理者のみが拠点を更新できる
-  if (session.user.role !== 'admin') {
-    return { error: 'この操作は管理者のみ実行できます' };
+  // 管理者権限の確認とレート制限を行う。このアクションは throw せず常に {error} を返す契約
+  // (呼び出し元の LocationsSection.tsx が try/catch を持たないため) なので、
+  // 共有ヘルパーが投げる例外をここで捕まえて変換する
+  try {
+    assertAdminSession(session);
+    // 拠点更新の連打を抑制 (60 秒あたり 10 回まで、ユーザー単位)
+    enforceRateLimit(`location-update:${session.user.id}`, { limit: 10, windowMs: 60_000 });
+  } catch (err) {
+    return { error: err instanceof Error ? err.message : 'この操作は管理者のみ実行できます' };
   }
 
   // 更新後の名前と説明を取り出す
@@ -61,7 +67,11 @@ export async function updateLocation(
     // 拠点名の重複エラーをユーザー向けメッセージに変換する
     const message = err instanceof Error ? err.message : '';
     // Prisma の一意制約違反または memory アダプタのエラーを検出する
-    if (message.includes('Unique constraint') || message.includes('already exists') || message.includes('P2002')) {
+    if (
+      message.includes('Unique constraint') ||
+      message.includes('already exists') ||
+      message.includes('P2002')
+    ) {
       return { error: 'この拠点名はすでに使用されています' };
     }
     // 存在しない拠点 ID のエラー
