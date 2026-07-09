@@ -10,6 +10,8 @@ import { createMemoryContext, type Store } from '@/data/adapters/memory';
 import type { Repos } from '@/data/ports/unit-of-work';
 // 課金プランの型 (フィクスチャ切替に使う)
 import type { SubscriptionPlan } from '@/domain/types';
+// レート制限バケットをテスト間で初期化するヘルパー
+import { __resetRateLimits } from '@/lib/rate-limit';
 
 const TENANT_ID = 'tenant-1';
 const ADMIN_ID = 'u-admin-1';
@@ -38,6 +40,19 @@ vi.mock('next/cache', () => ({
   revalidatePath: vi.fn(),
 }));
 
+// FormData を組み立てるヘルパー (updateLineConfig との共有レート制限テストで使う)
+function makeForm(input: {
+  channelSecret?: string;
+  channelAccessToken?: string;
+  botUserId?: string;
+}): FormData {
+  const fd = new FormData();
+  fd.set('channelSecret', input.channelSecret ?? '');
+  fd.set('channelAccessToken', input.channelAccessToken ?? '');
+  fd.set('botUserId', input.botUserId ?? '');
+  return fd;
+}
+
 // 指定プランのテナントをシードする
 function seedTenant(plan: SubscriptionPlan) {
   store.tenants.set(TENANT_ID, {
@@ -65,6 +80,7 @@ describe('deleteLineConfig', () => {
     store = ctx.store;
     repos = ctx.repos;
     sessionUser = { id: ADMIN_ID, role: 'admin', tenantId: TENANT_ID };
+    __resetRateLimits();
   });
 
   // 本 PR の主眼: Pro 在籍中に作った設定を Standard へ降格した後でも削除できる
@@ -114,5 +130,27 @@ describe('deleteLineConfig', () => {
     const result = await deleteLineConfig({}, new FormData());
 
     expect(result.error).toBe('認証が必要です');
+  });
+
+  // レート制限は update/delete-line-config でテナント単位に共有する (update だけで
+  // 上限を使い切っても delete が同じテナントでは拒否されることを確認する)
+  it('updateとレート制限を共有する', async () => {
+    seedTenant('pro');
+    const { updateLineConfig } = await import('@/features/settings/actions/update-line-config');
+    const { deleteLineConfig } = await import('@/features/settings/actions/delete-line-config');
+
+    // update だけで上限 (10回) を使い切る
+    for (let i = 0; i < 10; i++) {
+      const result = await updateLineConfig(
+        {},
+        makeForm({ channelSecret: 's1', channelAccessToken: 't1', botUserId: BOT_USER_ID }),
+      );
+      expect(result.error).toBeUndefined();
+    }
+
+    // 同じテナントの delete も共有の上限に達しているため拒否される
+    const deleteResult = await deleteLineConfig({}, new FormData());
+    expect(deleteResult.error).toEqual(expect.any(String));
+    expect(deleteResult.success).toBeUndefined();
   });
 });
