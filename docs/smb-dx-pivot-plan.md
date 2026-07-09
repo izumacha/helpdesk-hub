@@ -123,6 +123,30 @@
 - [x] 添付ファイル（画像）対応 ― S3 互換ストレージ / もしくはローカルボリューム + 後で差し替え可能な Adapter
 - [x] マジックリンク認証（メール一通でログイン）
 
+#### 1.1 フォローアップ（2026-07-09）: FAQ 候補が Lite テナントでは事実上使えなかった
+
+監査で発見したギャップ: §2 のギャップ分析表は「FAQ 候補 →**よくある質問テンプレ**として残す
+（用語を変える）」と明記しており、エスカレーション（Lite では非表示）とは異なり Lite でも
+機能自体は使える設計意図だった。実装は `FAQ_ELIGIBLE_STATUSES = ['Resolved']`（Pro 専用ステータス）
+固定で FAQ 候補化可否を判定していたが、Lite の遷移表（`ALLOWED_TRANSITIONS_LITE`）には
+`Resolved` が存在しない（Lite の「完了」は `Closed`）。そのため Lite テナントで起票・完了した
+チケットは Resolved に到達できず、`canAddFaq` が常に false、`createFaqCandidate` も常に拒否され、
+「よくある質問」の登録導線自体（サイドバーの `/faq` リンク）も `proOnly` で非表示にされていた。
+Phase 1〜3 のロードマップ上は `[x]` 済みの機能が、既定モード（Lite）を使う大多数の SMB テナントに
+対しては一度も動作しない、という §4.1〜§4.3 と同種の「完了扱いだが実際には機能していない」ギャップ
+だった。
+
+- `src/lib/constants.ts` に `getFaqEligibleStatuses(mode)` を追加し、`update-ticket.ts` の
+  `completionStatuses`（Pro: `['Resolved']` / Lite: `['Closed', 'Resolved']`）と同じ判定に揃えた。
+  `FAQ_TERM_LABELS`（Lite: 「よくある質問」/ Pro: 「FAQ候補」）も一元管理の定数として追加（§6）。
+- `createFaqCandidate`（`src/features/faq/actions/faq-actions.ts`）・チケット詳細ページの
+  `canAddFaq`・サイドバーの `/faq` ナビ項目・`/faq` 一覧ページの見出し/空状態文言を、いずれも
+  この mode-aware な判定/呼称に切り替えた。サイドバーは `proOnly` による非表示をやめ、呼称だけ
+  mode に応じて切り替える方式にした。
+- `tests/features/faq-actions.test.ts` を新規追加し、Pro/Lite 双方の完了判定・後方互換
+  （Lite テナントに残る旧 Resolved データも候補化可能）を検証。`e2e/lite-mode.spec.ts` の
+  「FAQ候補が非表示であること」テストを「よくある質問として表示されること」に更新した。
+
 ### Phase 2 — 既存チャネルからの取り込み（4 週間）★ 差別化の本丸
 
 - [x] **メール取り込み**: 専用転送アドレス（例: `tenant-abc@inbox.helpdesk-hub.app`）に転送するとチケット化。`POST /api/inbound/email` を Webhook として実装（SendGrid Inbound Parse 形式の multipart / JSON 双方を受理）。テナントは `Tenant.inboundToken`（宛先ローカルパート）で特定、共有シークレット検証＋既知メンバー以外は隔離。純粋パーサ `src/lib/inbound-email.ts` ＋ ユニット/ルートテスト付き

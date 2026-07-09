@@ -8,8 +8,10 @@ import { repos } from '@/data';
 import { auth } from '@/lib/auth';
 // 「エージェント権限を持つか」を判定するヘルパー
 import { isAgent } from '@/lib/role';
-// FAQ 候補化を許可する状態 (Resolved のみ) の一覧
-import { FAQ_ELIGIBLE_STATUSES } from '@/lib/constants';
+// FAQ 候補化を許可する状態一覧を mode (lite/pro) に応じて返す関数
+import { getFaqEligibleStatuses } from '@/lib/constants';
+// テナントの動作モード (lite | pro) を取得するヘルパー
+import { getCurrentTenantMode } from '@/lib/tenant';
 // レート制限 (連打防止) の共通関数
 import { enforceRateLimit } from '@/lib/rate-limit';
 // FAQ 候補入力の Zod スキーマ (質問/回答の検証)
@@ -41,9 +43,12 @@ export async function createFaqCandidate(ticketId: string, question: string, ans
   const ticket = await repos.tickets.findById(ticketId, tenantId);
   // 無ければエラー
   if (!ticket) throw new Error('チケットが見つかりません');
-  // 解決済み以外は FAQ 化不可
-  if (!FAQ_ELIGIBLE_STATUSES.includes(ticket.status)) {
-    throw new Error('解決済みチケットのみFAQ候補に変換できます');
+  // テナントの動作モード (lite | pro) を取得し、完了扱いの状態集合を切り替える
+  // (§1.1 フォローアップ: Lite の「完了」は Closed であり Resolved 固定では判定できない)
+  const mode = await getCurrentTenantMode(tenantId);
+  // 完了扱いの状態でなければ FAQ 化不可
+  if (!getFaqEligibleStatuses(mode).includes(ticket.status)) {
+    throw new Error('完了済みチケットのみFAQ候補に変換できます');
   }
 
   // FAQ 候補を新規作成 (初期ステータスは Adapter 側の既定値 Candidate)

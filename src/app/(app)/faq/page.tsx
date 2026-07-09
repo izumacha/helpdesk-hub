@@ -6,10 +6,12 @@ import { repos } from '@/data';
 import { notFound } from 'next/navigation';
 // エージェント/管理者判定
 import { isAgent } from '@/lib/role';
-// FAQ ステータスの日本語ラベル + Tailwind カラークラス
-import { FAQ_STATUS_LABELS, FAQ_STATUS_COLORS } from '@/lib/constants';
+// FAQ ステータスの日本語ラベル + Tailwind カラークラス + FAQ 機能自体の mode-aware 呼称
+import { FAQ_STATUS_LABELS, FAQ_STATUS_COLORS, FAQ_TERM_LABELS } from '@/lib/constants';
 // FAQ の状態を更新するサーバーアクション
 import { updateFaqStatus } from '@/features/faq/actions/faq-actions';
+// テナントの動作モード (lite | pro) を取得するヘルパー
+import { getCurrentTenantMode } from '@/lib/tenant';
 
 // /faq : FAQ 候補一覧ページ (エージェント以上のみ閲覧可)
 export default async function FaqPage() {
@@ -20,23 +22,29 @@ export default async function FaqPage() {
   // 一般ユーザー (依頼者) は 404 で隠す
   if (!isAgent(session.user.role)) notFound();
 
-  // 当該テナントの FAQ 候補を新しい順で全件取得 (元チケットと作成者名を含む、port 経由)
-  const faqs = await repos.faq.list(session.user.tenantId);
+  // 当該テナントの FAQ 候補一覧とテナントモードを並列取得 (mode で見出し文言を切り替える)
+  const [faqs, mode] = await Promise.all([
+    // 新しい順で全件取得 (元チケットと作成者名を含む、port 経由)
+    repos.faq.list(session.user.tenantId),
+    getCurrentTenantMode(session.user.tenantId),
+  ]);
+  // この機能の呼称 (Lite: よくある質問 / Pro: FAQ候補)
+  const termLabel = FAQ_TERM_LABELS[mode];
 
   return (
     <div className="space-y-6">
       {/* ページヘッダー: タイトル + サブテキスト */}
       <div>
-        <h1 className="text-2xl font-bold text-slate-900">FAQ候補一覧</h1>
+        <h1 className="text-2xl font-bold text-slate-900">{termLabel}一覧</h1>
         <p className="mt-1 text-sm text-slate-500">
-          解決済みチケットから抽出されたナレッジ候補を公開・却下できます。
+          完了した問い合わせから抽出されたナレッジ候補を公開・却下できます。
         </p>
       </div>
 
       {faqs.length === 0 ? (
         // 0 件時の空状態 (柔らかなカード)
         <div className="rounded-2xl bg-white py-20 text-center text-slate-400 ring-1 ring-slate-200">
-          <p className="text-sm">FAQ候補はまだありません</p>
+          <p className="text-sm">{termLabel}はまだありません</p>
         </div>
       ) : (
         // 1 件以上ある場合は順に列挙

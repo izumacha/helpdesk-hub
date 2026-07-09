@@ -15,6 +15,8 @@ import {
   PRIORITY_COLORS,
   HISTORY_FIELD_LABELS,
   formatHistoryValue,
+  getFaqEligibleStatuses,
+  FAQ_TERM_LABELS,
 } from '@/lib/constants';
 // 現在ログイン中のテナントの動作モード (lite | pro) を取得するヘルパー
 import { getCurrentTenantMode } from '@/lib/tenant';
@@ -100,8 +102,10 @@ export default async function TicketDetailPage({ params }: Props) {
   // Pro モードの遷移表を参照する (Lite モードでは Escalated 自体が UI 上は存在しない)
   const canEscalate =
     isAgent && mode === 'pro' && getAllowedTransitions(ticket.status, 'pro').includes('Escalated');
-  // FAQ 候補化可能か (エージェント && 解決済み && 既存 FAQ 候補なし)
-  const canAddFaq = isAgent && ticket.status === 'Resolved' && !ticket.faqCandidate;
+  // FAQ 候補化可能か (エージェント && mode-aware な完了状態 && 既存 FAQ 候補なし)
+  // (§1.1 フォローアップ: Resolved 固定だと Lite テナントのチケットは常に false になっていた)
+  const canAddFaq =
+    isAgent && getFaqEligibleStatuses(mode).includes(ticket.status) && !ticket.faqCandidate;
 
   return (
     <div className="mx-auto max-w-4xl space-y-6">
@@ -353,19 +357,19 @@ export default async function TicketDetailPage({ params }: Props) {
                 </div>
               )}
 
-              {/* FAQ 候補登録フォーム (条件を満たすときのみ表示) */}
+              {/* FAQ 候補登録フォーム (条件を満たすときのみ表示。呼称は mode-aware) */}
               {canAddFaq && (
                 <div>
-                  <dt className="font-medium text-gray-500">FAQ候補</dt>
+                  <dt className="font-medium text-gray-500">{FAQ_TERM_LABELS[mode]}</dt>
                   <dd className="mt-1">
-                    <FaqCandidateForm ticketId={ticket.id} ticketTitle={ticket.title} />
+                    <FaqCandidateForm ticketId={ticket.id} ticketTitle={ticket.title} mode={mode} />
                   </dd>
                 </div>
               )}
               {/* 既に FAQ 候補化済みの場合は登録済み表示 */}
               {ticket.faqCandidate && (
                 <div>
-                  <dt className="font-medium text-gray-500">FAQ候補</dt>
+                  <dt className="font-medium text-gray-500">{FAQ_TERM_LABELS[mode]}</dt>
                   <dd className="mt-1 text-xs text-green-600">登録済み</dd>
                 </div>
               )}

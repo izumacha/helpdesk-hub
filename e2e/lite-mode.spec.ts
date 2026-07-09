@@ -39,11 +39,15 @@ test.describe('Lite モード', () => {
     await expect(page.getByText('担当者別 未完了件数')).toHaveCount(0);
   });
 
-  // サイドバーに FAQ候補メニューが出ない (Lite では proOnly のため隠れる)
-  test('サイドバーに FAQ候補 が表示されない', async ({ page }) => {
+  // サイドバーの FAQ 候補メニューは Lite でも表示されるが、呼称が「よくある質問」に変わる
+  // (§1.1 フォローアップ: 以前は proOnly で隠していたが、Lite テナントでも使える機能のため
+  //  呼称だけ切り替えて表示するよう修正した)
+  test('サイドバーに よくある質問 が表示され、Pro 用語の FAQ候補 は出ない', async ({ page }) => {
     // エージェントでログイン
     await login(page);
-    // FAQ候補へのリンクが 1 つも無いこと
+    // Lite 用語の「よくある質問」リンクが表示される
+    await expect(page.getByRole('link', { name: 'よくある質問' })).toBeVisible();
+    // Pro 用語の「FAQ候補」リンクは存在しない
     await expect(page.getByRole('link', { name: 'FAQ候補' })).toHaveCount(0);
   });
 

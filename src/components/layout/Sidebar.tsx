@@ -10,6 +10,8 @@ import { usePathname } from 'next/navigation';
 import { isAgent } from '@/lib/role';
 // 権限・テナントモードを表すドメイン型 (正準)
 import type { Role, TenantMode } from '@/domain/types';
+// 「FAQ 候補」機能の呼称を mode に応じて切り替える定数 (§6 一元管理)
+import { FAQ_TERM_LABELS } from '@/lib/constants';
 // 共通ブランドマーク
 import { Logo } from '@/components/brand/Logo';
 // モバイルナビ Context (ハンバーガーで開閉するドロワー状態)
@@ -24,18 +26,19 @@ interface Props {
 // メニュー項目定義
 // - agentOnly: エージェント以上 (agent / admin) のみ表示
 // - adminOnly: 管理者 (admin) のみ表示 (テナント設定など組織管理向け)
-// - proOnly: Pro モードのテナントのみ表示 (Lite では用語簡素化のため隠す)
+// - label: 固定文言、または mode に応じて表示文言を変える関数
+//   (§1.1 フォローアップ: FAQ 候補は Lite でも「よくある質問」として使える機能のため、
+//    以前の proOnly による非表示をやめ、呼称だけ mode で切り替える)
 const navItems: {
   href: string;
-  label: string;
+  label: string | ((mode: TenantMode) => string);
   agentOnly?: boolean;
   adminOnly?: boolean;
-  proOnly?: boolean;
 }[] = [
   { href: '/dashboard', label: 'ダッシュボード' },
   { href: '/tickets', label: '問い合わせ一覧' },
   { href: '/tickets/new', label: '新規登録' },
-  { href: '/faq', label: 'FAQ候補', agentOnly: true, proOnly: true },
+  { href: '/faq', label: (mode) => FAQ_TERM_LABELS[mode], agentOnly: true },
   { href: '/notifications', label: '通知' },
   { href: '/settings/line', label: 'LINE連携' }, // Phase 2: 自分の LINE を連携する自己サービス (全ロール)
   { href: '/audit', label: '監査ログ', adminOnly: true }, // Phase 4: 管理者向け変更履歴
@@ -53,16 +56,14 @@ export function Sidebar({ role, mode }: Props) {
   // (md 未満ではこの open に従って画面外/画面内へスライドする)
   const { open: mobileOpen, closeNav } = useMobileNav();
 
-  // 権限とテナントモードに応じて表示できる項目だけに絞り込む
-  // 1 項目に複数の制約 (例: FAQ候補 = agentOnly + proOnly) が付くため、各制約を個別に判定し
+  // 権限に応じて表示できる項目だけに絞り込む
+  // 1 項目に複数の制約が付きうるため、各制約を個別に判定し
   // どれか 1 つでも満たさなければ隠す (早期 return で「いずれか不適合なら除外」を表現)
   const visibleItems = navItems.filter((item) => {
     // adminOnly 項目は admin ロール以外には表示しない
     if (item.adminOnly && role !== 'admin') return false;
     // agentOnly 項目は agent / admin 以外には表示しない
     if (item.agentOnly && !isAgent(role)) return false;
-    // proOnly 項目は Pro テナント以外 (= Lite) には表示しない
-    if (item.proOnly && mode !== 'pro') return false;
     // すべての制約を満たした項目だけ表示する
     return true;
   });
@@ -139,6 +140,8 @@ export function Sidebar({ role, mode }: Props) {
           {visibleItems.map((item) => {
             // この項目が現在のページかどうか
             const isActive = isItemActive(item.href);
+            // label が関数 (mode-aware) なら現在の mode で解決し、そうでなければそのまま使う
+            const label = typeof item.label === 'function' ? item.label(mode) : item.label;
             return (
               <Link
                 key={item.href}
@@ -154,7 +157,7 @@ export function Sidebar({ role, mode }: Props) {
                     : 'text-slate-600 hover:bg-teal-50/60 hover:text-teal-800'
                 }`}
               >
-                {item.label}
+                {label}
               </Link>
             );
           })}
