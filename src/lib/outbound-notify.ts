@@ -20,20 +20,19 @@ import { isUnsafeUrl } from '@/lib/ssrf-guard';
 import { resolveAppBaseUrl } from '@/lib/app-url';
 // 優先度の日本語ラベル (外部通知本文に使う)
 import { PRIORITY_LABELS } from '@/lib/constants';
-// 新規作成されたチケットの型 (通知本文の組み立てに使う最小限のフィールドのみ参照)
-import type { Ticket } from '@/domain/types';
+// 新規作成されたチケットの型 (通知本文の組み立てに使う最小限のフィールドのみ参照)、
+// 外部通知チャネルの識別キー型 (唯一の参照元。ここでは再宣言しない §6 一元管理)、
+// および失敗記録の有無判定に使う Tenant 型
+import type { OutboundChannelKey, Tenant, Ticket } from '@/domain/types';
 
 // notifyNewTicketOutbound が参照する最小限のチケット情報。
 // メール/LINE 取り込みは冪等化ヘルパーが { id, alreadyExisted } しか返さず、通知のためだけに
 // フル Ticket を再取得するのは無駄なため、呼び出し元が持つ最小限のフィールドだけ要求する。
 export type NewTicketNotifyInput = Pick<Ticket, 'id' | 'title' | 'priority'>;
 
-// テナントの通知チャネル健全性を記録する際のキー (Tenant の slack/teams/chatwork*LastFailure* 列に対応)
-type ChannelKey = 'slack' | 'teams' | 'chatwork';
-
 // 設定済みチャネルを表す内部型 (ログ・健全性記録用のキー/チャネル名と送信実体をペアで持つ)
 interface ResolvedChannel {
-  key: ChannelKey; // 健全性記録用のキー (repos.tenants.recordOutboundChannelResult に渡す)
+  key: OutboundChannelKey; // 健全性記録用のキー (repos.tenants.recordOutboundChannelResult に渡す)
   name: string; // ログ表示用のチャネル名 (Slack / Teams / Chatwork)
   notifier: OutboundNotifier; // 実際の送信を行う Adapter
 }
@@ -42,13 +41,21 @@ interface ResolvedChannel {
 // DB 肥大化・画面崩れを防ぐ上限を設ける。§8 パフォーマンス)
 const FAILURE_MESSAGE_MAX_LENGTH = 300;
 
+// チャネルごとの直近失敗記録の有無を読む Tenant フィールド名。channelHasRecordedFailure が参照する
+// (OutboundChannelKey → Tenant.<channel>LastFailureAt のフィールド名の対応表。§6 一元管理)
+const CHANNEL_FAILURE_AT_FIELD = {
+  slack: 'slackLastFailureAt', // Slack の直近失敗日時フィールド名
+  teams: 'teamsLastFailureAt', // Teams の直近失敗日時フィールド名
+  chatwork: 'chatworkLastFailureAt', // Chatwork の直近失敗日時フィールド名
+} as const satisfies Record<OutboundChannelKey, string>;
+
 // Webhook URL を SSRF チェックして安全なら channels リストへ追加する共通ヘルパー。
 // Slack / Teams のように「ユーザーが入力した URL を保存して後で叩く」チャネルに共通して使う。
 // Chatwork のような固定ホスト宛チャネルには不要なため呼ばない。
 // 将来チャネルを追加するときも、このヘルパーを呼べば SSRF 二重防御を取り込める。
 function addWebhookChannel(
   channels: ResolvedChannel[], // 追加先のチャネル一覧 (破壊的に追加する)
-  key: ChannelKey, // 健全性記録用のキー
+  key: OutboundChannelKey, // 健全性記録用のキー
   name: string, // ログ表示用のチャネル名
   url: string, // ユーザーが設定した Webhook URL
   factory: (url: string) => OutboundNotifier, // URL を受け取って Adapter を生成するファクトリ
@@ -131,7 +138,7 @@ export async function sendOutboundNotification(
           );
           // 管理画面向けに直近の失敗日時・概要メッセージを記録する (履歴ではなく最新 1 件のみ)
           await repos.tenants.recordOutboundChannelResult(tenantId, channel.key, {
-            message: String(result.reason).slice(0, FAILURE_MESSAGE_MAX_LENGTH),
+            message: formatFailureMessage(result.reason),
             at: new Date(),
           });
         } else if (hadPriorFailure) {
@@ -148,17 +155,24 @@ export async function sendOutboundNotification(
 
 // 指定チャネルの直近失敗が記録済みかどうかを判定する (成功時の不要な DB 書き込みを避けるための判定専用)
 function channelHasRecordedFailure(
-  tenant: { slackLastFailureAt?: Date | null; teamsLastFailureAt?: Date | null; chatworkLastFailureAt?: Date | null },
-  channel: ChannelKey,
+  tenant: Pick<Tenant, 'slackLastFailureAt' | 'teamsLastFailureAt' | 'chatworkLastFailureAt'>,
+  channel: OutboundChannelKey,
 ): boolean {
-  switch (channel) {
-    case 'slack':
-      return tenant.slackLastFailureAt != null;
-    case 'teams':
-      return tenant.teamsLastFailureAt != null;
-    case 'chatwork':
-      return tenant.chatworkLastFailureAt != null;
-  }
+  // CHANNEL_FAILURE_AT_FIELD でチャネルキーを対応する Tenant のフィールド名に変換する
+  const fieldName = CHANNEL_FAILURE_AT_FIELD[channel];
+  // そのフィールドが null/undefined でなければ「失敗記録あり」と判定する
+  return tenant[fieldName] != null;
+}
+
+// Promise.allSettled の reason (拒否理由) を、管理画面に表示できる安全な文字列に変換する。
+// - Error インスタンスなら message だけを使う (スタックトレース等の内部詳細は含めない)
+// - Error 以外 (将来 Notifier 実装が非 Error を reject した場合の保険) は String() にフォールバックする
+// - サロゲートペア (絵文字等) の途中で文字列を切らないよう、コードポイント単位で切り詰める
+function formatFailureMessage(reason: unknown): string {
+  // Error インスタンスなら message を、そうでなければ文字列化した値を使う
+  const raw = reason instanceof Error ? reason.message : String(reason);
+  // Array.from はコードポイント単位で分割するため、.slice() と違いサロゲートペアを壊さない
+  return Array.from(raw).slice(0, FAILURE_MESSAGE_MAX_LENGTH).join('');
 }
 
 // tenantId + 呼び出し元コンテキストを受け取り、ベース URL 解決 + 送信 + ベストエフォート

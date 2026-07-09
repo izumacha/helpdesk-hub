@@ -241,19 +241,21 @@ export default async function SettingsPage() {
           teamsWebhookUrl={tenant?.teamsWebhookUrl ?? null}
           chatworkApiToken={tenant?.chatworkApiToken ?? null}
           chatworkRoomId={tenant?.chatworkRoomId ?? null}
-          // 監査で発見したギャップ対応: 直近送信失敗があるチャネルだけ警告バッジを表示する
+          // 監査で発見したギャップ対応: 直近送信失敗があるチャネルだけ警告バッジを表示する。
+          // 空文字列 (falsy だが記録は存在する) を見落とさないよう `!= null` で判定する
+          // (`&&` の truthy チェックだと message が空文字列のとき記録があるのにバッジが消える)
           slackFailure={
-            tenant?.slackLastFailureAt && tenant.slackLastFailureMessage
+            tenant?.slackLastFailureAt != null && tenant.slackLastFailureMessage != null
               ? { at: tenant.slackLastFailureAt, message: tenant.slackLastFailureMessage }
               : null
           }
           teamsFailure={
-            tenant?.teamsLastFailureAt && tenant.teamsLastFailureMessage
+            tenant?.teamsLastFailureAt != null && tenant.teamsLastFailureMessage != null
               ? { at: tenant.teamsLastFailureAt, message: tenant.teamsLastFailureMessage }
               : null
           }
           chatworkFailure={
-            tenant?.chatworkLastFailureAt && tenant.chatworkLastFailureMessage
+            tenant?.chatworkLastFailureAt != null && tenant.chatworkLastFailureMessage != null
               ? { at: tenant.chatworkLastFailureAt, message: tenant.chatworkLastFailureMessage }
               : null
           }

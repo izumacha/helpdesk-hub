@@ -10,9 +10,10 @@ import { createMemoryContext, type Store } from '@/data/adapters/memory';
 // 型のみ
 import type { Repos, UnitOfWork } from '@/data/ports/unit-of-work';
 
-// テスト用テナント ID と Slack Webhook URL (実際には送信されない。SSRF ガードを通す公開ホスト)
+// テスト用テナント ID と Slack/Teams Webhook URL (実際には送信されない。SSRF ガードを通す公開ホスト)
 const TENANT = 'default-tenant';
 const SLACK_WEBHOOK_URL = 'https://hooks.slack.com/services/T000/B000/xxx';
+const TEAMS_WEBHOOK_URL = 'https://prod-00.japaneast.logic.azure.com/webhook';
 
 // 各テストで差し替える可変な依存 (動的 import 前に値を入れる)
 let store: Store;
@@ -124,6 +125,74 @@ describe('sendOutboundNotification のチャネル健全性記録', () => {
 
     // 前回失敗が無いので、成功時にわざわざ DB を書きに行かない
     expect(recordSpy).not.toHaveBeenCalled();
+  });
+
+  it('複数チャネル設定時、片方の失敗がもう片方の記録に混線しない', async () => {
+    const now = new Date();
+    // Slack と Teams の両方を設定したテナントを投入する
+    store.tenants.set(TENANT, {
+      id: TENANT,
+      name: 'デフォルト組織',
+      mode: 'lite',
+      industry: null,
+      inboundToken: null,
+      slackWebhookUrl: SLACK_WEBHOOK_URL,
+      teamsWebhookUrl: TEAMS_WEBHOOK_URL,
+      subscriptionPlan: 'free' as const,
+      stripeCustomerId: null,
+      stripeSubscriptionId: null,
+      stripeSubscriptionStatus: null,
+      trialEndsAt: null,
+      chatworkApiToken: null,
+      chatworkRoomId: null,
+      createdAt: now,
+    });
+    // URL で振り分けて Slack だけ失敗させ、Teams は成功させる
+    fetchMock.mockImplementation((url: string) => {
+      if (url === SLACK_WEBHOOK_URL) return Promise.reject(new Error('slack down'));
+      return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve('ok') });
+    });
+    const { sendOutboundNotification } = await import('@/lib/outbound-notify');
+
+    await sendOutboundNotification(TENANT, { subject: '件名', body: '本文' });
+
+    const tenant = await repos.tenants.findById(TENANT);
+    // Slack は失敗記録が残る
+    expect(tenant?.slackLastFailureAt).toBeInstanceOf(Date);
+    expect(tenant?.slackLastFailureMessage).toContain('slack down');
+    // Teams は成功しているので失敗記録は無い (Slack の失敗が混線していない)
+    expect(tenant?.teamsLastFailureAt ?? null).toBeNull();
+    expect(tenant?.teamsLastFailureMessage ?? null).toBeNull();
+  });
+
+  it('失敗メッセージは300コードポイントに切り詰められ、サロゲートペアを壊さない', async () => {
+    await seedTenant();
+    // 絵文字 (サロゲートペア = UTF-16 2 単位/文字) を含む長いメッセージで失敗させる
+    const longMessage = '😀'.repeat(310);
+    fetchMock.mockRejectedValueOnce(new Error(longMessage));
+    const { sendOutboundNotification } = await import('@/lib/outbound-notify');
+
+    await sendOutboundNotification(TENANT, { subject: '件名', body: '本文' });
+
+    const tenant = await repos.tenants.findById(TENANT);
+    const message = tenant?.slackLastFailureMessage ?? '';
+    // コードポイント単位で 300 文字に切り詰められている (.slice() のような UTF-16 単位切り捨てだと
+    // サロゲートペアの片割れが残り、文字化けする)
+    expect(Array.from(message)).toHaveLength(300);
+    // 壊れたサロゲート (置換文字 U+FFFD) を含まない
+    expect(message).not.toContain('�');
+  });
+
+  it('Errorの失敗メッセージは冗長な "Error: " 接頭辞を含まない', async () => {
+    await seedTenant();
+    fetchMock.mockRejectedValueOnce(new Error('HTTP 404 - channel_not_found'));
+    const { sendOutboundNotification } = await import('@/lib/outbound-notify');
+
+    await sendOutboundNotification(TENANT, { subject: '件名', body: '本文' });
+
+    const tenant = await repos.tenants.findById(TENANT);
+    // String(error) だと "Error: HTTP 404 - ..." になってしまうため、message だけを使う
+    expect(tenant?.slackLastFailureMessage).toBe('HTTP 404 - channel_not_found');
   });
 
   it('健全性記録自体が失敗しても送信結果の処理は継続する (非クリティカルな副作用)', async () => {

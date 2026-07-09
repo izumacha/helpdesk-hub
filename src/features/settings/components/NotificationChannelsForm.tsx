@@ -4,6 +4,8 @@
 import { useActionState, useTransition } from 'react';
 // 外部通知チャネル設定を更新するサーバーアクション
 import { updateNotificationChannels } from '@/features/settings/actions/update-notification-channels';
+// 日本時間 (Asia/Tokyo) を明示してフォーマットする共通関数 (ブラウザのタイムゾーンに依存させない §6 一元管理)
+import { formatDateTimeJP } from '@/lib/format-date';
 
 // 1 チャネル分の直近送信失敗情報 (未発生なら null)
 interface ChannelFailure {
@@ -24,13 +26,17 @@ interface Props {
   chatworkFailure: ChannelFailure | null;
 }
 
-// 直近送信失敗の警告バッジ。色だけでなく「⚠️」と文言でも状態を伝える (§7 a11y)
+// 直近送信失敗の警告バッジ。色だけでなく「⚠️」と文言でも状態を伝える (§7 a11y)。
+// role="alert" は付けない: これは初回表示 (SSR) から存在する静的な状態表示であり、
+// フォーム送信後に動的に現れる state.error/state.success (下記) とは異なり
+// 「即時に読み上げてほしい変化」ではないため (CLAUDE.md §7 aria-live の使いどころ)
 function ChannelFailureBadge({ failure }: { failure: ChannelFailure | null }) {
   // 失敗記録が無ければ何も表示しない (正常系)
   if (!failure) return null;
   return (
-    <p role="alert" className="mt-1 text-xs text-rose-700">
-      ⚠️ 最終送信失敗: {failure.at.toLocaleString('ja-JP')}（{failure.message}）
+    <p className="mt-1 text-xs text-rose-700">
+      {/* JST を明示するフォーマッタで統一する (ブラウザのタイムゾーンに依存させない) */}
+      ⚠️ 最終送信失敗: {formatDateTimeJP(failure.at)}（{failure.message}）
     </p>
   );
 }

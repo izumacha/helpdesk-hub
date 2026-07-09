@@ -35,6 +35,13 @@ export type SettingsAuditAction =
   | 'line_config_delete' // LINE 連携設定の削除
   | 'notification_channels_update'; // 通知チャネル設定の更新
 
+// Phase 4 外部通知チャネルの識別キー (Tenant.<channel>WebhookUrl 等・
+// <channel>LastFailureAt/Message 列に対応)。src/data/ports/tenant-repository.ts
+// (recordOutboundChannelResult) と src/lib/outbound-notify.ts の唯一の参照元。
+// 値を追加したら両アダプタの switch (tenant-repository.{prisma,memory}.ts) と
+// outbound-notify.ts の channelHasRecordedFailure・settings 画面も更新すること
+export type OutboundChannelKey = 'slack' | 'teams' | 'chatwork';
+
 // FAQ 候補の公開状態 (候補/公開中/却下)
 export type FaqStatus = 'Candidate' | 'Published' | 'Rejected';
 

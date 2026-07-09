@@ -160,17 +160,22 @@ export function makeTenantRepo(db: PrismaLike): TenantRepository {
       // 失敗時は日時とメッセージを、成功 (クリア) 時は両方 null を書き込む
       const at = failure ? failure.at : null;
       const message = failure ? failure.message : null;
+      // Prisma の更新データ (チャネルに応じて書き込むカラムが変わる)
       let data: Prisma.TenantUpdateInput;
+      // チャネルキーで分岐する (3 種類のみなので switch で列挙する)
       switch (channel) {
         case 'slack':
+          // Slack 用の 2 カラムだけを更新対象にする
           data = { slackLastFailureAt: at, slackLastFailureMessage: message };
-          break;
+          break; // 他のケースに落ちないよう抜ける
         case 'teams':
+          // Teams 用の 2 カラムだけを更新対象にする
           data = { teamsLastFailureAt: at, teamsLastFailureMessage: message };
-          break;
+          break; // 他のケースに落ちないよう抜ける
         case 'chatwork':
+          // Chatwork 用の 2 カラムだけを更新対象にする
           data = { chatworkLastFailureAt: at, chatworkLastFailureMessage: message };
-          break;
+          break; // 他のケースに落ちないよう抜ける
       }
       const row = await db.tenant.update({ where: { id }, data });
       // 更新後の行をドメイン型に詰め替えて返す

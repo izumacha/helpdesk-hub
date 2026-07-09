@@ -159,6 +159,51 @@ describe('updateNotificationChannels', () => {
     expect(result.error).toBe('Chatwork ルーム ID は数字で入力してください');
   });
 
+  // 監査で発見したギャップ対応: Webhook URL を修正して保存すると、その場ですぐに
+  // 直近の失敗記録 (「⚠️ 最終送信失敗」バッジ) がクリアされる (次の送信成功を待たない)
+  it('チャネルの設定値を変更すると直近の失敗記録がクリアされる', async () => {
+    // あらかじめ Slack の失敗を記録しておく (前回の Webhook URL が壊れていた想定)
+    await repos.tenants.recordOutboundChannelResult(TENANT_ID, 'slack', {
+      message: 'HTTP 404',
+      at: new Date(),
+    });
+    const { updateNotificationChannels } =
+      await import('@/features/settings/actions/update-notification-channels');
+    // 正しい URL に修正して保存する
+    const result = await updateNotificationChannels(
+      {},
+      makeForm({ slackWebhookUrl: 'https://hooks.slack.com/services/fixed' }),
+    );
+    expect(result.success).toBe(true);
+    const saved = await repos.tenants.findById(TENANT_ID);
+    // 失敗記録が消えていること (次の送信成功を待たずにバッジが消える)
+    expect(saved?.slackLastFailureAt ?? null).toBeNull();
+    expect(saved?.slackLastFailureMessage ?? null).toBeNull();
+  });
+
+  // 触っていないチャネルの失敗記録は残る (実際に直したわけではないため)
+  it('変更していないチャネルの失敗記録は保持される', async () => {
+    // Slack はあらかじめ正しい URL で設定済み・失敗記録もある状態にする
+    await repos.tenants.updateNotificationChannels(TENANT_ID, {
+      slackWebhookUrl: 'https://hooks.slack.com/services/unchanged',
+    });
+    await repos.tenants.recordOutboundChannelResult(TENANT_ID, 'slack', {
+      message: 'HTTP 500',
+      at: new Date(),
+    });
+    const { updateNotificationChannels } =
+      await import('@/features/settings/actions/update-notification-channels');
+    // Slack の値は変えずに、フォームを再送信する (実質同じ値で保存)
+    const result = await updateNotificationChannels(
+      {},
+      makeForm({ slackWebhookUrl: 'https://hooks.slack.com/services/unchanged' }),
+    );
+    expect(result.success).toBe(true);
+    const saved = await repos.tenants.findById(TENANT_ID);
+    // 値を変えていないので、失敗記録は消えずに残っている
+    expect(saved?.slackLastFailureAt).not.toBeNull();
+  });
+
   // レート制限: 60秒あたり10回を超える連打は拒否される
   it('60秒あたり10回を超える連打は拒否される', async () => {
     const { updateNotificationChannels } =

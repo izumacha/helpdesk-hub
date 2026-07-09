@@ -1,5 +1,5 @@
-// ドメイン層の Tenant 型とテナントモード・課金プラン型を参照
-import type { SubscriptionPlan, Tenant, TenantMode } from '@/domain/types';
+// ドメイン層の Tenant 型とテナントモード・課金プラン型・外部通知チャネルキー型を参照
+import type { OutboundChannelKey, SubscriptionPlan, Tenant, TenantMode } from '@/domain/types';
 
 // Tenant 操作の契約 (port)。取得系に加え、Lite/Pro モード切替の更新系を提供する
 export interface TenantRepository {
@@ -65,7 +65,7 @@ export interface TenantRepository {
   // id はセッション/内部呼び出し由来の tenantId のみを渡すこと (クロステナント更新防止)
   recordOutboundChannelResult(
     id: string,
-    channel: 'slack' | 'teams' | 'chatwork',
+    channel: OutboundChannelKey,
     failure: { message: string; at: Date } | null,
   ): Promise<Tenant>;
 }
