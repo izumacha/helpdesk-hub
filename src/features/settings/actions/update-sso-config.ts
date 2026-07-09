@@ -14,7 +14,7 @@ import { assertSsoConfigAdmin } from '@/lib/sso-context';
 // 証明書の base64 正規化 (SAML SP コアと共有する純粋ヘルパー)
 import { normalizeCert } from '@/lib/saml-cert';
 // 連打防止のための共通レート制限ヘルパー
-import { enforceRateLimit } from '@/lib/rate-limit';
+import { checkRateLimit } from '@/lib/rate-limit';
 
 // 入力長の上限 (DoS・異常入力対策。EntityID/URL は十分長め、証明書は数 KB を想定)
 const ENTITY_ID_MAX = 1024; // IdP EntityID の最大長
@@ -67,15 +67,15 @@ export async function updateSsoConfig(
   // 検証済みの tenantId (セッション由来)
   const tenantId = gate.tenantId;
 
-  try {
-    // SSO 設定の作成・更新・削除の連打を抑制 (60 秒あたり 10 回まで、テナント単位で
-    // delete-sso-config.ts と共有する)。update/delete で同じキーを共有する理由も
-    // create/update/delete-location.ts と同じ (アクション別に分けると実質の上限が
-    // action 数倍になってしまう)
-    enforceRateLimit(`sso-config-mutate:${tenantId}`, { limit: 10, windowMs: 60_000 });
-  } catch (err) {
-    return { error: err instanceof Error ? err.message : 'しばらく時間をおいて再度お試しください' };
-  }
+  // SSO 設定の作成・更新・削除の連打を抑制 (60 秒あたり 10 回まで、テナント単位で
+  // delete-sso-config.ts と共有する)。update/delete で同じキーを共有する理由も
+  // create/update/delete-location.ts と同じ (アクション別に分けると実質の上限が
+  // action 数倍になってしまう)
+  const rateLimitError = checkRateLimit(`sso-config-mutate:${tenantId}`, {
+    limit: 10,
+    windowMs: 60_000,
+  });
+  if (rateLimitError) return { error: rateLimitError };
 
   // フォームから各値を取り出して前後空白を除去する
   const idpEntityId = String(formData.get('idpEntityId') ?? '').trim();

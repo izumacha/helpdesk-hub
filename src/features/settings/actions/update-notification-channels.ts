@@ -13,7 +13,7 @@ import { repos } from '@/data';
 // SSRF 対策ガード (プライベート IP / ループバック / IPv6-mapped などを拒否する)
 import { isUnsafeUrl } from '@/lib/ssrf-guard';
 // 連打防止のための共通レート制限ヘルパー
-import { enforceRateLimit } from '@/lib/rate-limit';
+import { checkRateLimit } from '@/lib/rate-limit';
 
 // Chatwork API トークンの最大長 (常識的な上限。これを超える入力は不正として弾く)
 const CHATWORK_TOKEN_MAX_LENGTH = 200;
@@ -63,13 +63,13 @@ export async function updateNotificationChannels(
   // 検証済みの tenantId (セッション由来)
   const tenantId = session.user.tenantId;
 
-  try {
-    // 通知チャネル設定変更の連打を抑制 (60 秒あたり 10 回まで、テナント単位。
-    // create/update/delete-location.ts と同じ上限・キー粒度の方針)
-    enforceRateLimit(`notification-channels-mutate:${tenantId}`, { limit: 10, windowMs: 60_000 });
-  } catch (err) {
-    return { error: err instanceof Error ? err.message : 'しばらく時間をおいて再度お試しください' };
-  }
+  // 通知チャネル設定変更の連打を抑制 (60 秒あたり 10 回まで、テナント単位。
+  // create/update/delete-location.ts と同じ上限・キー粒度の方針)
+  const rateLimitError = checkRateLimit(`notification-channels-mutate:${tenantId}`, {
+    limit: 10,
+    windowMs: 60_000,
+  });
+  if (rateLimitError) return { error: rateLimitError };
 
   // ── Slack / Teams Webhook URL の検証 ────────────────────────────────────────
   // フォームから各チャネルの入力値を取り出す (未入力は空文字列)

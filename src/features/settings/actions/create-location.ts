@@ -12,7 +12,7 @@ import { revalidatePath } from 'next/cache';
 // line-config-context.ts / sso-context.ts と同じ非throw系アクションで共有する)
 import { assertTenantAdmin } from '@/lib/tenant-admin-gate';
 // 連打防止のための共通レート制限ヘルパー
-import { enforceRateLimit } from '@/lib/rate-limit';
+import { checkRateLimit } from '@/lib/rate-limit';
 
 // 作成結果の戻り値型
 export interface CreateLocationResult {
@@ -31,17 +31,17 @@ export async function createLocation(formData: FormData): Promise<CreateLocation
   // 検証済みの tenantId (セッション由来)
   const tenantId = gate.tenantId;
 
-  try {
-    // 拠点の作成・更新・削除の連打を抑制 (60 秒あたり 10 回まで、テナント単位で共有)。
-    // ユーザー単位ではなくテナント単位にする理由: 拠点は「テナント全体の設定」であり、
-    // 同一テナントの複数管理者が個別の枠を持つと合計の操作回数が管理者数倍になり、
-    // 制限の意図 (拠点乱造の抑止) を損なう (regenerate-inbound-token.ts と同じ方針)。
-    // create/update/delete で同じキーを共有するのも同じ理由 (アクション別に分けると
-    // 実質の上限が action 数倍になってしまう)
-    enforceRateLimit(`location-mutate:${tenantId}`, { limit: 10, windowMs: 60_000 });
-  } catch (err) {
-    return { error: err instanceof Error ? err.message : 'しばらく時間をおいて再度お試しください' };
-  }
+  // 拠点の作成・更新・削除の連打を抑制 (60 秒あたり 10 回まで、テナント単位で共有)。
+  // ユーザー単位ではなくテナント単位にする理由: 拠点は「テナント全体の設定」であり、
+  // 同一テナントの複数管理者が個別の枠を持つと合計の操作回数が管理者数倍になり、
+  // 制限の意図 (拠点乱造の抑止) を損なう (regenerate-inbound-token.ts と同じ方針)。
+  // create/update/delete で同じキーを共有するのも同じ理由 (アクション別に分けると
+  // 実質の上限が action 数倍になってしまう)
+  const rateLimitError = checkRateLimit(`location-mutate:${tenantId}`, {
+    limit: 10,
+    windowMs: 60_000,
+  });
+  if (rateLimitError) return { error: rateLimitError };
 
   // フォームデータから入力値を取り出す
   const name = (formData.get('name') ?? '').toString().trim();

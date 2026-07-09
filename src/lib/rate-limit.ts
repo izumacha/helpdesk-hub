@@ -124,6 +124,27 @@ function sweepStaleBuckets(now: number): void {
   }
 }
 
+// Server Action で使う定型ラッパー。`{error}` を返す契約のアクション (useActionState 互換や
+// create/update/delete-location.ts のような非throw系アクション) は元々 enforceRateLimit の
+// try/catch を各所で手書きしていたが、8 箇所目で完全に同一の 6 行を複製する状態になった
+// (CLAUDE.md §6 の「2〜3 箇所目で共通化する」を超過)。この関数に集約し、レート制限超過なら
+// ユーザー向けメッセージを、問題なければ null を返す (呼び出し側は `if (msg) return {error: msg}`
+// と 1 行で済ませられる)。
+export function checkRateLimit(
+  key: string, // "userId:scope" や "tenantId:scope" 形式のキー
+  options: RateLimitOptions, // 制限値
+  now?: number, // 現在時刻 (テスト時に差し替えできるよう引数化。省略時は Date.now())
+): string | null {
+  try {
+    enforceRateLimit(key, options, now);
+    // 超過していなければ null (エラー無し)
+    return null;
+  } catch (err) {
+    // RateLimitError の日本語メッセージ、それ以外は汎用メッセージにフォールバック
+    return err instanceof Error ? err.message : 'しばらく時間をおいて再度お試しください';
+  }
+}
+
 /** Testing helper: clear all buckets between test cases. */
 // テスト間で状態を初期化するためのヘルパー関数 (本番コードからは呼ばない)
 export function __resetRateLimits(): void {

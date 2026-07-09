@@ -13,7 +13,7 @@ import { repos } from '@/data';
 // SSO 設定削除の共有認可ゲート (ログイン済み・admin・自テナント。プラン不問)
 import { assertSsoConfigOwner } from '@/lib/sso-context';
 // 連打防止のための共通レート制限ヘルパー
-import { enforceRateLimit } from '@/lib/rate-limit';
+import { checkRateLimit } from '@/lib/rate-limit';
 
 // 削除結果型 (useActionState 互換)
 export interface DeleteSsoConfigState {
@@ -33,13 +33,13 @@ export async function deleteSsoConfig(
   // 検証済みの tenantId (セッション由来)
   const tenantId = gate.tenantId;
 
-  try {
-    // SSO 設定の作成・更新・削除の連打を抑制 (60 秒あたり 10 回まで、テナント単位で
-    // update-sso-config.ts と共有する)
-    enforceRateLimit(`sso-config-mutate:${tenantId}`, { limit: 10, windowMs: 60_000 });
-  } catch (err) {
-    return { error: err instanceof Error ? err.message : 'しばらく時間をおいて再度お試しください' };
-  }
+  // SSO 設定の作成・更新・削除の連打を抑制 (60 秒あたり 10 回まで、テナント単位で
+  // update-sso-config.ts と共有する)
+  const rateLimitError = checkRateLimit(`sso-config-mutate:${tenantId}`, {
+    limit: 10,
+    windowMs: 60_000,
+  });
+  if (rateLimitError) return { error: rateLimitError };
 
   try {
     // SSO 設定を削除する (tenantId スコープ)

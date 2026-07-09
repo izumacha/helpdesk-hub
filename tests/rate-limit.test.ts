@@ -6,6 +6,7 @@ import {
   __resetRateLimits,
   __getRateLimitBucketCount,
   enforceRateLimit,
+  checkRateLimit,
 } from '../src/lib/rate-limit';
 
 // レート制限ヘルパーの仕様確認テスト群
@@ -85,5 +86,28 @@ describe('enforceRateLimit', () => {
     // 窓 (60 秒) の途中で他キーを呼んでも、まだ生きているキーは消えない
     enforceRateLimit('other-key', { limit: 5, windowMs: 60_000 }, t0 + 5_000);
     expect(__getRateLimitBucketCount()).toBe(2);
+  });
+});
+
+// checkRateLimit (throw せず {error} を返す契約のアクション向けラッパー) の仕様確認テスト群
+describe('checkRateLimit', () => {
+  beforeEach(() => {
+    __resetRateLimits();
+  });
+
+  // 上限以内なら null (エラー無し) を返す
+  it('returns null when within the limit', () => {
+    const now = 1_000_000;
+    expect(checkRateLimit('k', { limit: 3, windowMs: 10_000 }, now)).toBeNull();
+  });
+
+  // 上限を超えると enforceRateLimit と同じ日本語メッセージを文字列で返す (例外を投げない)
+  it('returns the Japanese message string instead of throwing once over the limit', () => {
+    const now = 1_000_000;
+    for (let i = 0; i < 3; i += 1) {
+      expect(checkRateLimit('k', { limit: 3, windowMs: 10_000 }, now + i)).toBeNull();
+    }
+    const message = checkRateLimit('k', { limit: 3, windowMs: 10_000 }, now + 4);
+    expect(message).toEqual(expect.stringMatching(/操作の頻度/));
   });
 });
