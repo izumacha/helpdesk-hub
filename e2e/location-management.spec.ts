@@ -83,12 +83,24 @@ async function seedLocationTenantFixture(): Promise<void> {
     update: { name: OTHER_LOCATION_NAME, tenantId: TENANT_ID },
     create: { id: OTHER_LOCATION_ID, name: OTHER_LOCATION_NAME, tenantId: TENANT_ID },
   });
+  // /code-review ultra 指摘対応: LOCATION_NAME はテスト本体が UI 経由で作成するため
+  // upsert では冪等化できず、かつ Location は (tenantId, name) に一意制約を持つ。
+  // Playwright はCI で retries:2 のため、前回試行がピルクリック等で失敗し削除まで
+  // 到達しなかった場合、この行が残ったまま次の試行が始まる。すると次の試行の
+  // 「追加する」クリックは一意制約違反でエラーになるが、設定ページの初期一覧には
+  // 前回試行の残骸が既に表示されているため、作成成功を検証しているはずの
+  // `expect(page.getByText(LOCATION_NAME)).toBeVisible()` が「作成が実際には失敗した」
+  // ことを見逃したまま素通りしてしまう。各試行の開始時に必ず削除しておくことで、
+  // このテストが常に「今回の試行で本当に作成できたか」を検証するようにする。
+  await prisma.location.deleteMany({ where: { tenantId: TENANT_ID, name: LOCATION_NAME } });
 }
 
 // テスト後の後始末: テナント/管理者自体は multitenant.spec.ts の fixture と同じく
 // 永続 fixture として残し削除しない (次回実行時に upsert で再利用するため)。
-// 拠点だけは Location.name に一意制約が無く重複作成され得るため、万一テストが
-// 拠点削除の前に失敗しても次回実行に影響しないよう明示的に掃除しておく
+// Location は (tenantId, name) に一意制約があるため、万一テストが拠点削除の前に
+// 失敗した場合に残骸が残っていると次回実行の作成が一意制約違反で失敗しうる。
+// (次回実行の冒頭でも seedLocationTenantFixture 側で同様に掃除しているため、これは
+// 二重の安全網。テスト内で作成した拠点をテスト終了後にも確実に片付ける)
 test.afterAll(async () => {
   // このテナント内の同名拠点を掃除する (通常はテスト本体の削除操作で既に消えている)
   await prisma.location.deleteMany({ where: { tenantId: TENANT_ID, name: LOCATION_NAME } });
