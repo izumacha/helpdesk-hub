@@ -47,8 +47,8 @@ import {
 } from '@/lib/idempotent-ticket-creation';
 // 新規起票時の初期ステータスを mode から決める共通ルール (Web フォーム起票と単一の源を共有)
 import { initialStatusForMode } from '@/domain/ticket-status';
-// 公開エンドポイントの流量制限 (§9: DoS / リソース枯渇防止)
-import { enforceRateLimit, RateLimitError } from '@/lib/rate-limit';
+// 公開エンドポイントの流量制限 (§9: DoS / リソース枯渇防止。Route Handler 向け共通ラッパー)
+import { checkRouteRateLimit } from '@/lib/route-rate-limit';
 // 優先度から解決期限を計算する SLA ヘルパー (他の取り込みチャネルと同じ既定値に揃える)
 import { calculateFirstResponseDueAt, calculateResolutionDueAt } from '@/lib/sla';
 // LINE メンバー紐付け: 受信テキストの正規化・コード形判定・ハッシュ化 (発行は Web 設定画面側)
@@ -82,26 +82,6 @@ const LINE_UNAUTHENTICATED_RATE_LIMIT = { limit: 600, windowMs: 60_000 } as cons
 // (シークレット漏洩時のスパムを抑える)。lineConfig.tenantId は DB 由来の信頼できる値
 // (botUserId の @unique 制約でテナントと 1:1) なので、これをキーにする。
 const LINE_RATE_LIMIT = { limit: 120, windowMs: 60_000 } as const;
-
-// レート制限を適用し、超過していれば 429 レスポンスを返す共通ヘルパー。
-// 超過なしなら null を返し、呼び出し側はそのまま処理を続行する。
-function checkRateLimit(key: string, options: { limit: number; windowMs: number }) {
-  try {
-    // 同期の流量制限チェック (超過時は RateLimitError を throw する)
-    enforceRateLimit(key, options);
-    // 超過なし: 呼び出し側へ処理続行を伝える
-    return null;
-  } catch (err) {
-    // 流量超過専用エラーだけを 429 にマップ。それ以外は想定外なので上位へ再 throw する
-    if (err instanceof RateLimitError) {
-      return NextResponse.json(
-        { error: '取り込みが混み合っています' },
-        { status: 429, headers: { 'Retry-After': String(err.retryAfterSec) } },
-      );
-    }
-    throw err;
-  }
-}
 
 // チケットタイトルとして使うテキストの最大文字数 (長すぎる場合は末尾を省略する)
 const MAX_TITLE_LENGTH = 100;
@@ -256,9 +236,10 @@ export async function POST(req: Request) {
 
   // 固定キーの全体レート制限を適用する (DB 参照より前に置き、destination を変え続ける
   // ことでのレート制限回避・DB 負荷増大を防ぐ。詳細は定数の定義コメント参照)
-  const unauthLimitResponse = checkRateLimit(
+  const unauthLimitResponse = checkRouteRateLimit(
     'inbound-line:unauthenticated',
     LINE_UNAUTHENTICATED_RATE_LIMIT,
+    '取り込みが混み合っています',
   );
   if (unauthLimitResponse) return unauthLimitResponse;
 
@@ -272,9 +253,10 @@ export async function POST(req: Request) {
 
   // テナントが解決できたので、ここからは信頼できる tenantId をキーにしたチャネル単位の
   // レート制限を適用する (destination のような攻撃者が操作可能な値はキーに使わない)。
-  const tenantLimitResponse = checkRateLimit(
+  const tenantLimitResponse = checkRouteRateLimit(
     `inbound-line:${lineConfig.tenantId}`,
     LINE_RATE_LIMIT,
+    '取り込みが混み合っています',
   );
   if (tenantLimitResponse) return tenantLimitResponse;
 
