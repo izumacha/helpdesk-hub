@@ -14,6 +14,8 @@ import { repos } from '@/data';
 import { isUnsafeUrl } from '@/lib/ssrf-guard';
 // 連打防止のための共通レート制限ヘルパー
 import { checkRateLimit } from '@/lib/rate-limit';
+// 設定変更監査ログへの記録を共通化するヘルパー
+import { recordSettingsAudit } from '@/lib/settings-audit';
 
 // Chatwork API トークンの最大長 (常識的な上限。これを超える入力は不正として弾く)
 const CHATWORK_TOKEN_MAX_LENGTH = 200;
@@ -143,19 +145,13 @@ export async function updateNotificationChannels(
   }
 
   // §4.2 フォローアップ: 監査ログに「誰が通知チャネル設定を更新したか」を記録する
-  // (chatworkApiToken 等の秘匿情報は記録しない。アクション名のみ)。
-  // try/catch で囲む理由: 設定は既に保存済みなので、監査ログの書き込みだけが失敗しても
-  // 管理者に「保存に失敗した」という誤ったエラーを見せてはいけない
-  // (update-ticket.ts の外部通知失敗時と同じ方針)
-  try {
-    await repos.settingsAudit.record({
-      tenantId,
-      actorId: session.user.id,
-      action: 'notification_channels_update',
-    });
-  } catch (auditErr) {
-    console.error('[update-notification-channels] 監査ログの記録に失敗しました:', auditErr);
-  }
+  // (chatworkApiToken 等の秘匿情報は記録しない。アクション名のみ)
+  await recordSettingsAudit({
+    tenantId,
+    actorId: session.user.id,
+    action: 'notification_channels_update',
+    logPrefix: '[update-notification-channels]',
+  });
 
   // 成功を返す (UI でサクセストーストを出す)
   return { success: true };

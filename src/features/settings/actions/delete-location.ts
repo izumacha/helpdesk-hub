@@ -12,6 +12,8 @@ import { revalidatePath } from 'next/cache';
 import { assertTenantAdmin } from '@/lib/tenant-admin-gate';
 // 連打防止のための共通レート制限ヘルパー
 import { checkRateLimit } from '@/lib/rate-limit';
+// 設定変更監査ログへの記録を共通化するヘルパー
+import { recordSettingsAudit } from '@/lib/settings-audit';
 
 // 削除結果の戻り値型
 export interface DeleteLocationResult {
@@ -44,18 +46,13 @@ export async function deleteLocation(locationId: string): Promise<DeleteLocation
     // 設定ページのキャッシュを無効化して削除結果がすぐ反映されるようにする
     revalidatePath('/settings');
 
-    // §4.3 フォローアップ: 監査ログに「誰が拠点を削除したか」を記録する。
-    // 削除自体は既に完了済みなので、監査ログの書き込みだけが失敗しても
-    // 管理者に「削除に失敗した」という誤ったエラーを見せてはいけない
-    try {
-      await repos.settingsAudit.record({
-        tenantId,
-        actorId: gate.userId,
-        action: 'location_delete',
-      });
-    } catch (auditErr) {
-      console.error('[delete-location] 監査ログの記録に失敗しました:', auditErr);
-    }
+    // §4.3 フォローアップ: 監査ログに「誰が拠点を削除したか」を記録する
+    await recordSettingsAudit({
+      tenantId,
+      actorId: gate.userId,
+      action: 'location_delete',
+      logPrefix: '[delete-location]',
+    });
 
     // 成功を返す
     return { success: true };

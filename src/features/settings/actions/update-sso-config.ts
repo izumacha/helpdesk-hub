@@ -15,6 +15,8 @@ import { assertSsoConfigAdmin } from '@/lib/sso-context';
 import { normalizeCert } from '@/lib/saml-cert';
 // 連打防止のための共通レート制限ヘルパー
 import { checkRateLimit } from '@/lib/rate-limit';
+// 設定変更監査ログへの記録を共通化するヘルパー
+import { recordSettingsAudit } from '@/lib/settings-audit';
 
 // 入力長の上限 (DoS・異常入力対策。EntityID/URL は十分長め、証明書は数 KB を想定)
 const ENTITY_ID_MAX = 1024; // IdP EntityID の最大長
@@ -124,19 +126,13 @@ export async function updateSsoConfig(
     revalidatePath('/settings');
 
     // §4.2 フォローアップ: 監査ログに「誰が SSO 設定を更新したか」を記録する
-    // (idpX509Cert 等の秘匿情報は記録しない。アクション名のみ)。
-    // 上の try に含めず独立した try/catch にする理由: SSO 設定は既に保存済みなので、
-    // 監査ログの書き込みだけが失敗しても管理者に「保存に失敗した」という誤った
-    // エラーを見せてはいけない (update-ticket.ts の外部通知失敗時と同じ方針)
-    try {
-      await repos.settingsAudit.record({
-        tenantId,
-        actorId: gate.userId,
-        action: 'sso_config_update',
-      });
-    } catch (auditErr) {
-      console.error('[update-sso-config] 監査ログの記録に失敗しました:', auditErr);
-    }
+    // (idpX509Cert 等の秘匿情報は記録しない。アクション名のみ)
+    await recordSettingsAudit({
+      tenantId,
+      actorId: gate.userId,
+      action: 'sso_config_update',
+      logPrefix: '[update-sso-config]',
+    });
 
     // 成功を返す
     return { success: true };

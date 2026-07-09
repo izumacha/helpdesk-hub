@@ -12,6 +12,8 @@ import { revalidatePath } from 'next/cache';
 import { assertTenantAdmin } from '@/lib/tenant-admin-gate';
 // 連打防止のための共通レート制限ヘルパー
 import { checkRateLimit } from '@/lib/rate-limit';
+// 設定変更監査ログへの記録を共通化するヘルパー
+import { recordSettingsAudit } from '@/lib/settings-audit';
 
 // 更新結果の戻り値型
 export interface UpdateLocationResult {
@@ -62,18 +64,13 @@ export async function updateLocation(
     // 設定ページのキャッシュを無効化して更新結果がすぐ反映されるようにする
     revalidatePath('/settings');
 
-    // §4.3 フォローアップ: 監査ログに「誰が拠点を更新したか」を記録する。
-    // 更新自体は既に完了済みなので、監査ログの書き込みだけが失敗しても
-    // 管理者に「更新に失敗した」という誤ったエラーを見せてはいけない
-    try {
-      await repos.settingsAudit.record({
-        tenantId,
-        actorId: gate.userId,
-        action: 'location_update',
-      });
-    } catch (auditErr) {
-      console.error('[update-location] 監査ログの記録に失敗しました:', auditErr);
-    }
+    // §4.3 フォローアップ: 監査ログに「誰が拠点を更新したか」を記録する
+    await recordSettingsAudit({
+      tenantId,
+      actorId: gate.userId,
+      action: 'location_update',
+      logPrefix: '[update-location]',
+    });
 
     // 成功を返す
     return { success: true };

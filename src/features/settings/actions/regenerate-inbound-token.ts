@@ -24,6 +24,8 @@ import { generateInboundToken } from '@/lib/inbound-email';
 import { resolveTenantPlan } from '@/lib/tenant-plan';
 // プランゲート: メール取り込みは Standard 以上のみ利用可能 (§6.1 料金プラン)
 import { isEmailInboundAllowed } from '@/lib/plan-guard';
+// 設定変更監査ログへの記録を共通化するヘルパー
+import { recordSettingsAudit } from '@/lib/settings-audit';
 
 // メール取り込み用トークンを (再)発行するサーバーアクション。フォーム入力は使わないため
 // formData は受け取らず、管理者権限のみを確認して即座に新トークンを発行する
@@ -68,16 +70,11 @@ export async function regenerateInboundToken(): Promise<void> {
   // 設定画面のキャッシュを無効化して新しい転送先アドレスを再描画させる
   revalidatePath('/settings');
 
-  // §4.3 フォローアップ: 監査ログに「誰が転送先アドレスを再発行したか」を記録する。
-  // 発行自体は既に完了済みなので、監査ログの書き込みだけが失敗しても
-  // 管理者に「発行に失敗した」という誤ったエラーを見せてはいけない
-  try {
-    await repos.settingsAudit.record({
-      tenantId,
-      actorId: session.user.id,
-      action: 'inbound_token_regenerate',
-    });
-  } catch (auditErr) {
-    console.error('[regenerate-inbound-token] 監査ログの記録に失敗しました:', auditErr);
-  }
+  // §4.3 フォローアップ: 監査ログに「誰が転送先アドレスを再発行したか」を記録する
+  await recordSettingsAudit({
+    tenantId,
+    actorId: session.user.id,
+    action: 'inbound_token_regenerate',
+    logPrefix: '[regenerate-inbound-token]',
+  });
 }

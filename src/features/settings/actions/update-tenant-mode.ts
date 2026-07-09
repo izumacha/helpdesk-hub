@@ -16,6 +16,8 @@ import { tenantModeSchema } from '@/lib/validations/tenant';
 import { isProModeAllowed } from '@/lib/plan-guard';
 // テナントの現在プランを解決する共通ヘルパー (複数箇所での重複を避ける)
 import { resolveTenantPlan } from '@/lib/tenant-plan';
+// 設定変更監査ログへの記録を共通化するヘルパー
+import { recordSettingsAudit } from '@/lib/settings-audit';
 
 // テナントの動作モード (lite | pro) を切り替えるサーバーアクション
 export async function updateTenantMode(formData: FormData): Promise<void> {
@@ -55,17 +57,11 @@ export async function updateTenantMode(formData: FormData): Promise<void> {
   revalidatePath('/tickets');
   revalidatePath('/dashboard');
 
-  // §4.3 フォローアップ: 監査ログに「誰がモードを変更したか」を記録する。
-  // モード変更は既に完了済みなので、監査ログの書き込みだけが失敗しても
-  // 管理者に「変更に失敗した」という誤ったエラーを見せてはいけない
-  // (update-notification-channels.ts と同じ方針)
-  try {
-    await repos.settingsAudit.record({
-      tenantId,
-      actorId: session.user.id,
-      action: 'tenant_mode_update',
-    });
-  } catch (auditErr) {
-    console.error('[update-tenant-mode] 監査ログの記録に失敗しました:', auditErr);
-  }
+  // §4.3 フォローアップ: 監査ログに「誰がモードを変更したか」を記録する
+  await recordSettingsAudit({
+    tenantId,
+    actorId: session.user.id,
+    action: 'tenant_mode_update',
+    logPrefix: '[update-tenant-mode]',
+  });
 }
