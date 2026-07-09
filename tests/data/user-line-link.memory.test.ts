@@ -6,28 +6,13 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { createMemoryContext, type Store } from '@/data/adapters/memory';
 import type { Repos } from '@/data/ports/unit-of-work';
 import { hashLineLinkCode, normalizeLineLinkCode } from '@/lib/line-link';
+import { putUser } from './user-fixtures';
 
 const TENANT = 'default-tenant';
 const OTHER_TENANT = 'other-tenant';
 
 let store: Store;
 let repos: Repos;
-
-// テスト用メンバーを 1 人ストアに置く小ヘルパー
-function putUser(id: string, tenantId: string, extra: Record<string, unknown> = {}) {
-  const now = new Date();
-  store.users.set(id, {
-    id,
-    email: `${id}@example.com`,
-    name: id,
-    passwordHash: 'x',
-    role: 'requester',
-    tenantId,
-    createdAt: now,
-    updatedAt: now,
-    ...extra,
-  });
-}
 
 // 生コードを正規化してハッシュ化する (発行側と同じ手順)
 async function codeHashOf(rawCode: string): Promise<string> {
@@ -43,7 +28,7 @@ describe('UserRepository LINE 紐付け (memory)', () => {
 
   // findByLineUserId: 紐付け済みメンバーを返し、別テナントには漏れない
   it('findByLineUserId はテナントスコープで引く', async () => {
-    putUser('u1', TENANT, { lineUserId: 'Uline1' });
+    putUser(store, 'u1', TENANT, { lineUserId: 'Uline1' });
     // 同 tenant では引ける
     expect((await repos.users.findByLineUserId(TENANT, 'Uline1'))?.id).toBe('u1');
     // 別 tenant からは見えない (クロステナント漏洩防止)
@@ -54,7 +39,7 @@ describe('UserRepository LINE 紐付け (memory)', () => {
 
   // setLineLinkCode → linkLineUserByCode で連携が成立し、コードは消費される
   it('発行コードで連携が成立し、コードが消費される', async () => {
-    putUser('u1', TENANT);
+    putUser(store, 'u1', TENANT);
     const expiresAt = new Date(Date.now() + 10 * 60 * 1000);
     const hash = await codeHashOf('AB7K-9QF2');
     await repos.users.setLineLinkCode('u1', TENANT, { codeHash: hash, expiresAt });
@@ -82,7 +67,7 @@ describe('UserRepository LINE 紐付け (memory)', () => {
 
   // 失効済みコードは invalid
   it('失効したコードは invalid を返す', async () => {
-    putUser('u1', TENANT);
+    putUser(store, 'u1', TENANT);
     const hash = await codeHashOf('AB7K-9QF2');
     // 既に失効している有効期限を設定する
     await repos.users.setLineLinkCode('u1', TENANT, {
@@ -100,7 +85,7 @@ describe('UserRepository LINE 紐付け (memory)', () => {
 
   // 別テナントのコードは取り込み先テナントでは消費できない (クロステナント防止)
   it('別テナントのコードは消費できない', async () => {
-    putUser('uOther', OTHER_TENANT);
+    putUser(store, 'uOther', OTHER_TENANT);
     const hash = await codeHashOf('AB7K-9QF2');
     await repos.users.setLineLinkCode('uOther', OTHER_TENANT, {
       codeHash: hash,
@@ -118,8 +103,8 @@ describe('UserRepository LINE 紐付け (memory)', () => {
 
   // その LINE ユーザー ID が別メンバーに連携済みなら conflict
   it('LINE ユーザー ID が別メンバーに連携済みなら conflict', async () => {
-    putUser('u1', TENANT, { lineUserId: 'Uline1' }); // 既に Uline1 を持つ
-    putUser('u2', TENANT); // u2 が同じ Uline1 を取りにくる
+    putUser(store, 'u1', TENANT, { lineUserId: 'Uline1' }); // 既に Uline1 を持つ
+    putUser(store, 'u2', TENANT); // u2 が同じ Uline1 を取りにくる
     const hash = await codeHashOf('ZZ11-2233');
     await repos.users.setLineLinkCode('u2', TENANT, {
       codeHash: hash,
@@ -138,7 +123,7 @@ describe('UserRepository LINE 紐付け (memory)', () => {
 
   // unlinkLineUser は lineUserId と発行中コードをまとめてクリアする
   it('unlinkLineUser で連携を解除する', async () => {
-    putUser('u1', TENANT, {
+    putUser(store, 'u1', TENANT, {
       lineUserId: 'Uline1',
       lineLinkCodeHash: 'h',
       lineLinkCodeExpiresAt: new Date(),

@@ -6,6 +6,7 @@
 
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { __resetRateLimits } from '@/lib/rate-limit';
+import { expectRateLimitTripsAfter } from './sso-rate-limit-assertions';
 
 const TENANT_ID = 'tenant-1';
 
@@ -39,22 +40,12 @@ describe('GET /api/auth/sso/[tenantId]/login のレート制限', () => {
 
   // 固定キーの全体レート制限 (60秒60回) を超えると 429 を返す
   it('未認証全体のレート制限を超えると429を返す', async () => {
-    for (let i = 0; i < 60; i++) {
-      const res = await getLogin(`tenant-${i}`);
-      expect(res.status).not.toBe(429);
-    }
-    const res = await getLogin('tenant-over-limit');
-    expect(res.status).toBe(429);
+    await expectRateLimitTripsAfter((i) => getLogin(`tenant-${i}`), 60);
   });
 
   // テナント単位のレート制限 (60秒20回) を超えると429を返す (同一テナントへの連打)
   it('同一テナントへの連打はテナント単位のレート制限で429を返す', async () => {
-    for (let i = 0; i < 20; i++) {
-      const res = await getLogin(TENANT_ID);
-      expect(res.status).not.toBe(429);
-    }
-    const res = await getLogin(TENANT_ID);
-    expect(res.status).toBe(429);
+    await expectRateLimitTripsAfter(() => getLogin(TENANT_ID), 20);
   });
 
   // レート制限内であれば通常どおり IdP のログイン URL へ 303 リダイレクトされる

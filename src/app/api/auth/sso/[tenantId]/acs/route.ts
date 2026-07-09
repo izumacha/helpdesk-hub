@@ -31,21 +31,16 @@ import { generateMagicLinkToken, hashMagicLinkToken } from '@/lib/magic-link';
 import { escapeHtml } from '@/lib/html-escape';
 // Route Handler 向け共通レート制限ラッパー (inbound-email/inbound-line と共有)
 import { checkRouteRateLimit } from '@/lib/route-rate-limit';
+// SSO エンドポイント群 (acs/login/metadata) が共有するレート制限の定数とメッセージ
+// (/code-review ultra 指摘対応: 3 ファイルへの同一定数の複製を集約)
+import {
+  SSO_UNAUTHENTICATED_RATE_LIMIT,
+  SSO_TENANT_RATE_LIMIT,
+  SSO_RATE_LIMIT_MESSAGE,
+} from '@/lib/sso-rate-limit';
 
 // SSO ハンドオフトークンの有効期限 (2 分)。ACS → コールバックの即時引き渡し専用なので短くする
 const SSO_HANDOFF_TTL_MS = 2 * 60 * 1000;
-
-// 監査で発見したギャップ: 他の未認証受信エンドポイント (inbound-line/inbound-email) は
-// いずれもレート制限を持つが、この ACS エンドポイントには無かった。ACS は未認証で到達でき、
-// XML パース + 署名検証という CPU コストの高い処理をリクエストごとに行うため、他の受信系と
-// 同じ二段構えの制限を適用する:
-//  - URL の tenantId は署名検証前の値で攻撃者が自由に変更できるため、これ単体をキーにすると
-//    値を変えるだけで無制限に回避・バケット増殖されてしまう (inbound-line の destination と同じ問題)。
-//    そのためテナント解決 (DB 参照) より前に固定キーで「未認証リクエスト全体」の上限を設ける。
-const SSO_ACS_UNAUTHENTICATED_RATE_LIMIT = { limit: 60, windowMs: 60_000 } as const;
-//  - テナントが実在し SSO が有効だと確認できた後は、tenantId (DB 由来で信頼できる値) を
-//    キーにしたテナント単位の制限も適用する (1 テナントからの異常な連打を抑える)。
-const SSO_ACS_TENANT_RATE_LIMIT = { limit: 20, windowMs: 60_000 } as const;
 
 // 動的セグメント (tenantId) の型
 type Params = { params: Promise<{ tenantId: string }> };
@@ -67,13 +62,15 @@ export async function POST(req: Request, { params }: Params) {
   // 変え続けることでのレート制限回避・DB 負荷増大を防ぐ。詳細は定数の定義コメント参照)
   const unauthLimitResponse = checkRouteRateLimit(
     'sso-acs:unauthenticated',
-    SSO_ACS_UNAUTHENTICATED_RATE_LIMIT,
-    'しばらく時間をおいて再度お試しください',
+    SSO_UNAUTHENTICATED_RATE_LIMIT,
+    SSO_RATE_LIMIT_MESSAGE,
   );
+  // 制限超過なら 429 をそのまま返す (超過なしなら null が返り後続処理を続ける)
   if (unauthLimitResponse) return unauthLimitResponse;
 
   // SSO が利用可能か検証する (不可ならログイン画面へ)
   const ctx = await loadEnabledSsoContext(tenantId);
+  // 無効な SSO 設定・テナント不在ならエラーリダイレクトで打ち切る
   if (!ctx.ok) return errorRedirect('sso-unavailable');
 
   // テナントが実在し SSO が有効だと確認できたので、ここからは信頼できる tenantId を
@@ -81,9 +78,10 @@ export async function POST(req: Request, { params }: Params) {
   // CPU コストが高いため、その前に弾く)
   const tenantLimitResponse = checkRouteRateLimit(
     `sso-acs:${tenantId}`,
-    SSO_ACS_TENANT_RATE_LIMIT,
-    'しばらく時間をおいて再度お試しください',
+    SSO_TENANT_RATE_LIMIT,
+    SSO_RATE_LIMIT_MESSAGE,
   );
+  // テナント単位の制限超過なら 429 をそのまま返す
   if (tenantLimitResponse) return tenantLimitResponse;
 
   // POST ボディ (application/x-www-form-urlencoded) から SAMLResponse を取り出す
