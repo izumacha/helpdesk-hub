@@ -111,12 +111,19 @@ export async function updateNotificationChannels(
   });
 
   // §4.2 フォローアップ: 監査ログに「誰が通知チャネル設定を更新したか」を記録する
-  // (chatworkApiToken 等の秘匿情報は記録しない。アクション名のみ)
-  await repos.settingsAudit.record({
-    tenantId,
-    actorId: session.user.id,
-    action: 'notification_channels_update',
-  });
+  // (chatworkApiToken 等の秘匿情報は記録しない。アクション名のみ)。
+  // try/catch で囲む理由: 設定は既に保存済みなので、監査ログの書き込みだけが失敗しても
+  // 管理者に「保存に失敗した」という誤ったエラーを見せてはいけない
+  // (update-ticket.ts の外部通知失敗時と同じ方針)
+  try {
+    await repos.settingsAudit.record({
+      tenantId,
+      actorId: session.user.id,
+      action: 'notification_channels_update',
+    });
+  } catch (auditErr) {
+    console.error('[update-notification-channels] 監査ログの記録に失敗しました:', auditErr);
+  }
 
   // 設定ページを再レンダリングして最新値を反映する
   revalidatePath('/settings');

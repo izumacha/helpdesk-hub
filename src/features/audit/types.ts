@@ -6,24 +6,24 @@ import type { SettingsAuditAction } from '@/domain/types';
 
 // チケット変更履歴 1 行 (従来の TicketHistoryWithRefs 相当)
 export interface TicketAuditRow {
-  kind: 'ticket';
-  id: string;
-  createdAt: Date;
+  kind: 'ticket'; // 行の種別判別用タグ
+  id: string; // 履歴 ID
+  createdAt: Date; // 変更日時
   actorName: string; // 変更者氏名
-  ticketId: string;
-  ticketTitle: string;
-  field: string; // HistoryField
-  oldValue: string | null;
-  newValue: string | null;
+  ticketId: string; // 対象チケット ID
+  ticketTitle: string; // 対象チケット件名 (表示用)
+  field: string; // 変更された項目 (HistoryField)
+  oldValue: string | null; // 変更前の値
+  newValue: string | null; // 変更後の値
 }
 
 // 設定変更監査ログ 1 行 (SettingsAuditLogWithRefs 相当)
 export interface SettingsAuditRow {
-  kind: 'settings';
-  id: string;
-  createdAt: Date;
+  kind: 'settings'; // 行の種別判別用タグ
+  id: string; // 監査ログ ID
+  createdAt: Date; // 操作日時
   actorName: string; // 操作者氏名
-  action: SettingsAuditAction;
+  action: SettingsAuditAction; // 実行された操作の種別
 }
 
 // 監査ログ一覧・CSV エクスポートが扱う行の判別共用型

@@ -5,11 +5,9 @@ import type {
 } from '@/data/ports/settings-audit-log-repository';
 import type { SettingsAuditLog } from '@/domain/types';
 import { nextId, type Store } from './store';
-
-// 取得件数の既定値と上限 (Prisma 実装と揃える)
-const AUDIT_DEFAULT_LIMIT = 100;
-// 上限超過リクエストによる DoS を防ぐ (Prisma 実装と同一の値を維持してテスト/本番の挙動を一致させる)
-const AUDIT_MAX_LIMIT = 500;
+// 監査ログ系リポジトリ共通のページネーション上限・クランプ処理 (ticket-history-repository と共有。
+// Prisma 実装と同一の値を使うことでテスト/本番の挙動を一致させる)
+import { resolveAuditLimit } from '../audit-pagination';
 
 // メモリストアを使った設定変更監査ログリポジトリを生成する関数
 export function makeSettingsAuditLogRepo(store: Store): SettingsAuditLogRepository {
@@ -30,8 +28,8 @@ export function makeSettingsAuditLogRepo(store: Store): SettingsAuditLogReposito
 
     // テナント全体の設定変更監査ログを取得する (テスト用メモリ実装)
     async findAllByTenant(filter) {
-      // 件数上限 (DoS 対策として AUDIT_MAX_LIMIT でクランプ。Prisma 実装と同じ上限値)
-      const limit = Math.min(filter.limit ?? AUDIT_DEFAULT_LIMIT, AUDIT_MAX_LIMIT);
+      // 件数上限 (DoS 対策としてクランプ。Prisma 実装と同じ上限値)
+      const limit = resolveAuditLimit(filter.limit);
       const offset = filter.offset ?? 0;
 
       // メモリストアからテナントスコープで絞り込む
