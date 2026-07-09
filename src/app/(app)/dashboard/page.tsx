@@ -172,28 +172,33 @@ export default async function DashboardPage({ searchParams }: Props) {
           <span className="text-xs font-semibold tracking-wider text-slate-500 uppercase">
             拠点で絞り込み
           </span>
-          {/* 「すべての拠点」ピル (未選択状態) */}
+          {/* 「すべての拠点」ピル (未選択状態)。選択状態は色だけでなく aria-current と
+              チェックマークでも伝える (§7 a11y「色だけに意味を持たせない」) */}
           <Link
             href="/dashboard"
+            aria-current={selectedLocationId === undefined ? 'true' : undefined}
             className={`rounded-full px-3 py-1 text-xs font-medium transition ${
               selectedLocationId === undefined
                 ? 'bg-teal-700 text-white'
                 : 'bg-white text-slate-600 ring-1 ring-slate-200 hover:bg-slate-50'
             }`}
           >
+            {selectedLocationId === undefined && <span aria-hidden="true">✓ </span>}
             すべての拠点
           </Link>
-          {/* 拠点ごとのピル */}
+          {/* 拠点ごとのピル (同様に aria-current + チェックマークで選択状態を明示) */}
           {locations.map((location) => (
             <Link
               key={location.id}
               href={`/dashboard?locationId=${location.id}`}
+              aria-current={selectedLocationId === location.id ? 'true' : undefined}
               className={`rounded-full px-3 py-1 text-xs font-medium transition ${
                 selectedLocationId === location.id
                   ? 'bg-teal-700 text-white'
                   : 'bg-white text-slate-600 ring-1 ring-slate-200 hover:bg-slate-50'
               }`}
             >
+              {selectedLocationId === location.id && <span aria-hidden="true">✓ </span>}
               {location.name}
             </Link>
           ))}
