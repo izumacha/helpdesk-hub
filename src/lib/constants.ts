@@ -4,9 +4,6 @@ import type { TicketStatus, TenantMode, Role, SettingsAuditAction } from '@/doma
 // Lite モードの 3 値型と型ガード関数を取り込み、mode-aware ラベル関数で使う
 import { isLiteStatus, type LiteStatus } from '@/domain/ticket-status';
 
-// FAQ 候補化を許可するチケット状態一覧 (解決済みのみ候補化可能)
-export const FAQ_ELIGIBLE_STATUSES: readonly TicketStatus[] = ['Resolved'];
-
 // チケット状態の英語キーに対応する日本語表示ラベル (Pro モード、現行 7 値)
 export const STATUS_LABELS: Record<string, string> = {
   New: '新規',
@@ -94,6 +91,15 @@ export const PRIORITY_COLORS: Record<string, string> = {
   Low: 'text-slate-500', // 低: グレー
   Medium: 'text-amber-700', // 中: 落ち着いたアンバー
   High: 'text-rose-700 font-semibold', // 高: ロゼ + 太字
+};
+
+// 「FAQ 候補」機能そのものの呼称を mode に応じて切り替えるラベル (Pivot plan §3.1 用語表)。
+// Lite ではカタカナ・英語を避けた「よくある質問」、Pro では従来どおり「FAQ候補」。
+// ナビゲーション・一覧見出し・チケット詳細の登録導線など、この機能を指す箇所は
+// すべてここを参照する (§6 一元管理)。
+export const FAQ_TERM_LABELS: Record<TenantMode, string> = {
+  lite: 'よくある質問',
+  pro: 'FAQ候補',
 };
 
 // FAQ 状態キーに対応する日本語表示ラベル

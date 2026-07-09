@@ -4,15 +4,21 @@
 import { useRef, useTransition, useState } from 'react';
 // FAQ 候補を作成するサーバーアクション
 import { createFaqCandidate } from '@/features/faq/actions/faq-actions';
+// テナントモード型 (lite | pro) とラベル一元管理の定数
+import type { TenantMode } from '@/domain/types';
+import { FAQ_TERM_LABELS } from '@/lib/constants';
 
-// このフォームが受け取る props (チケット ID と既定で質問欄に入れるタイトル)
+// このフォームが受け取る props (チケット ID・既定で質問欄に入れるタイトル・テナント mode)
 interface Props {
   ticketId: string;
   ticketTitle: string;
+  mode: TenantMode;
 }
 
 // チケット詳細ページから FAQ 候補を登録するインライン展開フォーム
-export function FaqCandidateForm({ ticketId, ticketTitle }: Props) {
+export function FaqCandidateForm({ ticketId, ticketTitle, mode }: Props) {
+  // この機能の呼称 (Lite: よくある質問 / Pro: FAQ候補)
+  const termLabel = FAQ_TERM_LABELS[mode];
   // 展開状態 (true で入力欄を表示、false ではボタンのみ)
   const [open, setOpen] = useState(false);
   // 送信中フラグ + トランジション関数
@@ -56,7 +62,7 @@ export function FaqCandidateForm({ ticketId, ticketTitle }: Props) {
         onClick={() => setOpen(true)}
         className="mt-2 rounded-md border border-blue-500 px-3 py-1.5 text-xs font-medium text-blue-600 hover:bg-blue-50"
       >
-        FAQ候補に登録
+        {termLabel}に登録
       </button>
     );
   }

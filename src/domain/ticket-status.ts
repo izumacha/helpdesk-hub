@@ -91,3 +91,15 @@ export function initialStatusForMode(mode: TenantMode): TicketStatus | undefined
   // Lite は 'Open'、それ以外 (pro) は undefined
   return mode === 'lite' ? 'Open' : undefined;
 }
+
+// 「完了」とみなすステータス集合を mode に応じて返す (「起票直後」の initialStatusForMode と対になる、
+// 「終端」側の単一ルール)。
+// - Pro: ['Resolved'] (従来どおり「解決済み」のみ完了扱い)
+// - Lite: ['Closed', 'Resolved'] — Lite UI の「完了」は Closed に対応するが、Lite 遷移表が
+//   Lite 非対応ステータス (例: 旧 Pro データの Resolved) から Pro 表へフォールバックするため、
+//   Lite テナントでも Resolved が残っている可能性がある。両方を完了扱いにしておくことで
+//   update-ticket.ts の resolvedAt 判定と FAQ 候補化可否判定 (§1.1 フォローアップ) が
+//   同じ「完了」の定義を共有し、片方だけ更新して食い違う事態を防ぐ (この関数が唯一の源)。
+export function getCompletionStatuses(mode: TenantMode): TicketStatus[] {
+  return mode === 'lite' ? ['Closed', 'Resolved'] : ['Resolved'];
+}
