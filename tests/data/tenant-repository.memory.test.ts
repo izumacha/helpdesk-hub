@@ -250,3 +250,98 @@ describe('TenantRepository.updateNotificationChannels (memory)', () => {
     expect(tenantB?.slackWebhookUrl).toBeNull();
   });
 });
+
+// §7.2 Free trial 終了リマインダー用の listActiveTrials の単体テスト。
+// free プランかつトライアル進行中のテナントだけを、上限件数・終了が近い順で返すことを確認する。
+describe('TenantRepository.listActiveTrials (memory)', () => {
+  beforeEach(() => {
+    const ctx = createMemoryContext();
+    store = ctx.store;
+    repos = ctx.repos;
+  });
+
+  // 指定の subscriptionPlan / trialEndsAt でテナントを 1 件シードする
+  function seedTrialTenant(
+    id: string,
+    subscriptionPlan: 'free' | 'standard',
+    trialEndsAt: Date | null,
+  ) {
+    store.tenants.set(id, {
+      id,
+      name: id,
+      mode: 'lite',
+      industry: null,
+      inboundToken: null,
+      slackWebhookUrl: null,
+      subscriptionPlan,
+      stripeCustomerId: null,
+      stripeSubscriptionId: null,
+      stripeSubscriptionStatus: null,
+      trialEndsAt,
+      teamsWebhookUrl: null,
+      chatworkApiToken: null,
+      chatworkRoomId: null,
+      createdAt: new Date(),
+    });
+  }
+
+  // free プランかつトライアル進行中 (trialEndsAt > now) のテナントだけを返す
+  it('freeプランかつトライアル進行中のテナントのみ返す', async () => {
+    const now = new Date('2026-07-01T00:00:00Z');
+    seedTrialTenant('trial-active', 'free', new Date('2026-07-05T00:00:00Z')); // 対象
+    seedTrialTenant('trial-expired', 'free', new Date('2026-06-25T00:00:00Z')); // 既に終了
+    seedTrialTenant('no-trial', 'free', null); // トライアル対象外
+    seedTrialTenant('standard-plan', 'standard', new Date('2026-07-05T00:00:00Z')); // 有料プラン
+    const result = await repos.tenants.listActiveTrials(now, 100);
+    expect(result.map((t) => t.id)).toEqual(['trial-active']);
+  });
+
+  // 終了が近い順 (trialEndsAt 昇順) に並ぶこと
+  it('終了が近い順に並べる', async () => {
+    const now = new Date('2026-07-01T00:00:00Z');
+    seedTrialTenant('far', 'free', new Date('2026-07-20T00:00:00Z'));
+    seedTrialTenant('near', 'free', new Date('2026-07-05T00:00:00Z'));
+    const result = await repos.tenants.listActiveTrials(now, 100);
+    expect(result.map((t) => t.id)).toEqual(['near', 'far']);
+  });
+
+  // 上限件数で切り詰めること (§8 一覧取得は必ず上限を持たせる)
+  it('上限件数で切り詰める', async () => {
+    const now = new Date('2026-07-01T00:00:00Z');
+    seedTrialTenant('t1', 'free', new Date('2026-07-05T00:00:00Z'));
+    seedTrialTenant('t2', 'free', new Date('2026-07-06T00:00:00Z'));
+    seedTrialTenant('t3', 'free', new Date('2026-07-07T00:00:00Z'));
+    const result = await repos.tenants.listActiveTrials(now, 2);
+    expect(result).toHaveLength(2);
+  });
+});
+
+// §7.2.1 Free trial 終了リマインダーの冪等化フラグ updateTrialReminderLastSent の単体テスト。
+describe('TenantRepository.updateTrialReminderLastSent (memory)', () => {
+  beforeEach(() => {
+    const ctx = createMemoryContext();
+    store = ctx.store;
+    repos = ctx.repos;
+    seed();
+  });
+
+  // マイルストーンを永続化できる
+  it('マイルストーンを永続化できる', async () => {
+    const updated = await repos.tenants.updateTrialReminderLastSent(TENANT_A, 5);
+    expect(updated.trialReminderLastSentDaysBefore).toBe(5);
+    const reloaded = await repos.tenants.findById(TENANT_A);
+    expect(reloaded?.trialReminderLastSentDaysBefore).toBe(5);
+  });
+
+  // 分離: あるテナントの更新が他テナントに波及しない
+  it('他テナントのフラグには影響しない', async () => {
+    await repos.tenants.updateTrialReminderLastSent(TENANT_A, 5);
+    const tenantB = await repos.tenants.findById(TENANT_B);
+    expect(tenantB?.trialReminderLastSentDaysBefore ?? null).toBeNull();
+  });
+
+  // 異常系: 存在しないテナント ID はエラーになる (fail-closed)
+  it('存在しないテナント ID はエラーになる', async () => {
+    await expect(repos.tenants.updateTrialReminderLastSent('no-such-tenant', 5)).rejects.toThrow();
+  });
+});

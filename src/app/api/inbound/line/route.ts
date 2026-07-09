@@ -35,7 +35,9 @@
 // JSON レスポンスヘルパー
 import { NextResponse } from 'next/server';
 // 署名検証に使う HMAC ユーティリティ (Node ランタイム前提)
-import { createHmac, timingSafeEqual } from 'node:crypto';
+import { createHmac } from 'node:crypto';
+// 定数時間比較の共通ヘルパー (trial-reminders の Bearer トークン検証と共有)
+import { constantTimeStringEqual } from '@/lib/timing-safe-compare';
 // データ層の Composition Root (テナント / ユーザー / チケットのリポジトリ束)
 import { repos } from '@/data';
 // Webhook 再送に対する冪等起票の共通ヘルパー (LINE/メールで共有)
@@ -181,13 +183,8 @@ function verifyLineSignature(rawBody: string, signature: string, channelSecret: 
   // 期待される署名を Base64 で得る
   const expected = hmac.digest('base64');
 
-  // 定数時間比較のために Buffer 化する (長さが違う場合は早期 false で返す)
-  const a = Buffer.from(signature);
-  const b = Buffer.from(expected);
-  // 長さが違えば false (timingSafeEqual は同一長さを前提とするため先に弾く)
-  if (a.length !== b.length) return false;
-  // 同一長さなら定数時間比較して HMAC 一致を判定する
-  return timingSafeEqual(a, b);
+  // 定数時間比較 (共通ヘルパー。長さが違う場合は早期 false)
+  return constantTimeStringEqual(signature, expected);
 }
 
 // POST /api/inbound/line : LINE Webhook を受信してチケットを作成する

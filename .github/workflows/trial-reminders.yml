@@ -1,0 +1,49 @@
+# Phase 4 運用 (継続): §7.2 Free trial 終了リマインダーの定期実行。
+# docs/smb-dx-pivot-plan.md §7.2「30日間の Free trial (Standard 相当)」フォローアップ。
+#
+# 仕組み:
+#   - 毎日 1 回 (cron) と手動実行 (workflow_dispatch) で、デプロイ済みアプリの
+#     POST /api/internal/trial-reminders を共有シークレット付きで叩く。
+#   - このリポジトリ自体はビルド・デプロイを行わない (backup.yml と違い DB に直接繋がず、
+#     常に稼働中のアプリ経由でのみ実行する設計)。
+#   - Secret `TRIAL_REMINDER_CRON_SECRET` と Variable `APP_BASE_URL` のいずれかが未設定なら
+#     ジョブは安全に no-op で終了する (fail-closed: 宛先/認証情報が無い状態で叩かない)。
+#
+# セキュリティ上の注意:
+#   - TRIAL_REMINDER_CRON_SECRET はエンドポイント側 (process.env) と同じ値を Secret に登録すること。
+#   - APP_BASE_URL は公開情報のため Variable (Secret ではない) で管理する。
+
+name: Trial Reminders
+
+on:
+  schedule:
+    # UTC 19:00 = JST 04:00 に毎日 1 回実行する (バックアップと時間をずらして負荷分散)
+    - cron: '0 19 * * *'
+  # 手動トリガも許可する (Actions 画面の Run workflow ボタン)
+  workflow_dispatch:
+
+# 既定の GITHUB_TOKEN は読み取りのみで十分 (このジョブはリポジトリに書き込まない)
+permissions:
+  contents: read
+
+jobs:
+  send-reminders:
+    name: Call trial-reminders endpoint
+    runs-on: ubuntu-latest
+    steps:
+      # Secret / Variable が両方設定されているときだけ実行する。
+      # 未設定なら no-op (このリポジトリを fork した環境でもジョブが赤くならないようにする)。
+      - name: Call endpoint
+        env:
+          TRIAL_REMINDER_CRON_SECRET: ${{ secrets.TRIAL_REMINDER_CRON_SECRET }}
+          APP_BASE_URL: ${{ vars.APP_BASE_URL }}
+        run: |
+          if [ -z "${TRIAL_REMINDER_CRON_SECRET}" ] || [ -z "${APP_BASE_URL}" ]; then
+            echo "TRIAL_REMINDER_CRON_SECRET または APP_BASE_URL が未設定のためスキップします (no-op)。" >&2
+            exit 0
+          fi
+          # レスポンスボディを表示しつつ、HTTP ステータスが 2xx でなければジョブを失敗させる
+          curl --fail-with-body -sS \
+            -X POST \
+            -H "Authorization: Bearer ${TRIAL_REMINDER_CRON_SECRET}" \
+            "${APP_BASE_URL%/}/api/internal/trial-reminders"

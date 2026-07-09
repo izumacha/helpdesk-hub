@@ -320,6 +320,26 @@ src/data/adapters/inbound/line-bot.ts        # 新規 (Phase 2)
 - 30 日間の Free trial（Standard 相当）。延長は問い合わせベース。
 - **CSV エクスポート**を全プランで保証（ロックインしない安心感）。
 
+#### 7.2.1 フォローアップ（2026-07-09）: トライアル終了リマインダー
+
+初回実装ではトライアル残日数の計算・表示（`trialDaysRemaining`）を `/settings` 画面にのみ持ち、
+管理者が自ら設定画面を開かない限り終了が近いことに気づけなかった（監査で発見したギャップ）。
+これは §7.2 の「失敗しない撤退ポイント」の意図（気づかないまま不利益を被らせない）に反するため、
+以下を追加実装する:
+
+- 純粋ロジック・メール本文組み立ては `src/lib/trial-reminder.ts`（残り 5 日・1 日でリマインド）。
+- 送信先は `TenantRepository.listActiveTrials` で対象テナントを取得し、
+  `UserRepository.listAdminEmails`（admin 限定。課金操作が admin 限定なのと同じ理由）へ送る。
+- `POST /api/internal/trial-reminders` を共有シークレット (`TRIAL_REMINDER_CRON_SECRET`) 認証の
+  内部エンドポイントとして実装し、`.github/workflows/trial-reminders.yml` が毎日 1 回叩く
+  （`scripts/backup-db.sh` + `backup.yml` と同じ「daily cron」設計をベースにする）。
+- `/code-review ultra` 指摘対応: 当初「残り日数がちょうど 5 日 / 1 日の日だけ送る」設計だったが、
+  GitHub Actions の cron は手動再実行 (`workflow_dispatch`)・遅延・欠落がありうる best-effort な
+  実行であるため、ちょうどの日を通り過ぎて取りこぼしたり、手動再実行で同日に二重送信したりする
+  恐れがあった。`Tenant.trialReminderLastSentDaysBefore` に直近送信済みのマイルストーンを永続化し、
+  「まだ送っていない最も緊急なマイルストーンに達していれば送る」方式 (`resolveTrialReminderMilestone`)
+  に変更することで、cron が何度・いつ叩かれても二重送信・取りこぼしの両方を防ぐ。
+
 ---
 
 ## 8. リスクと対策

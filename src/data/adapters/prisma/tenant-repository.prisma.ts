@@ -32,6 +32,7 @@ function toTenant(row: TenantRow): Tenant {
     stripeSubscriptionId: row.stripeSubscriptionId, // Stripe Subscription ID (null なら未契約)
     stripeSubscriptionStatus: row.stripeSubscriptionStatus, // Stripe の subscription.status
     trialEndsAt: row.trialEndsAt, // §7.2 Free trial 終了日時 (対象外/終了済みなら null)
+    trialReminderLastSentDaysBefore: row.trialReminderLastSentDaysBefore, // §7.2.1 冪等化フラグ
     createdAt: row.createdAt,
   };
 }
@@ -118,6 +119,29 @@ export function makeTenantRepo(db: PrismaLike): TenantRepository {
           // subscriptionPlan は SubscriptionPlan 型として型チェックされた値のみ受け付ける
           subscriptionPlan: data.subscriptionPlan as SubscriptionPlan | undefined,
         },
+      });
+      // 更新後の行をドメイン型に詰め替えて返す
+      return toTenant(row);
+    },
+
+    // §7.2 Free trial 終了リマインダー用: free プランかつトライアル進行中 (trialEndsAt > now)
+    // のテナントを limit 件までを上限に返す
+    async listActiveTrials(now, limit) {
+      const rows = await db.tenant.findMany({
+        where: { subscriptionPlan: 'free', trialEndsAt: { gt: now } },
+        take: limit, // §8 一覧取得は必ず上限を持たせる
+        orderBy: { trialEndsAt: 'asc' }, // 終了が近い順 (デバッグ・ログ確認時の見やすさのため)
+      });
+      // 各行をドメイン型に詰め替えて返す
+      return rows.map(toTenant);
+    },
+
+    // §7.2.1 Free trial 終了リマインダーの冪等化フラグを更新する。cron の手動再実行・遅延・欠落が
+    // あっても同じマイルストーンを二重送信しないよう、送信成功後にこの値を書き込む
+    async updateTrialReminderLastSent(id, daysBefore) {
+      const row = await db.tenant.update({
+        where: { id },
+        data: { trialReminderLastSentDaysBefore: daysBefore },
       });
       // 更新後の行をドメイン型に詰め替えて返す
       return toTenant(row);

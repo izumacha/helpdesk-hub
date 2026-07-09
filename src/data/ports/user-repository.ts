@@ -34,6 +34,10 @@ export interface UserRepository {
   // エスカレーション一斉メール等、メール送信先として全エージェントの email が必要な場面向け。
   // listAgentIds + findById の N+1 を避けるため専用メソッドとして用意する。
   listAgentEmails(tenantId: string): Promise<Array<{ id: string; email: string }>>;
+  // §7.2 Free trial 終了リマインダー等、課金関連の通知先として admin (agent は含まない) の
+  // email のみが必要な場面向け。createCheckoutSession 等の課金 Server Action が admin 限定
+  // なのと同じ理由で、課金の通知先も admin に限定する
+  listAdminEmails(tenantId: string): Promise<Array<{ id: string; email: string }>>;
   // Phase 4 課金: テナント内のスタッフ (agent + admin) 数を返す (プランのシート上限チェック用)
   // requester はカウントしない — シートはヘルプデスクスタッフ分のみ消費する
   countByTenant(tenantId: string): Promise<number>;

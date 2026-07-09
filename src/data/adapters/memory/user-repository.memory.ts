@@ -109,6 +109,19 @@ export function makeUserRepo(store: Store): UserRepository {
       return out;
     },
 
+    // §7.2 Free trial 終了リマインダー等、課金関連の通知先として admin のみの id + email を取得
+    async listAdminEmails(tenantId) {
+      // 結果配列
+      const out: Array<{ id: string; email: string }> = [];
+      // 全ユーザーを走査し、テナント一致かつ admin ロールだけ抽出 (agent は含まない)
+      for (const u of store.users.values()) {
+        if (u.tenantId !== tenantId) continue; // 他テナントは除外
+        if (u.role === 'admin') out.push({ id: u.id, email: u.email });
+      }
+      // 結果を返す
+      return out;
+    },
+
     // Phase 4 課金: テナント内のスタッフ (agent + admin) 数を返す (プランのシート上限チェック用)
     // requester (エンドユーザー) はシートを消費しない — ヘルプデスク製品の標準的な課金モデル
     async countByTenant(tenantId) {
