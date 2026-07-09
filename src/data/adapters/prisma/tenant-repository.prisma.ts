@@ -122,5 +122,17 @@ export function makeTenantRepo(db: PrismaLike): TenantRepository {
       // 更新後の行をドメイン型に詰め替えて返す
       return toTenant(row);
     },
+
+    // §7.2 Free trial 終了リマインダー用: free プランかつトライアル進行中 (trialEndsAt > now)
+    // のテナントを limit 件までを上限に返す
+    async listActiveTrials(now, limit) {
+      const rows = await db.tenant.findMany({
+        where: { subscriptionPlan: 'free', trialEndsAt: { gt: now } },
+        take: limit, // §8 一覧取得は必ず上限を持たせる
+        orderBy: { trialEndsAt: 'asc' }, // 終了が近い順 (デバッグ・ログ確認時の見やすさのため)
+      });
+      // 各行をドメイン型に詰め替えて返す
+      return rows.map(toTenant);
+    },
   };
 }

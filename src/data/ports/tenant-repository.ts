@@ -50,4 +50,9 @@ export interface TenantRepository {
       subscriptionPlan?: SubscriptionPlan;
     },
   ): Promise<Tenant>;
+  // §7.2 Free trial 終了リマインダー用: 契約プランが free で、かつ trialEndsAt が now より
+  // 未来 (=トライアル進行中) のテナントを limit 件までを上限に返す (§8 一覧取得は必ず上限を
+  // 持たせる)。呼び出し側 (定期実行のリマインダー処理) が各テナントの残り日数からリマインド
+  // 要否を判定する (このメソッド自体はリマインダー送信要否を判定しない)
+  listActiveTrials(now: Date, limit: number): Promise<Tenant[]>;
 }

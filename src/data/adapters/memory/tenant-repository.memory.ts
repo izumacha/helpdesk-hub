@@ -127,5 +127,25 @@ export function makeTenantRepo(store: Store): TenantRepository {
       // 防御的コピーを返す
       return { ...updated };
     },
+
+    // §7.2 Free trial 終了リマインダー用: free プランかつトライアル進行中 (trialEndsAt > now)
+    // のテナントを limit 件までを上限に、終了が近い順で返す
+    async listActiveTrials(now, limit) {
+      const matches: Tenant[] = [];
+      // 全テナントを走査し条件に合うものだけ集める (テスト規模なら線形で十分)
+      for (const t of store.tenants.values()) {
+        if (
+          t.subscriptionPlan === 'free' &&
+          t.trialEndsAt &&
+          t.trialEndsAt.getTime() > now.getTime()
+        ) {
+          matches.push({ ...t }); // 防御的コピー
+        }
+      }
+      // 終了が近い順 (trialEndsAt 昇順) に並べ替える
+      matches.sort((a, b) => a.trialEndsAt!.getTime() - b.trialEndsAt!.getTime());
+      // 上限件数まで切り詰めて返す
+      return matches.slice(0, limit);
+    },
   };
 }

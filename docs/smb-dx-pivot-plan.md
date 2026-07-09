@@ -320,6 +320,23 @@ src/data/adapters/inbound/line-bot.ts        # 新規 (Phase 2)
 - 30 日間の Free trial（Standard 相当）。延長は問い合わせベース。
 - **CSV エクスポート**を全プランで保証（ロックインしない安心感）。
 
+#### 7.2.1 フォローアップ（2026-07-09）: トライアル終了リマインダー
+
+初回実装ではトライアル残日数の計算・表示（`trialDaysRemaining`）を `/settings` 画面にのみ持ち、
+管理者が自ら設定画面を開かない限り終了が近いことに気づけなかった（監査で発見したギャップ）。
+これは §7.2 の「失敗しない撤退ポイント」の意図（気づかないまま不利益を被らせない）に反するため、
+以下を追加実装する:
+
+- 純粋ロジック・メール本文組み立ては `src/lib/trial-reminder.ts`（残り 5 日・1 日でリマインド）。
+- 送信先は `TenantRepository.listActiveTrials` で対象テナントを取得し、
+  `UserRepository.listAdminEmails`（admin 限定。課金操作が admin 限定なのと同じ理由）へ送る。
+- `POST /api/internal/trial-reminders` を共有シークレット (`TRIAL_REMINDER_CRON_SECRET`) 認証の
+  内部エンドポイントとして実装し、`.github/workflows/trial-reminders.yml` が毎日 1 回叩く
+  （`scripts/backup-db.sh` + `backup.yml` と同じ「daily cron」設計に揃える）。
+- 送信済みフラグを DB に持たず、「残り日数がちょうど 5 日 / 1 日の日だけ送る」ことで
+  1 日 1 回の cron 実行を前提に冪等性を担保する（cron が確実に毎日動く前提。将来複数回/日
+  実行するようになった場合は送信済みフラグの追加を検討する）。
+
 ---
 
 ## 8. リスクと対策

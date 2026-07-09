@@ -77,6 +77,16 @@ export function makeUserRepo(db: PrismaLike): UserRepository {
       return rows;
     },
 
+    // §7.2 Free trial 終了リマインダー等、課金関連の通知先として admin のみの id + email を取得
+    async listAdminEmails(tenantId) {
+      const rows = await db.user.findMany({
+        where: { tenantId, role: 'admin' }, // テナント + admin のみで絞る (agent は含まない)
+        select: { id: true, email: true }, // 必要列のみ
+      });
+      // { id, email } の配列をそのまま返す (追加の変換は不要)
+      return rows;
+    },
+
     // Phase 4 課金: テナント内のスタッフ (agent + admin) 数を返す (プランのシート上限チェック用)
     // requester (エンドユーザー) はシートを消費しない — ヘルプデスク製品の標準的な課金モデル
     async countByTenant(tenantId) {
