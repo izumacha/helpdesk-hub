@@ -28,11 +28,19 @@ import type { Ticket } from '@/domain/types';
 // フル Ticket を再取得するのは無駄なため、呼び出し元が持つ最小限のフィールドだけ要求する。
 export type NewTicketNotifyInput = Pick<Ticket, 'id' | 'title' | 'priority'>;
 
-// 設定済みチャネルを表す内部型 (ログ用のチャネル名と送信実体をペアで持つ)
+// テナントの通知チャネル健全性を記録する際のキー (Tenant の slack/teams/chatwork*LastFailure* 列に対応)
+type ChannelKey = 'slack' | 'teams' | 'chatwork';
+
+// 設定済みチャネルを表す内部型 (ログ・健全性記録用のキー/チャネル名と送信実体をペアで持つ)
 interface ResolvedChannel {
+  key: ChannelKey; // 健全性記録用のキー (repos.tenants.recordOutboundChannelResult に渡す)
   name: string; // ログ表示用のチャネル名 (Slack / Teams / Chatwork)
   notifier: OutboundNotifier; // 実際の送信を行う Adapter
 }
+
+// 管理画面に表示する失敗メッセージの最大文字数 (Webhook/API のエラーレスポンスは長大な場合があるため
+// DB 肥大化・画面崩れを防ぐ上限を設ける。§8 パフォーマンス)
+const FAILURE_MESSAGE_MAX_LENGTH = 300;
 
 // Webhook URL を SSRF チェックして安全なら channels リストへ追加する共通ヘルパー。
 // Slack / Teams のように「ユーザーが入力した URL を保存して後で叩く」チャネルに共通して使う。
@@ -40,6 +48,7 @@ interface ResolvedChannel {
 // 将来チャネルを追加するときも、このヘルパーを呼べば SSRF 二重防御を取り込める。
 function addWebhookChannel(
   channels: ResolvedChannel[], // 追加先のチャネル一覧 (破壊的に追加する)
+  key: ChannelKey, // 健全性記録用のキー
   name: string, // ログ表示用のチャネル名
   url: string, // ユーザーが設定した Webhook URL
   factory: (url: string) => OutboundNotifier, // URL を受け取って Adapter を生成するファクトリ
@@ -55,7 +64,7 @@ function addWebhookChannel(
     return;
   }
   // URL が安全であればチャネル一覧へ追加する
-  channels.push({ name, notifier: factory(url) });
+  channels.push({ key, name, notifier: factory(url) });
 }
 
 // 指定テナントの設定済み外部通知チャネルにメッセージを送信する。
@@ -77,13 +86,13 @@ export async function sendOutboundNotification(
   // ── Slack ───────────────────────────────────────────────────────────────────
   // slackWebhookUrl が設定済みであれば SSRF 検証のうえチャネルへ追加する
   if (tenant.slackWebhookUrl) {
-    addWebhookChannel(channels, 'Slack', tenant.slackWebhookUrl, createSlackNotifier);
+    addWebhookChannel(channels, 'slack', 'Slack', tenant.slackWebhookUrl, createSlackNotifier);
   }
 
   // ── Teams ───────────────────────────────────────────────────────────────────
   // teamsWebhookUrl が設定済みであれば SSRF 検証のうえチャネルへ追加する
   if (tenant.teamsWebhookUrl) {
-    addWebhookChannel(channels, 'Teams', tenant.teamsWebhookUrl, createTeamsNotifier);
+    addWebhookChannel(channels, 'teams', 'Teams', tenant.teamsWebhookUrl, createTeamsNotifier);
   }
 
   // ── Chatwork ──────────────────────────────────────────────────────────────────
@@ -91,6 +100,7 @@ export async function sendOutboundNotification(
   // 送信先ホストは api.chatwork.com 固定 (ユーザー入力ではない) のため SSRF 検証は不要。
   if (tenant.chatworkApiToken && tenant.chatworkRoomId) {
     channels.push({
+      key: 'chatwork',
       name: 'Chatwork',
       notifier: createChatworkNotifier(tenant.chatworkApiToken, tenant.chatworkRoomId),
     });
@@ -102,17 +112,53 @@ export async function sendOutboundNotification(
   // 全チャネルへ並行送信する。1 つが失敗しても他チャネルの送信は止めない (allSettled)
   const results = await Promise.allSettled(channels.map((c) => c.notifier.send(message)));
 
-  // 失敗したチャネルだけをログに残す (チケット操作の成否には影響させない)
-  results.forEach((result, index) => {
-    if (result.status === 'rejected') {
-      // どのチャネルで失敗したかを明示してログに残す。
-      // セキュリティ: reason の詳細はサーバーログのみに残し、レスポンスには含めない
-      console.error(
-        `[outbound-notify] ${channels[index].name} 通知の送信に失敗しました:`,
-        result.reason,
-      );
-    }
-  });
+  // 監査で発見したギャップ対応: 失敗はログに残すだけでなく、管理画面で気づけるよう
+  // Tenant の直近失敗記録にも書き込む。成功時は「前回失敗が記録されているときだけ」クリアし、
+  // 毎回 DB を書きに行かないようにする (§8 パフォーマンス)。この記録処理自体の失敗は
+  // ログに残すのみに留め、本来の送信結果判定には影響させない (非クリティカルな副作用)。
+  await Promise.all(
+    results.map(async (result, index) => {
+      const channel = channels[index];
+      // このチャネルの直近失敗記録が既にあるかどうか (成功時の不要な書き込みを避けるため)
+      const hadPriorFailure = channelHasRecordedFailure(tenant, channel.key);
+      try {
+        if (result.status === 'rejected') {
+          // どのチャネルで失敗したかを明示してログに残す。
+          // セキュリティ: reason の詳細はサーバーログのみに残し、レスポンスには含めない
+          console.error(
+            `[outbound-notify] ${channel.name} 通知の送信に失敗しました:`,
+            result.reason,
+          );
+          // 管理画面向けに直近の失敗日時・概要メッセージを記録する (履歴ではなく最新 1 件のみ)
+          await repos.tenants.recordOutboundChannelResult(tenantId, channel.key, {
+            message: String(result.reason).slice(0, FAILURE_MESSAGE_MAX_LENGTH),
+            at: new Date(),
+          });
+        } else if (hadPriorFailure) {
+          // 前回失敗が記録されている状態から今回は成功したので、警告表示をクリアする
+          await repos.tenants.recordOutboundChannelResult(tenantId, channel.key, null);
+        }
+      } catch (err) {
+        // 記録自体の失敗はログに残すだけで、通知送信自体の成否判定には影響させない
+        console.error(`[outbound-notify] ${channel.name} の送信結果記録に失敗しました:`, err);
+      }
+    }),
+  );
+}
+
+// 指定チャネルの直近失敗が記録済みかどうかを判定する (成功時の不要な DB 書き込みを避けるための判定専用)
+function channelHasRecordedFailure(
+  tenant: { slackLastFailureAt?: Date | null; teamsLastFailureAt?: Date | null; chatworkLastFailureAt?: Date | null },
+  channel: ChannelKey,
+): boolean {
+  switch (channel) {
+    case 'slack':
+      return tenant.slackLastFailureAt != null;
+    case 'teams':
+      return tenant.teamsLastFailureAt != null;
+    case 'chatwork':
+      return tenant.chatworkLastFailureAt != null;
+  }
 }
 
 // tenantId + 呼び出し元コンテキストを受け取り、ベース URL 解決 + 送信 + ベストエフォート

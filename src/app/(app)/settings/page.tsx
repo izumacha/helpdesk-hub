@@ -241,6 +241,22 @@ export default async function SettingsPage() {
           teamsWebhookUrl={tenant?.teamsWebhookUrl ?? null}
           chatworkApiToken={tenant?.chatworkApiToken ?? null}
           chatworkRoomId={tenant?.chatworkRoomId ?? null}
+          // 監査で発見したギャップ対応: 直近送信失敗があるチャネルだけ警告バッジを表示する
+          slackFailure={
+            tenant?.slackLastFailureAt && tenant.slackLastFailureMessage
+              ? { at: tenant.slackLastFailureAt, message: tenant.slackLastFailureMessage }
+              : null
+          }
+          teamsFailure={
+            tenant?.teamsLastFailureAt && tenant.teamsLastFailureMessage
+              ? { at: tenant.teamsLastFailureAt, message: tenant.teamsLastFailureMessage }
+              : null
+          }
+          chatworkFailure={
+            tenant?.chatworkLastFailureAt && tenant.chatworkLastFailureMessage
+              ? { at: tenant.chatworkLastFailureAt, message: tenant.chatworkLastFailureMessage }
+              : null
+          }
         />
       </section>
 

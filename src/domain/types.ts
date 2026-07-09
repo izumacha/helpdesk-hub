@@ -72,6 +72,15 @@ export interface Tenant {
   chatworkApiToken: string | null;
   // Phase 4: 外部通知チャネル。投稿先の Chatwork ルーム ID (数字文字列。null なら通知無効)
   chatworkRoomId: string | null;
+  // 外部通知チャネルの直近送信失敗 (履歴は持たず直近 1 件のみ。成功したら null に戻る)。
+  // 既存フィクスチャ・呼び出しを壊さないよう任意 (optional) とし、アダプタは常に null か値で埋める
+  // (trialReminderLastSentDaysBefore と同じパターン)
+  slackLastFailureAt?: Date | null;
+  slackLastFailureMessage?: string | null;
+  teamsLastFailureAt?: Date | null;
+  teamsLastFailureMessage?: string | null;
+  chatworkLastFailureAt?: Date | null;
+  chatworkLastFailureMessage?: string | null;
   // Phase 4 課金: Stripe Billing 連携フィールド
   subscriptionPlan: SubscriptionPlan; // 現在の課金プラン (既定: free)
   stripeCustomerId: string | null; // Stripe Customer ID (cu_xxx)

@@ -33,6 +33,13 @@ function toTenant(row: TenantRow): Tenant {
     stripeSubscriptionStatus: row.stripeSubscriptionStatus, // Stripe の subscription.status
     trialEndsAt: row.trialEndsAt, // §7.2 Free trial 終了日時 (対象外/終了済みなら null)
     trialReminderLastSentDaysBefore: row.trialReminderLastSentDaysBefore, // §7.2.1 冪等化フラグ
+    // 外部通知チャネルの直近送信失敗 (チャネルごとに 1 件のみ。成功後は null)
+    slackLastFailureAt: row.slackLastFailureAt,
+    slackLastFailureMessage: row.slackLastFailureMessage,
+    teamsLastFailureAt: row.teamsLastFailureAt,
+    teamsLastFailureMessage: row.teamsLastFailureMessage,
+    chatworkLastFailureAt: row.chatworkLastFailureAt,
+    chatworkLastFailureMessage: row.chatworkLastFailureMessage,
     createdAt: row.createdAt,
   };
 }
@@ -143,6 +150,29 @@ export function makeTenantRepo(db: PrismaLike): TenantRepository {
         where: { id },
         data: { trialReminderLastSentDaysBefore: daysBefore },
       });
+      // 更新後の行をドメイン型に詰め替えて返す
+      return toTenant(row);
+    },
+
+    // Phase 4: 外部通知チャネル 1 件の送信結果を記録する (失敗時は日時+メッセージ、成功時は null でクリア)。
+    // チャネルごとにカラムが分かれているため switch で明示的に振り分ける (動的キーで any を使わない)
+    async recordOutboundChannelResult(id, channel, failure) {
+      // 失敗時は日時とメッセージを、成功 (クリア) 時は両方 null を書き込む
+      const at = failure ? failure.at : null;
+      const message = failure ? failure.message : null;
+      let data: Prisma.TenantUpdateInput;
+      switch (channel) {
+        case 'slack':
+          data = { slackLastFailureAt: at, slackLastFailureMessage: message };
+          break;
+        case 'teams':
+          data = { teamsLastFailureAt: at, teamsLastFailureMessage: message };
+          break;
+        case 'chatwork':
+          data = { chatworkLastFailureAt: at, chatworkLastFailureMessage: message };
+          break;
+      }
+      const row = await db.tenant.update({ where: { id }, data });
       // 更新後の行をドメイン型に詰め替えて返す
       return toTenant(row);
     },
