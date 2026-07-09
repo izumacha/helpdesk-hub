@@ -110,6 +110,14 @@ export async function updateNotificationChannels(
     chatworkRoomId,
   });
 
+  // §4.2 フォローアップ: 監査ログに「誰が通知チャネル設定を更新したか」を記録する
+  // (chatworkApiToken 等の秘匿情報は記録しない。アクション名のみ)
+  await repos.settingsAudit.record({
+    tenantId,
+    actorId: session.user.id,
+    action: 'notification_channels_update',
+  });
+
   // 設定ページを再レンダリングして最新値を反映する
   revalidatePath('/settings');
 

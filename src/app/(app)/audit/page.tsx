@@ -6,14 +6,16 @@ import { redirect } from 'next/navigation';
 import { repos } from '@/data';
 // 日付フォーマットヘルパー (年月日時分秒を JST で表示する)
 import { formatDateTimeJP } from '@/lib/format-date';
-// 履歴フィールドの日本語ラベル
-import { HISTORY_FIELD_LABELS } from '@/lib/constants';
+// 履歴フィールド / 設定変更アクションの日本語ラベル
+import { HISTORY_FIELD_LABELS, SETTINGS_AUDIT_ACTION_LABELS } from '@/lib/constants';
 // CSV エクスポートボタン (Client Component)
 import { AuditExportButton } from '@/features/audit/components/AuditExportButton';
 // 監査ログ機能のプランゲート (§6.1 料金プラン: Pro / Enterprise のみ利用可能)
 import { isAuditLogAllowed } from '@/lib/plan-guard';
 // テナントの現在プランを解決する共通ヘルパー (複数箇所での重複を避ける)
 import { resolveTenantPlan } from '@/lib/tenant-plan';
+// 監査ログ一覧が扱う統一行型 (チケット変更履歴 + 設定変更監査ログ)
+import type { AuditFeedRow } from '@/features/audit/types';
 
 // 一覧の取得件数上限 (パフォーマンス保護: 画面表示は 200 件まで)
 const PAGE_LIMIT = 200;
@@ -43,17 +45,48 @@ export default async function AuditPage() {
     return (
       <div className="rounded-2xl bg-white py-20 text-center text-slate-400 ring-1 ring-slate-200">
         <p className="text-sm">
-          監査ログは Pro / Enterprise プランでご利用いただけます。設定画面からプランをアップグレードしてください。
+          監査ログは Pro / Enterprise
+          プランでご利用いただけます。設定画面からプランをアップグレードしてください。
         </p>
       </div>
     );
   }
 
-  // テナント全体の変更履歴を新しい順に取得する (上限 PAGE_LIMIT 件)
-  const logs = await repos.history.findAllByTenant({
-    tenantId: session.user.tenantId, // セッション由来の tenantId のみ使用 (クロステナント漏洩防止)
-    limit: PAGE_LIMIT,
-  });
+  // テナント全体の変更履歴を並列取得する (上限 PAGE_LIMIT 件ずつ)。
+  // §4.2 フォローアップ: チケット変更履歴だけでなく設定変更 (SSO/LINE/通知チャネル) も
+  // 同じ監査ログ画面に統合する (セッション由来の tenantId のみ使用してクロステナント漏洩防止)
+  const [ticketHistory, settingsAudit] = await Promise.all([
+    repos.history.findAllByTenant({ tenantId: session.user.tenantId, limit: PAGE_LIMIT }),
+    repos.settingsAudit.findAllByTenant({ tenantId: session.user.tenantId, limit: PAGE_LIMIT }),
+  ]);
+
+  // 両者を共通の行型 (AuditFeedRow) に変換してマージし、新しい順に並べて PAGE_LIMIT 件に絞る
+  const logs: AuditFeedRow[] = [
+    ...ticketHistory.map(
+      (h): AuditFeedRow => ({
+        kind: 'ticket',
+        id: h.id,
+        createdAt: h.createdAt,
+        actorName: h.changedByName,
+        ticketId: h.ticketId,
+        ticketTitle: h.ticketTitle,
+        field: h.field,
+        oldValue: h.oldValue,
+        newValue: h.newValue,
+      }),
+    ),
+    ...settingsAudit.map(
+      (s): AuditFeedRow => ({
+        kind: 'settings',
+        id: s.id,
+        createdAt: s.createdAt,
+        actorName: s.actorName,
+        action: s.action,
+      }),
+    ),
+  ]
+    .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
+    .slice(0, PAGE_LIMIT);
 
   return (
     <div className="space-y-6">
@@ -64,7 +97,7 @@ export default async function AuditPage() {
           <h1 className="text-2xl font-bold text-slate-900">監査ログ</h1>
           {/* 説明文: 何が表示されているかを伝える */}
           <p className="mt-1 text-sm text-slate-500">
-            組織内のチケット変更履歴を表示しています。最新 {PAGE_LIMIT} 件。
+            組織内のチケット変更履歴・設定変更を表示しています。最新 {PAGE_LIMIT} 件。
           </p>
         </div>
         {/* CSV エクスポートボタン (Client Component) */}
@@ -83,60 +116,91 @@ export default async function AuditPage() {
             <thead className="bg-slate-50">
               <tr>
                 {/* 各列ヘッダー (scope="col" でスクリーンリーダーに列見出しを伝える) */}
-                <th scope="col" className="px-4 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">
+                <th
+                  scope="col"
+                  className="px-4 py-3 text-left text-xs font-semibold tracking-wider text-slate-500 uppercase"
+                >
                   日時
                 </th>
-                <th scope="col" className="px-4 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">
+                <th
+                  scope="col"
+                  className="px-4 py-3 text-left text-xs font-semibold tracking-wider text-slate-500 uppercase"
+                >
                   担当者
                 </th>
-                <th scope="col" className="px-4 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">
+                <th
+                  scope="col"
+                  className="px-4 py-3 text-left text-xs font-semibold tracking-wider text-slate-500 uppercase"
+                >
                   問い合わせ
                 </th>
-                <th scope="col" className="px-4 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">
+                <th
+                  scope="col"
+                  className="px-4 py-3 text-left text-xs font-semibold tracking-wider text-slate-500 uppercase"
+                >
                   項目
                 </th>
-                <th scope="col" className="px-4 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">
+                <th
+                  scope="col"
+                  className="px-4 py-3 text-left text-xs font-semibold tracking-wider text-slate-500 uppercase"
+                >
                   変更前
                 </th>
-                <th scope="col" className="px-4 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">
+                <th
+                  scope="col"
+                  className="px-4 py-3 text-left text-xs font-semibold tracking-wider text-slate-500 uppercase"
+                >
                   変更後
                 </th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
               {logs.map((log) => (
-                <tr key={log.id} className="hover:bg-slate-50/60 transition-colors">
+                <tr key={log.id} className="transition-colors hover:bg-slate-50/60">
                   {/* 変更日時 (フォーマット済み) */}
-                  <td className="whitespace-nowrap px-4 py-3 text-sm text-slate-500">
+                  <td className="px-4 py-3 text-sm whitespace-nowrap text-slate-500">
                     <time dateTime={log.createdAt.toISOString()}>
                       {formatDateTimeJP(log.createdAt)}
                     </time>
                   </td>
                   {/* 変更を行ったユーザー名 */}
-                  <td className="px-4 py-3 text-sm font-medium text-slate-900">
-                    {log.changedByName}
-                  </td>
-                  {/* 対象チケット件名 (チケット詳細へのリンク) */}
-                  <td className="max-w-xs px-4 py-3 text-sm text-slate-700">
-                    <a
-                      href={`/tickets/${log.ticketId}`}
-                      className="line-clamp-1 hover:text-teal-700 hover:underline"
-                    >
-                      {log.ticketTitle}
-                    </a>
-                  </td>
-                  {/* 変更された項目 (HISTORY_FIELD_LABELS で日本語ラベルに変換) */}
-                  <td className="whitespace-nowrap px-4 py-3 text-sm text-slate-600">
-                    {HISTORY_FIELD_LABELS[log.field as keyof typeof HISTORY_FIELD_LABELS] ?? log.field}
-                  </td>
-                  {/* 変更前の値 (null の場合は「−」で表示) */}
-                  <td className="px-4 py-3 text-sm text-slate-500">
-                    {log.oldValue ?? '−'}
-                  </td>
-                  {/* 変更後の値 (null の場合は「−」で表示) */}
-                  <td className="px-4 py-3 text-sm text-slate-900 font-medium">
-                    {log.newValue ?? '−'}
-                  </td>
+                  <td className="px-4 py-3 text-sm font-medium text-slate-900">{log.actorName}</td>
+                  {log.kind === 'ticket' ? (
+                    <>
+                      {/* 対象チケット件名 (チケット詳細へのリンク) */}
+                      <td className="max-w-xs px-4 py-3 text-sm text-slate-700">
+                        <a
+                          href={`/tickets/${log.ticketId}`}
+                          className="line-clamp-1 hover:text-teal-700 hover:underline"
+                        >
+                          {log.ticketTitle}
+                        </a>
+                      </td>
+                      {/* 変更された項目 (HISTORY_FIELD_LABELS で日本語ラベルに変換) */}
+                      <td className="px-4 py-3 text-sm whitespace-nowrap text-slate-600">
+                        {HISTORY_FIELD_LABELS[log.field as keyof typeof HISTORY_FIELD_LABELS] ??
+                          log.field}
+                      </td>
+                      {/* 変更前の値 (null の場合は「−」で表示) */}
+                      <td className="px-4 py-3 text-sm text-slate-500">{log.oldValue ?? '−'}</td>
+                      {/* 変更後の値 (null の場合は「−」で表示) */}
+                      <td className="px-4 py-3 text-sm font-medium text-slate-900">
+                        {log.newValue ?? '−'}
+                      </td>
+                    </>
+                  ) : (
+                    <>
+                      {/* 設定変更は対象チケットを持たないため「−」で表示する */}
+                      <td className="px-4 py-3 text-sm text-slate-400">−</td>
+                      {/* 変更された設定の種類 (SETTINGS_AUDIT_ACTION_LABELS で日本語ラベルに変換)。
+                          値そのもの (channelSecret 等の秘匿情報) は記録していないため変更前/変更後は表示しない */}
+                      <td className="px-4 py-3 text-sm whitespace-nowrap text-slate-600">
+                        {SETTINGS_AUDIT_ACTION_LABELS[log.action] ?? log.action}
+                      </td>
+                      <td className="px-4 py-3 text-sm text-slate-400">−</td>
+                      <td className="px-4 py-3 text-sm text-slate-400">−</td>
+                    </>
+                  )}
                 </tr>
               ))}
             </tbody>

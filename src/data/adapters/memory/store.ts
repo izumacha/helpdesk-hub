@@ -5,6 +5,7 @@ import type {
   Location,
   MagicLinkToken,
   Notification,
+  SettingsAuditLog,
   Tenant,
   TenantLineConfig,
   TenantSsoConfig,
@@ -67,6 +68,7 @@ export interface Store {
   locations: Map<string, Location>; // Phase 4 多拠点: テナント内の店舗・拠点
   ssoConfigs: Map<string, TenantSsoConfig>; // Phase 4 Enterprise: テナント単位の SAML SSO 設定
   lineConfigs: Map<string, TenantLineConfig>; // Phase 2 フォローアップ: テナント単位の LINE 連携設定
+  settingsAuditLogs: Map<string, SettingsAuditLog>; // §4.2 フォローアップ: 設定変更監査ログ
   idSeq: { value: number }; // 連番生成用のカウンタ (オブジェクトに包んで参照共有)
 }
 
@@ -91,6 +93,7 @@ export function createEmptyStore(): Store {
     locations: new Map(), // Phase 4 多拠点: テナント内の店舗・拠点
     ssoConfigs: new Map(), // Phase 4 Enterprise: SAML SSO 設定
     lineConfigs: new Map(), // Phase 2 フォローアップ: テナント単位の LINE 連携設定
+    settingsAuditLogs: new Map(), // §4.2 フォローアップ: 設定変更監査ログ
     idSeq: { value: 0 },
   };
 }
@@ -116,6 +119,7 @@ export function cloneStore(src: Store): Store {
     locations: new Map(src.locations), // Phase 4 多拠点
     ssoConfigs: new Map(src.ssoConfigs), // Phase 4 Enterprise: SAML SSO 設定
     lineConfigs: new Map(src.lineConfigs), // Phase 2 フォローアップ: テナント単位の LINE 連携設定
+    settingsAuditLogs: new Map(src.settingsAuditLogs), // §4.2 フォローアップ: 設定変更監査ログ
     idSeq: { value: src.idSeq.value },
   };
 }
@@ -140,6 +144,7 @@ export function overwriteStore(dst: Store, src: Store): void {
   dst.locations = new Map(src.locations); // Phase 4 多拠点
   dst.ssoConfigs = new Map(src.ssoConfigs); // Phase 4 Enterprise: SAML SSO 設定
   dst.lineConfigs = new Map(src.lineConfigs); // Phase 2 フォローアップ: テナント単位の LINE 連携設定
+  dst.settingsAuditLogs = new Map(src.settingsAuditLogs); // §4.2 フォローアップ: 設定変更監査ログ
   // 連番も元に戻す
   dst.idSeq.value = src.idSeq.value;
 }

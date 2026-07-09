@@ -13,6 +13,7 @@ import { makeLineMessageRepo } from './line-message-repository.prisma';
 import { makeLocationRepo } from './location-repository.prisma';
 import { makeMagicLinkRepo } from './magic-link-repository.prisma';
 import { makeNotificationRepo } from './notification-repository.prisma';
+import { makeSettingsAuditLogRepo } from './settings-audit-log-repository.prisma';
 import { makeSsoConfigRepo } from './sso-config-repository.prisma';
 import { makeTenantRepo } from './tenant-repository.prisma';
 import { makeTicketCommentRepo } from './ticket-comment-repository.prisma';
@@ -46,6 +47,7 @@ export function buildPrismaRepos(db: PrismaLike): Repos {
     locations: makeLocationRepo(db), // Phase 4 多拠点
     ssoConfigs: makeSsoConfigRepo(db), // Phase 4 Enterprise: SAML SSO 設定
     lineConfigs: makeLineConfigRepo(db), // Phase 2 フォローアップ: テナント単位の LINE 連携設定
+    settingsAudit: makeSettingsAuditLogRepo(db), // §4.2 フォローアップ: 設定変更監査ログ
   };
 }
 

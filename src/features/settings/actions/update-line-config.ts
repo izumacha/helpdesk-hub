@@ -89,6 +89,13 @@ export async function updateLineConfig(
       channelAccessToken,
       botUserId,
     });
+    // §4.2 フォローアップ: 監査ログに「誰が LINE 連携設定を更新したか」を記録する
+    // (channelSecret 等の秘匿情報は記録しない。アクション名のみ)
+    await repos.settingsAudit.record({
+      tenantId,
+      actorId: gate.userId,
+      action: 'line_config_update',
+    });
     // 設定ページのキャッシュを無効化して結果をすぐ反映する
     revalidatePath('/settings');
     // 成功を返す

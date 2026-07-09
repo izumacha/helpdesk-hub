@@ -129,6 +129,10 @@ describe('updateSsoConfig', () => {
     const saved = await repos.ssoConfigs.findByTenant(TENANT_ID);
     expect(saved?.idpEntityId).toBe('https://idp.example.com/entity');
     expect(saved?.enabled).toBe(true);
+    // §4.2 フォローアップ: 監査ログに記録されること
+    const auditLogs = await repos.settingsAudit.findAllByTenant({ tenantId: TENANT_ID });
+    expect(auditLogs).toHaveLength(1);
+    expect(auditLogs[0].action).toBe('sso_config_update');
   });
 
   // https 以外の SSO URL は拒否される (ブラウザのリダイレクト先になるため)

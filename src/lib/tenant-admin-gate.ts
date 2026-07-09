@@ -7,8 +7,10 @@
 // 現在のセッション取得
 import { auth } from '@/lib/auth';
 
-// テナント管理者ゲートの検証結果
-export type TenantAdminGate = { ok: true; tenantId: string } | { ok: false; error: string };
+// テナント管理者ゲートの検証結果 (userId は §4.2 監査ログ記録で「誰が」を残すために使う)
+export type TenantAdminGate =
+  | { ok: true; tenantId: string; userId: string }
+  | { ok: false; error: string };
 
 // 「ログイン済み・admin・自テナント」をまとめて検証する。プランは問わない
 export async function assertTenantAdmin(): Promise<TenantAdminGate> {
@@ -22,6 +24,6 @@ export async function assertTenantAdmin(): Promise<TenantAdminGate> {
   if (session.user.role !== 'admin') {
     return { ok: false, error: 'この操作は管理者のみ実行できます' };
   }
-  // セッション由来の tenantId を返す (クロステナント操作防止)
-  return { ok: true, tenantId: session.user.tenantId };
+  // セッション由来の tenantId / userId を返す (クロステナント操作防止・監査ログの操作者記録に使う)
+  return { ok: true, tenantId: session.user.tenantId, userId: session.user.id };
 }

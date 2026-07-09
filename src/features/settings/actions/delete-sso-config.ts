@@ -44,6 +44,12 @@ export async function deleteSsoConfig(
   try {
     // SSO 設定を削除する (tenantId スコープ)
     await repos.ssoConfigs.delete(tenantId);
+    // §4.2 フォローアップ: 監査ログに「誰が SSO 設定を削除したか」を記録する
+    await repos.settingsAudit.record({
+      tenantId,
+      actorId: gate.userId,
+      action: 'sso_config_delete',
+    });
     // 設定ページのキャッシュを無効化する
     revalidatePath('/settings');
     // 成功を返す

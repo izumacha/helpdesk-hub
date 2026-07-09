@@ -112,6 +112,10 @@ describe('updateNotificationChannels', () => {
     expect(result.success).toBe(true);
     const saved = await repos.tenants.findById(TENANT_ID);
     expect(saved?.slackWebhookUrl).toBe('https://hooks.slack.com/services/xxx');
+    // §4.2 フォローアップ: 監査ログに記録されること
+    const auditLogs = await repos.settingsAudit.findAllByTenant({ tenantId: TENANT_ID });
+    expect(auditLogs).toHaveLength(1);
+    expect(auditLogs[0].action).toBe('notification_channels_update');
   });
 
   // https 以外の Webhook URL は拒否される

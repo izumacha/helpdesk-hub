@@ -1,0 +1,57 @@
+// 設定変更監査ログリポジトリの契約 (port) と、メモリストア/ID 生成ヘルパーをインポート
+import type {
+  SettingsAuditLogRepository,
+  SettingsAuditLogWithRefs,
+} from '@/data/ports/settings-audit-log-repository';
+import type { SettingsAuditLog } from '@/domain/types';
+import { nextId, type Store } from './store';
+
+// 取得件数の既定値と上限 (Prisma 実装と揃える)
+const AUDIT_DEFAULT_LIMIT = 100;
+// 上限超過リクエストによる DoS を防ぐ (Prisma 実装と同一の値を維持してテスト/本番の挙動を一致させる)
+const AUDIT_MAX_LIMIT = 500;
+
+// メモリストアを使った設定変更監査ログリポジトリを生成する関数
+export function makeSettingsAuditLogRepo(store: Store): SettingsAuditLogRepository {
+  return {
+    // 監査ログを 1 件記録する
+    async record(input) {
+      // 新しい監査ログ行を組み立てる
+      const row: SettingsAuditLog = {
+        id: nextId(store, 'sal'), // 'sal_...' 形式の一意 ID
+        tenantId: input.tenantId, // 対象テナント
+        actorId: input.actorId, // 操作者
+        action: input.action, // 実行された操作の種別
+        createdAt: new Date(), // 操作日時
+      };
+      // ストアに登録 (返り値はなし)
+      store.settingsAuditLogs.set(row.id, row);
+    },
+
+    // テナント全体の設定変更監査ログを取得する (テスト用メモリ実装)
+    async findAllByTenant(filter) {
+      // 件数上限 (DoS 対策として AUDIT_MAX_LIMIT でクランプ。Prisma 実装と同じ上限値)
+      const limit = Math.min(filter.limit ?? AUDIT_DEFAULT_LIMIT, AUDIT_MAX_LIMIT);
+      const offset = filter.offset ?? 0;
+
+      // メモリストアからテナントスコープで絞り込む
+      const rows: SettingsAuditLogWithRefs[] = [];
+      for (const log of store.settingsAuditLogs.values()) {
+        // 当該テナント以外は対象外 (クロステナント漏洩防止)
+        if (log.tenantId !== filter.tenantId) continue;
+        // 操作者を取得する
+        const user = store.users.get(log.actorId);
+        rows.push({
+          id: log.id, // 監査ログ ID
+          actorId: log.actorId, // 操作者 ID
+          actorName: user?.name ?? '不明', // 操作者氏名 (存在しない場合は「不明」)
+          action: log.action, // 実行された操作の種別
+          createdAt: log.createdAt, // 操作日時
+        });
+      }
+      // 新しい順に並べてページネーションを適用する
+      rows.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+      return rows.slice(offset, offset + limit);
+    },
+  };
+}

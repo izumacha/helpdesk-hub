@@ -120,6 +120,13 @@ export async function updateSsoConfig(
       idpSsoUrl,
       idpX509Cert: cert,
     });
+    // §4.2 フォローアップ: 監査ログに「誰が SSO 設定を更新したか」を記録する
+    // (idpX509Cert 等の秘匿情報は記録しない。アクション名のみ)
+    await repos.settingsAudit.record({
+      tenantId,
+      actorId: gate.userId,
+      action: 'sso_config_update',
+    });
     // 設定ページのキャッシュを無効化して結果をすぐ反映する
     revalidatePath('/settings');
     // 成功を返す

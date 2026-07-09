@@ -25,6 +25,16 @@ export type Priority = 'Low' | 'Medium' | 'High';
 // 履歴に記録する項目の種類 (状態/優先度/担当者/エスカレーション)
 export type HistoryField = 'status' | 'priority' | 'assignee' | 'escalation';
 
+// 設定変更監査ログの対象アクション種別 (SSO/LINE 連携/通知チャネル設定の変更)。
+// prisma/schema.prisma の SettingsAuditAction enum および src/lib/constants.ts の
+// SETTINGS_AUDIT_ACTION_LABELS と常に同期すること。値を追加したら 3 箇所すべてを更新する。
+export type SettingsAuditAction =
+  | 'sso_config_update' // SSO 設定の作成・更新
+  | 'sso_config_delete' // SSO 設定の削除
+  | 'line_config_update' // LINE 連携設定の作成・更新
+  | 'line_config_delete' // LINE 連携設定の削除
+  | 'notification_channels_update'; // 通知チャネル設定の更新
+
 // FAQ 候補の公開状態 (候補/公開中/却下)
 export type FaqStatus = 'Candidate' | 'Published' | 'Rejected';
 
@@ -185,6 +195,16 @@ export interface TicketHistory {
   oldValue: string | null; // 変更前の値 (初期登録時は null)
   newValue: string | null; // 変更後の値
   createdAt: Date; // 変更日時
+}
+
+// 設定変更 (SSO/LINE 連携/通知チャネル) の監査ログ 1 件分。
+// TicketHistory と異なり oldValue/newValue は持たない (秘匿情報を含む設定値のため記録しない)
+export interface SettingsAuditLog {
+  id: string; // 監査ログ ID
+  tenantId: string; // 対象テナント
+  actorId: string; // 操作を行ったユーザー ID
+  action: SettingsAuditAction; // 実行された操作の種別
+  createdAt: Date; // 操作日時
 }
 
 // 解決済みチケットから派生した FAQ 候補 1 件分

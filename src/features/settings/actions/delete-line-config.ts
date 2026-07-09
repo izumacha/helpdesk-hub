@@ -44,6 +44,12 @@ export async function deleteLineConfig(
   try {
     // LINE 連携設定を削除する (tenantId スコープ)
     await repos.lineConfigs.delete(tenantId);
+    // §4.2 フォローアップ: 監査ログに「誰が LINE 連携設定を削除したか」を記録する
+    await repos.settingsAudit.record({
+      tenantId,
+      actorId: gate.userId,
+      action: 'line_config_delete',
+    });
     // 設定ページのキャッシュを無効化する
     revalidatePath('/settings');
     // 成功を返す

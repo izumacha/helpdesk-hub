@@ -101,6 +101,10 @@ describe('deleteLineConfig', () => {
 
     expect(result.success).toBe(true);
     expect(await repos.lineConfigs.findByTenant(TENANT_ID)).toBeNull();
+    // §4.2 フォローアップ: 監査ログに記録されること
+    const auditLogs = await repos.settingsAudit.findAllByTenant({ tenantId: TENANT_ID });
+    expect(auditLogs).toHaveLength(1);
+    expect(auditLogs[0].action).toBe('line_config_delete');
   });
 
   // admin 以外は削除できない (プラン不問ゲートでも RBAC は維持する)

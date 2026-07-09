@@ -117,6 +117,17 @@ export const HISTORY_FIELD_LABELS: Record<string, string> = {
   escalation: 'エスカレーション',
 };
 
+// 設定変更監査ログのアクション種別に対応する日本語表示ラベル。
+// SettingsAuditAction 型 (src/domain/types.ts) / SettingsAuditAction enum (prisma/schema.prisma)
+// に値を追加したらここも更新する (§4.2 フォローアップ)
+export const SETTINGS_AUDIT_ACTION_LABELS: Record<string, string> = {
+  sso_config_update: 'SSO 設定を更新',
+  sso_config_delete: 'SSO 設定を削除',
+  line_config_update: 'LINE 連携設定を更新',
+  line_config_delete: 'LINE 連携設定を削除',
+  notification_channels_update: '通知チャネル設定を更新',
+};
+
 // 通知種別の英語キーに対応する日本語表示ラベル
 // NotificationType enum (prisma/schema.prisma) に値を追加したらここも更新する
 export const NOTIFICATION_TYPE_LABELS: Record<string, string> = {

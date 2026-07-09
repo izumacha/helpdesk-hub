@@ -10,7 +10,9 @@ import { isLineIntegrationAllowed } from '@/lib/plan-guard';
 import { assertTenantAdmin } from '@/lib/tenant-admin-gate';
 
 // LINE 連携設定変更の前提検証結果
-export type LineConfigAdminGate = { ok: true; tenantId: string } | { ok: false; error: string };
+export type LineConfigAdminGate =
+  | { ok: true; tenantId: string; userId: string }
+  | { ok: false; error: string };
 
 // LINE 連携設定変更の前提 (ログイン済み・admin・Pro/Enterprise プラン) をまとめて検証する。
 export async function assertLineConfigAdmin(): Promise<LineConfigAdminGate> {
@@ -24,8 +26,8 @@ export async function assertLineConfigAdmin(): Promise<LineConfigAdminGate> {
   if (!isLineIntegrationAllowed(tenant.subscriptionPlan)) {
     return { ok: false, error: 'LINE 連携は Pro / Enterprise プランでのみ利用できます。' };
   }
-  // すべて満たしたので tenantId を返す
-  return { ok: true, tenantId: gate.tenantId };
+  // すべて満たしたので tenantId / userId を返す
+  return { ok: true, tenantId: gate.tenantId, userId: gate.userId };
 }
 
 // LINE 連携設定の削除専用ゲート: 「ログイン済み・admin・自テナント」のみを検証し、
