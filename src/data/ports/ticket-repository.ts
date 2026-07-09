@@ -141,6 +141,7 @@ export interface TicketRepository {
     now: Date; // SLA 超過判定の基準時刻
     excludeStatusesForWorkload: TicketStatus[]; // ワークロード集計で除外する状態
     tenantId: string; // テナントスコープ (必須)
+    locationId?: string; // 拠点で絞る (Phase 4 多拠点。省略時は全拠点対象)
   }): Promise<DashboardStats>; // 上記 3 指標をまとめて返す
 
   /**
@@ -150,8 +151,13 @@ export interface TicketRepository {
    * - reopenRate         : 全チケット中「再オープンした」チケットの割合 (0.0〜1.0)
    * @param args.tenantId テナントスコープ (必須)
    * @param args.since    この日時以降に作成されたチケットのみ対象 (省略時は全期間)
+   * @param args.locationId 拠点で絞る (Phase 4 多拠点。省略時は全拠点対象)
    */
-  qualityMetrics(args: { tenantId: string; since?: Date }): Promise<QualityMetrics>;
+  qualityMetrics(args: {
+    tenantId: string;
+    since?: Date;
+    locationId?: string;
+  }): Promise<QualityMetrics>;
 
   create(input: CreateTicketInput): Promise<TicketWithRefs>; // 新規作成 (input.tenantId 必須)
   // 状態更新 (tenantId スコープ。他テナントの ID なら 0 件更新で no-op)
