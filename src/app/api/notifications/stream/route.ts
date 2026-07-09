@@ -6,6 +6,8 @@ import { auth } from '@/lib/auth';
 import { getUnreadNotificationCount } from '@/lib/notifications';
 // SSE 購読者をプロセス内 Map に登録/解除する関数
 import { addSubscriber, removeSubscriber } from '@/lib/sse-subscribers';
+// Route Handler 向け共通レート制限ラッパー
+import { checkRouteRateLimit } from '@/lib/route-rate-limit';
 
 // このルートは常に動的実行 (キャッシュ無効)
 export const dynamic = 'force-dynamic';
@@ -14,6 +16,19 @@ export const runtime = 'nodejs';
 
 // keep-alive ping を送る間隔 (30 秒)
 const KEEPALIVE_INTERVAL_MS = 30_000;
+
+// 監査で発見したギャップ: この SSE エンドポイントには接続確立のレート制限が無かった
+// (CLAUDE.md §9 DoS/リソース枯渇防止)。新規接続確立の頻度だけを絞る (確立済みの接続は
+// そのまま張り続けられ、プロセス内購読者 Map の「同時接続数そのものの上限」は別の課題として
+// 残る。ここで対処するのはバグった再接続ループ・スクリプトによる新規接続の連打のみ)。
+// EventSource はデフォルトで約 3 秒間隔で再接続を試みるため (下記 SSE_RETRY_MS 参照)、
+// 複数タブを開く通常利用や短時間のサーバー再起動時の再接続の波を吸収できる値にする
+const SSE_CONNECT_RATE_LIMIT = { limit: 60, windowMs: 60_000 } as const;
+
+// SSE の retry フィールドで指定するクライアントの再接続間隔 (ミリ秒)。
+// ブラウザの EventSource 既定値 (約3秒) より長くすることで、サーバー再起動やレート制限
+// 超過直後の再接続の波を緩やかにし、SSE_CONNECT_RATE_LIMIT の消費ペースを落とす
+const SSE_RETRY_MS = 5000;
 
 // 文字列を SSE 用の UTF-8 バイト列に変換するエンコーダ
 const encoder = new TextEncoder();
@@ -26,6 +41,11 @@ function sseComment(text: string): Uint8Array {
 // SSE の「event + data」行を作る (クライアントで addEventListener 可能)
 function sseEvent(eventName: string, data: unknown): Uint8Array {
   return encoder.encode(`event: ${eventName}\ndata: ${JSON.stringify(data)}\n\n`);
+}
+
+// SSE の retry フィールド (クライアントの次回再接続までの待ち時間指定) を作る
+function sseRetry(ms: number): Uint8Array {
+  return encoder.encode(`retry: ${ms}\n\n`);
 }
 
 // GET /api/notifications/stream : 未読件数更新を受け取る SSE エンドポイント
@@ -41,6 +61,14 @@ export async function GET(): Promise<Response> {
   // 未読件数を引くテナントスコープ
   const tenantId = session.user.tenantId;
 
+  // ユーザー単位で新規接続確立の頻度を制限する (他の Route Handler と同じ 429 契約)
+  const rateLimitResponse = checkRouteRateLimit(
+    `sse-connect:${userId}`,
+    SSE_CONNECT_RATE_LIMIT,
+    '接続が多すぎます。しばらく時間をおいて再度お試しください',
+  );
+  if (rateLimitResponse) return rateLimitResponse;
+
   // ストリーム制御用のコントローラを外側スコープで保持
   let controller!: ReadableStreamDefaultController<Uint8Array>;
   // keep-alive 用 setInterval の参照 (cancel 時にクリア)
@@ -54,6 +82,9 @@ export async function GET(): Promise<Response> {
       controller = ctrl;
       // このユーザー向けの購読者 Map にコントローラを登録
       addSubscriber(userId, controller);
+
+      // クライアントの再接続間隔を指定 (ブラウザ既定の約3秒より緩やかにする)
+      controller.enqueue(sseRetry(SSE_RETRY_MS));
 
       try {
         // 最初に現在の未読件数を取得し (tenantId スコープ)

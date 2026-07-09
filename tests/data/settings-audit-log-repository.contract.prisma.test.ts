@@ -95,4 +95,30 @@ describe.runIf(SHOULD_RUN)('SettingsAuditLogRepository (prisma adapter)', () => 
     const logs = await repos.settingsAudit.findAllByTenant({ tenantId: TENANT_A, limit: 2 });
     expect(logs).toHaveLength(2);
   });
+
+  // §4.3 フォローアップで追加した5種 (テナントモード切替・拠点CRUD・転送先アドレス再発行) が
+  // 実 DB の SettingsAuditAction enum に対して問題なく書き込み・読み出しできること。
+  // line_config_delete も含め、このテストまで元々未検証だった値をまとめて確認する
+  it('§4.3で追加したアクション種別も含め、全10種が書き込み・読み出しできる', async () => {
+    const repos = buildPrismaRepos(prisma);
+    const actions = [
+      'sso_config_update',
+      'sso_config_delete',
+      'line_config_update',
+      'line_config_delete',
+      'notification_channels_update',
+      'tenant_mode_update',
+      'location_create',
+      'location_update',
+      'location_delete',
+      'inbound_token_regenerate',
+    ] as const;
+    for (const action of actions) {
+      await repos.settingsAudit.record({ tenantId: TENANT_A, actorId: USER_A, action });
+    }
+    const logs = await repos.settingsAudit.findAllByTenant({ tenantId: TENANT_A, limit: 100 });
+    expect(logs).toHaveLength(actions.length);
+    // 記録した全アクションが読み出せること (順序は新しい順なので集合として比較する)
+    expect(new Set(logs.map((l) => l.action))).toEqual(new Set(actions));
+  });
 });
