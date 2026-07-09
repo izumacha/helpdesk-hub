@@ -62,6 +62,20 @@ describe('updateLocation', () => {
     expect(reloaded?.name).toBe('新名称');
   });
 
+  // §4.3 フォローアップ: 更新成功時に監査ログへ記録されること
+  it('更新成功時に監査ログへ記録される', async () => {
+    const location = await repos.locations.create({
+      tenantId: TENANT_ID,
+      name: '旧名称',
+      description: null,
+    });
+    const { updateLocation } = await import('@/features/settings/actions/update-location');
+    await updateLocation(location.id, makeForm('新名称'));
+    const auditLogs = await repos.settingsAudit.findAllByTenant({ tenantId: TENANT_ID });
+    expect(auditLogs).toHaveLength(1);
+    expect(auditLogs[0].action).toBe('location_update');
+  });
+
   // admin 以外 (agent) は拒否される
   it('agent ロールは拒否される', async () => {
     const location = await repos.locations.create({

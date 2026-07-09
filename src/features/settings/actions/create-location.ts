@@ -67,6 +67,20 @@ export async function createLocation(formData: FormData): Promise<CreateLocation
     });
     // 設定ページのキャッシュを無効化して新しい拠点がすぐ反映されるようにする
     revalidatePath('/settings');
+
+    // §4.3 フォローアップ: 監査ログに「誰が拠点を作成したか」を記録する。
+    // 作成自体は既に完了済みなので、監査ログの書き込みだけが失敗しても
+    // 管理者に「作成に失敗した」という誤ったエラーを見せてはいけない
+    try {
+      await repos.settingsAudit.record({
+        tenantId,
+        actorId: gate.userId,
+        action: 'location_create',
+      });
+    } catch (auditErr) {
+      console.error('[create-location] 監査ログの記録に失敗しました:', auditErr);
+    }
+
     // 作成された拠点 ID を返す
     return { locationId: location.id };
   } catch (err) {

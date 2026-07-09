@@ -61,6 +61,20 @@ export async function updateLocation(
     await repos.locations.update(locationId, tenantId, { name, description });
     // 設定ページのキャッシュを無効化して更新結果がすぐ反映されるようにする
     revalidatePath('/settings');
+
+    // §4.3 フォローアップ: 監査ログに「誰が拠点を更新したか」を記録する。
+    // 更新自体は既に完了済みなので、監査ログの書き込みだけが失敗しても
+    // 管理者に「更新に失敗した」という誤ったエラーを見せてはいけない
+    try {
+      await repos.settingsAudit.record({
+        tenantId,
+        actorId: gate.userId,
+        action: 'location_update',
+      });
+    } catch (auditErr) {
+      console.error('[update-location] 監査ログの記録に失敗しました:', auditErr);
+    }
+
     // 成功を返す
     return { success: true };
   } catch (err) {

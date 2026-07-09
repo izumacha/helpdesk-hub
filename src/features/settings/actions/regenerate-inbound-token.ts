@@ -67,4 +67,17 @@ export async function regenerateInboundToken(): Promise<void> {
 
   // 設定画面のキャッシュを無効化して新しい転送先アドレスを再描画させる
   revalidatePath('/settings');
+
+  // §4.3 フォローアップ: 監査ログに「誰が転送先アドレスを再発行したか」を記録する。
+  // 発行自体は既に完了済みなので、監査ログの書き込みだけが失敗しても
+  // 管理者に「発行に失敗した」という誤ったエラーを見せてはいけない
+  try {
+    await repos.settingsAudit.record({
+      tenantId,
+      actorId: session.user.id,
+      action: 'inbound_token_regenerate',
+    });
+  } catch (auditErr) {
+    console.error('[regenerate-inbound-token] 監査ログの記録に失敗しました:', auditErr);
+  }
 }

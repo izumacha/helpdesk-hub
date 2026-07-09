@@ -126,6 +126,12 @@ export const SETTINGS_AUDIT_ACTION_LABELS: Record<string, string> = {
   line_config_update: 'LINE 連携設定を更新',
   line_config_delete: 'LINE 連携設定を削除',
   notification_channels_update: '通知チャネル設定を更新',
+  // §4.3 フォローアップ
+  tenant_mode_update: '動作モードを変更',
+  location_create: '拠点を作成',
+  location_update: '拠点を更新',
+  location_delete: '拠点を削除',
+  inbound_token_regenerate: 'メール転送先アドレスを再発行',
 };
 
 // 通知種別の英語キーに対応する日本語表示ラベル

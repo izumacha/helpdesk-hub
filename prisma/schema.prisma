@@ -62,6 +62,13 @@ enum SettingsAuditAction {
   line_config_update // LINE 連携設定の作成・更新
   line_config_delete // LINE 連携設定の削除
   notification_channels_update // 通知チャネル (Slack/Teams/Chatwork) 設定の更新
+  // §4.3 フォローアップ: SSO/LINE/通知チャネルと同じ「管理者による設定変更」でありながら
+  // 監査対象から漏れていた操作を追加
+  tenant_mode_update // テナントの Lite/Pro モード切替
+  location_create // 拠点の新規作成
+  location_update // 拠点の更新
+  location_delete // 拠点の削除
+  inbound_token_regenerate // メール取り込み用転送先アドレスの (再)発行
 }
 
 // FAQ 候補の状態
