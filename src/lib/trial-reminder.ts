@@ -56,6 +56,13 @@ export function daysUntilTrialEnds(trialEndsAt: Date, now: Date): number {
 //   本文に含めた形で「5」マイルストーンとして遅れて送信できる (取りこぼし防止)。
 // - workflow_dispatch の手動再実行で同日に 2 回叩かれた場合: 1 回目で lastSentDaysBefore が
 //   更新済みのため、2 回目は同じマイルストーンを再度満たさず null を返す (二重送信防止)。
+//
+// 既知の制約 (/code-review ultra 指摘): cron が非常に長時間 (5 日以上) 停止し、未送信のまま
+// daysRemaining が 5 と 1 の両方を一度に通り過ぎた場合、最も緊急な「1」だけを送り「5」は送らない
+// (Math.min で最小値を選ぶため)。これは意図的な選択: 「5」を今さら送っても実際の残り日数と
+// 乖離した古い内容になり誤解を招くため、常に正確な残り日数を伴う最も緊急な通知を優先する。
+// GitHub Actions の cron 遅延は通常「分〜時間」単位であり、この状況 (5 日以上の完全停止) は
+// 極めて起こりにくいことを踏まえたトレードオフ
 export function resolveTrialReminderMilestone(
   daysRemaining: number,
   lastSentDaysBefore: number | null,

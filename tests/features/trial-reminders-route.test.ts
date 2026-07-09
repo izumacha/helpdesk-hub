@@ -199,6 +199,24 @@ describe('POST /api/internal/trial-reminders', () => {
     expect(store.tenants.get('t1')?.trialReminderLastSentDaysBefore).toBe(5);
   });
 
+  // 送信は成功したが永続化 (updateTrialReminderLastSent) が失敗した場合、
+  // remindersSent は加算しない (次回実行時の再試行対象として正しく報告する)
+  it('永続化が失敗した場合はremindersSentを加算しない', async () => {
+    seedTenant('t1', new Date(Date.now() + 5 * 24 * 60 * 60 * 1000));
+    seedAdmin('t1', 'admin@example.com');
+    // updateTrialReminderLastSent だけ失敗するよう差し替える
+    repos.tenants.updateTrialReminderLastSent = async () => {
+      throw new Error('DB 接続エラー (テスト用)');
+    };
+    const POST = await loadRoute();
+    const res = await POST(makeRequest());
+    const body = await res.json();
+    expect(res.status).toBe(200);
+    // メール自体は送られている (副作用は戻せない) が、永続化失敗のため未送信扱いで報告する
+    expect(sentMessages).toHaveLength(1);
+    expect(body.remindersSent).toBe(0);
+  });
+
   // standard プラン (トライアル対象外) には送信しない
   it('Standardプランのテナントは対象外', async () => {
     seedTenant('t1', new Date(Date.now() + 5 * 24 * 60 * 60 * 1000), 'standard');

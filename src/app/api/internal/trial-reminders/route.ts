@@ -126,12 +126,15 @@ export async function POST(request: Request): Promise<NextResponse> {
           `[trial-reminders] テナント ${tenant.id}: 管理者への送信 ${failedCount}/${admins.length} 件が失敗しました`,
         );
       }
-      // 1 人でも届いていれば「リマインドできた」とみなしてカウントし、このマイルストーンを
-      // 送信済みとして永続化する (次回以降の同マイルストーンの再送・二重送信を防ぐ)。
-      // 全員失敗した場合は永続化しない (次回実行時に再試行できるようにする)
+      // 1 人でも届いていれば「リマインドできた」とみなし、このマイルストーンを送信済みとして
+      // 永続化する (次回以降の同マイルストーンの再送・二重送信を防ぐ)。全員失敗した場合は
+      // 永続化しない (次回実行時に再試行できるようにする)。
+      // remindersSent は「永続化まで成功した」場合だけ加算する (先に加算すると、永続化が
+      // 例外を投げて catch に落ちた際に「送信できた」と報告しつつ実際は次回再送されてしまう
+      // 不整合が起きるため、永続化の成否を反映してから加算する)
       if (succeededCount > 0) {
-        remindersSent += 1;
         await repos.tenants.updateTrialReminderLastSent(tenant.id, milestone);
+        remindersSent += 1;
       }
     } catch (err) {
       // 1 テナント分の失敗はログに残すだけで処理を継続する (内部詳細はログのみ、レスポンスには含めない)

@@ -80,6 +80,13 @@ describe('resolveTrialReminderMilestone', () => {
     expect(resolveTrialReminderMilestone(3, null)).toBe(5);
   });
 
+  // 既知の制約: cron が長時間停止し、未送信のまま daysRemaining が 5 と 1 の両方を
+  // 一度に通り過ぎた場合、最も緊急な「1」だけを送り「5」は送らない (意図的な仕様。
+  // resolveTrialReminderMilestone の関数コメント参照)
+  it('両方のマイルストーンを一度に通り過ぎた場合は最も緊急な方だけを返す', () => {
+    expect(resolveTrialReminderMilestone(0, null)).toBe(1);
+  });
+
   // 既に終了済み (負の残り日数) でも、まだ何も送っていなければ最も緊急なマイルストーンを返す
   // (呼び出し側は listActiveTrials で trialEndsAt > now のテナントしか渡さないため実運用では
   // 起こりにくいが、関数単体としての境界値を確認する)
