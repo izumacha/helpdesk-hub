@@ -13,11 +13,21 @@
 import { describe, beforeAll, afterAll, beforeEach, expect, it } from 'vitest';
 import { PrismaClient } from '@/generated/prisma';
 import { buildPrismaRepos } from '@/data/adapters/prisma';
+import type { Role } from '@/domain/types';
 
 const TENANT_A = 'tenant-a';
 const TENANT_B = 'tenant-b';
 
 const SHOULD_RUN = process.env.RUN_PRISMA_CONTRACT === '1';
+
+// このファイルのどのテストも passwordHash の値自体は検証対象にしないため、
+// email/name/role/tenantId だけを渡せば作れるテスト専用ヘルパー (§6 DRY)
+function createUser(
+  repos: ReturnType<typeof buildPrismaRepos>,
+  input: { email: string; name: string; role: Role; tenantId: string },
+) {
+  return repos.users.create({ passwordHash: 'x', ...input });
+}
 
 describe.runIf(SHOULD_RUN)('UserRepository (prisma adapter)', () => {
   let prisma: PrismaClient;
@@ -43,10 +53,9 @@ describe.runIf(SHOULD_RUN)('UserRepository (prisma adapter)', () => {
   // 新規ユーザーを作成できる
   it('新規ユーザーを作成できる', async () => {
     const repos = buildPrismaRepos(prisma);
-    const user = await repos.users.create({
+    const user = await createUser(repos, {
       email: 'taro@example.com',
       name: '山田太郎',
-      passwordHash: 'hashed',
       role: 'agent',
       tenantId: TENANT_A,
     });
@@ -57,18 +66,16 @@ describe.runIf(SHOULD_RUN)('UserRepository (prisma adapter)', () => {
   // email は @unique 制約でテナントを跨いでも重複を拒否する
   it('emailの重複はテナントを跨いでもエラーになる (@unique制約)', async () => {
     const repos = buildPrismaRepos(prisma);
-    await repos.users.create({
+    await createUser(repos, {
       email: 'dup@example.com',
       name: 'A',
-      passwordHash: 'x',
       role: 'requester',
       tenantId: TENANT_A,
     });
     await expect(
-      repos.users.create({
+      createUser(repos, {
         email: 'dup@example.com',
         name: 'B',
-        passwordHash: 'x',
         role: 'requester',
         tenantId: TENANT_B,
       }),
@@ -78,10 +85,9 @@ describe.runIf(SHOULD_RUN)('UserRepository (prisma adapter)', () => {
   // findById/findByEmail は意図的にテナント横断 (認証フローで tenantId 不明のまま引くため)
   it('findByIdとfindByEmailはテナントを問わず取得できる', async () => {
     const repos = buildPrismaRepos(prisma);
-    const user = await repos.users.create({
+    const user = await createUser(repos, {
       email: 'cross@example.com',
       name: 'クロス',
-      passwordHash: 'x',
       role: 'requester',
       tenantId: TENANT_B,
     });
@@ -94,24 +100,21 @@ describe.runIf(SHOULD_RUN)('UserRepository (prisma adapter)', () => {
   // listAgents/listAgentIds/listAgentEmails は agent+admin のみ、テナントスコープで返す
   it('listAgents系はagent/adminのみをテナントスコープで返す', async () => {
     const repos = buildPrismaRepos(prisma);
-    const agentA = await repos.users.create({
+    const agentA = await createUser(repos, {
       email: 'agent-a@example.com',
       name: 'エージェントA',
-      passwordHash: 'x',
       role: 'agent',
       tenantId: TENANT_A,
     });
-    await repos.users.create({
+    await createUser(repos, {
       email: 'req-a@example.com',
       name: '依頼者A',
-      passwordHash: 'x',
       role: 'requester',
       tenantId: TENANT_A,
     });
-    await repos.users.create({
+    await createUser(repos, {
       email: 'agent-b@example.com',
       name: 'エージェントB',
-      passwordHash: 'x',
       role: 'agent',
       tenantId: TENANT_B,
     });
@@ -126,17 +129,15 @@ describe.runIf(SHOULD_RUN)('UserRepository (prisma adapter)', () => {
   // listAdminEmails は admin のみを返す (agent は含まない)
   it('listAdminEmailsはadminのみを返す', async () => {
     const repos = buildPrismaRepos(prisma);
-    const admin = await repos.users.create({
+    const admin = await createUser(repos, {
       email: 'admin-a@example.com',
       name: '管理者A',
-      passwordHash: 'x',
       role: 'admin',
       tenantId: TENANT_A,
     });
-    await repos.users.create({
+    await createUser(repos, {
       email: 'agent-a2@example.com',
       name: 'エージェントA2',
-      passwordHash: 'x',
       role: 'agent',
       tenantId: TENANT_A,
     });
@@ -147,24 +148,21 @@ describe.runIf(SHOULD_RUN)('UserRepository (prisma adapter)', () => {
   // countByTenant は agent+admin のみ数え、requester は数えない (シート上限チェック用)
   it('countByTenantはrequesterを除いたスタッフ数を返す', async () => {
     const repos = buildPrismaRepos(prisma);
-    await repos.users.create({
+    await createUser(repos, {
       email: 'staff1@example.com',
       name: 'S1',
-      passwordHash: 'x',
       role: 'agent',
       tenantId: TENANT_A,
     });
-    await repos.users.create({
+    await createUser(repos, {
       email: 'staff2@example.com',
       name: 'S2',
-      passwordHash: 'x',
       role: 'admin',
       tenantId: TENANT_A,
     });
-    await repos.users.create({
+    await createUser(repos, {
       email: 'member1@example.com',
       name: 'M1',
-      passwordHash: 'x',
       role: 'requester',
       tenantId: TENANT_A,
     });
@@ -174,17 +172,15 @@ describe.runIf(SHOULD_RUN)('UserRepository (prisma adapter)', () => {
   // findSummariesByIds はテナントスコープで絞り込む (他テナントの ID は結果に含まれない)
   it('findSummariesByIdsは他テナントのIDを除外する', async () => {
     const repos = buildPrismaRepos(prisma);
-    const userA = await repos.users.create({
+    const userA = await createUser(repos, {
       email: 'sum-a@example.com',
       name: 'サマリA',
-      passwordHash: 'x',
       role: 'agent',
       tenantId: TENANT_A,
     });
-    const userB = await repos.users.create({
+    const userB = await createUser(repos, {
       email: 'sum-b@example.com',
       name: 'サマリB',
-      passwordHash: 'x',
       role: 'agent',
       tenantId: TENANT_B,
     });
@@ -195,10 +191,9 @@ describe.runIf(SHOULD_RUN)('UserRepository (prisma adapter)', () => {
   // linkLineUserByCode: 発行コードで連携が成立し、コードが消費される (条件付き updateMany の正常系)
   it('発行コードで連携が成立し、コードが消費される', async () => {
     const repos = buildPrismaRepos(prisma);
-    const user = await repos.users.create({
+    const user = await createUser(repos, {
       email: 'line1@example.com',
       name: 'LINE連携1',
-      passwordHash: 'x',
       role: 'requester',
       tenantId: TENANT_A,
     });
@@ -231,17 +226,15 @@ describe.runIf(SHOULD_RUN)('UserRepository (prisma adapter)', () => {
   // になる (事前判定をすり抜けた場合の P2002 捕捉を含む、本番 DB ならではの検証ポイント)
   it('既に連携済みのLINEユーザーIDへの連携はconflictになる', async () => {
     const repos = buildPrismaRepos(prisma);
-    const u1 = await repos.users.create({
+    const u1 = await createUser(repos, {
       email: 'line-u1@example.com',
       name: 'U1',
-      passwordHash: 'x',
       role: 'requester',
       tenantId: TENANT_A,
     });
-    const u2 = await repos.users.create({
+    const u2 = await createUser(repos, {
       email: 'line-u2@example.com',
       name: 'U2',
-      passwordHash: 'x',
       role: 'requester',
       tenantId: TENANT_A,
     });
@@ -275,10 +268,9 @@ describe.runIf(SHOULD_RUN)('UserRepository (prisma adapter)', () => {
   // findByLineUserId はテナントスコープで引く (別テナントには漏れない)
   it('findByLineUserIdは他テナントには漏れない', async () => {
     const repos = buildPrismaRepos(prisma);
-    const user = await repos.users.create({
+    const user = await createUser(repos, {
       email: 'line-scope@example.com',
       name: 'スコープ',
-      passwordHash: 'x',
       role: 'requester',
       tenantId: TENANT_A,
     });
@@ -299,10 +291,9 @@ describe.runIf(SHOULD_RUN)('UserRepository (prisma adapter)', () => {
   // unlinkLineUser は lineUserId と発行中コードをまとめてクリアする
   it('unlinkLineUserで連携を解除できる', async () => {
     const repos = buildPrismaRepos(prisma);
-    const user = await repos.users.create({
+    const user = await createUser(repos, {
       email: 'unlink@example.com',
       name: 'アンリンク',
-      passwordHash: 'x',
       role: 'requester',
       tenantId: TENANT_A,
     });

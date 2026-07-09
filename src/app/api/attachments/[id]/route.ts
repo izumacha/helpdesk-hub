@@ -16,9 +16,10 @@ type Params = { params: Promise<{ id: string }> };
 
 // 監査で発見したギャップ: 添付ファイル ID は cuid で推測困難だが、他の認可済みルートと
 // 一貫性を取り、総当たりダウンロード試行に対する多層防御としてレート制限を掛ける
-// (CLAUDE.md §9 DoS/リソース枯渇防止)。認証済みユーザー単位で、通常のブラウジング
-// (1 チケットに最大 5 枚の添付を連続表示する程度) を妨げない緩めの上限にする
-const ATTACHMENT_DOWNLOAD_RATE_LIMIT = { limit: 120, windowMs: 60_000 } as const;
+// (CLAUDE.md §9 DoS/リソース枯渇防止)。認証済みユーザー単位で、キューを次々に捌く
+// エージェントが短時間に多数のチケット (各数枚の添付) を連続閲覧する通常のブラウジングを
+// 妨げないよう、1 チケット分 (最大 5 枚) の閾値ではなくセッション単位で余裕を持たせる
+const ATTACHMENT_DOWNLOAD_RATE_LIMIT = { limit: 300, windowMs: 60_000 } as const;
 
 // GET /api/attachments/[id] : 認可されたユーザーに添付ファイルのバイト列を返すエンドポイント。
 // 必要な権限チェック:
