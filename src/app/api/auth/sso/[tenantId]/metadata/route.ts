@@ -17,12 +17,30 @@ import { isSsoAllowed } from '@/lib/plan-guard';
 import { resolveAppBaseUrl } from '@/lib/app-url';
 // SP メタデータ XML 生成 (純粋関数)
 import { buildSpMetadataXml } from '@/lib/saml';
+// Route Handler 向け共通レート制限ラッパー (login/acs の各 route.ts と共有)
+import { checkRouteRateLimit } from '@/lib/route-rate-limit';
+
+// 監査で発見したギャップ: 同じ SSO エンドポイント群のうち login/acs はレート制限済みで、
+// このエンドポイントには無かった。未認証で到達でき、リクエストごとに DB 参照
+// (tenants.findById) が発生するため、URL の tenantId を変え続けて連打されると DB 負荷に
+// つながる。tenantId は DB 検証前の値で攻撃者が自由に変更できるため、login/acs と同じ
+// 理由で固定キーの全体制限にする (テナント単位のキーだけでは変更するだけで回避できる)。
+const SSO_METADATA_RATE_LIMIT = { limit: 60, windowMs: 60_000 } as const;
 
 // 動的セグメント (tenantId) の型
 type Params = { params: Promise<{ tenantId: string }> };
 
 // GET ハンドラ: SP メタデータ XML を返す
 export async function GET(_req: Request, { params }: Params) {
+  // 固定キーの全体レート制限を適用する (DB 参照より前に置き、URL の tenantId を
+  // 変え続けることでのレート制限回避・DB 負荷増大を防ぐ)
+  const limitResponse = checkRouteRateLimit(
+    'sso-metadata:unauthenticated',
+    SSO_METADATA_RATE_LIMIT,
+    'しばらく時間をおいて再度お試しください',
+  );
+  if (limitResponse) return limitResponse;
+
   // URL の tenantId を取り出す
   const { tenantId } = await params;
   // テナントを取得する
