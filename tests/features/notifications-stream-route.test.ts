@@ -8,7 +8,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createMemoryContext, type Store } from '@/data/adapters/memory';
 import { createInMemoryNotificationBroadcaster } from '@/data/adapters/memory/notification-broadcaster.memory';
-import type { Repos, UnitOfWork } from '@/data/ports/unit-of-work';
+import type { Repos } from '@/data/ports/unit-of-work';
 import type { NotificationBroadcaster } from '@/data/ports/notification-broadcaster';
 import type { Session } from 'next-auth';
 
@@ -18,16 +18,12 @@ const REQUESTER_B = 'u-req-b';
 
 let store: Store;
 let repos: Repos;
-let uow: UnitOfWork;
 let notificationBroadcaster: NotificationBroadcaster;
 let mockSession: Session | null;
 
 vi.mock('@/data', () => ({
   get repos() {
     return repos;
-  },
-  get uow() {
-    return uow;
   },
   get notificationBroadcaster() {
     return notificationBroadcaster;
@@ -55,7 +51,6 @@ beforeEach(async () => {
   const ctx = createMemoryContext();
   store = ctx.store;
   repos = ctx.repos;
-  uow = ctx.uow;
   notificationBroadcaster = createInMemoryNotificationBroadcaster();
   mockSession = null;
   vi.resetModules();
@@ -91,17 +86,17 @@ describe('GET /api/notifications/stream', () => {
     expect(res.status).toBe(401);
   });
 
-  // 監査で発見したギャップ対応: ユーザー単位で 60 秒あたり 20 回を超える新規接続は 429 になる
+  // 監査で発見したギャップ対応: ユーザー単位で 60 秒あたり 60 回を超える新規接続は 429 になる
   it('returns 429 with Retry-After once the per-user connect rate limit is exceeded', async () => {
     mockSession = buildSession(REQUESTER_A);
     const { GET } = await import('@/app/api/notifications/stream/route');
-    // 上限 (20回) までは通常どおり 200 を返す
-    for (let i = 0; i < 20; i++) {
+    // 上限 (60回) までは通常どおり 200 を返す
+    for (let i = 0; i < 60; i++) {
       const res = await GET();
       expect(res.status).toBe(200);
       await closeStream(res);
     }
-    // 21 回目は 429 になる
+    // 61 回目は 429 になる
     const res = await GET();
     expect(res.status).toBe(429);
     expect(res.headers.get('Retry-After')).toEqual(expect.any(String));
@@ -112,7 +107,7 @@ describe('GET /api/notifications/stream', () => {
     const { GET } = await import('@/app/api/notifications/stream/route');
     // REQUESTER_A が上限まで接続する
     mockSession = buildSession(REQUESTER_A);
-    for (let i = 0; i < 20; i++) {
+    for (let i = 0; i < 60; i++) {
       const res = await GET();
       await closeStream(res);
     }
