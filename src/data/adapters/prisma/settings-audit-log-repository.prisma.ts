@@ -33,13 +33,21 @@ export function makeSettingsAuditLogRepo(db: PrismaLike): SettingsAuditLogReposi
       const rows = await db.settingsAuditLog.findMany({
         where: {
           tenantId: filter.tenantId, // テナントスコープ
-          // §4.2.1 フォローアップ: before が指定されていればそれより前の行だけに絞る (キーセット)
-          ...(filter.before && { createdAt: { lt: filter.before } }),
+          // §4.2.1 フォローアップ再訪: before が指定されていれば「それより前」または
+          // 「同時刻かつ id がカーソルより小さい」行だけに絞る (複合キーセットカーソル。
+          // ticket-history-repository.prisma.ts と同じ理由)
+          ...(filter.before && {
+            OR: [
+              { createdAt: { lt: filter.before.createdAt } },
+              { createdAt: filter.before.createdAt, id: { lt: filter.before.id } },
+            ],
+          }),
         },
         include: {
           actor: { select: { name: true } }, // 操作者氏名のみ取得
         },
-        orderBy: { createdAt: 'desc' }, // 新しい順に並べる
+        // 新しい順に並べる。createdAt が同値の行を安定した順序にするため id を第 2 キーにする
+        orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
         take: limit, // 件数上限
         skip: offset, // ページネーション
       });

@@ -155,4 +155,60 @@ describe.runIf(SHOULD_RUN)('TicketHistoryRepository (prisma adapter)', () => {
     const rows = await repos.history.findAllByTenant({ tenantId: TENANT_A, limit: 2 });
     expect(rows).toHaveLength(2);
   });
+
+  // §4.2.1 フォローアップ再訪 (2026-07-10): before の複合キーセットカーソル (createdAt, id) が
+  // 本番 Prisma アダプタの OR クエリ (createdAt < before.createdAt OR (createdAt = ... AND id < ...))
+  // として正しく動くことを検証する。createdAt が完全に同一の行があっても、id タイブレーカーにより
+  // ページ境界で行を取りこぼさないことが最重要 (tests/data/ticket-history-repository.memory.test.ts
+  // と同じ観点をメモリアダプタと同じ規約で本番 DB クエリでも固定する)
+  it('createdAtが同一の行はidで安定した順序に並び、beforeカーソルで取りこぼさない', async () => {
+    const sameInstant = new Date('2026-01-01T00:00:00.000Z');
+    // Prisma を直接使い、3 行を id 順不同・同一 createdAt で投入する
+    // (repos.history.record() は createdAt を DB 既定値 (now()) にしか設定できないため)
+    await prisma.ticketHistory.create({
+      data: {
+        id: 'hst_b',
+        ticketId: ticketA,
+        changedById: USER_A,
+        field: 'status',
+        oldValue: 'New',
+        newValue: 'Open',
+        createdAt: sameInstant,
+      },
+    });
+    await prisma.ticketHistory.create({
+      data: {
+        id: 'hst_a',
+        ticketId: ticketA,
+        changedById: USER_A,
+        field: 'priority',
+        oldValue: 'Low',
+        newValue: 'Medium',
+        createdAt: sameInstant,
+      },
+    });
+    await prisma.ticketHistory.create({
+      data: {
+        id: 'hst_c',
+        ticketId: ticketA,
+        changedById: USER_A,
+        field: 'assignee',
+        oldValue: null,
+        newValue: USER_A,
+        createdAt: sameInstant,
+      },
+    });
+
+    const repos = buildPrismaRepos(prisma);
+    // 1 ページ目: id 降順で 2 件だけ取得する (hst_c, hst_b が先頭 2 件になるはず)
+    const page1 = await repos.history.findAllByTenant({ tenantId: TENANT_A, limit: 2 });
+    expect(page1.map((r) => r.id)).toEqual(['hst_c', 'hst_b']);
+
+    // 2 ページ目: 1 ページ目の最後の行 (hst_b) をカーソルにすると、残りの hst_a だけが返る
+    const page2 = await repos.history.findAllByTenant({
+      tenantId: TENANT_A,
+      before: { createdAt: sameInstant, id: 'hst_b' },
+    });
+    expect(page2.map((r) => r.id)).toEqual(['hst_a']);
+  });
 });

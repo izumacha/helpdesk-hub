@@ -35,15 +35,25 @@ export function makeTicketHistoryRepo(db: PrismaLike): TicketHistoryRepository {
           // テナントスコープ: Ticket を通じて間接的に tenantId を絞り込む
           // TicketHistory に tenantId 列はないが、Ticket.tenantId でテナントを特定できる
           ticket: { tenantId: filter.tenantId },
-          // §4.2.1 フォローアップ: before が指定されていればそれより前の行だけに絞る (キーセット)
-          ...(filter.before && { createdAt: { lt: filter.before } }),
+          // §4.2.1 フォローアップ再訪: before が指定されていれば「それより前」または
+          // 「同時刻かつ id がカーソルより小さい」行だけに絞る (複合キーセットカーソル)。
+          // createdAt 単独の比較だと、同一ミリ秒に複数行が記録されたときページ境界で
+          // 一部の行が抜け落ちる (orderBy の id 第 2 キーと対にして使う)
+          ...(filter.before && {
+            OR: [
+              { createdAt: { lt: filter.before.createdAt } },
+              { createdAt: filter.before.createdAt, id: { lt: filter.before.id } },
+            ],
+          }),
         },
         // 表示に必要な関連レコードをまとめて取得 (N+1 回避)
         include: {
           ticket: { select: { title: true } }, // チケット件名のみ取得
           changedBy: { select: { name: true } }, // 変更者氏名のみ取得
         },
-        orderBy: { createdAt: 'desc' }, // 新しい順に並べる
+        // 新しい順に並べる。createdAt が同値の行を安定した順序にするため id を第 2 キーにする
+        // (§4.2.1 フォローアップ再訪: before カーソルの比較条件と対になる)
+        orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
         take: limit, // 件数上限
         skip: offset, // ページネーション
       });

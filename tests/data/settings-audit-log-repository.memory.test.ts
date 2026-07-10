@@ -100,28 +100,75 @@ describe('SettingsAuditLogRepository (memory)', () => {
   });
 
   // §4.2.1 フォローアップ (2026-07-10): before カーソルより後 (同時刻含む) のログは除外され、
-  // 監査ページの「さらに読み込む」キーセットページネーションが正しく古いログへ辿れることを確認する
+  // 監査ページの「さらに読み込む」キーセットページネーションが正しく古いログへ辿れることを確認する。
+  // record() は内部で new Date() を使い時刻を差し替えられないため、ストアへ直接行を投入して
+  // createdAt / id を完全に制御する
   it('beforeを指定するとその日時より前のログだけに絞り込める', async () => {
     seedUser(USER_A, TENANT_A, '管理者太郎');
-    await repos.settingsAudit.record({
+    const older = new Date('2026-01-01T00:00:00.000Z');
+    const newer = new Date('2026-01-01T00:00:01.000Z');
+    store.settingsAuditLogs.set('sal_older', {
+      id: 'sal_older',
       tenantId: TENANT_A,
       actorId: USER_A,
       action: 'line_config_update',
+      createdAt: older,
     });
-    // record() は内部で new Date() を使うため、テストからは時刻を差し替えられない。
-    // 実時間で間隔を空けて「カーソル」と「カーソルより後の記録」を作る
-    await new Promise((resolve) => setTimeout(resolve, 5));
-    const cursor = new Date();
-    await new Promise((resolve) => setTimeout(resolve, 5));
-    await repos.settingsAudit.record({
+    store.settingsAuditLogs.set('sal_newer', {
+      id: 'sal_newer',
       tenantId: TENANT_A,
       actorId: USER_A,
       action: 'line_config_delete',
+      createdAt: newer,
     });
 
+    // カーソルを新しい行と古い行のちょうど中間に置く
+    const cursor = { createdAt: new Date('2026-01-01T00:00:00.500Z'), id: 'irrelevant' };
     const logs = await repos.settingsAudit.findAllByTenant({ tenantId: TENANT_A, before: cursor });
     expect(logs).toHaveLength(1);
     expect(logs[0].action).toBe('line_config_update');
+  });
+
+  // /code-review ultra 指摘対応 (2026-07-10, §4.2.1 フォローアップ再訪): createdAt が完全に
+  // 同一の複数行があっても、id をタイブレーカーにしてページ境界で行を取りこぼさないことを検証する
+  // (バルク CSV インポート・同時多発の設定変更等で同一ミリ秒の行が発生しうる)
+  it('createdAtが同一の行はidで安定した順序に並び、カーソルで取りこぼさない', async () => {
+    seedUser(USER_A, TENANT_A, '管理者太郎');
+    const sameInstant = new Date('2026-01-01T00:00:00.000Z');
+    // 同一 createdAt を持つ 3 行を id 順不同で投入する
+    store.settingsAuditLogs.set('sal_b', {
+      id: 'sal_b',
+      tenantId: TENANT_A,
+      actorId: USER_A,
+      action: 'line_config_update',
+      createdAt: sameInstant,
+    });
+    store.settingsAuditLogs.set('sal_a', {
+      id: 'sal_a',
+      tenantId: TENANT_A,
+      actorId: USER_A,
+      action: 'sso_config_update',
+      createdAt: sameInstant,
+    });
+    store.settingsAuditLogs.set('sal_c', {
+      id: 'sal_c',
+      tenantId: TENANT_A,
+      actorId: USER_A,
+      action: 'sso_config_delete',
+      createdAt: sameInstant,
+    });
+
+    // 1 ページ目: id 降順で 2 件だけ取得する (sal_c, sal_b が先頭 2 件になるはず)
+    const page1 = await repos.settingsAudit.findAllByTenant({ tenantId: TENANT_A, limit: 2 });
+    expect(page1.map((l) => l.id)).toEqual(['sal_c', 'sal_b']);
+
+    // 2 ページ目: 1 ページ目の最後の行 (sal_b) をカーソルにすると、残りの sal_a だけが返る
+    // (createdAt 単独のカーソルだと同一ミリ秒の行が全て除外されて 0 件になってしまう回帰を防ぐ)
+    const page2 = await repos.settingsAudit.findAllByTenant({
+      tenantId: TENANT_A,
+      before: { createdAt: sameInstant, id: 'sal_b' },
+    });
+    expect(page2.map((l) => l.id)).toEqual(['sal_a']);
   });
 
   // §4.3 フォローアップ (2026-07-10): actorId=null (Stripe Webhook 起因の自動プランダウングレード

@@ -5,9 +5,9 @@ import type {
 } from '@/data/ports/ticket-history-repository';
 import type { TicketHistory } from '@/domain/types';
 import { nextId, type Store } from './store';
-// 監査ログ系リポジトリ共通のページネーション上限・クランプ処理 (settings-audit-log-repository と共有。
-// Prisma 実装と同一の値を使うことでテスト/本番の挙動を一致させる)
-import { resolveAuditLimit } from '../audit-pagination';
+// 監査ログ系リポジトリ共通のページネーション上限・クランプ処理・複合カーソル比較 (settings-audit-log-repository
+// と共有。Prisma 実装と同一の値・比較規則を使うことでテスト/本番の挙動を一致させる)
+import { resolveAuditLimit, isBeforeAuditCursor } from '../audit-pagination';
 
 // メモリストアを使った履歴リポジトリを生成する関数
 export function makeTicketHistoryRepo(store: Store): TicketHistoryRepository {
@@ -42,8 +42,9 @@ export function makeTicketHistoryRepo(store: Store): TicketHistoryRepository {
         const ticket = store.tickets.get(h.ticketId);
         // チケットが存在しない or 別テナントならスキップ (クロステナント漏洩防止)
         if (!ticket || ticket.tenantId !== filter.tenantId) continue;
-        // §4.2.1 フォローアップ: before が指定されていればそれ以降 (同時刻含む) の行はスキップ
-        if (filter.before && h.createdAt.getTime() >= filter.before.getTime()) continue;
+        // §4.2.1 フォローアップ再訪: before が指定されていればカーソルより前 (または同時刻かつ
+        // id がカーソルより小さい) 行だけを対象にする (複合キーセットカーソル)
+        if (filter.before && !isBeforeAuditCursor(h.createdAt, h.id, filter.before)) continue;
         // 変更者を取得する
         const user = store.users.get(h.changedById);
         // 変更者が存在しない場合は「不明」で代替する (データ不整合のフォールバック)
@@ -59,8 +60,9 @@ export function makeTicketHistoryRepo(store: Store): TicketHistoryRepository {
           createdAt: h.createdAt, // 変更日時
         });
       }
-      // 新しい順に並べてページネーションを適用する
-      rows.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+      // 新しい順に並べてページネーションを適用する。createdAt が同値の行を安定した順序にするため
+      // id を第 2 キーにする (Prisma アダプタの orderBy [{createdAt:'desc'},{id:'desc'}] と対にする)
+      rows.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime() || (a.id < b.id ? 1 : -1));
       return rows.slice(offset, offset + limit);
     },
   };

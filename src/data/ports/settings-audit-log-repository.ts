@@ -5,6 +5,8 @@
 
 // アクション種別の型
 import type { SettingsAuditAction } from '@/domain/types';
+// キーセットページネーション用カーソル型 (ticket-history-repository.ts と共有)
+import type { AuditPaginationCursor } from './audit-pagination';
 
 // 監査ログを 1 件記録する際に渡す入力値
 export interface RecordSettingsAuditInput {
@@ -31,8 +33,9 @@ export interface SettingsAuditLogListFilter {
   offset?: number; // スキップ件数 (ページネーション)
   // §4.2 フォローアップ再訪 (2026-07-10, §4.2.1): キーセットページネーション用カーソル。
   // ticket-history-repository.ts の HistoryListFilter.before と同じ理由・同じ規約を共有する
-  // (TicketHistory とマージして時系列表示するため offset だけでは正しくページ送りできない)
-  before?: Date;
+  // (TicketHistory とマージして時系列表示するため offset だけでは正しくページ送りできない。
+  // createdAt 単独だと同一ミリ秒の複数行を取りこぼすため id を第 2 キーに持つ複合カーソルにする)
+  before?: AuditPaginationCursor;
 }
 
 // 設定変更監査ログ書き込み用リポジトリの契約 (port)

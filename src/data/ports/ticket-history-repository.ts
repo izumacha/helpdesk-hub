@@ -1,5 +1,7 @@
 // 履歴項目の種類 (status/priority/assignee/escalation) を示す型をインポート
 import type { HistoryField } from '@/domain/types';
+// キーセットページネーション用カーソル型 (settings-audit-log-repository.ts と共有)
+import type { AuditPaginationCursor } from './audit-pagination';
 
 // 履歴 1 件を記録する際に渡す入力値
 export interface RecordHistoryInput {
@@ -28,12 +30,14 @@ export interface HistoryListFilter {
   tenantId: string; // テナントスコープ (必須。クロステナント漏洩防止)
   limit?: number; // 取得件数上限 (既定 100、最大 500)
   offset?: number; // スキップ件数 (ページネーション)
-  // §4.2 フォローアップ再訪 (2026-07-10, §4.2.1): この日時より前 (createdAt <) の行だけを対象にする
-  // キーセットページネーション用カーソル。監査ログ画面が「もっと見る」で古い履歴を辿るために使う。
-  // TicketHistory と SettingsAuditLog という 2 種類の時系列を日時でマージ表示する都合上、
-  // offset だけでは「マージ後の何件目か」を正しく指定できない (どちらの種類が何件ずつ含まれるかは
-  // ページごとに変わるため)。カーソルは両リポジトリで同じ createdAt 境界値を渡すことで解決する。
-  before?: Date;
+  // §4.2 フォローアップ再訪 (2026-07-10, §4.2.1): この日時より前 (または同時刻かつ id が
+  // カーソルより小さい) 行だけを対象にするキーセットページネーション用カーソル。
+  // 監査ログ画面が「もっと見る」で古い履歴を辿るために使う。TicketHistory と SettingsAuditLog
+  // という 2 種類の時系列を日時でマージ表示する都合上、offset だけでは「マージ後の何件目か」を
+  // 正しく指定できない (どちらの種類が何件ずつ含まれるかはページごとに変わるため)。
+  // カーソルは両リポジトリで同じ (createdAt, id) 境界値を渡すことで解決する
+  // (createdAt 単独だと同一ミリ秒の複数行をページ境界で取りこぼす。AuditPaginationCursor 参照)
+  before?: AuditPaginationCursor;
 }
 
 // チケット履歴書き込み用リポジトリの契約 (port)
