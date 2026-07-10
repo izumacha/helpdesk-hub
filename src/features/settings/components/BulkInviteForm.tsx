@@ -14,6 +14,8 @@ import {
 } from '@/features/settings/actions/create-invitations-bulk';
 // 一括招待 1 回あたりの上限件数 (画面の補足文言に使う)
 import { MAX_BULK_INVITE_ROWS } from '@/lib/invite';
+// CSV 入力の上限バイト数 (CsvImportForm.tsx と共有。過大なファイル選択をアップロード前に弾く)
+import { MAX_CSV_BYTES } from '@/lib/csv';
 // 権限型 (requester | agent | admin)
 import type { Role } from '@/domain/types';
 // 権限選択ラジオボタン群 (SingleInviteForm と共有する共通コンポーネント)
@@ -40,6 +42,16 @@ export function BulkInviteForm() {
     const file = e.target.files?.[0];
     // ファイルが選択されていなければ何もしない (キャンセル操作)
     if (!file) return;
+    // /code-review ultra 指摘対応 (2026-07-10): CsvImportForm.tsx と同じくファイルサイズが
+    // 上限を超える場合は読み込み自体をスキップする (巨大ファイルをブラウザ側で丸ごと
+    // 文字列化して state に積んでしまう DoS 的な挙動を、サーバー側検証を待たずに防ぐ)
+    if (file.size > MAX_CSV_BYTES) {
+      setError(`ファイルサイズが大きすぎます（上限 ${MAX_CSV_BYTES / 1024}KB）`);
+      if (fileInputRef.current) fileInputRef.current.value = '';
+      return;
+    }
+    // 直前のファイルサイズエラー表示が残っていればクリアする
+    setError(null);
     // ファイル内容をテキストとして読み込む (UTF-8 前提。Excel 由来の Shift_JIS は非対応。
     // 画面のヒント文言で「UTF-8 で保存」を案内し、文字化けの原因に気づけるようにしている)
     const text = await file.text();

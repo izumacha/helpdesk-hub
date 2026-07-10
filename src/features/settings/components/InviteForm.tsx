@@ -20,6 +20,16 @@ const INVITE_MODE_TABS: { key: InviteMode; label: string }[] = [
   { key: 'bulk', label: 'まとめて招待（CSV）' },
 ];
 
+// /code-review ultra 指摘対応 (2026-07-10): role="tab" のボタンと role="tabpanel" の
+// コンテンツを id / aria-controls / aria-labelledby で相互参照させる (WAI-ARIA Tabs パターン)。
+// タブごとに一意な id にするための命名ヘルパー
+function tabId(key: InviteMode): string {
+  return `invite-tab-${key}`;
+}
+function tabPanelId(key: InviteMode): string {
+  return `invite-tabpanel-${key}`;
+}
+
 // メンバー招待リンクを発行するフォーム。「個別に招待」(既存の 1 件発行) と
 // 「まとめて招待（CSV）」(§7.1 フォローアップで追加した一括発行) をタブで切り替える。
 export function InviteForm() {
@@ -36,9 +46,11 @@ export function InviteForm() {
           return (
             <button
               key={tab.key}
+              id={tabId(tab.key)}
               type="button"
               role="tab"
               aria-selected={isActive}
+              aria-controls={tabPanelId(tab.key)}
               onClick={() => setMode(tab.key)}
               className={`-mb-px border-b-2 px-3 py-2 text-sm font-medium transition ${
                 isActive
@@ -51,8 +63,10 @@ export function InviteForm() {
           );
         })}
       </div>
-      {/* 選択中のタブに応じたフォームを表示する */}
-      {mode === 'single' ? <SingleInviteForm /> : <BulkInviteForm />}
+      {/* 選択中のタブに応じたフォームを表示する (role="tabpanel" でタブとの対応関係を伝える) */}
+      <div id={tabPanelId(mode)} role="tabpanel" aria-labelledby={tabId(mode)}>
+        {mode === 'single' ? <SingleInviteForm /> : <BulkInviteForm />}
+      </div>
     </div>
   );
 }

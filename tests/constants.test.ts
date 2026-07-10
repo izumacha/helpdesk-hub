@@ -86,7 +86,14 @@ describe('getStatusLabelsForMode', () => {
     expect(getStatusLabelsForMode('lite')).toEqual(['未対応', '対応中', '完了']);
   });
 
-  it('Pro モードでは Pro の7ラベルを返す', () => {
-    expect(getStatusLabelsForMode('pro')).toEqual(Object.values(STATUS_LABELS));
+  // /code-review ultra 指摘対応 (2026-07-10): 「エスカレーション」は CSV インポートでは
+  // 別のエラーメッセージで拒否される非対応値のため、入力候補のヒントには含めない
+  // (6ラベル。Escalated を除いた Pro の状況ラベル一覧)
+  it('Pro モードではエスカレーションを除いた6ラベルを返す', () => {
+    const labels = getStatusLabelsForMode('pro');
+    expect(labels).toEqual(
+      Object.values(STATUS_LABELS).filter((label) => label !== STATUS_LABELS.Escalated),
+    );
+    expect(labels).not.toContain(STATUS_LABELS.Escalated);
   });
 });

@@ -63,7 +63,13 @@ export function resolveStatusFromLabel(label: string, mode: TenantMode): TicketS
 // エラーメッセージに「入力できる値」を具体的に示すために使う。
 export function getStatusLabelsForMode(mode: TenantMode): string[] {
   // mode に応じて Lite/Pro のラベル集合を選び、値 (日本語ラベル) の一覧を返す
-  return Object.values(mode === 'lite' ? LITE_STATUS_LABELS : STATUS_LABELS);
+  const labels = Object.values(mode === 'lite' ? LITE_STATUS_LABELS : STATUS_LABELS);
+  // /code-review ultra 指摘対応 (2026-07-10): 「エスカレーション」は resolveStatusFromLabel
+  // 自体は解決できるが、import-tickets.ts の validateImportRow が別のエラーメッセージで
+  // 明示的に拒否する CSV インポート非対応の値。この一覧をそのままエラーヒントに出すと、
+  // 「エスカレーションと指定してください」と案内した直後に矛盾する拒否メッセージを見せて
+  // しまうため、CSV インポートで実際に指定できる値だけに絞る
+  return labels.filter((label) => label !== STATUS_LABELS.Escalated);
 }
 
 // テナントの動作モード (lite | pro) の一覧。設定画面の選択肢生成や反復に使う
