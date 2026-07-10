@@ -52,6 +52,32 @@ export function buildTicketReplyLineMessage(input: {
     : text;
 }
 
+// ステータス変更を LINE のテキストメッセージ本文として組み立てる純粋関数 (副作用なし)。
+// §5.4 フォローアップ: これまで LINE push はコメント返信 (buildTicketReplyLineMessage) にしか
+// 実装されておらず、ステータス変更はメールのみだった。ギャップ分析表 (§2) の「通知」行が
+// 「メール通知」＆「LINE 通知」を通知の主軸とする方針だったため、同じ主要イベントである
+// ステータス変更にも LINE 通知を追加する。
+export function buildTicketStatusChangedLineMessage(input: {
+  ticketTitle: string; // 問い合わせの件名
+  ticketUrl: string; // チケット詳細ページの URL (アプリでの続きの確認用)
+  oldStatusLabel: string; // 変更前ステータスの日本語ラベル (mode-aware。呼び出し側で解決済み)
+  newStatusLabel: string; // 変更後ステータスの日本語ラベル (同上)
+}): string {
+  // LINE はプレーンテキストのみのため、改行区切りの簡潔な文面にする (メールの HTML 版に相当する装飾はない)
+  const text = [
+    `お問い合わせ「${input.ticketTitle}」の状況が更新されました。`,
+    `${input.oldStatusLabel} → ${input.newStatusLabel}`,
+    '',
+    '詳細はこちら:',
+    input.ticketUrl,
+  ].join('\n');
+
+  // LINE の文字数上限を超える場合は末尾を省略する (buildTicketReplyLineMessage と同じ安全策)
+  return text.length > LINE_TEXT_MESSAGE_MAX_LENGTH
+    ? `${text.slice(0, LINE_TEXT_MESSAGE_MAX_LENGTH - 1)}…`
+    : text;
+}
+
 // 指定した LINE ユーザーへテキストメッセージを push する。
 // accessToken が空文字ならこのテナントで LINE 連携が未設定 (または未対応プラン) であることを
 // 意味し、何もしない (任意機能のためサイレントにスキップする)。

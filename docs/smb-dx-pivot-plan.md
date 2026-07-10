@@ -361,6 +361,28 @@ src/data/adapters/inbound/line-bot.ts        # 新規 (Phase 2)
 
 を **テナント設定で 0〜複数選択**できるようにする。Lite モードの既定は `email` のみ。
 
+#### 5.4.1 フォローアップ（2026-07-10）: LINE 通知がコメント返信にしか実装されていなかった
+
+監査で発見したギャップ: `notify:line` は「担当者の返信が LINE に返る」（Phase 2）としてコメント
+返信（`POST /api/tickets/[id]/comments`）にのみ実装されており、`notify:email` と並ぶ通知チャネル
+として §5.4 が意図した「主要イベントを 0〜複数チャネルへ届ける」という設計にはなっていなかった。
+実際には、依頼者が LINE 連携済みでも、ステータス変更（「対応中になりました」「解決しました」）は
+メールでしか届かず、依頼者はアプリを開くかメールを見るまで気づけなかった。ステータス変更は
+コメント返信と並ぶ最も重要な進捗通知であり、このギャップは §2 のギャップ分析表「通知」行
+（メール通知 & LINE 通知を通知の主軸にする）の意図に反していた。
+
+- `src/lib/line-push.ts` に `buildTicketStatusChangedLineMessage`（純粋関数）を追加し、
+  既存の `buildTicketReplyLineMessage` と同じ「本文組み立て（純粋関数）/ 送る（副作用）」の
+  分離方針を踏襲した。
+- `src/features/tickets/actions/update-ticket.ts` の `updateTicketStatus` に
+  `sendStatusChangedLineToRequester` を追加し、`sendStatusChangedEmailToRequester` と同じ条件
+  （自分以外の起票者向け）で LINE push も送るようにした。判定順序
+  （依頼者の LINE 連携 → テナントの `TenantLineConfig` → プランゲート `isLineIntegrationAllowed`）
+  は `comments/route.ts` の `sendReplyLineToRequester` と揃え、プランダウングレード後に
+  `TenantLineConfig` の行が残っていても送信され続けない防御を同様に効かせた。
+- 優先度変更・担当者アサインへの LINE 通知拡張は本フォローアップのスコープ外として残す
+  (メールと並ぶ最重要イベントであるステータス変更を優先し、変更を 1 コミット 1 論理変更に保つ)。
+
 ### 5.5 認証
 
 - Auth.js v5 に **Email Provider（マジックリンク）** を追加。実装済み（`src/lib/magic-link.ts` 等。
