@@ -174,6 +174,23 @@ describe('createInvitationsBulk', () => {
     expect([...store.invitations.values()]).toHaveLength(0);
   });
 
+  // /code-review ultra 指摘対応 (2026-07-10): checkSeatAvailability の remaining は
+  // limit === -1 (無制限プラン) のとき Math.max(0, -1 - count) = 0 に落ちるバグがあり、
+  // Enterprise (無制限シート) テナントの agent 一括招待が常に「残り 0 枠」で拒否されていた。
+  // この回帰を検知するテスト。
+  it('Enterprise (無制限シート) では残り枠不足を理由に拒否されない', async () => {
+    seedTenant('enterprise');
+    const { createInvitationsBulk } =
+      await import('@/features/settings/actions/create-invitations-bulk');
+
+    const result = await createInvitationsBulk(
+      makeForm('agent', 'a@example.com\nb@example.com\nc@example.com'),
+    );
+
+    expect(result.results).toHaveLength(3);
+    expect(result.results.every((r) => r.ok)).toBe(true);
+  });
+
   // 残り枠内に収まるバッチは全件成功する (拒否が過剰にならないことの確認)
   it('シート残り枠内のバッチは全件成功する', async () => {
     seedTenant('standard');
@@ -196,9 +213,7 @@ describe('createInvitationsBulk', () => {
       await import('@/features/settings/actions/create-invitations-bulk');
 
     // 残り枠 2 名分ちょうどを要求する
-    const result = await createInvitationsBulk(
-      makeForm('agent', 'a@example.com\nb@example.com'),
-    );
+    const result = await createInvitationsBulk(makeForm('agent', 'a@example.com\nb@example.com'));
 
     expect(result.results).toHaveLength(2);
     expect(result.results.every((r) => r.ok)).toBe(true);

@@ -119,30 +119,35 @@ export async function createInvitationsBulk(
     }
   }
 
-  // 1 件ずつ順番に発行する (シート枠は上でバッチ全体分を検証済みのため、issueInvitation 側の
-  // 再チェックは skipSeatCheck でスキップし、行数分の無駄な SELECT を発生させない)。
-  const results: BulkInvitationRowResult[] = [];
-  for (const email of emails) {
-    try {
-      const { url } = await issueInvitation({
-        tenantId,
-        invitedById: session.user.id,
-        role,
-        email,
-        baseUrl,
-        skipSeatCheck: true,
-      });
-      results.push({ email, ok: true, url });
-    } catch (err) {
-      // 1 行の失敗 (トークン重複などの想定外エラー) で他の行の発行を止めない (部分成功を許容する)
-      results.push({
-        email,
-        ok: false,
-        error: err instanceof Error ? err.message : '招待の発行に失敗しました',
-      });
-    }
-  }
+  // 全行を並行して発行する (行ごとに独立した処理であり、DB 書き込み + メール送信を待つため
+  // 直列に await すると件数分だけ応答が遅くなる。シート枠は上でバッチ全体分を検証済みのため、
+  // issueInvitation 側の再チェックは skipSeatCheck でスキップし、行数分の無駄な SELECT も避ける)。
+  // /code-review ultra 指摘対応 (2026-07-10): 直列 for ループだと 30 件で応答が数秒〜十数秒に
+  // なりうるため、update-ticket.ts の Promise.all によるメール/LINE 並行送信と同じ方針に揃えた。
+  const results: BulkInvitationRowResult[] = await Promise.all(
+    emails.map(async (email): Promise<BulkInvitationRowResult> => {
+      try {
+        const { url } = await issueInvitation({
+          tenantId,
+          invitedById: session.user.id,
+          role,
+          email,
+          baseUrl,
+          skipSeatCheck: true,
+        });
+        return { email, ok: true, url };
+      } catch (err) {
+        // 1 行の失敗 (トークン重複などの想定外エラー) で他の行の発行を止めない (部分成功を許容する)
+        return {
+          email,
+          ok: false,
+          error: err instanceof Error ? err.message : '招待の発行に失敗しました',
+        };
+      }
+    }),
+  );
 
-  // 行ごとの結果一覧を返す (画面で成功/失敗を一覧表示する)
+  // 行ごとの結果一覧を返す (画面で成功/失敗を一覧表示する。Promise.all は入力順を保つため
+  // 行の順序は入力どおりに保たれる)
   return { results };
 }

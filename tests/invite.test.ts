@@ -45,6 +45,13 @@ describe('extractEmailCandidates', () => {
     ]);
   });
 
+  // /code-review ultra 指摘対応: ヘッダ判定は「先頭の空行を除いた最初の行」を見る。
+  // 単純な行番号 (lineIndex === 0) で判定すると、先頭に空行が挟まる貼り付け (コピペの
+  // 余白等) でヘッダ行を見逃し、ヘッダが候補として残ってバッチ全体のエラーになってしまう
+  it('先頭に空行があってもヘッダ行を除外する', () => {
+    expect(extractEmailCandidates('\n\nメール\na@example.com')).toEqual(['a@example.com']);
+  });
+
   // 大文字小文字を無視した重複は除去し、最初に現れた表記を残す
   it('大文字小文字を無視して重複を除去する', () => {
     const raw = 'a@example.com\nA@Example.com\na@example.com';

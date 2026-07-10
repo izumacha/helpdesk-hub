@@ -84,10 +84,11 @@ export function extractEmailCandidates(raw: string): string[] {
   const seenKeys = new Set<string>();
   // 抽出結果 (入力に現れた表記のまま。小文字化は呼び出し側のスキーマに任せる)
   const candidates: string[] = [];
+  // まだ最初の非空行に到達していないか (ヘッダ行判定に使う。単純な生の行番号だと、先頭に
+  // 空行が挟まっている入力でヘッダを見逃すため、「最初に中身のある行かどうか」で判定する)
+  let isFirstNonEmptyLine = true;
   // CRLF / LF どちらの改行にも対応して行に分割する
-  const lines = raw.split(/\r?\n/);
-  // CRLF / LF どちらの改行にも対応して行に分割し、入力全体での行番号 (0 始まり) も併せて取り出す
-  for (const [lineIndex, line] of lines.entries()) {
+  for (const line of raw.split(/\r?\n/)) {
     // 行頭・行末の空白を除去する
     const trimmedLine = line.trim();
     // 空行はスキップ
@@ -97,10 +98,13 @@ export function extractEmailCandidates(raw: string): string[] {
     const candidate = (firstField ?? '').trim();
     // 空フィールドはスキップ
     if (!candidate) continue;
-    // ヘッダ行らしき 1 語だけの行は、入力の 1 行目 (lineIndex === 0) のときだけ候補から除外する。
+    // ヘッダ行らしき 1 語だけの行は、入力の最初の非空行のときだけ候補から除外する。
     // /code-review ultra 指摘対応: 全行に適用すると、リストの途中に偶然「メール」とだけ書かれた
     // 行があった場合 (コピペミス等) にエラーも出さず静かに無視され、招待漏れに気づけなかった。
-    if (lineIndex === 0 && /^(email|メール|メールアドレス)$/i.test(candidate)) continue;
+    if (isFirstNonEmptyLine) {
+      isFirstNonEmptyLine = false;
+      if (/^(email|メール|メールアドレス)$/i.test(candidate)) continue;
+    }
     // 重複除去 (大文字小文字を無視して同一とみなす)
     const key = candidate.toLowerCase();
     if (seenKeys.has(key)) continue;

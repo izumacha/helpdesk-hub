@@ -149,13 +149,16 @@ export async function checkSeatAvailability(
   const currentUserCount = await repos.users.countByTenant(tenantId);
   // §7.2 Free trial 中なら Standard 相当のシート数を適用する
   const effectivePlan = resolveEffectivePlan(tenant.subscriptionPlan, tenant.trialEndsAt);
-  // このプランのスタッフ上限 (無制限プランは Infinity)
+  // このプランのスタッフ上限 (UI 表示用。無制限なら -1。getMonthlyTicketQuota 等と同じ規約)
   const limit = getUserLimit(effectivePlan);
-  // 上限判定結果とプランの上限値・残り枠数を返す (残り枠は 0 未満にならないようクランプする)
+  // 上限判定結果とプランの上限値・残り枠数を返す。
+  // limit === -1 (無制限プラン) は「-1 - 現在数」を計算すると常に負になり 0 にクランプされてしまう
+  // (getMonthlyTicketQuota/getAttachmentQuota と同じ規約からのずれ)。無制限プランは残り枠も
+  // Infinity として扱う (一括招待の事前見積もりが誤って「残り 0 枠」で全件拒否するのを防ぐ)
   return {
     available: !isUserLimitReached(effectivePlan, currentUserCount),
     limit,
-    remaining: Math.max(0, limit - currentUserCount),
+    remaining: limit === -1 ? Infinity : Math.max(0, limit - currentUserCount),
   };
 }
 
