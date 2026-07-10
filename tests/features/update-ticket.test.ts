@@ -806,3 +806,98 @@ describe('updateTicketStatus LINE 通知 (§5.4 フォローアップ)', () => {
     }
   });
 });
+
+// §5.4.2 フォローアップ (2026-07-10): §5.4.1 はステータス変更のみに LINE 通知を追加し、
+// 優先度変更・担当者アサインへの拡張は明示的にスコープ外としていた。優先度変更も依頼者向けの
+// 主要イベントであるため、同じ判定順序・文面規約で LINE 通知を追加した回帰防止テスト。
+describe('updateTicketPriority LINE 通知 (§5.4.2 フォローアップ)', () => {
+  // LINE 連携済み (lineUserId 設定済み + Pro プラン + TenantLineConfig あり) の依頼者には
+  // メールに加えて LINE Messaging API への push も行われる
+  it('LINE 連携済みの依頼者へ優先度変更を push する', async () => {
+    const { ticketId } = await seed();
+    // LINE 連携は Pro/Enterprise 限定機能 (§6.1 料金プラン) なので、seed() 既定の free から昇格させる
+    const tenant = store.tenants.get(TENANT)!;
+    store.tenants.set(TENANT, { ...tenant, subscriptionPlan: 'pro' as const });
+    // 依頼者を LINE 連携済みにする
+    const requester = store.users.get('u-req-1')!;
+    const lineUserId = `U${'a'.repeat(32)}`;
+    store.users.set('u-req-1', { ...requester, lineUserId });
+    // テナントの LINE 連携設定 (アクセストークン) をシードする
+    const now = new Date();
+    store.lineConfigs.set('line_cfg_priority_test', {
+      id: 'line_cfg_priority_test',
+      tenantId: TENANT,
+      channelSecret: 'irrelevant-for-push',
+      channelAccessToken: 'test-access-token',
+      botUserId: `U${'d'.repeat(32)}`,
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    // fetch をモックして実際の外部送信は行わない
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      type: 'basic',
+      text: () => Promise.resolve('{}'),
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    try {
+      const { updateTicketPriority } = await import('@/features/tickets/actions/update-ticket');
+      await updateTicketPriority(ticketId, 'High');
+
+      // LINE Messaging API へ 1 回 push されている
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      const [url, init] = fetchMock.mock.calls[0];
+      expect(url).toBe('https://api.line.me/v2/bot/message/push');
+      const body = JSON.parse(init.body);
+      expect(body.to).toBe(lineUserId);
+      // メールと同じく優先度ラベルの日本語変換 (Medium→High は「中」→「高」) を含む
+      expect(body.messages[0].text).toContain('中 → 高');
+    } finally {
+      // 他テストへ影響しないよう fetch のスタブを必ず元に戻す
+      vi.unstubAllGlobals();
+    }
+  });
+
+  // 回帰防止: LINE 連携は Pro/Enterprise 限定機能。TenantLineConfig 行が残っていても、
+  // テナントがダウングレード (または未アップグレード) であれば push しないこと
+  it('プランが LINE 連携を許可しない場合は push しない', async () => {
+    const { ticketId } = await seed();
+    // seed() 既定の free プランのまま (LINE 連携を許可しないプラン)
+    const requester = store.users.get('u-req-1')!;
+    const lineUserId = `U${'a'.repeat(32)}`;
+    store.users.set('u-req-1', { ...requester, lineUserId });
+    // テナントの LINE 連携設定自体は残っている状態を再現する (ダウングレード後も行は削除されない)
+    const now = new Date();
+    store.lineConfigs.set('line_cfg_priority_test_free', {
+      id: 'line_cfg_priority_test_free',
+      tenantId: TENANT,
+      channelSecret: 'irrelevant-for-push',
+      channelAccessToken: 'test-access-token',
+      botUserId: `U${'e'.repeat(32)}`,
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      type: 'basic',
+      text: () => Promise.resolve('{}'),
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    try {
+      const { updateTicketPriority } = await import('@/features/tickets/actions/update-ticket');
+      await updateTicketPriority(ticketId, 'High');
+
+      // Free プランでは LINE push が送られない (メールは通常通り届く)
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(sentEmails).toHaveLength(1);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+});

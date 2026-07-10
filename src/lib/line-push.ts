@@ -107,6 +107,32 @@ export function buildTicketStatusChangedLineMessage(input: {
     : text;
 }
 
+// 優先度変更を LINE のテキストメッセージ本文として組み立てる純粋関数 (副作用なし)。
+// §5.4.2 フォローアップ (2026-07-10): §5.4.1 は「優先度変更・担当者アサインへの LINE 通知拡張は
+// 本フォローアップのスコープ外」と明記して見送っていたが、ステータス変更と並ぶ主要イベントであり、
+// ギャップ分析表 (§2) の「メール通知＆LINE通知を主軸にする」方針を優先度変更にも揃える。
+// buildTicketStatusChangedLineMessage と同じ構成の文面にする
+export function buildTicketPriorityChangedLineMessage(input: {
+  ticketTitle: string; // 問い合わせの件名
+  ticketUrl: string; // チケット詳細ページの URL (アプリでの続きの確認用)
+  oldPriorityLabel: string; // 変更前優先度の日本語ラベル (呼び出し側で解決済み)
+  newPriorityLabel: string; // 変更後優先度の日本語ラベル (同上)
+}): string {
+  // LINE はプレーンテキストのみのため、改行区切りの簡潔な文面にする (メールの HTML 版に相当する装飾はない)
+  const text = [
+    `お問い合わせ「${input.ticketTitle}」の優先度が変更されました。`,
+    `${input.oldPriorityLabel} → ${input.newPriorityLabel}`,
+    '',
+    '詳細はこちら:',
+    input.ticketUrl,
+  ].join('\n');
+
+  // LINE の文字数上限を超える場合は末尾を省略する (buildTicketReplyLineMessage と同じ安全策)
+  return text.length > LINE_TEXT_MESSAGE_MAX_LENGTH
+    ? `${text.slice(0, LINE_TEXT_MESSAGE_MAX_LENGTH - 1)}…`
+    : text;
+}
+
 // 指定した LINE ユーザーへテキストメッセージを push する。
 // accessToken が空文字ならこのテナントで LINE 連携が未設定 (または未対応プラン) であることを
 // 意味し、何もしない (任意機能のためサイレントにスキップする)。

@@ -499,6 +499,24 @@ src/data/adapters/inbound/line-bot.ts        # 新規 (Phase 2)
   `Promise.all` で並行送信する」設計に揃えて解消した（従来は 2 チャネル分の送信が直列に
   積み上がっていた）。
 
+#### 5.4.2 フォローアップ（2026-07-10）: 優先度変更が LINE 通知の対象外のままだった
+
+監査で発見したギャップ: §5.4.1 は「優先度変更・担当者アサインへの LINE 通知拡張は本フォローアップの
+スコープ外として残す」と明記してステータス変更のみに対応していた。しかし優先度変更もステータス変更と
+並ぶ依頼者向けの主要イベントであり（`updateTicketPriority` は起票者への app 内通知・メール通知を
+発行する）、§2 のギャップ分析表「通知」行（メール通知 & LINE 通知を通知の主軸にする）の意図に対して、
+LINE 連携済みの依頼者だけが優先度変更に気づけないというギャップが残っていた。
+なお担当者アサインの通知先は依頼者ではなく社内エージェント（常にアプリにログインしている前提）
+であるため、依頼者向け通知チャネルである LINE 連携の対象には含めず、今回は優先度変更のみを対応した。
+
+- `src/lib/line-push.ts` に `buildTicketPriorityChangedLineMessage`（純粋関数）を追加し、
+  `buildTicketStatusChangedLineMessage` と同じ文面構成にした。
+- `src/features/tickets/actions/update-ticket.ts` の `updateTicketPriority` に、
+  §5.4.1 の `notifyRequesterOfStatusChange` と同じ「依頼者情報を 1 度だけ引き、メール/LINE を
+  `Promise.all` で並行送信する」設計 (`notifyRequesterOfPriorityChange`) を追加した。判定順序
+  （依頼者の LINE 連携 → テナントの `TenantLineConfig` → プランゲート）・失敗時の握り潰し方針は
+  ステータス変更と揃えている。
+
 ### 5.5 認証
 
 - Auth.js v5 に **Email Provider（マジックリンク）** を追加。実装済み（`src/lib/magic-link.ts` 等。
