@@ -1,0 +1,132 @@
+'use server';
+
+/**
+ * 招待リンクを複数メールアドレス (CSV アップロード or 貼り付け) からまとめて発行するサーバー
+ * アクション (管理者専用)。
+ *
+ * docs/smb-dx-pivot-plan.md §7.1 フォローアップ (2026-07-10): 「30 分で運用開始」シナリオの
+ * 手順3は「メンバーを招待（リンク貼り付け or CSV）」と明記していたが、実装は 1 件ずつしか
+ * 発行できず、「CSV」経路が存在しなかった不備を解消する。
+ *
+ * セキュリティ要点は createInvitation (単発発行) と同一:
+ *  - tenantId / invitedById はセッション由来のみを使う (クロステナント招待の防止)。
+ *  - 発行は admin のみ (assertAdminSession)。
+ *  - テナント単位の発行レート制限 (バッチ全体で 1 回、上限超過分もまとめて拒否する)。
+ */
+
+// データ層の Composition Root (Prisma 直叩きを避けるための入口)
+import { repos } from '@/data';
+// 現在のセッション (ログイン中ユーザー) を取得
+import { auth } from '@/lib/auth';
+// メール内リンクのベース URL を解決する共通ヘルパー
+import { resolveAppBaseUrl } from '@/lib/app-url';
+// 管理者権限を強制する共通アサーション
+import { assertAdminSession } from '@/lib/role';
+// 招待発行の共有ロジック (createInvitation と同じヘルパーを再利用する)
+import { issueInvitation } from './create-invitation';
+// 招待固有の定数 (レート制限) と、複数行テキストからメールアドレス候補を抽出する純粋関数
+import {
+  INVITE_RATE_LIMIT_MAX,
+  INVITE_RATE_LIMIT_WINDOW_MS,
+  extractEmailCandidates,
+} from '@/lib/invite';
+// 一括招待フォームの入力検証スキーマ (権限 / メールアドレス一覧)
+import { bulkInviteEmailsSchema, invitableRoleSchema } from '@/lib/validations/invite';
+// CSV 入力の上限バイト数 (ticket import と共有。過大な貼り付け/アップロードを弾く)
+import { MAX_CSV_BYTES } from '@/lib/csv';
+
+// 一括発行 1 行分の結果 (成功した URL、または失敗理由)
+export interface BulkInvitationRowResult {
+  email: string; // 対象のメールアドレス
+  ok: boolean; // 発行に成功したか
+  url?: string; // 成功時: 発行された招待リンク
+  error?: string; // 失敗時: ユーザー向け日本語エラーメッセージ
+}
+
+// createInvitationsBulk の戻り値型
+export interface CreateInvitationsBulkResult {
+  results: BulkInvitationRowResult[]; // 入力順の行ごとの結果一覧
+}
+
+// 招待リンクを複数メールアドレスからまとめて発行するサーバーアクション。フォーム (FormData) から呼ぶ。
+// FormData には role (単一) と emails (改行/CSV 区切りの複数行テキスト) を積む。
+export async function createInvitationsBulk(
+  formData: FormData,
+): Promise<CreateInvitationsBulkResult> {
+  // セッション取得
+  const session = await auth();
+  // 管理者権限を要求 (失敗時は日本語エラーを throw)
+  assertAdminSession(session);
+  // 参加先テナントはログイン中テナントのみ (クロステナント招待の防止)
+  const tenantId = session.user.tenantId;
+
+  // 権限 (バッチ全体で単一のロールを共有する。行ごとに変えたいケースは複数回に分けて実行する)
+  const roleParsed = invitableRoleSchema.safeParse(formData.get('role'));
+  if (!roleParsed.success) {
+    throw new Error(roleParsed.error.issues[0]?.message ?? '権限の指定が正しくありません');
+  }
+  const role = roleParsed.data;
+
+  // メールアドレス一覧の生テキストを取り出す (textarea 直接入力、または File.text() 読み込み結果)
+  const rawEmails = String(formData.get('emails') ?? '');
+  // 過大な入力はサイズ上限で弾く (ticket import と同じ上限を流用して一貫させる)
+  if (new TextEncoder().encode(rawEmails).length > MAX_CSV_BYTES) {
+    throw new Error('入力内容が大きすぎます');
+  }
+
+  // 複数行テキスト (1 行 1 メール、または CSV) からメールアドレス候補を抽出する
+  const candidates = extractEmailCandidates(rawEmails);
+  // 形式検証 + 件数上限チェック (1 件も無い / 上限超過はここでまとめて弾く)
+  const emailsParsed = bulkInviteEmailsSchema.safeParse(candidates);
+  if (!emailsParsed.success) {
+    throw new Error(
+      emailsParsed.error.issues[0]?.message ?? 'メールアドレスの指定が正しくありません',
+    );
+  }
+  const emails = emailsParsed.data;
+
+  // 期限切れ招待をベストエフォートで掃除 (createInvitation と同じ)
+  await repos.invitations.deleteExpired(new Date());
+
+  // テナント単位の発行レート制限をバッチ全体で 1 回だけ確認する。
+  // このバッチを発行すると上限を超える場合は、1 件も発行せずにまとめて拒否する
+  // (一部だけ発行されて admin が「どこまで届いたか」を判別しづらくなる事態を避ける)。
+  const since = new Date(Date.now() - INVITE_RATE_LIMIT_WINDOW_MS);
+  const recent = await repos.invitations.countRecentByTenant(tenantId, since);
+  if (recent + emails.length > INVITE_RATE_LIMIT_MAX) {
+    throw new Error(
+      `一度に発行できる招待は最大 ${INVITE_RATE_LIMIT_MAX} 件までです (直近1時間で既に ${recent} 件発行済み)。しばらく待ってから再度お試しください。`,
+    );
+  }
+
+  // 受諾ページ URL のベースをバッチ開始前に 1 回だけ解決する (createInvitation と同じ fail-fast 方針)
+  const baseUrl = resolveAppBaseUrl();
+
+  // 1 件ずつ順番に発行する。
+  // 並行実行 (Promise.all) すると checkSeatAvailability の「現在のユーザー数」判定が
+  // 同時多発でレースし、シート上限を超えて agent 権限の招待を発行してしまう恐れがあるため、
+  // あえて直列に await する (件数は MAX_BULK_INVITE_ROWS で上限を設けているため許容できる遅さ)。
+  const results: BulkInvitationRowResult[] = [];
+  for (const email of emails) {
+    try {
+      const { url } = await issueInvitation({
+        tenantId,
+        invitedById: session.user.id,
+        role,
+        email,
+        baseUrl,
+      });
+      results.push({ email, ok: true, url });
+    } catch (err) {
+      // 1 行の失敗 (シート上限到達など) で他の行の発行を止めない (部分成功を許容する)
+      results.push({
+        email,
+        ok: false,
+        error: err instanceof Error ? err.message : '招待の発行に失敗しました',
+      });
+    }
+  }
+
+  // 行ごとの結果一覧を返す (画面で成功/失敗を一覧表示する)
+  return { results };
+}

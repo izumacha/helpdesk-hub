@@ -11,6 +11,9 @@ export { generateMagicLinkToken as generateInviteToken } from '@/lib/magic-link'
 export { hashMagicLinkToken as hashInviteToken } from '@/lib/magic-link';
 // HTML 本文に外部由来文字列を差し込む前のエスケープ (共有ヘルパーを再利用)
 import { escapeHtml } from '@/lib/html-escape';
+// RFC 4180 準拠の CSV 行パーサ (ticket import と共有。1 行 1 メールアドレス、または
+// カンマ区切りの CSV としても解釈できるようにするため再利用する)
+import { parseCsvLine } from '@/lib/csv';
 
 // 招待リンクの既定 TTL (7 日)。ログイン用マジックリンク (15 分) より長めにする。
 // 招待は「あとで受け取って登録する」運用が前提のため、即時性は不要で猶予を持たせる。
@@ -20,6 +23,11 @@ export const INVITE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 export const INVITE_RATE_LIMIT_WINDOW_MS = 60 * 60 * 1000;
 // 上記の窓内で許容される発行回数の上限。
 export const INVITE_RATE_LIMIT_MAX = 30;
+
+// §7.1 フォローアップ (2026-07-10): 一括招待 1 回あたりに受け付けるメールアドレスの上限件数。
+// レート制限 (INVITE_RATE_LIMIT_MAX = 1時間30件) を単発で使い切らないよう同じ値に揃える
+// (バッチが大きすぎて他の招待発行を長時間ブロックしないようにする意図)
+export const MAX_BULK_INVITE_ROWS = INVITE_RATE_LIMIT_MAX;
 
 // 指定した baseUrl と生トークンから、招待される人が踏む受諾ページの URL を組み立てる
 // 例: buildInviteUrl('http://localhost:3000', 'xxx') -> 'http://localhost:3000/invite/xxx'
@@ -61,4 +69,39 @@ export function renderInviteEmail(input: {
   `.trim();
   // 3 点セットを返す
   return { subject, text, html };
+}
+
+// §7.1 フォローアップ (2026-07-10): 一括招待用に、複数行テキスト (1 行 1 メールアドレス、
+// または「メールアドレス,...」形式の CSV) からメールアドレス候補一覧を抽出する純粋関数。
+// docs/smb-dx-pivot-plan.md §7.1「メンバーを招待（リンク貼り付け or CSV）」の "CSV" 経路に対応する。
+// - 各行を CSV パーサに通し、1 列目 (または唯一の列) をメールアドレス候補として扱う
+// - 空行は無視する
+// - 「email」「メール」「メールアドレス」などヘッダ行らしき 1 語だけの行は除外する
+// - 大文字小文字を無視した重複は除去する (最初に現れた表記を残す)
+// 形式の妥当性 (メールとして正しいか) はここでは検証しない。呼び出し側が Zod スキーマで検証する。
+export function extractEmailCandidates(raw: string): string[] {
+  // 既に採用したメールアドレス (小文字化キー) を記録し、重複除去に使う
+  const seenKeys = new Set<string>();
+  // 抽出結果 (入力に現れた表記のまま。小文字化は呼び出し側のスキーマに任せる)
+  const candidates: string[] = [];
+  // CRLF / LF どちらの改行にも対応して行に分割する
+  for (const line of raw.split(/\r?\n/)) {
+    // 行頭・行末の空白を除去する
+    const trimmedLine = line.trim();
+    // 空行はスキップ
+    if (!trimmedLine) continue;
+    // CSV 行として解析し、1 列目 (メールアドレス列) を取り出す
+    const [firstField] = parseCsvLine(trimmedLine);
+    const candidate = (firstField ?? '').trim();
+    // 空フィールドはスキップ
+    if (!candidate) continue;
+    // ヘッダ行らしき 1 語だけの行は候補から除外する (誤って招待送信しないため)
+    if (/^(email|メール|メールアドレス)$/i.test(candidate)) continue;
+    // 重複除去 (大文字小文字を無視して同一とみなす)
+    const key = candidate.toLowerCase();
+    if (seenKeys.has(key)) continue;
+    seenKeys.add(key);
+    candidates.push(candidate);
+  }
+  return candidates;
 }

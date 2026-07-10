@@ -495,6 +495,30 @@ src/data/adapters/inbound/line-bot.ts        # 新規 (Phase 2)
 5. テスト送信して 1 件チケット化される瞬間を見せる（「動いた！」体験）
 6. スマホでログイン → 期限切れタブをホーム画面に追加
 
+#### 7.1.1 フォローアップ（2026-07-10）: メンバー招待の「CSV」経路が存在しなかった
+
+監査で発見したギャップ: 上記手順3は「メンバーを招待（**リンク貼り付け or CSV**）」と明記して
+いたが、実装 (`createInvitation` / `InviteForm.tsx`) は 1 回の呼び出しにつき 1 件の招待リンクしか
+発行できず、CSV による一括招待の経路が存在しなかった。§1.1 のペルソナ「町工場の事務員 田中さん」
+（従業員 30 名）がこの手順どおりに運用開始しようとすると、招待リンクを最大 30 回、
+1 件ずつ発行してコピー＆共有する必要があり、「30 分で運用開始」の前提を崩していた。
+
+- `src/features/settings/actions/create-invitation.ts` から「シート上限確認 → トークン発行 →
+  DB 保存 → 案内メール送信」の内部ロジックを `issueInvitation` として切り出し、新設した
+  `src/features/settings/actions/create-invitations-bulk.ts`（`createInvitationsBulk`）と
+  共有する（§6 DRY）。
+- 複数行テキスト（1 行 1 メール、または CSV の 1 列目）からメールアドレス候補を抽出する純粋関数
+  `extractEmailCandidates` を `src/lib/invite.ts` に追加。ticket import と同じ `parseCsvLine`
+  （`src/lib/csv.ts`）を再利用し、ヘッダ行の除外・大文字小文字を無視した重複除去を行う。
+  `MAX_BULK_INVITE_ROWS`（= `INVITE_RATE_LIMIT_MAX` と同値の 30 件）で 1 回のバッチ件数を制限する。
+- `src/features/settings/components/InviteForm.tsx` を「個別に招待」「まとめて招待（CSV）」の
+  タブ切替に変更し、新設の `BulkInviteForm.tsx` が CSV ファイル選択（`File.text()` で読み込み）
+  または直接貼り付けの両方を受け付ける。行ごとの発行結果（成功/失敗）を一覧表示し、
+  シート上限などで一部の行だけ失敗しても他の行の発行は止めない（部分成功を許容する）。
+- テナント単位のレート制限（1 時間 30 件）はバッチ全体で 1 回だけ確認し、バッチ発行後に上限を
+  超える場合は 1 件も発行せずに拒否する（一部だけ発行されて admin が「どこまで届いたか」を
+  判別しづらくなる事態を避けるため）。
+
 ### 7.2 「失敗しない撤退ポイント」
 
 - 30 日間の Free trial（Standard 相当）。延長は問い合わせベース。
