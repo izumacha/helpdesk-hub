@@ -88,8 +88,7 @@ export default async function DashboardPage({ searchParams }: Props) {
     // §4.1 で埋めたはずのギャップが Lite テナントに対しては残ってしまう)
     const locations = await repos.locations.listByTenant(tenantId);
     // URL の locationId は当該テナントの拠点一覧に実在するものだけを有効とみなす (Pro 側と同じ検証)
-    const selectedLocationId =
-      sp.locationId && locations.some((l) => l.id === sp.locationId) ? sp.locationId : undefined;
+    const selectedLocationId = resolveSelectedLocationId(sp.locationId, locations);
     return (
       <LiteDashboard
         isAgent={isAgent}
@@ -107,10 +106,7 @@ export default async function DashboardPage({ searchParams }: Props) {
   // Phase 4 多拠点: テナントの拠点一覧を取得する (フィルタ UI の表示要否・選択肢に使う)
   const locations = await repos.locations.listByTenant(tenantId);
   // URL の locationId は当該テナントの拠点一覧に実在するものだけを有効とみなす
-  // (存在しない ID や他テナントの ID をそのまま渡しても集計スコープは tenantId が守るため
-  // 危険はないが、UI 上「フィルタが効いていないのに URL だけ残る」事故を避けるため検証する)
-  const selectedLocationId =
-    sp.locationId && locations.some((l) => l.id === sp.locationId) ? sp.locationId : undefined;
+  const selectedLocationId = resolveSelectedLocationId(sp.locationId, locations);
 
   // ダッシュボード用 3 指標 + 品質メトリクスを並列取得する
   // - byStatus: 7 状態それぞれの件数 (依頼者なら自身のチケットに限定)
@@ -332,6 +328,19 @@ export default async function DashboardPage({ searchParams }: Props) {
       )}
     </div>
   );
+}
+
+// URL の locationId が当該テナントの拠点一覧に実在するものかどうかを検証する共有ヘルパー。
+// (存在しない ID や他テナントの ID をそのまま渡しても集計スコープは tenantId が守るため危険は
+// ないが、UI 上「フィルタが効いていないのに URL だけ残る」事故を避けるため検証する)
+// /code-review ultra 指摘対応: LocationFilterPills と同様、Pro/Lite 両ブランチで書き写して
+// いた同一のバリデーション三項演算子を 1 箇所に集約する (§6 DRY)。
+function resolveSelectedLocationId(
+  rawLocationId: string | undefined, // URL クエリの生値 (未指定なら undefined)
+  locations: Location[], // テナントの拠点一覧 (実在確認に使う)
+): string | undefined {
+  // 生値が空、または一覧に存在しない ID なら「フィルタなし」扱いにする
+  return rawLocationId && locations.some((l) => l.id === rawLocationId) ? rawLocationId : undefined;
 }
 
 // 拠点フィルタのピル UI (Pro / Lite 両ダッシュボードで共有)。

@@ -14,6 +14,12 @@
 import { postWebhook } from '@/lib/webhook-fetch';
 // LINE ユーザー ID の正規形式 (受信 Webhook と共有する単一の源)
 import { LINE_USER_ID_PATTERN } from '@/lib/line-link';
+// データ層の Composition Root (Prisma 直叩きを避ける入口)。resolveLineAccessToken が使う
+import { repos } from '@/data';
+// tenantId → Tenant のリクエストスコープ共有キャッシュ (同一リクエスト内の重複 SELECT を回避する)
+import { getCachedTenant } from '@/lib/tenant-cache';
+// LINE 連携がテナントのプランで許可されているか (Pro/Enterprise 限定機能)
+import { isLineIntegrationAllowed } from '@/lib/plan-guard';
 
 // LINE Messaging API の push エンドポイント (固定ホスト。ユーザー入力ではないため SSRF の懸念はない)
 const LINE_PUSH_API_URL = 'https://api.line.me/v2/bot/message/push';
@@ -23,6 +29,29 @@ const LINE_PUSH_TIMEOUT_MS = 5_000;
 
 // レスポンス本文の上限読み取りバイト数 (LINE のエラーレスポンスは小さい JSON なので十分)
 const LINE_PUSH_MAX_RESPONSE_BYTES = 1024;
+
+// テナントに対して LINE push が実行できるかを解決し、可能ならアクセストークンを返す共通ヘルパー。
+// 「テナントの TenantLineConfig を引く → プランが LINE 連携を許可するか確認する」という判定順序を
+// comments/route.ts (コメント返信) と update-ticket.ts (ステータス変更) の両方が必要とするため、
+// /code-review ultra 指摘対応: 個別に重複実装せずここに集約する
+// (§6 DRY: 2 箇所目の複製が生じた時点で共通化する方針)。
+// 依頼者側の LINE 連携有無 (lineUserId の null チェック) は呼び出し側が既に持っている情報なので、
+// ここでは扱わない (テナント側の判定だけに責務を絞る)。
+export async function resolveLineAccessToken(tenantId: string): Promise<string | null> {
+  // テナントの LINE 連携設定 (アクセストークン) を取得する。未設定ならこのテナントは
+  // LINE push を使わないので null を返す (Pro/Enterprise 限定機能の任意設定)
+  const lineConfig = await repos.lineConfigs.findByTenant(tenantId);
+  if (!lineConfig) return null;
+
+  // プランゲート: LINE 連携は Pro/Enterprise 限定機能 (§6.1 料金プラン)。プランダウングレード後も
+  // TenantLineConfig の行自体は削除されないため、存在チェックだけでは送信され続けてしまう。
+  // UI 非表示に頼らずここでもサーバー側で強制する (§9)。getCachedTenant はリクエストスコープで
+  // メモ化されるため、呼び出し元が同一リクエスト内で既に Tenant を取得済みなら追加の SELECT は発生しない
+  const tenant = await getCachedTenant(tenantId);
+  if (!tenant || !isLineIntegrationAllowed(tenant.subscriptionPlan)) return null;
+
+  return lineConfig.channelAccessToken;
+}
 
 // LINE のテキストメッセージ 1 件あたりの上限文字数 (Messaging API 仕様)。
 // コメント本文は最大 5000 文字 (commentBodySchema) でほぼ同じだが、件名・URL 等を足すと

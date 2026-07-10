@@ -45,10 +45,14 @@ import { getEmailSender } from '@/lib/email';
 import { resolveAppBaseUrl } from '@/lib/app-url';
 // Phase 4: Slack/Teams 外部通知ヘルパー (失敗してもチケット操作を止めない)
 import { sendOutboundNotification, notifyOutboundBestEffort } from '@/lib/outbound-notify';
-// §5.4 フォローアップ: ステータス変更を依頼者へ LINE で届けるための本文組み立て + push 送信ヘルパー
-import { buildTicketStatusChangedLineMessage, pushLineMessage } from '@/lib/line-push';
-// LINE 連携がテナントのプランで許可されているか (Pro/Enterprise 限定機能。ダウングレード後は false)
-import { isLineIntegrationAllowed } from '@/lib/plan-guard';
+// §5.4 フォローアップ: ステータス変更を依頼者へ LINE で届けるための本文組み立て + push 送信ヘルパー、
+// および「テナントで LINE push が使えるか (連携設定 + プランゲート)」を解決する共通ヘルパー
+// (/code-review ultra 指摘対応: comments/route.ts と重複していた判定ロジックをここへ集約)
+import {
+  buildTicketStatusChangedLineMessage,
+  pushLineMessage,
+  resolveLineAccessToken,
+} from '@/lib/line-push';
 
 // セッションがログイン済みであることを保証するアサーション関数
 function assertAuthenticatedUser(session: Session | null): asserts session is Session {
@@ -171,7 +175,7 @@ export async function updateTicketStatus(ticketId: string, newStatus: TicketStat
   // (トランザクションコミット後に呼ぶ。自己更新時は notifiedCreatorId が null なので配信しない)
   if (notifiedCreatorId) await broadcastUnreadCount(notifiedCreatorId, tenantId);
 
-  // Phase 2: ステータス変更を依頼者へメールで通知する (ベストエフォート)
+  // Phase 2 (メール) / §5.4 フォローアップ (LINE): ステータス変更を依頼者へ複数チャネルで通知する。
   // ticketSnapshot / oldStatus は uow.run クロージャ内で代入される let 変数。
   // TSC の CFA は async クロージャを跨いだ let 変数を never に絞り込んでしまうため、
   // 宣言型で明示アサーションして const に取り出してから null チェックを行う。
@@ -183,26 +187,11 @@ export async function updateTicketStatus(ticketId: string, newStatus: TicketStat
     oldStatusForMail !== null &&
     snapForMail.creatorId !== session.user.id
   ) {
-    // メール送信を別関数に切り出して try/catch で囲み、失敗してもチケット更新は巻き戻さない
-    await sendStatusChangedEmailToRequester({
-      ticketId,
-      ticketTitle: snapForMail.title,
-      creatorId: snapForMail.creatorId,
-      oldStatus: oldStatusForMail,
-      newStatus,
-      mode,
-    });
-  }
-
-  // §5.4 フォローアップ: ステータス変更を依頼者へ LINE でも届ける (これまでコメント返信にしか
-  // LINE push が実装されておらず、依頼者が LINE 連携済みでもステータス変更はメールでしか届かなかった)。
-  // メールと同じ条件 (スナップショットが揃い、自分以外の起票者) でのみ送る
-  if (
-    snapForMail !== null &&
-    oldStatusForMail !== null &&
-    snapForMail.creatorId !== session.user.id
-  ) {
-    await sendStatusChangedLineToRequester({
+    // /code-review ultra 指摘対応: メール/LINE を個別に await していると、依頼者ごとの
+    // 通知チャネル数だけ待ち時間が直列に積み上がる (comments/route.ts の
+    // notifyRequesterOfReply や本ファイルの updateTicketPriority は既に並行実行している)。
+    // 依頼者情報 (メール・LINE 連携状況) も 1 度だけ引き、各チャネルへ並行送信する
+    await notifyRequesterOfStatusChange({
       ticketId,
       ticketTitle: snapForMail.title,
       creatorId: snapForMail.creatorId,
@@ -645,23 +634,69 @@ export async function escalateTicket(ticketId: string, reason: string) {
 // Server Action の既定 1MB ボディ上限ではスマホ写真添付 (10MB × 5 枚) を扱えないため、
 // 同じロジックを Route Handler に置いて UI / API 双方の入口を一本化している。
 
+// ステータス変更を依頼者へ複数チャネル (メール・LINE) で届ける内部ヘルパー (ベストエフォート)。
+// /code-review ultra 指摘対応: メール用/LINE 用でそれぞれ個別に repos.users.findById(creatorId)
+// していた重複呼び出しを解消するため、comments/route.ts の notifyRequesterOfReply と同じ
+// 「依頼者情報を 1 度だけ引き、独立した I/O である各チャネルへ並行送信する」設計に揃える。
+async function notifyRequesterOfStatusChange(args: {
+  ticketId: string; // 対象チケット ID (URL 構築用)
+  ticketTitle: string; // チケット件名 (メール・LINE 本文用)
+  creatorId: string; // 起票者ユーザー ID (メールアドレス・LINE 連携状況の取得用)
+  oldStatus: TicketStatus; // 変更前のステータス (ラベル変換用)
+  newStatus: TicketStatus; // 変更後のステータス (ラベル変換用)
+  mode: import('@/domain/types').TenantMode; // テナント mode (ラベル変換で Lite/Pro を切替)
+  tenantId: string; // LINE 連携設定・プランの取得に使うテナントスコープ
+}): Promise<void> {
+  const { ticketId, ticketTitle, creatorId, oldStatus, newStatus, mode, tenantId } = args;
+  // 依頼者の連絡先 (メールアドレス・LINE 連携状況) をまとめて 1 度だけ引く。
+  // この呼び出し自体が失敗しても、コメント返信の notifyRequesterOfReply と同じ理由
+  // (一過性の DB 障害で「ステータスは更新できたのに 500 が返る」事態を避ける) で握り潰す
+  let creator: { email: string | null; lineUserId?: string | null } | null;
+  try {
+    creator = await repos.users.findById(creatorId);
+  } catch (err) {
+    console.error('[updateTicketStatus] 依頼者情報の取得に失敗しました', err);
+    return;
+  }
+  // 依頼者自体が見つからなければメール / LINE どちらも送りようがないので早期 return する
+  if (!creator) return;
+
+  await Promise.all([
+    sendStatusChangedEmailToRequester({
+      creator,
+      ticketId,
+      ticketTitle,
+      oldStatus,
+      newStatus,
+      mode,
+    }),
+    sendStatusChangedLineToRequester({
+      creator,
+      ticketId,
+      ticketTitle,
+      oldStatus,
+      newStatus,
+      mode,
+      tenantId,
+    }),
+  ]);
+}
+
 // ステータス変更を依頼者へメールで通知する内部ヘルパー (ベストエフォート / 副作用は send のみ)。
 // 例外は呼び出し側に伝播させず、ログに残して握り潰す: メール送信の失敗でチケット更新が
 // 「保存できたのに 500 が返る」事態を避けるため。
 async function sendStatusChangedEmailToRequester(args: {
+  creator: { email: string | null }; // notifyRequesterOfStatusChange が 1 度だけ引いた依頼者情報
   ticketId: string; // 対象チケット ID (URL 構築用)
   ticketTitle: string; // チケット件名 (メール本文用)
-  creatorId: string; // 起票者ユーザー ID (メールアドレス取得用)
   oldStatus: TicketStatus; // 変更前のステータス (ラベル変換用)
   newStatus: TicketStatus; // 変更後のステータス (ラベル変換用)
   mode: import('@/domain/types').TenantMode; // テナント mode (ラベル変換で Lite/Pro を切替)
 }): Promise<void> {
-  const { ticketId, ticketTitle, creatorId, oldStatus, newStatus, mode } = args;
+  const { creator, ticketId, ticketTitle, oldStatus, newStatus, mode } = args;
+  // メール未設定なら送りようがないのでスキップ
+  if (!creator.email) return;
   try {
-    // 起票者 (依頼者) のメールアドレスをユーザーリポジトリから引く
-    const creator = await repos.users.findById(creatorId);
-    // 依頼者が見つからない / メール未設定なら送りようがないのでスキップ
-    if (!creator?.email) return;
     // ベース URL を解決する (production で NEXTAUTH_URL 未設定なら throw → 下で握る)
     const baseUrl = resolveAppBaseUrl();
     // チケット詳細ページへの導線 URL を組み立てる
@@ -690,31 +725,25 @@ async function sendStatusChangedEmailToRequester(args: {
 // 同じ判定順序を踏襲する: 依頼者の連携 → テナントの連携設定 → プランゲート)。
 // 例外は呼び出し側に伝播させず、ログに残して握り潰す (メール送信ヘルパーと同じ方針)。
 async function sendStatusChangedLineToRequester(args: {
+  creator: { lineUserId?: string | null }; // notifyRequesterOfStatusChange が 1 度だけ引いた依頼者情報
   ticketId: string; // 対象チケット ID (URL 構築用)
   ticketTitle: string; // チケット件名 (LINE 本文用)
-  creatorId: string; // 起票者ユーザー ID (LINE 連携状況の取得用)
   oldStatus: TicketStatus; // 変更前のステータス (ラベル変換用)
   newStatus: TicketStatus; // 変更後のステータス (ラベル変換用)
   mode: import('@/domain/types').TenantMode; // テナント mode (ラベル変換で Lite/Pro を切替)
   tenantId: string; // LINE 連携設定・プランの取得に使うテナントスコープ
 }): Promise<void> {
-  const { ticketId, ticketTitle, creatorId, oldStatus, newStatus, mode, tenantId } = args;
+  const { creator, ticketId, ticketTitle, oldStatus, newStatus, mode, tenantId } = args;
+  // LINE 未連携なら送りようがないのでスキップ
+  if (!creator.lineUserId) return;
+
   try {
-    // 起票者 (依頼者) の LINE 連携状況をユーザーリポジトリから引く
-    const creator = await repos.users.findById(creatorId);
-    // LINE 未連携なら送りようがないのでスキップ
-    if (!creator?.lineUserId) return;
-
-    // テナントの LINE 連携設定 (アクセストークン) を引く。未設定ならこのテナントは
-    // LINE push を使わないので何もしない (Pro/Enterprise 限定機能の任意設定)
-    const lineConfig = await repos.lineConfigs.findByTenant(tenantId);
-    if (!lineConfig) return;
-
-    // プランゲート: LINE 連携は Pro/Enterprise 限定機能 (§6.1 料金プラン)。プランダウングレード後も
-    // TenantLineConfig の行自体は削除されないため、存在チェックだけでは送信され続けてしまう。
-    // UI 非表示に頼らずここでもサーバー側で強制する (§9)
-    const tenant = await repos.tenants.findById(tenantId);
-    if (!tenant || !isLineIntegrationAllowed(tenant.subscriptionPlan)) return;
+    // /code-review ultra 指摘対応: テナントの LINE 連携設定・プランゲートの判定は
+    // comments/route.ts の sendReplyLineToRequester と重複していたため、
+    // resolveLineAccessToken (src/lib/line-push.ts) へ共通化した
+    const accessToken = await resolveLineAccessToken(tenantId);
+    // null は「このテナントでは LINE push が使えない」を意味する (未設定 or プラン非対応)
+    if (!accessToken) return;
 
     // ベース URL を解決する (production で NEXTAUTH_URL 未設定なら throw → 下で握る)
     const baseUrl = resolveAppBaseUrl();
@@ -731,7 +760,7 @@ async function sendStatusChangedLineToRequester(args: {
       newStatusLabel,
     });
     // Messaging API へ push する (このテナント専用のアクセストークンを使う)
-    await pushLineMessage(lineConfig.channelAccessToken, creator.lineUserId, text);
+    await pushLineMessage(accessToken, creator.lineUserId, text);
   } catch (err) {
     // 送信失敗はサーバログに残すだけ (アプリ内通知・メールは既に成立している)
     console.error('[updateTicketStatus] 依頼者宛ステータス変更 LINE 送信に失敗しました', err);
