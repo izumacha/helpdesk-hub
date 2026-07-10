@@ -33,10 +33,12 @@ if (PAGE_LIMIT > AUDIT_MAX_LIMIT) {
 interface Props {
   searchParams: Promise<{
     // §4.2.1 フォローアップ (2026-07-10): 「さらに読み込む」用のキーセットページネーション
-    // カーソル。日時 (ISO 8601 文字列) と id の組で、同一ミリ秒に複数行があっても
-    // 一意にページ境界を指せるようにする (複合カーソル。before 単独の理由は
+    // カーソル。日時 (ISO 8601 文字列)・種別 (kind)・id の 3 要素で、同一ミリ秒に複数行が
+    // あっても、また TicketHistory / SettingsAuditLog という 2 つの独立したテーブルを
+    // マージ表示していても、一意にページ境界を指せるようにする (複合カーソル。
     // AuditPaginationCursor のコメント参照)
     before?: string;
+    beforeKind?: string;
     beforeId?: string;
   }>;
 }
@@ -46,14 +48,18 @@ interface Props {
 export default async function AuditPage({ searchParams }: Props) {
   // searchParams は Promise なので await して取り出す
   const sp = await searchParams;
-  // /code-review ultra 指摘対応 (2026-07-10, §4.2.1): before/beforeId は URL から来る外部入力
-  // なので、不正な値 (壊れた日付・片方だけ欠落した過去の無効なリンク等) が来ても落ちないよう
-  // 検証する (§9 入力検証: 壊れたデータでクラッシュさせずフォールバックする)。
-  // 両方揃っていなければ「カーソル無し (最新から表示)」に安全側でフォールバックする
+  // /code-review ultra 指摘対応 (2026-07-10, §4.2.1): before/beforeKind/beforeId は URL から来る
+  // 外部入力なので、不正な値 (壊れた日付・一部だけ欠落した過去の無効なリンク等) が来ても
+  // 落ちないよう検証する (§9 入力検証: 壊れたデータでクラッシュさせずフォールバックする)。
+  // 3 つ揃っていなければ「カーソル無し (最新から表示)」に安全側でフォールバックする
   const parsedBefore = sp.before ? new Date(sp.before) : null;
+  // beforeKind は 'ticket' | 'settings' のリテラル型に絞り込んでから使う。型推論だけに頼ると
+  // 後続の三項演算子の中で string に広がってしまうため、明示的に型注釈を付ける
+  const parsedBeforeKind: 'ticket' | 'settings' | null =
+    sp.beforeKind === 'ticket' || sp.beforeKind === 'settings' ? sp.beforeKind : null;
   const before =
-    parsedBefore && !isNaN(parsedBefore.getTime()) && sp.beforeId
-      ? { createdAt: parsedBefore, id: sp.beforeId }
+    parsedBefore && !isNaN(parsedBefore.getTime()) && parsedBeforeKind && sp.beforeId
+      ? { createdAt: parsedBefore, kind: parsedBeforeKind, id: sp.beforeId }
       : undefined;
 
   // セッション取得 (middleware で未ログインは弾かれている前提)
@@ -125,16 +131,29 @@ export default async function AuditPage({ searchParams }: Props) {
       }),
     ),
   ]
-    .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
+    .sort((a, b) => {
+      // 日時が異なればそれだけで決まる (新しい順)
+      const timeDiff = b.createdAt.getTime() - a.createdAt.getTime();
+      if (timeDiff !== 0) return timeDiff;
+      // /code-review ultra 再指摘対応: 同時刻のタイブレークを Array.sort の安定性 +
+      // 配列の連結順序 (ticketHistory を先に concat している) という暗黙の前提に頼ると、
+      // 将来の並び替え・データソース追加で静かに壊れる。findAllByTenant 側の
+      // isBeforeAuditCursor / Prisma クエリと同じ「ticket が settings より先」という
+      // 規約を、ここでも明示的なコードとして固定する (AuditPaginationCursor 参照)
+      if (a.kind !== b.kind) return a.kind === 'ticket' ? -1 : 1;
+      // 同 kind 内は id 降順 (各リポジトリの取得順・カーソル比較と一致させる)
+      return a.id < b.id ? 1 : -1;
+    })
     .slice(0, PAGE_LIMIT);
 
   // §4.2.1 フォローアップ (2026-07-10): このページがちょうど PAGE_LIMIT 件で埋まっていれば、
   // まだ表示していない古い行が残っている可能性があるとみなす (簡易ヒューリスティック。
   // ちょうど境界と一致するとリンクが 1 回余分に出るだけで実害は無い)。
   const hasMore = logs.length === PAGE_LIMIT;
-  // 「さらに読み込む」リンクの次カーソル = このページで最も古い行の (日時, id)。
-  // id も渡す複合カーソルにすることで、同一ミリ秒に複数行があってもページ境界で
-  // 取りこぼさない (AuditPaginationCursor のコメント参照)
+  // 「さらに読み込む」リンクの次カーソル = このページで最も古い行の (日時, kind, id)。
+  // kind まで含めた複合カーソルにすることで、同一ミリ秒に複数行があっても、また
+  // TicketHistory / SettingsAuditLog をまたいでもページ境界で取りこぼさない
+  // (AuditPaginationCursor のコメント参照)
   const oldestLog = hasMore ? logs[logs.length - 1] : null;
 
   return (
@@ -266,7 +285,7 @@ export default async function AuditPage({ searchParams }: Props) {
       {hasMore && oldestLog && (
         <div className="text-center">
           <a
-            href={`/audit?before=${encodeURIComponent(oldestLog.createdAt.toISOString())}&beforeId=${encodeURIComponent(oldestLog.id)}`}
+            href={`/audit?before=${encodeURIComponent(oldestLog.createdAt.toISOString())}&beforeKind=${encodeURIComponent(oldestLog.kind)}&beforeId=${encodeURIComponent(oldestLog.id)}`}
             className="inline-block rounded-lg border border-slate-200 bg-white px-4 py-2 text-sm font-medium text-slate-700 shadow-sm transition hover:border-teal-200 hover:text-teal-800"
           >
             さらに読み込む（{formatDateTimeJP(oldestLog.createdAt)} より前）

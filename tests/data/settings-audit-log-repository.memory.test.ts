@@ -123,7 +123,11 @@ describe('SettingsAuditLogRepository (memory)', () => {
     });
 
     // カーソルを新しい行と古い行のちょうど中間に置く
-    const cursor = { createdAt: new Date('2026-01-01T00:00:00.500Z'), id: 'irrelevant' };
+    const cursor = {
+      createdAt: new Date('2026-01-01T00:00:00.500Z'),
+      kind: 'settings' as const,
+      id: 'irrelevant',
+    };
     const logs = await repos.settingsAudit.findAllByTenant({ tenantId: TENANT_A, before: cursor });
     expect(logs).toHaveLength(1);
     expect(logs[0].action).toBe('line_config_update');
@@ -166,7 +170,7 @@ describe('SettingsAuditLogRepository (memory)', () => {
     // (createdAt 単独のカーソルだと同一ミリ秒の行が全て除外されて 0 件になってしまう回帰を防ぐ)
     const page2 = await repos.settingsAudit.findAllByTenant({
       tenantId: TENANT_A,
-      before: { createdAt: sameInstant, id: 'sal_b' },
+      before: { createdAt: sameInstant, kind: 'settings', id: 'sal_b' },
     });
     expect(page2.map((l) => l.id)).toEqual(['sal_a']);
   });

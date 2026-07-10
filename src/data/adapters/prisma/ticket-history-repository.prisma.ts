@@ -35,16 +35,25 @@ export function makeTicketHistoryRepo(db: PrismaLike): TicketHistoryRepository {
           // テナントスコープ: Ticket を通じて間接的に tenantId を絞り込む
           // TicketHistory に tenantId 列はないが、Ticket.tenantId でテナントを特定できる
           ticket: { tenantId: filter.tenantId },
-          // §4.2.1 フォローアップ再訪: before が指定されていれば「それより前」または
-          // 「同時刻かつ id がカーソルより小さい」行だけに絞る (複合キーセットカーソル)。
-          // createdAt 単独の比較だと、同一ミリ秒に複数行が記録されたときページ境界で
-          // 一部の行が抜け落ちる (orderBy の id 第 2 キーと対にして使う)
-          ...(filter.before && {
-            OR: [
-              { createdAt: { lt: filter.before.createdAt } },
-              { createdAt: filter.before.createdAt, id: { lt: filter.before.id } },
-            ],
-          }),
+          // §4.2.1 フォローアップ再訪: before が指定されていれば「それより前」の行だけに絞る
+          // (複合キーセットカーソル)。この TicketHistory 側は自身の kind が 'ticket'。
+          // /code-review ultra 再指摘対応: TicketHistory と SettingsAuditLog という由来の
+          // 異なる 2 テーブルをマージするため、cursor.kind によって条件を分ける必要がある
+          // (マージ順序は 'ticket' が 'settings' より先。AuditPaginationCursor のコメント参照)。
+          // - cursor.kind === 'ticket' (自分と同じテーブル由来): 通常どおり id をタイブレーカーにする
+          // - cursor.kind === 'settings' (別テーブル由来): cursor の createdAt 時点で 'ticket' 側は
+          //   マージ順序上すでに全件表示済みのはずなので、同時刻の行は id に関わらず全て除外する
+          //   (createdAt < before.createdAt だけで足りる。他方をそのまま流用すると、まだ
+          //   1 件も表示していない SettingsAuditLog 側の行を誤って除外する回帰が起きていた)
+          ...(filter.before &&
+            (filter.before.kind === 'ticket'
+              ? {
+                  OR: [
+                    { createdAt: { lt: filter.before.createdAt } },
+                    { createdAt: filter.before.createdAt, id: { lt: filter.before.id } },
+                  ],
+                }
+              : { createdAt: { lt: filter.before.createdAt } })),
         },
         // 表示に必要な関連レコードをまとめて取得 (N+1 回避)
         include: {

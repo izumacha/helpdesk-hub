@@ -351,6 +351,20 @@ Lite（既定モード。§3.1）の簡易ダッシュボード（`LiteDashboard
   `isBeforeAuditCursor`（`src/data/adapters/audit-pagination.ts`）で同じ比較規則に揃えた。
   Prisma 契約テスト（`tests/data/{ticket-history,settings-audit-log}-repository.contract.prisma.test.ts`）
   にも同一 createdAt の行を直接投入する回帰テストを追加した。
+- `/code-review ultra` 再指摘対応 (2026-07-10): 上記の `id` 複合カーソルにも一段深い不備が
+  あった。`TicketHistory` と `SettingsAuditLog` は id の採番元が別々のテーブルであり、
+  「まだ 1 件も表示していないテーブル」の id を、たまたま先に表示された側のテーブルの id と
+  直接大小比較すると、表示順序とは無関係な理由で誤って除外されうる（例: `TicketHistory` 側を
+  全件出し切った直後にカーソルを取った場合、`SettingsAuditLog` 側は 1 件も表示していないのに、
+  その id が偶然カーソルの `TicketHistory` の id より大きいというだけで次ページから漏れる）。
+  カーソルに `kind`（`'ticket' | 'settings'`。マージ順序は `'ticket'` が `'settings'` より必ず
+  先、という規約を新設）を追加した 3 要素カーソルに変更し、各リポジトリのクエリを
+  「カーソルが自テーブル由来なら通常どおり id で絞る／他テーブル由来なら、マージ順序上
+  『まだ表示していない』側は同時刻の行を id を無視して全件対象にし、『表示し終えた』側は
+  同時刻の行を全件除外する」の 3 分岐に変更した。`/audit` 画面のマージ用ソートも、配列の
+  連結順序と `Array.sort` の安定性という暗黙の前提に頼らず、`kind` による明示的なタイブレークに
+  書き換えた。純粋な比較ロジックは `tests/data/audit-pagination.test.ts` として単体テストを新設し、
+  Prisma 契約テストにもテーブルをまたぐ境界条件（cursor が他テーブル由来のケース）を追加した。
 
 #### 4.3 フォローアップ（2026-07-09）: 監査ログ対象の拡大（テナントモード・拠点・転送先アドレス）
 

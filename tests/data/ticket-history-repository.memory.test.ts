@@ -155,7 +155,11 @@ describe('TicketHistoryRepository (memory)', () => {
     });
 
     // カーソルを新しい行と古い行のちょうど中間に置く
-    const cursor = { createdAt: new Date('2026-01-01T00:00:00.500Z'), id: 'irrelevant' };
+    const cursor = {
+      createdAt: new Date('2026-01-01T00:00:00.500Z'),
+      kind: 'ticket' as const,
+      id: 'irrelevant',
+    };
     const rows = await repos.history.findAllByTenant({ tenantId: TENANT_A, before: cursor });
     expect(rows).toHaveLength(1);
     expect(rows[0].newValue).toBe('Open');
@@ -203,7 +207,7 @@ describe('TicketHistoryRepository (memory)', () => {
     // (createdAt 単独のカーソルだと同一ミリ秒の行が全て除外されて 0 件になってしまう回帰を防ぐ)
     const page2 = await repos.history.findAllByTenant({
       tenantId: TENANT_A,
-      before: { createdAt: sameInstant, id: 'hst_b' },
+      before: { createdAt: sameInstant, kind: 'ticket', id: 'hst_b' },
     });
     expect(page2.map((r) => r.id)).toEqual(['hst_a']);
   });

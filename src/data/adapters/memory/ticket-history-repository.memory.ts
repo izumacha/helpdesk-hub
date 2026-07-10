@@ -42,9 +42,12 @@ export function makeTicketHistoryRepo(store: Store): TicketHistoryRepository {
         const ticket = store.tickets.get(h.ticketId);
         // チケットが存在しない or 別テナントならスキップ (クロステナント漏洩防止)
         if (!ticket || ticket.tenantId !== filter.tenantId) continue;
-        // §4.2.1 フォローアップ再訪: before が指定されていればカーソルより前 (または同時刻かつ
-        // id がカーソルより小さい) 行だけを対象にする (複合キーセットカーソル)
-        if (filter.before && !isBeforeAuditCursor(h.createdAt, h.id, filter.before)) continue;
+        // §4.2.1 フォローアップ再訪: before が指定されていればカーソルより前の行だけを対象にする
+        // (複合キーセットカーソル。自分のテーブル種別 'ticket' を渡し、SettingsAuditLog との
+        // マージ境界でも正しく判定させる)
+        if (filter.before && !isBeforeAuditCursor(h.createdAt, 'ticket', h.id, filter.before)) {
+          continue;
+        }
         // 変更者を取得する
         const user = store.users.get(h.changedById);
         // 変更者が存在しない場合は「不明」で代替する (データ不整合のフォールバック)

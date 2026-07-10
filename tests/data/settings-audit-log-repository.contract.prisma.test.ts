@@ -185,8 +185,35 @@ describe.runIf(SHOULD_RUN)('SettingsAuditLogRepository (prisma adapter)', () => 
     // 2 ページ目: 1 ページ目の最後の行 (sal_b) をカーソルにすると、残りの sal_a だけが返る
     const page2 = await repos.settingsAudit.findAllByTenant({
       tenantId: TENANT_A,
-      before: { createdAt: sameInstant, id: 'sal_b' },
+      before: { createdAt: sameInstant, kind: 'settings', id: 'sal_b' },
     });
     expect(page2.map((l) => l.id)).toEqual(['sal_a']);
+  });
+
+  // /code-review ultra 再指摘対応: TicketHistory と SettingsAuditLog をまたぐ同時刻の取りこぼしが
+  // 無いことを、SettingsAuditLog 側のクエリ分岐 (cursor.kind === 'ticket' のとき id を無視して
+  // createdAt <= before で全件含める) を実際の DB クエリで検証する
+  it('カーソルがticket由来のとき、同時刻のSettingsAuditLog行は全て含まれる', async () => {
+    const sameInstant = new Date('2026-01-01T00:00:00.000Z');
+    await prisma.settingsAuditLog.create({
+      data: {
+        id: 'aaa_not_yet_shown',
+        tenantId: TENANT_A,
+        actorId: USER_A,
+        action: 'line_config_update',
+        createdAt: sameInstant,
+      },
+    });
+
+    const repos = buildPrismaRepos(prisma);
+    // ticket 由来のカーソル (id は SettingsAuditLog の id と無関係な値。あえて文字列として
+    // より大きい値にして、id 比較に頼ると誤って除外されることを確認する) を渡す。
+    // マージ順序上 'settings' はこの createdAt でまだ 1 件も表示されていないはずなので、
+    // id の大小に関わらずこの行が返るのが正しい
+    const page = await repos.settingsAudit.findAllByTenant({
+      tenantId: TENANT_A,
+      before: { createdAt: sameInstant, kind: 'ticket', id: 'zzz_ticket_row' },
+    });
+    expect(page.map((l) => l.id)).toEqual(['aaa_not_yet_shown']);
   });
 });

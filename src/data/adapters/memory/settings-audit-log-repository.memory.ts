@@ -39,9 +39,15 @@ export function makeSettingsAuditLogRepo(store: Store): SettingsAuditLogReposito
       for (const log of store.settingsAuditLogs.values()) {
         // 当該テナント以外は対象外 (クロステナント漏洩防止)
         if (log.tenantId !== filter.tenantId) continue;
-        // §4.2.1 フォローアップ再訪: before が指定されていればカーソルより前 (または同時刻かつ
-        // id がカーソルより小さい) 行だけを対象にする (複合キーセットカーソル)
-        if (filter.before && !isBeforeAuditCursor(log.createdAt, log.id, filter.before)) continue;
+        // §4.2.1 フォローアップ再訪: before が指定されていればカーソルより前の行だけを対象にする
+        // (複合キーセットカーソル。自分のテーブル種別 'settings' を渡し、TicketHistory との
+        // マージ境界でも正しく判定させる)
+        if (
+          filter.before &&
+          !isBeforeAuditCursor(log.createdAt, 'settings', log.id, filter.before)
+        ) {
+          continue;
+        }
         // 操作者を取得する (actorId が null ならシステム操作なので lookup 自体をスキップする)
         const user = log.actorId ? store.users.get(log.actorId) : undefined;
         rows.push({
