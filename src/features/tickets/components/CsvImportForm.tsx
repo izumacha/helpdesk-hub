@@ -33,6 +33,8 @@ type ColumnMapping = {
   期限日: string; // 「期限日」フィールドに対応する CSV 列名 (任意。空文字は使わない)
   優先度: string; // 「優先度」フィールドに対応する CSV 列名 (任意。空文字は使わない)
   拠点: string; // 「拠点」フィールドに対応する CSV 列名 (任意。空文字は使わない。Phase 4 多拠点)
+  // §3.1 フォローアップ (2026-07-10): 既存 Excel に混在する完了済み行をそのまま取り込めるようにする
+  状況: string; // 「状況」フィールドに対応する CSV 列名 (任意。空文字は使わない)
 };
 
 // プレビューテーブルの 1 行を表す型 (マッピング後の固定システムフィールド)
@@ -42,6 +44,7 @@ interface PreviewRow {
   期限日: string; // 期限日セル (省略可)
   優先度: string; // 優先度セル (省略可)
   拠点: string; // 拠点セル (省略可)
+  状況: string; // 状況セル (省略可。§3.1 フォローアップ)
 }
 
 // マッピング設定フォームに表示するシステムフィールドの定義一覧
@@ -52,6 +55,7 @@ const SYSTEM_FIELDS = [
   { key: '期限日' as const, label: '期限日（任意）', required: false }, // 任意フィールド
   { key: '優先度' as const, label: '優先度（任意）', required: false }, // 任意フィールド
   { key: '拠点' as const, label: '拠点（任意）', required: false }, // 任意フィールド
+  { key: '状況' as const, label: '状況（任意）', required: false }, // 任意フィールド (§3.1 フォローアップ)
 ] as const;
 
 // ウィザードのステップ情報一覧 (ステップインジケーターの表示に使う)
@@ -93,8 +97,9 @@ function applyMapping(csvText: string, mapping: ColumnMapping): string {
   const dueIdx = mapping.期限日 ? headers.indexOf(mapping.期限日) : -1; // 期限日列のインデックス
   const priIdx = mapping.優先度 ? headers.indexOf(mapping.優先度) : -1; // 優先度列のインデックス
   const locIdx = mapping.拠点 ? headers.indexOf(mapping.拠点) : -1; // 拠点列のインデックス
+  const statusIdx = mapping.状況 ? headers.indexOf(mapping.状況) : -1; // 状況列のインデックス (§3.1 フォローアップ)
   // 出力 CSV のヘッダ行: サーバーアクションが期待する固定列名で上書きする
-  const outLines: string[] = ['件名,内容,期限日,優先度,拠点'];
+  const outLines: string[] = ['件名,内容,期限日,優先度,拠点,状況'];
   // データ行を 1 行ずつ変換する
   for (const line of lines.slice(1)) {
     // RFC 4180 パーサで元のセル値を取り出す
@@ -113,6 +118,7 @@ function applyMapping(csvText: string, mapping: ColumnMapping): string {
       escapeCsvCell(dueIdx !== -1 ? (cells[dueIdx] ?? '') : ''), // 期限日セル
       escapeCsvCell(priIdx !== -1 ? (cells[priIdx] ?? '') : ''), // 優先度セル
       escapeCsvCell(locIdx !== -1 ? (cells[locIdx] ?? '') : ''), // 拠点セル
+      escapeCsvCell(statusIdx !== -1 ? (cells[statusIdx] ?? '') : ''), // 状況セル (§3.1 フォローアップ)
     ];
     // カンマ区切りで 1 行にして出力リストに追加する
     outLines.push(row.join(','));
@@ -134,13 +140,14 @@ function buildPreview(mappedCsvText: string): PreviewRow[] {
   return dataLines.map((line) => {
     // RFC 4180 パーサで各セルを取り出す
     const cells = parseCsvLine(line);
-    // applyMapping が出力した列順: 件名[0], 内容[1], 期限日[2], 優先度[3], 拠点[4]
+    // applyMapping が出力した列順: 件名[0], 内容[1], 期限日[2], 優先度[3], 拠点[4], 状況[5]
     return {
       件名: cells[0] ?? '', // 件名セル
       内容: cells[1] ?? '', // 内容セル
       期限日: cells[2] ?? '', // 期限日セル
       優先度: cells[3] ?? '', // 優先度セル
       拠点: cells[4] ?? '', // 拠点セル
+      状況: cells[5] ?? '', // 状況セル (§3.1 フォローアップ)
     };
   });
 }
@@ -157,6 +164,7 @@ function buildAutoMapping(headers: string[]): ColumnMapping {
     期限日: find('期限日'), // 「期限日」列が CSV にあれば自動対応
     優先度: find('優先度'), // 「優先度」列が CSV にあれば自動対応
     拠点: find('拠点'), // 「拠点」列が CSV にあれば自動対応 (自社の CSV エクスポート結果をそのまま再取込しやすくする)
+    状況: find('状況'), // 「状況」列が CSV にあれば自動対応 (§3.1 フォローアップ)
   };
 }
 
@@ -176,6 +184,7 @@ export function CsvImportForm(_props: CsvImportFormProps) {
     期限日: '',
     優先度: '',
     拠点: '',
+    状況: '',
   });
   // マッピングを適用した変換後の CSV テキスト (サーバーアクションへ渡す)
   const [mappedCsvText, setMappedCsvText] = useState<string | null>(null);
@@ -196,7 +205,7 @@ export function CsvImportForm(_props: CsvImportFormProps) {
     if (!file) {
       setCsvText(null); // 生 CSV テキストをクリア
       setCsvHeaders([]); // ヘッダ一覧をクリア
-      setMapping({ 件名: '', 内容: '', 期限日: '', 優先度: '', 拠点: '' }); // マッピングをクリア
+      setMapping({ 件名: '', 内容: '', 期限日: '', 優先度: '', 拠点: '', 状況: '' }); // マッピングをクリア
       setMappedCsvText(null); // 変換後 CSV をクリア
       setPreview([]); // プレビューをクリア
       setResult(null); // 結果をクリア
@@ -209,7 +218,7 @@ export function CsvImportForm(_props: CsvImportFormProps) {
       // エラーを表示しつつ、以前のファイルに由来する状態をすべてリセットして不整合を防ぐ
       setCsvText(null); // 前回の生 CSV テキストをクリア
       setCsvHeaders([]); // 前回のヘッダ一覧をクリア
-      setMapping({ 件名: '', 内容: '', 期限日: '', 優先度: '', 拠点: '' }); // 前回のマッピングをクリア
+      setMapping({ 件名: '', 内容: '', 期限日: '', 優先度: '', 拠点: '', 状況: '' }); // 前回のマッピングをクリア
       setMappedCsvText(null); // 前回の変換後 CSV をクリア
       setPreview([]); // 前回のプレビューをクリア
       setResult(null); // 前回の結果をクリア
@@ -434,6 +443,13 @@ export function CsvImportForm(_props: CsvImportFormProps) {
               <span className="font-medium">拠点:</span>{' '}
               設定画面で登録済みの拠点名と完全に一致する文字列を入力してください。一致しない場合はエラーになります。
             </p>
+            {/* 状況のフォーマット説明 (§3.1 フォローアップ): 既存 Excel の完了済み行をそのまま
+                取り込めるようにする列。画面に表示されているのと同じ日本語表記が必要なので、
+                Lite/Pro どちらの用語かは確認画面で実際の値を見て判断してもらう */}
+            <p>
+              <span className="font-medium">状況:</span> 画面に表示されている状況の日本語表記（例:
+              「未対応」「対応中」「完了」）と完全に一致する文字列を入力してください。空欄の場合は既定の状況で取り込まれます。一致しない場合はエラーになります。
+            </p>
           </div>
 
           {/* 件名未選択時などのマッピングエラー */}
@@ -499,6 +515,10 @@ export function CsvImportForm(_props: CsvImportFormProps) {
                     <th className="px-4 py-2 text-left text-xs font-semibold text-slate-500">
                       拠点
                     </th>
+                    {/* ヘッダセル: 状況 (§3.1 フォローアップ) */}
+                    <th className="px-4 py-2 text-left text-xs font-semibold text-slate-500">
+                      状況
+                    </th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
@@ -517,6 +537,8 @@ export function CsvImportForm(_props: CsvImportFormProps) {
                       <td className="px-4 py-2 text-slate-500">{row.優先度 || '中'}</td>
                       {/* 拠点セル: 未設定は「―」で表示する */}
                       <td className="px-4 py-2 text-slate-500">{row.拠点 || '―'}</td>
+                      {/* 状況セル: 未設定は「―」で表示する (既定の状況が反映される。§3.1 フォローアップ) */}
+                      <td className="px-4 py-2 text-slate-500">{row.状況 || '―'}</td>
                     </tr>
                   ))}
                 </tbody>

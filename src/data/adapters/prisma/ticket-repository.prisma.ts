@@ -229,6 +229,8 @@ export function makeTicketRepo(db: PrismaLike): TicketRepository {
           tenantId: input.tenantId, // テナント所属を必ず保存
           firstResponseDueAt: input.firstResponseDueAt ?? null,
           resolutionDueAt: input.resolutionDueAt ?? null,
+          // §3.1 フォローアップ: CSV インポートで完了系ステータス指定時の解決日時 (未指定なら null)
+          resolvedAt: input.resolvedAt ?? null,
         },
         include: REFS_INCLUDE, // 作成直後に関連情報も取得
       });

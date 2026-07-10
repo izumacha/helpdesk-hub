@@ -17,10 +17,15 @@ import { enforceRateLimit } from '@/lib/rate-limit';
 import { getCurrentTenantMode } from '@/lib/tenant';
 // RFC 4180 準拠の CSV パーサ と共有定数 (サーバー / クライアント共通実装)
 import { parseCsvLine, MAX_CSV_BYTES } from '@/lib/csv';
-// 優先度・ステータスのドメイン型
-import type { Priority, TicketStatus } from '@/domain/types';
-// モードに応じた初期ステータスを返す共通関数（メール取り込み・LINE 取り込みと同一ロジックを共有し DRY を維持する）
-import { initialStatusForMode } from '@/domain/ticket-status';
+// 優先度・ステータス・テナントモードのドメイン型
+import type { Priority, TicketStatus, TenantMode } from '@/domain/types';
+// モードに応じた初期ステータスを返す共通関数（メール取り込み・LINE 取り込みと同一ロジックを共有し DRY を維持する）。
+// getCompletionStatuses は §3.1 フォローアップ (2026-07-10) で追加: インポート時に「状況」列が
+// 完了系ステータスを指定していた場合、resolvedAt をインポート時刻で設定するために使う
+import { initialStatusForMode, getCompletionStatuses } from '@/domain/ticket-status';
+// §3.1 フォローアップ (2026-07-10): 「状況」列の日本語ラベルから TicketStatus を逆引きする
+// mode-aware ヘルパー (getStatusLabel の逆写像)、およびエラーメッセージ用の有効ラベル一覧取得
+import { resolveStatusFromLabel, getStatusLabelsForMode } from '@/lib/constants';
 // CSV インポート完了後に他エージェントへ未読カウントを即時配信するヘルパー
 import { broadcastUnreadCountToMany } from '@/features/notifications/notify';
 // Phase 4 課金: 月間チケット上限チェック (Web フォーム・メール/LINE 取り込みと共有)
@@ -80,6 +85,9 @@ interface ValidatedRow {
   priority: Priority; // 変換済みの優先度
   resolutionDueAt: Date | null; // 変換済みの期限日 (null = 未指定)
   locationName: string | null; // 拠点名 (trim 済み。null = 未指定。実在確認は DB を持つ呼び出し側で行う)
+  // §3.1 フォローアップ (2026-07-10): 変換済みのステータス (null = 列なし/セル空 → 呼び出し側が
+  // initialStatusForMode の既定値にフォールバックする)
+  status: TicketStatus | null;
 }
 
 // CSV ヘッダの列インデックス一覧
@@ -89,6 +97,7 @@ interface ColumnIndices {
   dueDateIndex: number; // 「期限日」列 (-1 = 未指定)
   priorityIndex: number; // 「優先度」列 (-1 = 未指定)
   locationIndex: number; // 「拠点」列 (-1 = 未指定)
+  statusIndex: number; // 「状況」列 (-1 = 未指定。§3.1 フォローアップ)
 }
 
 // CSV 1 行分のセルを受け取り、バリデーション・型変換を行う純粋関数。
@@ -97,9 +106,11 @@ interface ColumnIndices {
 function validateImportRow(
   cells: string[], // パース済みのセル配列
   indices: ColumnIndices, // 各列のインデックス
+  mode: TenantMode, // §3.1 フォローアップ: 「状況」列のラベル解釈を Lite/Pro で切り替えるために必要
 ): { ok: true; data: ValidatedRow } | { ok: false; message: string } {
   // 引数オブジェクトから各列インデックスを取り出す
-  const { titleIndex, bodyIndex, dueDateIndex, priorityIndex, locationIndex } = indices;
+  const { titleIndex, bodyIndex, dueDateIndex, priorityIndex, locationIndex, statusIndex } =
+    indices;
 
   // 件名セルを取り出す。前後の空白は除去する (空白だけのセルを「入力あり」と誤判定しないため)
   const titleRaw = (cells[titleIndex] ?? '').trim();
@@ -165,12 +176,34 @@ function validateImportRow(
   // 空文字 (列なし、またはセルが空) の場合は「未指定」として null にフォールバックする
   const locationName = locationRaw || null;
 
+  // §3.1 フォローアップ (2026-07-10): 「状況」セルをテナントの現在モードのラベルから TicketStatus へ
+  // 変換する。既存の問い合わせ管理 Excel には既に完了済みの行が大量に混ざっているのが実情で、
+  // これを解決できないと CSV インポートのたびに全件が「未対応/新規」になってしまい
+  // 「最短で Excel から卒業できる」という北極星指標 (§0) に反する。
+  const statusRaw = statusIndex !== -1 ? (cells[statusIndex] ?? '').trim() : '';
+  let status: TicketStatus | null = null;
+  if (statusRaw) {
+    // 現在のモードで表示されているラベルから逆引きする (getStatusLabel の逆写像)
+    const resolved = resolveStatusFromLabel(statusRaw, mode);
+    if (resolved === null) {
+      // 優先度と同じ方針: タイポや意図しない値を静かに既定値へフォールバックさせず、エラー行にする
+      const statusDisplay = statusRaw.length > 100 ? `${statusRaw.slice(0, 100)}…` : statusRaw;
+      // 入力できる値をエラーメッセージに具体的に示す (現在モードのラベル一覧)
+      const validLabels = getStatusLabelsForMode(mode).join('・');
+      return {
+        ok: false,
+        message: `状況の値が正しくありません: "${statusDisplay}"（${validLabels} のいずれかを指定してください）`,
+      };
+    }
+    status = resolved;
+  }
+
   // 全バリデーション通過: バリデーション済みのデータをそのまま返す。
   // CSV インジェクション対策は書き出し (エクスポート) 時に行う (AuditExportButton 等)。
   // インポート時に ' を付加すると DB に汚染データが保存され、チケット件名が '=formula のように表示される。
   return {
     ok: true,
-    data: { title: titleRaw, body: bodyRaw, priority, resolutionDueAt, locationName },
+    data: { title: titleRaw, body: bodyRaw, priority, resolutionDueAt, locationName, status },
   };
 }
 
@@ -245,6 +278,7 @@ export async function importTickets(csvText: string): Promise<ImportTicketsResul
   const dueDateIndex = headers.indexOf('期限日'); // 解決期限 (YYYY-MM-DD 形式)
   const priorityIndex = headers.indexOf('優先度'); // 高 / 中 / 低
   const locationIndex = headers.indexOf('拠点'); // 拠点名 (Phase 4 多拠点。一覧/詳細/CSVエクスポートと対称の項目)
+  const statusIndex = headers.indexOf('状況'); // 状況 (§3.1 フォローアップ。既存 Excel の完了済み行を再現する)
 
   // データ行 (2 行目以降) を取り出す
   const dataLines = nonEmptyLines.slice(1);
@@ -285,6 +319,7 @@ export async function importTickets(csvText: string): Promise<ImportTicketsResul
     dueDateIndex,
     priorityIndex,
     locationIndex,
+    statusIndex,
   };
 
   // データ行を 1 件ずつ処理する (部分成功を許可するため、1 件エラーでも他を続ける)
@@ -319,14 +354,27 @@ export async function importTickets(csvText: string): Promise<ImportTicketsResul
     }
 
     // セルのバリデーション・型変換を純粋関数に委譲する (責務の分離)
-    const validation = validateImportRow(cells, columnIndices);
+    const validation = validateImportRow(cells, columnIndices, mode);
     if (!validation.ok) {
       // バリデーションエラーを行番号付きで記録してこの行をスキップする
       errors.push({ row: rowNum, message: validation.message });
       continue;
     }
     // バリデーション通過: 検証済みデータを展開する
-    const { title, body, priority, resolutionDueAt, locationName } = validation.data;
+    const {
+      title,
+      body,
+      priority,
+      resolutionDueAt,
+      locationName,
+      status: parsedStatus,
+    } = validation.data;
+    // 「状況」列が未指定 (null) ならモードの既定初期ステータスにフォールバックする
+    const status = parsedStatus ?? initialStatus;
+    // §3.1 フォローアップ: 完了系ステータス (Lite: Closed/Resolved, Pro: Resolved) で起票する場合、
+    // インポート時刻を解決日時として記録する (update-ticket.ts の完了判定と同じ getCompletionStatuses
+    // を共有し、「完了」の定義が呼び出し箇所ごとに食い違わないようにする)
+    const resolvedAt = getCompletionStatuses(mode).includes(status) ? now : null;
 
     // 拠点名が指定されていれば ID に解決する。テナントに存在しない拠点名は
     // タイポや削除済み拠点の可能性が高く、無言で「拠点未設定」にすると
@@ -364,12 +412,15 @@ export async function importTickets(csvText: string): Promise<ImportTicketsResul
         categoryId: null, // CSV インポートではカテゴリ未指定 (後から設定できる)
         creatorId, // セッションのユーザーが起票者になる
         tenantId, // テナントスコープを必ず付与する (クロステナント防止)
-        status: initialStatus, // Lite: Open / Pro: New
+        // 「状況」列があればその値、無ければモードの既定初期ステータス (Lite: Open / Pro: New)
+        status,
         resolutionDueAt, // 期限日 (未指定なら null)
         // 初回応答期限: CSV に対応列が無いため、常に優先度ベースで自動算出する
         // (Web フォーム・メール・LINE 取り込みと同じ SLA ヘルパーを使う)
         firstResponseDueAt: calculateFirstResponseDueAt(priority, now),
         locationId, // 拠点 ID (「拠点」列があれば名前解決済み、無ければ null)
+        // §3.1 フォローアップ: 完了系ステータスで起票する場合はインポート時刻を解決日時にする
+        resolvedAt,
       });
       // 成功カウンタをインクリメント
       imported += 1;

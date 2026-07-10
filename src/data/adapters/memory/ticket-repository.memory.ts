@@ -263,7 +263,8 @@ export function makeTicketRepo(store: Store): TicketRepository {
         firstResponseDueAt: input.firstResponseDueAt ?? null,
         resolutionDueAt: input.resolutionDueAt ?? null,
         firstRespondedAt: null,
-        resolvedAt: null,
+        // §3.1 フォローアップ: CSV インポートで完了系ステータス指定時の解決日時 (未指定なら null)
+        resolvedAt: input.resolvedAt ?? null,
         escalatedAt: null,
         escalationReason: null,
         creatorId: input.creatorId,

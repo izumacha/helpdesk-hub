@@ -38,6 +38,30 @@ export function getStatusLabel(status: TicketStatus, mode: TenantMode): string {
   return STATUS_LABELS[status] ?? status;
 }
 
+// §3.1 フォローアップ (2026-07-10): getStatusLabel の逆写像。CSV インポート (import-tickets.ts) が
+// 「状況」列の日本語ラベル (例: Lite の「完了」、Pro の「解決済み」) から TicketStatus を
+// 逆引きするために使う。テナントの現在モードで表示されているラベル集合からのみ一致させる
+// (Lite テナントに Pro 専用ラベルを渡しても一致させない。表示と入力の対称性を保つ)。
+// 一致しなければ null を返し、呼び出し側が「値が不正」としてエラー行に記録する。
+export function resolveStatusFromLabel(label: string, mode: TenantMode): TicketStatus | null {
+  // mode に応じて検索対象のラベル集合を選ぶ (getStatusLabel と同じ mode-aware な切替)
+  const labels: Record<string, string> = mode === 'lite' ? LITE_STATUS_LABELS : STATUS_LABELS;
+  // ラベル集合を順に見て、値が一致するキー (TicketStatus) を返す
+  for (const [status, statusLabel] of Object.entries(labels)) {
+    if (statusLabel === label) return status as TicketStatus;
+  }
+  // 一致するラベルが無ければ null (未知の値)
+  return null;
+}
+
+// §3.1 フォローアップ (2026-07-10): 指定モードで有効な状況ラベル一覧を返す。
+// CSV インポートで「状況」列の値が resolveStatusFromLabel で解決できなかったとき、
+// エラーメッセージに「入力できる値」を具体的に示すために使う。
+export function getStatusLabelsForMode(mode: TenantMode): string[] {
+  // mode に応じて Lite/Pro のラベル集合を選び、値 (日本語ラベル) の一覧を返す
+  return Object.values(mode === 'lite' ? LITE_STATUS_LABELS : STATUS_LABELS);
+}
+
 // テナントの動作モード (lite | pro) の一覧。設定画面の選択肢生成や反復に使う
 // (順序は UI の表示順。lite を既定として先頭に置く)
 export const TENANT_MODES: readonly TenantMode[] = ['lite', 'pro'];
