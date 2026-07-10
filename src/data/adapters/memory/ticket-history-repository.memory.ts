@@ -42,6 +42,8 @@ export function makeTicketHistoryRepo(store: Store): TicketHistoryRepository {
         const ticket = store.tickets.get(h.ticketId);
         // チケットが存在しない or 別テナントならスキップ (クロステナント漏洩防止)
         if (!ticket || ticket.tenantId !== filter.tenantId) continue;
+        // §4.2.1 フォローアップ: before が指定されていればそれ以降 (同時刻含む) の行はスキップ
+        if (filter.before && h.createdAt.getTime() >= filter.before.getTime()) continue;
         // 変更者を取得する
         const user = store.users.get(h.changedById);
         // 変更者が存在しない場合は「不明」で代替する (データ不整合のフォールバック)

@@ -29,6 +29,10 @@ export interface SettingsAuditLogListFilter {
   tenantId: string; // テナントスコープ (必須。クロステナント漏洩防止)
   limit?: number; // 取得件数上限 (既定 100、最大 500)
   offset?: number; // スキップ件数 (ページネーション)
+  // §4.2 フォローアップ再訪 (2026-07-10, §4.2.1): キーセットページネーション用カーソル。
+  // ticket-history-repository.ts の HistoryListFilter.before と同じ理由・同じ規約を共有する
+  // (TicketHistory とマージして時系列表示するため offset だけでは正しくページ送りできない)
+  before?: Date;
 }
 
 // 設定変更監査ログ書き込み用リポジトリの契約 (port)

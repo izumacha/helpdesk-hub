@@ -31,7 +31,11 @@ export function makeSettingsAuditLogRepo(db: PrismaLike): SettingsAuditLogReposi
 
       // 操作者 (氏名) を eager-load して N+1 を回避する
       const rows = await db.settingsAuditLog.findMany({
-        where: { tenantId: filter.tenantId }, // テナントスコープ
+        where: {
+          tenantId: filter.tenantId, // テナントスコープ
+          // §4.2.1 フォローアップ: before が指定されていればそれより前の行だけに絞る (キーセット)
+          ...(filter.before && { createdAt: { lt: filter.before } }),
+        },
         include: {
           actor: { select: { name: true } }, // 操作者氏名のみ取得
         },

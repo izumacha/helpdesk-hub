@@ -35,6 +35,8 @@ export function makeTicketHistoryRepo(db: PrismaLike): TicketHistoryRepository {
           // テナントスコープ: Ticket を通じて間接的に tenantId を絞り込む
           // TicketHistory に tenantId 列はないが、Ticket.tenantId でテナントを特定できる
           ticket: { tenantId: filter.tenantId },
+          // §4.2.1 フォローアップ: before が指定されていればそれより前の行だけに絞る (キーセット)
+          ...(filter.before && { createdAt: { lt: filter.before } }),
         },
         // 表示に必要な関連レコードをまとめて取得 (N+1 回避)
         include: {

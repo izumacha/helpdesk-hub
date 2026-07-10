@@ -127,6 +127,35 @@ describe('TicketHistoryRepository (memory)', () => {
     expect(rows[0].changedByName).toBe('不明');
   });
 
+  // §4.2.1 フォローアップ (2026-07-10): before カーソルより後 (同時刻含む) の履歴は除外され、
+  // 監査ページの「さらに読み込む」キーセットページネーションが正しく古い履歴へ辿れることを確認する
+  it('beforeを指定するとその日時より前の履歴だけに絞り込める', async () => {
+    const ticket = await seedTicket(TENANT_A, USER_A, 'チケット');
+    await repos.history.record({
+      ticketId: ticket.id,
+      changedById: USER_A,
+      field: 'status',
+      oldValue: 'New',
+      newValue: 'Open',
+    });
+    // record() は内部で new Date() を使うため、テストからは時刻を差し替えられない。
+    // 実時間で間隔を空けて「カーソル」と「カーソルより後の記録」を作る
+    await new Promise((r) => setTimeout(r, 5));
+    const cursor = new Date();
+    await new Promise((r) => setTimeout(r, 5));
+    await repos.history.record({
+      ticketId: ticket.id,
+      changedById: USER_A,
+      field: 'status',
+      oldValue: 'Open',
+      newValue: 'InProgress',
+    });
+
+    const rows = await repos.history.findAllByTenant({ tenantId: TENANT_A, before: cursor });
+    expect(rows).toHaveLength(1);
+    expect(rows[0].newValue).toBe('Open');
+  });
+
   // findAllByTenant: limit で件数を絞り込める (§8 一覧取得は必ず上限を持たせる)
   it('limitで件数を絞り込める', async () => {
     const ticket = await seedTicket(TENANT_A, USER_A, 'チケット');

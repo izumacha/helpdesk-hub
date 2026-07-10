@@ -39,6 +39,8 @@ export function makeSettingsAuditLogRepo(store: Store): SettingsAuditLogReposito
       for (const log of store.settingsAuditLogs.values()) {
         // 当該テナント以外は対象外 (クロステナント漏洩防止)
         if (log.tenantId !== filter.tenantId) continue;
+        // §4.2.1 フォローアップ: before が指定されていればそれ以降 (同時刻含む) の行はスキップ
+        if (filter.before && log.createdAt.getTime() >= filter.before.getTime()) continue;
         // 操作者を取得する (actorId が null ならシステム操作なので lookup 自体をスキップする)
         const user = log.actorId ? store.users.get(log.actorId) : undefined;
         rows.push({

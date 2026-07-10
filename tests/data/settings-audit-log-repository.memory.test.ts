@@ -99,6 +99,31 @@ describe('SettingsAuditLogRepository (memory)', () => {
     expect(logs[0].actorName).toBe('不明');
   });
 
+  // §4.2.1 フォローアップ (2026-07-10): before カーソルより後 (同時刻含む) のログは除外され、
+  // 監査ページの「さらに読み込む」キーセットページネーションが正しく古いログへ辿れることを確認する
+  it('beforeを指定するとその日時より前のログだけに絞り込める', async () => {
+    seedUser(USER_A, TENANT_A, '管理者太郎');
+    await repos.settingsAudit.record({
+      tenantId: TENANT_A,
+      actorId: USER_A,
+      action: 'line_config_update',
+    });
+    // record() は内部で new Date() を使うため、テストからは時刻を差し替えられない。
+    // 実時間で間隔を空けて「カーソル」と「カーソルより後の記録」を作る
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    const cursor = new Date();
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    await repos.settingsAudit.record({
+      tenantId: TENANT_A,
+      actorId: USER_A,
+      action: 'line_config_delete',
+    });
+
+    const logs = await repos.settingsAudit.findAllByTenant({ tenantId: TENANT_A, before: cursor });
+    expect(logs).toHaveLength(1);
+    expect(logs[0].action).toBe('line_config_update');
+  });
+
   // §4.3 フォローアップ (2026-07-10): actorId=null (Stripe Webhook 起因の自動プランダウングレード
   // のようにユーザーが介在しないシステム操作) は「不明」ではなく専用のシステムラベルに解決される
   // (「不明」はデータ不整合、null は正常系という意味の違いを区別する)
