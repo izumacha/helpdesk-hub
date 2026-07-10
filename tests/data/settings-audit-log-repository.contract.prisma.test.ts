@@ -140,4 +140,80 @@ describe.runIf(SHOULD_RUN)('SettingsAuditLogRepository (prisma adapter)', () => 
     // Prisma の include (actor リレーション) も null になるため固定のシステムラベルへ解決される
     expect(logs[0].actorName).toBe(SETTINGS_AUDIT_SYSTEM_ACTOR_NAME);
   });
+
+  // §4.2.1 フォローアップ再訪 (2026-07-10): before の複合キーセットカーソル (createdAt, id) が
+  // 本番 Prisma アダプタの OR クエリとして正しく動くことを検証する。createdAt が完全に同一の行が
+  // あっても id タイブレーカーによりページ境界で行を取りこぼさないことが最重要
+  // (tests/data/settings-audit-log-repository.memory.test.ts と同じ観点を本番 DB クエリでも固定する)
+  it('createdAtが同一の行はidで安定した順序に並び、beforeカーソルで取りこぼさない', async () => {
+    const sameInstant = new Date('2026-01-01T00:00:00.000Z');
+    // Prisma を直接使い、3 行を id 順不同・同一 createdAt で投入する
+    // (repos.settingsAudit.record() は createdAt を DB 既定値 (now()) にしか設定できないため)
+    await prisma.settingsAuditLog.create({
+      data: {
+        id: 'sal_b',
+        tenantId: TENANT_A,
+        actorId: USER_A,
+        action: 'line_config_update',
+        createdAt: sameInstant,
+      },
+    });
+    await prisma.settingsAuditLog.create({
+      data: {
+        id: 'sal_a',
+        tenantId: TENANT_A,
+        actorId: USER_A,
+        action: 'sso_config_update',
+        createdAt: sameInstant,
+      },
+    });
+    await prisma.settingsAuditLog.create({
+      data: {
+        id: 'sal_c',
+        tenantId: TENANT_A,
+        actorId: USER_A,
+        action: 'sso_config_delete',
+        createdAt: sameInstant,
+      },
+    });
+
+    const repos = buildPrismaRepos(prisma);
+    // 1 ページ目: id 降順で 2 件だけ取得する (sal_c, sal_b が先頭 2 件になるはず)
+    const page1 = await repos.settingsAudit.findAllByTenant({ tenantId: TENANT_A, limit: 2 });
+    expect(page1.map((l) => l.id)).toEqual(['sal_c', 'sal_b']);
+
+    // 2 ページ目: 1 ページ目の最後の行 (sal_b) をカーソルにすると、残りの sal_a だけが返る
+    const page2 = await repos.settingsAudit.findAllByTenant({
+      tenantId: TENANT_A,
+      before: { createdAt: sameInstant, kind: 'settings', id: 'sal_b' },
+    });
+    expect(page2.map((l) => l.id)).toEqual(['sal_a']);
+  });
+
+  // /code-review ultra 再指摘対応: TicketHistory と SettingsAuditLog をまたぐ同時刻の取りこぼしが
+  // 無いことを、SettingsAuditLog 側のクエリ分岐 (cursor.kind === 'ticket' のとき id を無視して
+  // createdAt <= before で全件含める) を実際の DB クエリで検証する
+  it('カーソルがticket由来のとき、同時刻のSettingsAuditLog行は全て含まれる', async () => {
+    const sameInstant = new Date('2026-01-01T00:00:00.000Z');
+    await prisma.settingsAuditLog.create({
+      data: {
+        id: 'aaa_not_yet_shown',
+        tenantId: TENANT_A,
+        actorId: USER_A,
+        action: 'line_config_update',
+        createdAt: sameInstant,
+      },
+    });
+
+    const repos = buildPrismaRepos(prisma);
+    // ticket 由来のカーソル (id は SettingsAuditLog の id と無関係な値。あえて文字列として
+    // より大きい値にして、id 比較に頼ると誤って除外されることを確認する) を渡す。
+    // マージ順序上 'settings' はこの createdAt でまだ 1 件も表示されていないはずなので、
+    // id の大小に関わらずこの行が返るのが正しい
+    const page = await repos.settingsAudit.findAllByTenant({
+      tenantId: TENANT_A,
+      before: { createdAt: sameInstant, kind: 'ticket', id: 'zzz_ticket_row' },
+    });
+    expect(page.map((l) => l.id)).toEqual(['aaa_not_yet_shown']);
+  });
 });

@@ -5,9 +5,9 @@ import type {
 } from '@/data/ports/settings-audit-log-repository';
 import type { SettingsAuditLog } from '@/domain/types';
 import { nextId, type Store } from './store';
-// 監査ログ系リポジトリ共通のページネーション上限・クランプ処理 (ticket-history-repository と共有。
-// Prisma 実装と同一の値を使うことでテスト/本番の挙動を一致させる)
-import { resolveAuditLimit } from '../audit-pagination';
+// 監査ログ系リポジトリ共通のページネーション上限・クランプ処理・複合カーソル比較 (ticket-history-repository
+// と共有。Prisma 実装と同一の値・比較規則を使うことでテスト/本番の挙動を一致させる)
+import { resolveAuditLimit, isBeforeAuditCursor } from '../audit-pagination';
 // actorId が null (システムによる自動変更) のときに表示する操作者名の一元管理定数
 import { SETTINGS_AUDIT_SYSTEM_ACTOR_NAME } from '@/lib/constants';
 
@@ -39,6 +39,15 @@ export function makeSettingsAuditLogRepo(store: Store): SettingsAuditLogReposito
       for (const log of store.settingsAuditLogs.values()) {
         // 当該テナント以外は対象外 (クロステナント漏洩防止)
         if (log.tenantId !== filter.tenantId) continue;
+        // §4.2.1 フォローアップ再訪: before が指定されていればカーソルより前の行だけを対象にする
+        // (複合キーセットカーソル。自分のテーブル種別 'settings' を渡し、TicketHistory との
+        // マージ境界でも正しく判定させる)
+        if (
+          filter.before &&
+          !isBeforeAuditCursor(log.createdAt, 'settings', log.id, filter.before)
+        ) {
+          continue;
+        }
         // 操作者を取得する (actorId が null ならシステム操作なので lookup 自体をスキップする)
         const user = log.actorId ? store.users.get(log.actorId) : undefined;
         rows.push({
@@ -50,8 +59,9 @@ export function makeSettingsAuditLogRepo(store: Store): SettingsAuditLogReposito
           createdAt: log.createdAt, // 操作日時
         });
       }
-      // 新しい順に並べてページネーションを適用する
-      rows.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+      // 新しい順に並べてページネーションを適用する。createdAt が同値の行を安定した順序にするため
+      // id を第 2 キーにする (Prisma アダプタの orderBy [{createdAt:'desc'},{id:'desc'}] と対にする)
+      rows.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime() || (a.id < b.id ? 1 : -1));
       return rows.slice(offset, offset + limit);
     },
   };

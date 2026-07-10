@@ -155,4 +155,88 @@ describe.runIf(SHOULD_RUN)('TicketHistoryRepository (prisma adapter)', () => {
     const rows = await repos.history.findAllByTenant({ tenantId: TENANT_A, limit: 2 });
     expect(rows).toHaveLength(2);
   });
+
+  // §4.2.1 フォローアップ再訪 (2026-07-10): before の複合キーセットカーソル (createdAt, id) が
+  // 本番 Prisma アダプタの OR クエリ (createdAt < before.createdAt OR (createdAt = ... AND id < ...))
+  // として正しく動くことを検証する。createdAt が完全に同一の行があっても、id タイブレーカーにより
+  // ページ境界で行を取りこぼさないことが最重要 (tests/data/ticket-history-repository.memory.test.ts
+  // と同じ観点をメモリアダプタと同じ規約で本番 DB クエリでも固定する)
+  it('createdAtが同一の行はidで安定した順序に並び、beforeカーソルで取りこぼさない', async () => {
+    const sameInstant = new Date('2026-01-01T00:00:00.000Z');
+    // Prisma を直接使い、3 行を id 順不同・同一 createdAt で投入する
+    // (repos.history.record() は createdAt を DB 既定値 (now()) にしか設定できないため)
+    await prisma.ticketHistory.create({
+      data: {
+        id: 'hst_b',
+        ticketId: ticketA,
+        changedById: USER_A,
+        field: 'status',
+        oldValue: 'New',
+        newValue: 'Open',
+        createdAt: sameInstant,
+      },
+    });
+    await prisma.ticketHistory.create({
+      data: {
+        id: 'hst_a',
+        ticketId: ticketA,
+        changedById: USER_A,
+        field: 'priority',
+        oldValue: 'Low',
+        newValue: 'Medium',
+        createdAt: sameInstant,
+      },
+    });
+    await prisma.ticketHistory.create({
+      data: {
+        id: 'hst_c',
+        ticketId: ticketA,
+        changedById: USER_A,
+        field: 'assignee',
+        oldValue: null,
+        newValue: USER_A,
+        createdAt: sameInstant,
+      },
+    });
+
+    const repos = buildPrismaRepos(prisma);
+    // 1 ページ目: id 降順で 2 件だけ取得する (hst_c, hst_b が先頭 2 件になるはず)
+    const page1 = await repos.history.findAllByTenant({ tenantId: TENANT_A, limit: 2 });
+    expect(page1.map((r) => r.id)).toEqual(['hst_c', 'hst_b']);
+
+    // 2 ページ目: 1 ページ目の最後の行 (hst_b) をカーソルにすると、残りの hst_a だけが返る
+    const page2 = await repos.history.findAllByTenant({
+      tenantId: TENANT_A,
+      before: { createdAt: sameInstant, kind: 'ticket', id: 'hst_b' },
+    });
+    expect(page2.map((r) => r.id)).toEqual(['hst_a']);
+  });
+
+  // /code-review ultra 再指摘対応: TicketHistory と SettingsAuditLog をまたぐ同時刻の取りこぼしが
+  // 無いことを、TicketHistory 側のクエリ分岐 (cursor.kind === 'settings' のとき id を無視して
+  // createdAt < before だけで絞る) を実際の DB クエリで検証する
+  it('カーソルがsettings由来のとき、同時刻のTicketHistory行は全て除外される', async () => {
+    const sameInstant = new Date('2026-01-01T00:00:00.000Z');
+    await prisma.ticketHistory.create({
+      data: {
+        id: 'hst_after_settings_cursor',
+        ticketId: ticketA,
+        changedById: USER_A,
+        field: 'status',
+        oldValue: 'New',
+        newValue: 'Open',
+        createdAt: sameInstant,
+      },
+    });
+
+    const repos = buildPrismaRepos(prisma);
+    // settings 由来のカーソル (id は TicketHistory の id と無関係な値) を渡す。
+    // マージ順序上 'ticket' は 'settings' より先に表示済みのはずなので、id の大小に
+    // 関わらず、この createdAt の TicketHistory 行は 1 件も返らないのが正しい
+    const page = await repos.history.findAllByTenant({
+      tenantId: TENANT_A,
+      before: { createdAt: sameInstant, kind: 'settings', id: 'zzz_settings_row' },
+    });
+    expect(page).toHaveLength(0);
+  });
 });

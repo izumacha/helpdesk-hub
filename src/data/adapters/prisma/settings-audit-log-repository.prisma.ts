@@ -31,11 +31,32 @@ export function makeSettingsAuditLogRepo(db: PrismaLike): SettingsAuditLogReposi
 
       // 操作者 (氏名) を eager-load して N+1 を回避する
       const rows = await db.settingsAuditLog.findMany({
-        where: { tenantId: filter.tenantId }, // テナントスコープ
+        where: {
+          tenantId: filter.tenantId, // テナントスコープ
+          // §4.2.1 フォローアップ再訪: before が指定されていれば「それより前」の行だけに絞る
+          // (複合キーセットカーソル)。この SettingsAuditLog 側は自身の kind が 'settings'。
+          // /code-review ultra 再指摘対応: ticket-history-repository.prisma.ts と対になる分岐
+          // (マージ順序は 'ticket' が 'settings' より先。AuditPaginationCursor のコメント参照)。
+          // - cursor.kind === 'settings' (自分と同じテーブル由来): 通常どおり id をタイブレーカーにする
+          // - cursor.kind === 'ticket' (別テーブル由来): cursor の createdAt 時点で SettingsAuditLog
+          //   側はマージ順序上まだ 1 件も表示されていないはずなので、同時刻の行も含めて全件を
+          //   対象にする (createdAt <= before.createdAt。id によるタイブレークをしないことで
+          //   「まだ表示していない設定変更監査ログを誤って除外する」回帰を防ぐ)
+          ...(filter.before &&
+            (filter.before.kind === 'settings'
+              ? {
+                  OR: [
+                    { createdAt: { lt: filter.before.createdAt } },
+                    { createdAt: filter.before.createdAt, id: { lt: filter.before.id } },
+                  ],
+                }
+              : { createdAt: { lte: filter.before.createdAt } })),
+        },
         include: {
           actor: { select: { name: true } }, // 操作者氏名のみ取得
         },
-        orderBy: { createdAt: 'desc' }, // 新しい順に並べる
+        // 新しい順に並べる。createdAt が同値の行を安定した順序にするため id を第 2 キーにする
+        orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
         take: limit, // 件数上限
         skip: offset, // ページネーション
       });

@@ -4,7 +4,11 @@
 // Vitest の DSL とフック
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 // テスト対象: 本文組み立て / push 送信
-import { buildTicketReplyLineMessage, pushLineMessage } from '@/lib/line-push';
+import {
+  buildTicketReplyLineMessage,
+  buildTicketPriorityChangedLineMessage,
+  pushLineMessage,
+} from '@/lib/line-push';
 
 // src/lib/webhook-fetch.ts は SSRF 対策の DNS 検証用 Dispatcher (Agent) を使うため
 // undici の fetch を直接 import している。vi.stubGlobal('fetch', ...) だけでは差し替わらない
@@ -44,6 +48,35 @@ describe('buildTicketReplyLineMessage', () => {
       ticketUrl: 'https://app.example.com/tickets/abc',
       commentBody: longBody,
       agentName: '担当者',
+    });
+    expect(text.length).toBe(5000);
+    expect(text.endsWith('…')).toBe(true);
+  });
+});
+
+// §5.4.2 フォローアップ (2026-07-10): 優先度変更にも LINE 通知を拡張した本文組み立て関数を検証する
+describe('buildTicketPriorityChangedLineMessage', () => {
+  // 正常系: 件名・変更前後の優先度ラベル・URL が文面に含まれる
+  it('件名・変更前後の優先度ラベル・URL を含む文面を組み立てる', () => {
+    const text = buildTicketPriorityChangedLineMessage({
+      ticketTitle: 'PC が起動しない',
+      ticketUrl: 'https://app.example.com/tickets/abc',
+      oldPriorityLabel: '中',
+      newPriorityLabel: '高',
+    });
+    expect(text).toContain('PC が起動しない');
+    expect(text).toContain('中 → 高');
+    expect(text).toContain('https://app.example.com/tickets/abc');
+  });
+
+  // 境界値: LINE のテキストメッセージ上限 (5000 文字) を超える場合は末尾を省略する
+  // (件名を極端に長くして超過させる。buildTicketReplyLineMessage と同じ安全策の検証)
+  it('5000 文字を超える場合は末尾を省略する', () => {
+    const text = buildTicketPriorityChangedLineMessage({
+      ticketTitle: 'あ'.repeat(6000),
+      ticketUrl: 'https://app.example.com/tickets/abc',
+      oldPriorityLabel: '中',
+      newPriorityLabel: '高',
     });
     expect(text.length).toBe(5000);
     expect(text.endsWith('…')).toBe(true);
