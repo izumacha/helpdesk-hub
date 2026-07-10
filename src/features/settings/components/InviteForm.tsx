@@ -4,13 +4,76 @@
 import { useState, useTransition } from 'react';
 // 招待リンク発行のサーバーアクション
 import { createInvitation } from '@/features/settings/actions/create-invitation';
-// 招待可能な権限の一覧と、その日本語ラベル (一元管理された定数)
-import { INVITABLE_ROLES, ROLE_LABELS } from '@/lib/constants';
 // 権限型 (requester | agent | admin)
 import type { Role } from '@/domain/types';
+// §7.1 フォローアップ: 複数メールアドレスをまとめて招待するフォーム (CSV/貼り付け経路)
+import { BulkInviteForm } from '@/features/settings/components/BulkInviteForm';
+// 権限選択ラジオボタン群 (SingleInviteForm / BulkInviteForm で共有する共通コンポーネント)
+import { RoleRadioGroup } from '@/features/settings/components/RoleRadioGroup';
 
-// メンバー招待リンクを発行するフォーム (権限選択 + 任意メール + リンク表示)
+// タブの識別子 ('single' = 1件ずつ、既存の挙動 / 'bulk' = CSV・複数貼り付けでまとめて発行)
+type InviteMode = 'single' | 'bulk';
+
+// タブの見出し・説明文を一元管理する定数 (§6)
+const INVITE_MODE_TABS: { key: InviteMode; label: string }[] = [
+  { key: 'single', label: '個別に招待' },
+  { key: 'bulk', label: 'まとめて招待（CSV）' },
+];
+
+// /code-review ultra 指摘対応 (2026-07-10): role="tab" のボタンと role="tabpanel" の
+// コンテンツを id / aria-controls / aria-labelledby で相互参照させる (WAI-ARIA Tabs パターン)。
+// タブごとに一意な id にするための命名ヘルパー
+function tabId(key: InviteMode): string {
+  return `invite-tab-${key}`;
+}
+function tabPanelId(key: InviteMode): string {
+  return `invite-tabpanel-${key}`;
+}
+
+// メンバー招待リンクを発行するフォーム。「個別に招待」(既存の 1 件発行) と
+// 「まとめて招待（CSV）」(§7.1 フォローアップで追加した一括発行) をタブで切り替える。
 export function InviteForm() {
+  // 選択中のタブ (初期値は従来どおりの個別招待)
+  const [mode, setMode] = useState<InviteMode>('single');
+
+  return (
+    <div className="space-y-4">
+      {/* タブ切り替え (role="tablist" でスクリーンリーダーにタブ UI であることを伝える) */}
+      <div role="tablist" className="flex gap-2 border-b border-slate-200">
+        {INVITE_MODE_TABS.map((tab) => {
+          // このタブが現在選択中か
+          const isActive = mode === tab.key;
+          return (
+            <button
+              key={tab.key}
+              id={tabId(tab.key)}
+              type="button"
+              role="tab"
+              aria-selected={isActive}
+              aria-controls={tabPanelId(tab.key)}
+              onClick={() => setMode(tab.key)}
+              className={`-mb-px border-b-2 px-3 py-2 text-sm font-medium transition ${
+                isActive
+                  ? 'border-teal-600 text-teal-800'
+                  : 'border-transparent text-slate-500 hover:text-slate-700'
+              }`}
+            >
+              {tab.label}
+            </button>
+          );
+        })}
+      </div>
+      {/* 選択中のタブに応じたフォームを表示する (role="tabpanel" でタブとの対応関係を伝える) */}
+      <div id={tabPanelId(mode)} role="tabpanel" aria-labelledby={tabId(mode)}>
+        {mode === 'single' ? <SingleInviteForm /> : <BulkInviteForm />}
+      </div>
+    </div>
+  );
+}
+
+// 招待リンクを 1 件ずつ発行するフォーム (権限選択 + 任意メール + リンク表示)。
+// InviteForm から切り出した既存の単発発行 UI で、挙動は変更していない。
+function SingleInviteForm() {
   // 送信中フラグ + トランジション (二重送信防止・ボタン無効化に使う)
   const [isPending, startTransition] = useTransition();
   // 選択中の権限 (初期値はメンバー = requester)
@@ -67,39 +130,7 @@ export function InviteForm() {
   return (
     <form onSubmit={handleSubmit} className="space-y-4">
       {/* 権限選択 (メンバー / 担当者) */}
-      <fieldset className="space-y-2">
-        {/* スクリーンリーダー向けにグループの目的を伝える凡例 */}
-        <legend className="text-sm font-medium text-slate-700">招待する人の権限</legend>
-        <div className="flex flex-wrap gap-3">
-          {INVITABLE_ROLES.map((r) => {
-            // この選択肢が現在選択中か
-            const isChecked = role === r;
-            return (
-              <label
-                key={r}
-                // 選択中はティールで強調する
-                className={`flex cursor-pointer items-center gap-2 rounded-lg border px-4 py-2 text-sm transition ${
-                  isChecked
-                    ? 'border-teal-400 bg-teal-50/60 ring-1 ring-teal-200'
-                    : 'border-slate-200 bg-white hover:border-teal-200'
-                }`}
-              >
-                {/* ラジオボタン本体 (name を揃えて単一選択にする) */}
-                <input
-                  type="radio"
-                  name="role"
-                  value={r}
-                  checked={isChecked}
-                  onChange={() => setRole(r)}
-                  className="h-4 w-4 accent-teal-600"
-                />
-                {/* 権限ラベル (メンバー / 担当者) */}
-                <span className="font-medium text-slate-800">{ROLE_LABELS[r]}</span>
-              </label>
-            );
-          })}
-        </div>
-      </fieldset>
+      <RoleRadioGroup legend="招待する人の権限" name="role" value={role} onChange={setRole} />
 
       {/* 宛先メール (任意) */}
       <div className="space-y-1">
@@ -114,7 +145,7 @@ export function InviteForm() {
           value={email}
           onChange={(e) => setEmail(e.target.value)}
           placeholder="member@example.com"
-          className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm focus:border-teal-400 focus:outline-none focus:ring-1 focus:ring-teal-200"
+          className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm focus:border-teal-400 focus:ring-1 focus:ring-teal-200 focus:outline-none"
         />
         {/* 補足: メール未指定でもリンクは発行できる */}
         <p className="text-xs text-slate-500">
@@ -141,7 +172,10 @@ export function InviteForm() {
       {/* 発行された招待リンクの表示 (コピー可能) */}
       {issuedUrl && (
         // aria-live で発行結果をスクリーンリーダーに通知する
-        <div className="space-y-2 rounded-xl border border-teal-200 bg-teal-50/60 p-4" aria-live="polite">
+        <div
+          className="space-y-2 rounded-xl border border-teal-200 bg-teal-50/60 p-4"
+          aria-live="polite"
+        >
           {/* 見出し */}
           <p className="text-sm font-semibold text-teal-800">招待リンクを発行しました</p>
           <div className="flex flex-col gap-2 sm:flex-row sm:items-center">

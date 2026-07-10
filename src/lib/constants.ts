@@ -4,8 +4,12 @@ import type { TicketStatus, TenantMode, Role, SettingsAuditAction } from '@/doma
 // Lite モードの 3 値型と型ガード関数を取り込み、mode-aware ラベル関数で使う
 import { isLiteStatus, type LiteStatus } from '@/domain/ticket-status';
 
-// チケット状態の英語キーに対応する日本語表示ラベル (Pro モード、現行 7 値)
-export const STATUS_LABELS: Record<string, string> = {
+// チケット状態の英語キーに対応する日本語表示ラベル (Pro モード、現行 7 値)。
+// /code-review ultra 指摘対応 (2026-07-10): Record<string, string> のままだと
+// TicketStatus (domain/types.ts) にキーを追加/変更してもコンパイラが検知できず、
+// resolveStatusFromLabel の as TicketStatus キャストが無効な文字列を作りかねなかった。
+// TicketStatus をキー型にすることで、両者の食い違いをコンパイル時に検出できるようにする
+export const STATUS_LABELS: Record<TicketStatus, string> = {
   New: '新規',
   Open: 'オープン',
   WaitingForUser: 'ユーザー待ち',
@@ -36,6 +40,36 @@ export function getStatusLabel(status: TicketStatus, mode: TenantMode): string {
   // それ以外 (Pro モード or Lite で非対応ステータス) は Pro ラベルにフォールバック
   // 未知のキーは status 文字列をそのまま返して画面が空にならないようにする
   return STATUS_LABELS[status] ?? status;
+}
+
+// §3.1 フォローアップ (2026-07-10): getStatusLabel の逆写像。CSV インポート (import-tickets.ts) が
+// 「状況」列の日本語ラベル (例: Lite の「完了」、Pro の「解決済み」) から TicketStatus を
+// 逆引きするために使う。テナントの現在モードで表示されているラベル集合からのみ一致させる
+// (Lite テナントに Pro 専用ラベルを渡しても一致させない。表示と入力の対称性を保つ)。
+// 一致しなければ null を返し、呼び出し側が「値が不正」としてエラー行に記録する。
+export function resolveStatusFromLabel(label: string, mode: TenantMode): TicketStatus | null {
+  // mode に応じて検索対象のラベル集合を選ぶ (getStatusLabel と同じ mode-aware な切替)
+  const labels: Record<string, string> = mode === 'lite' ? LITE_STATUS_LABELS : STATUS_LABELS;
+  // ラベル集合を順に見て、値が一致するキー (TicketStatus) を返す
+  for (const [status, statusLabel] of Object.entries(labels)) {
+    if (statusLabel === label) return status as TicketStatus;
+  }
+  // 一致するラベルが無ければ null (未知の値)
+  return null;
+}
+
+// §3.1 フォローアップ (2026-07-10): 指定モードで有効な状況ラベル一覧を返す。
+// CSV インポートで「状況」列の値が resolveStatusFromLabel で解決できなかったとき、
+// エラーメッセージに「入力できる値」を具体的に示すために使う。
+export function getStatusLabelsForMode(mode: TenantMode): string[] {
+  // mode に応じて Lite/Pro のラベル集合を選び、値 (日本語ラベル) の一覧を返す
+  const labels = Object.values(mode === 'lite' ? LITE_STATUS_LABELS : STATUS_LABELS);
+  // /code-review ultra 指摘対応 (2026-07-10): 「エスカレーション」は resolveStatusFromLabel
+  // 自体は解決できるが、import-tickets.ts の validateImportRow が別のエラーメッセージで
+  // 明示的に拒否する CSV インポート非対応の値。この一覧をそのままエラーヒントに出すと、
+  // 「エスカレーションと指定してください」と案内した直後に矛盾する拒否メッセージを見せて
+  // しまうため、CSV インポートで実際に指定できる値だけに絞る
+  return labels.filter((label) => label !== STATUS_LABELS.Escalated);
 }
 
 // テナントの動作モード (lite | pro) の一覧。設定画面の選択肢生成や反復に使う

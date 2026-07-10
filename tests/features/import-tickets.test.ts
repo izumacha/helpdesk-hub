@@ -306,6 +306,121 @@ describe('importTickets', () => {
     });
   });
 
+  // §3.1 フォローアップ (2026-07-10): 既存 Excel の完了済み行をそのまま取り込めるかを検証する
+  describe('状況列 (§3.1 フォローアップ)', () => {
+    // Lite テナント (seed() の既定) で「完了」を指定すると Closed で起票され、resolvedAt が
+    // インポート時刻でセットされる (getCompletionStatuses(mode) との整合を確認)
+    it('Lite テナントで「完了」を指定すると Closed かつ resolvedAt 付きで起票される', async () => {
+      const importTickets = await loadAction();
+      const csv = `件名,状況\n複合機の紙詰まり,完了`;
+      const before = Date.now();
+      const result = await importTickets(csv);
+      const after = Date.now();
+
+      expect(result.imported).toBe(1);
+      expect(result.errors).toHaveLength(0);
+      const ticket = [...store.tickets.values()][0];
+      expect(ticket?.status).toBe('Closed');
+      expect(ticket?.resolvedAt).toBeInstanceOf(Date);
+      const resolvedAtMs = ticket!.resolvedAt!.getTime();
+      expect(resolvedAtMs).toBeGreaterThanOrEqual(before);
+      expect(resolvedAtMs).toBeLessThanOrEqual(after);
+    });
+
+    // 未完了系のラベル (「対応中」) を指定すると、そのステータスで起票されるが resolvedAt は null のまま
+    it('未完了系のラベルを指定すると resolvedAt を設定せずに起票される', async () => {
+      const importTickets = await loadAction();
+      const csv = `件名,状況\n複合機の紙詰まり,対応中`;
+      const result = await importTickets(csv);
+
+      expect(result.imported).toBe(1);
+      const ticket = [...store.tickets.values()][0];
+      expect(ticket?.status).toBe('InProgress');
+      expect(ticket?.resolvedAt).toBeNull();
+    });
+
+    // 「状況」列自体が無ければ従来どおりモードの既定初期ステータス (Lite: Open) で起票される (後方互換)
+    it('状況列が無ければ既定の初期ステータスで起票される', async () => {
+      const importTickets = await loadAction();
+      const csv = `件名\n複合機の紙詰まり`;
+      const result = await importTickets(csv);
+
+      expect(result.imported).toBe(1);
+      const ticket = [...store.tickets.values()][0];
+      expect(ticket?.status).toBe('Open');
+      expect(ticket?.resolvedAt).toBeNull();
+    });
+
+    // 状況セルが空なら未指定として扱い、既定の初期ステータスにフォールバックする (エラーにしない)
+    it('状況セルが空なら既定の初期ステータスにフォールバックする', async () => {
+      const importTickets = await loadAction();
+      const csv = `件名,状況\n複合機の紙詰まり,`;
+      const result = await importTickets(csv);
+
+      expect(result.imported).toBe(1);
+      expect(result.errors).toHaveLength(0);
+      const ticket = [...store.tickets.values()][0];
+      expect(ticket?.status).toBe('Open');
+    });
+
+    // Lite テナントに Pro 専用ラベル (「解決済み」) を指定すると、表示と入力の対称性が
+    // 崩れるため一致させず、エラーとして記録する (静かに Resolved で起票しない)
+    it('Lite テナントで Pro 専用ラベルを指定するとエラーになる', async () => {
+      const importTickets = await loadAction();
+      const csv = `件名,状況\n複合機の紙詰まり,解決済み`;
+      const result = await importTickets(csv);
+
+      expect(result.imported).toBe(0);
+      expect(result.errors).toHaveLength(1);
+      expect(result.errors[0].message).toContain('状況の値が正しくありません');
+      expect(store.tickets.size).toBe(0);
+    });
+
+    // 未知の値 (タイポ等) は静かに既定値へフォールバックさせず、エラーとして記録する
+    it('未知の状況ラベルはエラーとして記録され起票されない', async () => {
+      const importTickets = await loadAction();
+      const csv = `件名,状況\n複合機の紙詰まり,対応済`;
+      const result = await importTickets(csv);
+
+      expect(result.imported).toBe(0);
+      expect(result.errors).toHaveLength(1);
+      expect(result.errors[0].message).toContain('状況の値が正しくありません');
+    });
+
+    // Pro テナントでは Pro のステータスラベル (7 種) が使える
+    it('Pro テナントでは Pro のステータスラベルで起票できる', async () => {
+      // テナントを Pro モードに切り替える
+      const tenant = store.tenants.get(TENANT)!;
+      store.tenants.set(TENANT, { ...tenant, mode: 'pro' });
+      const importTickets = await loadAction();
+      const csv = `件名,状況\n複合機の紙詰まり,解決済み`;
+      const result = await importTickets(csv);
+
+      expect(result.imported).toBe(1);
+      expect(result.errors).toHaveLength(0);
+      const ticket = [...store.tickets.values()][0];
+      expect(ticket?.status).toBe('Resolved');
+      expect(ticket?.resolvedAt).toBeInstanceOf(Date);
+    });
+
+    // /code-review ultra 指摘対応 (2026-07-10): 「エスカレーション」は escalatedAt/理由の記録や
+    // 全エージェント通知を伴う専用フロー (escalateTicket) を持つため、CSV インポートの状況列
+    // から直接指定することはできない (履歴の無い矛盾したチケットを防ぐ)
+    it('Pro テナントで「エスカレーション」を指定するとエラーになる', async () => {
+      const tenant = store.tenants.get(TENANT)!;
+      store.tenants.set(TENANT, { ...tenant, mode: 'pro' });
+      const importTickets = await loadAction();
+      const csv = `件名,状況\n複合機の紙詰まり,エスカレーション`;
+      const result = await importTickets(csv);
+
+      expect(result.imported).toBe(0);
+      expect(result.errors).toHaveLength(1);
+      expect(result.errors[0].message).toContain('CSV インポートでは指定できません');
+      const ticket = [...store.tickets.values()][0];
+      expect(ticket).toBeUndefined();
+    });
+  });
+
   // ── Phase 4 課金: 月間チケット上限 (プランゲート) ──────────────────
   describe('月間チケット上限 (§6.1 料金プラン)', () => {
     // Free プランは月 50 件まで。CSV インポートも Web フォームと同じ上限を守ることを確認する

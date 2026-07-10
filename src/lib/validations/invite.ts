@@ -2,6 +2,8 @@
 import { z } from 'zod';
 // 業種テンプレートの ID 一覧 (サーバー側ホワイトリスト検証に使う)
 import { INDUSTRY_TEMPLATES } from '@/lib/industry-templates';
+// 一括招待 1 回あたりの上限件数 (createInvitationsBulk と一元管理)
+import { MAX_BULK_INVITE_ROWS } from '@/lib/invite';
 
 // 招待リンクで付与できる権限は「メンバー (requester)」か「担当者 (agent)」のみ。
 // admin はリンク経由で付与しない (テナント作成フォームで初代管理者を作る運用)。
@@ -55,6 +57,14 @@ export const emailSchema = z
   .email('正しいメールアドレスを入力してください')
   .transform((v) => v.toLowerCase());
 
+// §7.1 フォローアップ (2026-07-10): 一括招待フォームが送るメールアドレス一覧の検証スキーマ。
+// extractEmailCandidates (src/lib/invite.ts) が抽出した候補配列を、1 件ずつ emailSchema で
+// 検証し (不正な形式が 1 件でもあれば行全体を弾く)、件数を MAX_BULK_INVITE_ROWS に制限する。
+export const bulkInviteEmailsSchema = z
+  .array(emailSchema)
+  .min(1, '招待するメールアドレスを 1 件以上入力してください')
+  .max(MAX_BULK_INVITE_ROWS, `一度に招待できるのは ${MAX_BULK_INVITE_ROWS} 件までです`);
+
 // 招待受諾フォームの入力検証スキーマ (氏名 + パスワード設定)。
 // tenantId / role は招待行から取り出すため入力に含めない (クロステナント参加の防止)。
 export const acceptInvitationSchema = z.object({
@@ -89,7 +99,7 @@ export const createTenantSchema = z.object({
     .refine(
       // v === '' を除外: 空文字は右ブランチ (.or) で undefined に変換するため refine では弾かない
       (v: string) => VALID_INDUSTRY_IDS.has(v),
-      '業種の指定が正しくありません。選択肢から選んでください。'
+      '業種の指定が正しくありません。選択肢から選んでください。',
     )
     .optional()
     .or(z.literal('').transform(() => undefined)),

@@ -77,6 +77,9 @@ export interface CreateTicketInput {
   status?: TicketStatus; // 初期ステータス (未指定なら DB 既定の New。Lite では 'Open'=未対応 で起票する)
   firstResponseDueAt?: Date | null; // 初回応答期限 (SLA)
   resolutionDueAt?: Date | null; // 解決期限 (SLA)
+  // §3.1 フォローアップ (2026-07-10): CSV インポートで「状況」列が完了系ステータスを指定していた
+  // 場合の解決日時 (インポート時刻)。未指定なら null (未解決のまま起票)
+  resolvedAt?: Date | null;
 }
 
 // エスカレーション適用時の入力値
