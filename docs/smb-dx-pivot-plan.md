@@ -547,6 +547,24 @@ src/data/adapters/inbound/line-bot.ts        # 新規 (Phase 2)
   超える場合は 1 件も発行せずに拒否する（一部だけ発行されて admin が「どこまで届いたか」を
   判別しづらくなる事態を避けるため）。
 
+#### 7.1.2 フォローアップ（2026-07-10）: メール転送の案内が Free プランでは行き止まりだった
+
+監査で発見したギャップ: 上記手順4は Standard 以上（Free trial 中も含む）のテナントにのみ表示される
+`emailInboundAllowed` ゲート（`settings/page.tsx`）付きの機能だが、`/dashboard` の「はじめかた」
+チュートリアルセクション（`GETTING_STARTED_STEPS`）はこのゲートを一切考慮せず、`isAgent` かつ
+チケット件数が閾値未満のテナントであれば常に「メールの転送アドレスを設定する」ステップを表示して
+いた。§6.1 の料金表は「Free: メール取り込み不可」と明記しており、Free プラン（トライアル終了後）の
+admin がこのステップに従って `/settings` を開いても、対応する転送先アドレスのカードは存在しない
+（表示条件を満たさない）。案内どおりに操作しても目的を達成できない行き止まりのオンボーディングだった。
+
+- `src/lib/getting-started-steps.ts` を新設し、「はじめかた」ステップの定義と組み立てロジック
+  (`buildGettingStartedSteps(emailInboundAllowed)`) を dashboard/page.tsx から切り出した
+  （テスト容易性のため純粋関数として分離。`tutorial-video.ts` と同じ設計方針）。
+  `settings/page.tsx` と同じ `resolveTenantPlan` + `isEmailInboundAllowed` の判定で、メール転送
+  ステップを含めるかどうかを出し分ける。
+- メール転送ステップを省いた場合、残りのステップ番号を 1, 2 と詰めて振り直す（1, 3 のような
+  歯抜けの番号を画面に出さないため）。
+
 ### 7.2 「失敗しない撤退ポイント」
 
 - 30 日間の Free trial（Standard 相当）。延長は問い合わせベース。

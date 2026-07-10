@@ -18,31 +18,12 @@ import { applyTabFilter } from '@/features/tickets/tab-filter';
 import type { TicketListFilter } from '@/data/ports/ticket-repository';
 // 拠点の型 (Phase 4 多拠点。§4.1 フォローアップで Lite ダッシュボードにも拠点フィルタを追加する)
 import type { Location } from '@/domain/types';
-
-// チュートリアルセクションに表示する「はじめかた」ステップ一覧 (Phase 3 オンボーディング)。
-// 3 ステップ固定。変更が必要なら以下の配列を直接編集する (各所に散らさない §6 定数の一元管理)。
-const GETTING_STARTED_STEPS = [
-  {
-    step: 1, // ステップ番号 (表示用)
-    title: 'スタッフを招待する', // ステップのタイトル
-    description: '設定画面の「招待リンク発行」からメンバーを招待しましょう。', // 補足説明
-    href: '/settings/invite', // 誘導先のリンク (ない場合は null)
-  },
-  {
-    step: 2,
-    title: 'メールの転送アドレスを設定する',
-    description:
-      '設定画面に専用の転送アドレスが表示されます。Gmail や Outlook の自動転送を設定すると、メールが届くたびに自動で問い合わせが作成されます。',
-    href: '/settings',
-  },
-  {
-    step: 3,
-    title: 'スマホから試してみる',
-    description:
-      'このページをスマホのブラウザで開き、ホーム画面に追加すると、アプリのように使えます。',
-    href: null,
-  },
-] as const;
+// §7.1.2 フォローアップ: テナントの実効プラン (Free trial 昇格込み) を解決する共通ヘルパー
+import { resolveTenantPlan } from '@/lib/tenant-plan';
+// メール取り込みがそのプランで許可されているか (Standard 以上。settings/page.tsx と同じ判定)
+import { isEmailInboundAllowed } from '@/lib/plan-guard';
+// §7.1.2 フォローアップ: 「はじめかた」ステップをプランに応じて出し分ける純粋ヘルパー
+import { buildGettingStartedSteps } from '@/lib/getting-started-steps';
 
 // チュートリアルセクションを表示するかどうかの閾値 (テナント全体のチケット件数がこれ未満なら表示)
 // 初期サンプルチケット 2 件を含む。小規模なインポート (数件程度) までは表示し続けるため 10 に設定
@@ -89,15 +70,25 @@ export default async function DashboardPage({ searchParams }: Props) {
     const locations = await repos.locations.listByTenant(tenantId);
     // URL の locationId は当該テナントの拠点一覧に実在するものだけを有効とみなす (Pro 側と同じ検証)
     const selectedLocationId = resolveSelectedLocationId(sp.locationId, locations);
+    // チュートリアルを表示する条件 (エージェントかつチケット件数が閾値未満)
+    const showTutorial = isAgent && totalTickets < TUTORIAL_TICKET_THRESHOLD;
+    // §7.1.2 フォローアップ: チュートリアルを表示する場合のみ実効プランを解決し、
+    // メール転送ステップの出し分けに使う (表示しないテナントでは無駄な解決をしない)。
+    // resolveTenantPlan は getCachedTenant 経由でリクエストスコープのメモ化が効くため、
+    // 同一リクエスト内の他箇所 (layout.tsx 等) で既に解決済みなら追加の SELECT は発生しない
+    const gettingStartedSteps = showTutorial
+      ? buildGettingStartedSteps(isEmailInboundAllowed(await resolveTenantPlan(tenantId)))
+      : [];
     return (
       <LiteDashboard
         isAgent={isAgent}
         userId={session.user.id}
         tenantId={tenantId}
         now={now}
-        showTutorial={isAgent && totalTickets < TUTORIAL_TICKET_THRESHOLD}
+        showTutorial={showTutorial}
         locations={locations}
         selectedLocationId={selectedLocationId}
+        gettingStartedSteps={gettingStartedSteps}
       />
     );
   }
@@ -438,6 +429,7 @@ async function LiteDashboard({
   showTutorial,
   locations,
   selectedLocationId,
+  gettingStartedSteps,
 }: {
   isAgent: boolean; // 担当者 (agent/admin) かどうか。'mine' の絞り込み方が依頼者と変わる
   userId: string; // ログインユーザー ID ('mine' で自分の担当/起票を絞る)
@@ -446,6 +438,9 @@ async function LiteDashboard({
   showTutorial: boolean; // Phase 3: チュートリアルセクションを表示するかどうか
   locations: Location[]; // §4.1 フォローアップ: テナントの拠点一覧 (拠点フィルタ UI の表示要否・選択肢)
   selectedLocationId: string | undefined; // 選択中の拠点 ID (未選択は undefined = 全拠点)
+  // §7.1.2 フォローアップ: プランに応じて出し分け済みの「はじめかた」ステップ一覧
+  // (showTutorial=false のときは呼び出し元から空配列が渡る)
+  gettingStartedSteps: ReturnType<typeof buildGettingStartedSteps>;
 }) {
   // 件数集計の共通土台。依頼者は自分のチケットのみ、担当者は全件 (creatorId 未指定)。
   // §4.1 フォローアップ: 拠点フィルタも Pro ダッシュボードと同様にここへ差し込む
@@ -519,7 +514,7 @@ async function LiteDashboard({
           </h2>
           {/* ステップカード列 (スマホ縦積み → sm 以上で 3 列) */}
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-            {GETTING_STARTED_STEPS.map(({ step, title, description, href }) =>
+            {gettingStartedSteps.map(({ step, title, description, href }) =>
               // ステップカード: リンクがあればクリッカブルに、なければ静的カードにする
               href ? (
                 <Link
