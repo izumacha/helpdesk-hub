@@ -12,12 +12,12 @@ import {
   createInvitationsBulk,
   type BulkInvitationRowResult,
 } from '@/features/settings/actions/create-invitations-bulk';
-// 招待可能な権限の一覧と、その日本語ラベル (InviteForm.tsx と共有する一元管理定数)
-import { INVITABLE_ROLES, ROLE_LABELS } from '@/lib/constants';
 // 一括招待 1 回あたりの上限件数 (画面の補足文言に使う)
 import { MAX_BULK_INVITE_ROWS } from '@/lib/invite';
 // 権限型 (requester | agent | admin)
 import type { Role } from '@/domain/types';
+// 権限選択ラジオボタン群 (SingleInviteForm と共有する共通コンポーネント)
+import { RoleRadioGroup } from '@/features/settings/components/RoleRadioGroup';
 
 // 複数メールアドレスをまとめて招待するフォーム (権限選択 + CSV/貼り付け + 結果一覧)
 export function BulkInviteForm() {
@@ -38,8 +38,10 @@ export function BulkInviteForm() {
   async function handleFileChange(e: React.ChangeEvent<HTMLInputElement>) {
     // 選択されたファイル (キャンセル時は undefined)
     const file = e.target.files?.[0];
+    // ファイルが選択されていなければ何もしない (キャンセル操作)
     if (!file) return;
-    // ファイル内容をテキストとして読み込む (UTF-8 前提。Excel 由来の Shift_JIS は非対応)
+    // ファイル内容をテキストとして読み込む (UTF-8 前提。Excel 由来の Shift_JIS は非対応。
+    // 画面のヒント文言で「UTF-8 で保存」を案内し、文字化けの原因に気づけるようにしている)
     const text = await file.text();
     // 既存の貼り付け内容を上書きする (アップロード = 一覧全体の差し替えという直感的な挙動)
     setEmailsText(text);
@@ -78,36 +80,12 @@ export function BulkInviteForm() {
   return (
     <form onSubmit={handleSubmit} className="space-y-4">
       {/* 権限選択 (バッチ全体で共通の権限を付与する) */}
-      <fieldset className="space-y-2">
-        {/* スクリーンリーダー向けにグループの目的を伝える凡例 */}
-        <legend className="text-sm font-medium text-slate-700">招待する人たちの権限</legend>
-        <div className="flex flex-wrap gap-3">
-          {INVITABLE_ROLES.map((r) => {
-            // この選択肢が現在選択中か
-            const isChecked = role === r;
-            return (
-              <label
-                key={r}
-                className={`flex cursor-pointer items-center gap-2 rounded-lg border px-4 py-2 text-sm transition ${
-                  isChecked
-                    ? 'border-teal-400 bg-teal-50/60 ring-1 ring-teal-200'
-                    : 'border-slate-200 bg-white hover:border-teal-200'
-                }`}
-              >
-                <input
-                  type="radio"
-                  name="bulk-role"
-                  value={r}
-                  checked={isChecked}
-                  onChange={() => setRole(r)}
-                  className="h-4 w-4 accent-teal-600"
-                />
-                <span className="font-medium text-slate-800">{ROLE_LABELS[r]}</span>
-              </label>
-            );
-          })}
-        </div>
-      </fieldset>
+      <RoleRadioGroup
+        legend="招待する人たちの権限"
+        name="bulk-role"
+        value={role}
+        onChange={setRole}
+      />
 
       {/* CSV ファイル選択 (任意。選ぶと下の貼り付けエリアに読み込まれる) */}
       <div className="space-y-1">
@@ -141,6 +119,13 @@ export function BulkInviteForm() {
         <p className="text-xs text-slate-500">
           一度に招待できるのは最大 {MAX_BULK_INVITE_ROWS}{' '}
           件までです。重複したメールアドレスは自動的にまとめられます。全員に案内メールが届きます。
+        </p>
+        {/* /code-review ultra 指摘対応: file.text() は常に UTF-8 として読み込むため、
+            Excel の既定エクスポート (Shift_JIS) だと文字化けし、原因が分かりにくいエラーに
+            なる。事前に案内して気づけるようにする */}
+        <p className="text-xs text-slate-500">
+          CSV ファイルは UTF-8 で保存してください。Excel から書き出す場合は「CSV UTF-8
+          (コンマ区切り)」形式を選ぶと文字化けを防げます。
         </p>
       </div>
 

@@ -34,6 +34,8 @@ import {
 import { bulkInviteEmailsSchema, invitableRoleSchema } from '@/lib/validations/invite';
 // CSV 入力の上限バイト数 (ticket import と共有。過大な貼り付け/アップロードを弾く)
 import { MAX_CSV_BYTES } from '@/lib/csv';
+// Phase 4 課金: プランごとのスタッフシート空き状況チェック (createInvitation と共有)
+import { checkSeatAvailability } from '@/lib/tenant-plan';
 
 // 一括発行 1 行分の結果 (成功した URL、または失敗理由)
 export interface BulkInvitationRowResult {
@@ -102,10 +104,23 @@ export async function createInvitationsBulk(
   // 受諾ページ URL のベースをバッチ開始前に 1 回だけ解決する (createInvitation と同じ fail-fast 方針)
   const baseUrl = resolveAppBaseUrl();
 
-  // 1 件ずつ順番に発行する。
-  // 並行実行 (Promise.all) すると checkSeatAvailability の「現在のユーザー数」判定が
-  // 同時多発でレースし、シート上限を超えて agent 権限の招待を発行してしまう恐れがあるため、
-  // あえて直列に await する (件数は MAX_BULK_INVITE_ROWS で上限を設けているため許容できる遅さ)。
+  // /code-review ultra 指摘対応 (2026-07-10): このバッチが agent 権限の招待を要求している場合、
+  // シート枠の空きをバッチ開始前に 1 回だけ見積もる。
+  // issueInvitation 内の checkSeatAvailability は「現在の実ユーザー数」だけを見ており、招待の
+  // 発行自体はユーザー数を増やさないため、ループ内で毎回呼んでも判定値は変わらない
+  // (= バッチ内の 2 件目以降も「空きあり」と判定され続け、残り枠を超えて発行できてしまっていた)。
+  // レート制限と同じ「バッチ全体で 1 回だけ確認し、超過するなら 1 件も発行せず拒否する」方針に揃える。
+  if (role === 'agent') {
+    const seat = await checkSeatAvailability(repos, tenantId);
+    if (emails.length > seat.remaining) {
+      throw new Error(
+        `このプランのメンバー上限 (${seat.limit} 名) に対し、残り ${seat.remaining} 枠しかありません (${emails.length} 件を招待しようとしました)。プランをアップグレードするか、件数を減らしてください。`,
+      );
+    }
+  }
+
+  // 1 件ずつ順番に発行する (シート枠は上でバッチ全体分を検証済みのため、issueInvitation 側の
+  // 再チェックは skipSeatCheck でスキップし、行数分の無駄な SELECT を発生させない)。
   const results: BulkInvitationRowResult[] = [];
   for (const email of emails) {
     try {
@@ -115,10 +130,11 @@ export async function createInvitationsBulk(
         role,
         email,
         baseUrl,
+        skipSeatCheck: true,
       });
       results.push({ email, ok: true, url });
     } catch (err) {
-      // 1 行の失敗 (シート上限到達など) で他の行の発行を止めない (部分成功を許容する)
+      // 1 行の失敗 (トークン重複などの想定外エラー) で他の行の発行を止めない (部分成功を許容する)
       results.push({
         email,
         ok: false,

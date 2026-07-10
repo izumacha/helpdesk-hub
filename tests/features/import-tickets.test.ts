@@ -402,6 +402,23 @@ describe('importTickets', () => {
       expect(ticket?.status).toBe('Resolved');
       expect(ticket?.resolvedAt).toBeInstanceOf(Date);
     });
+
+    // /code-review ultra 指摘対応 (2026-07-10): 「エスカレーション」は escalatedAt/理由の記録や
+    // 全エージェント通知を伴う専用フロー (escalateTicket) を持つため、CSV インポートの状況列
+    // から直接指定することはできない (履歴の無い矛盾したチケットを防ぐ)
+    it('Pro テナントで「エスカレーション」を指定するとエラーになる', async () => {
+      const tenant = store.tenants.get(TENANT)!;
+      store.tenants.set(TENANT, { ...tenant, mode: 'pro' });
+      const importTickets = await loadAction();
+      const csv = `件名,状況\n複合機の紙詰まり,エスカレーション`;
+      const result = await importTickets(csv);
+
+      expect(result.imported).toBe(0);
+      expect(result.errors).toHaveLength(1);
+      expect(result.errors[0].message).toContain('CSV インポートでは指定できません');
+      const ticket = [...store.tickets.values()][0];
+      expect(ticket).toBeUndefined();
+    });
   });
 
   // ── Phase 4 課金: 月間チケット上限 (プランゲート) ──────────────────

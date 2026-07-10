@@ -7,6 +7,8 @@ import { createMemoryContext, type Store } from '@/data/adapters/memory';
 import type { Repos } from '@/data/ports/unit-of-work';
 import { __resetRateLimits } from '@/lib/rate-limit';
 import type { SubscriptionPlan } from '@/domain/types';
+// レート制限の上限値 (マジックナンバーを避け、テストの意図を定数から導出するため)
+import { INVITE_RATE_LIMIT_MAX } from '@/lib/invite';
 
 const TENANT_ID = 'tenant-1';
 const ADMIN_ID = 'u-admin-1';
@@ -132,13 +134,19 @@ describe('createInvitationsBulk', () => {
     expect([...store.invitations.values()]).toHaveLength(0);
   });
 
-  // Standard プランはスタッフ (agent) 10 名まで。8 名いる状態で agent を 5 名分一括招待すると、
-  // シート上限に達した行だけ失敗し、残りは成功する (部分成功を許容する設計)
-  it('シート上限に達した行だけ失敗し、それ以外は成功する (部分成功)', async () => {
+  // Standard プランはスタッフ (agent) 10 名まで。8 名いる状態 (残り枠 2) で 5 名分を
+  // 一括招待すると、1 件も発行せずバッチ全体を拒否する。
+  // /code-review ultra 指摘対応 (2026-07-10): 当初の実装は issueInvitation 内で行ごとに
+  // checkSeatAvailability を呼んでいたが、招待の発行自体は実ユーザー数を増やさないため、
+  // バッチ内の全行が同じ「空きあり」判定を受け取り、残り枠を超えて発行できてしまっていた
+  // (このテスト自身も当初は okCount > 0 という弱いアサーションで、その過剰発行を検出できて
+  // いなかった)。バッチ全体を先に見積もり、レート制限と同じ「1件も発行しない」方針に修正した。
+  it('シート残り枠を超えるバッチは1件も発行せず拒否する', async () => {
     seedTenant('standard');
     const now = new Date();
-    // Standard プランの上限 10 名のうち 8 名を既存エージェントで埋めておく
-    for (let i = 0; i < 8; i++) {
+    // Standard プランの上限 10 名のうち、既存エージェント 7 名 + admin (seedTenant で投入済み) の
+    // 計 8 名で埋めておく (checkSeatAvailability は agent + admin を数えるため、残り枠は 10-8=2)
+    for (let i = 0; i < 7; i++) {
       store.users.set(`agt-${i}`, {
         id: `agt-${i}`,
         email: `agt-${i}@example.com`,
@@ -154,34 +162,56 @@ describe('createInvitationsBulk', () => {
       await import('@/features/settings/actions/create-invitations-bulk');
 
     // 残り枠は 2 名分だが、5 名分の agent 招待を要求する
-    const result = await createInvitationsBulk(
-      makeForm(
-        'agent',
-        'a@example.com\nb@example.com\nc@example.com\nd@example.com\ne@example.com',
+    await expect(
+      createInvitationsBulk(
+        makeForm(
+          'agent',
+          'a@example.com\nb@example.com\nc@example.com\nd@example.com\ne@example.com',
+        ),
       ),
+    ).rejects.toThrow(/残り 2 枠/);
+    // 1 件も発行されていないこと (シート上限を超えて発行される回帰を防ぐ)
+    expect([...store.invitations.values()]).toHaveLength(0);
+  });
+
+  // 残り枠内に収まるバッチは全件成功する (拒否が過剰にならないことの確認)
+  it('シート残り枠内のバッチは全件成功する', async () => {
+    seedTenant('standard');
+    const now = new Date();
+    // Standard プランの上限 10 名のうち、既存エージェント 7 名 + admin (seedTenant で投入済み) の
+    // 計 8 名で埋めておく (checkSeatAvailability は agent + admin を数えるため、残り枠は 10-8=2)
+    for (let i = 0; i < 7; i++) {
+      store.users.set(`agt-${i}`, {
+        id: `agt-${i}`,
+        email: `agt-${i}@example.com`,
+        name: `担当 ${i}`,
+        passwordHash: 'x',
+        role: 'agent',
+        tenantId: TENANT_ID,
+        createdAt: now,
+        updatedAt: now,
+      });
+    }
+    const { createInvitationsBulk } =
+      await import('@/features/settings/actions/create-invitations-bulk');
+
+    // 残り枠 2 名分ちょうどを要求する
+    const result = await createInvitationsBulk(
+      makeForm('agent', 'a@example.com\nb@example.com'),
     );
 
-    expect(result.results).toHaveLength(5);
-    // 先頭 2 件だけ成功し、残り 3 件はシート上限で失敗する
-    // (checkSeatAvailability は実ユーザー数のみを見るため、招待発行だけでは枠は減らない。
-    //  それでも「上限に達している場合は拒否する」判定自体は毎回再評価されるため、
-    //  8 名 + 2 名 = 10 名 (上限) に達した後の判定はテストの意図どおり「上限到達」の一括判定になる)
-    const okCount = result.results.filter((r) => r.ok).length;
-    const failCount = result.results.filter((r) => !r.ok).length;
-    expect(okCount + failCount).toBe(5);
-    // 少なくとも 1 件は成功する (完全な上限到達ではなく、余裕がある状態から始めている)
-    expect(okCount).toBeGreaterThan(0);
-    // 失敗した行にはシート上限のエラーメッセージが付く
-    for (const r of result.results.filter((r) => !r.ok)) {
-      expect(r.error).toMatch(/メンバー上限/);
-    }
+    expect(result.results).toHaveLength(2);
+    expect(result.results.every((r) => r.ok)).toBe(true);
   });
 
   // バッチのメールアドレス件数がレート制限の残り枠を超える場合は、1 件も発行せずに拒否する
   it('レート制限の残り枠を超えるバッチは1件も発行せず拒否する', async () => {
     seedTenant('standard');
-    // 直近 1 時間に 29 件発行済みという状態を作る (上限 30 件のうち残り 1 件)
-    for (let i = 0; i < 29; i++) {
+    // /code-review ultra 指摘対応: マジックナンバーを避け、INVITE_RATE_LIMIT_MAX から
+    // 「残り 1 件」の状態を導出する (定数が変わってもテストの意図が保たれる)
+    const seededCount = INVITE_RATE_LIMIT_MAX - 1;
+    // 直近 1 時間に上限 - 1 件発行済みという状態を作る (残り枠は 1 件)
+    for (let i = 0; i < seededCount; i++) {
       await repos.invitations.create({
         tokenHash: `hash-${i}`,
         tenantId: TENANT_ID,
@@ -196,8 +226,8 @@ describe('createInvitationsBulk', () => {
     await expect(
       createInvitationsBulk(makeForm('requester', 'a@example.com\nb@example.com')),
     ).rejects.toThrow(/一度に発行できる招待は最大/);
-    // 事前に作った 29 件のまま増えていないこと (今回のバッチは 1 件も発行されない)
-    expect([...store.invitations.values()]).toHaveLength(29);
+    // 事前に作った件数のまま増えていないこと (今回のバッチは 1 件も発行されない)
+    expect([...store.invitations.values()]).toHaveLength(seededCount);
   });
 
   it('管理者以外は実行できない', async () => {

@@ -123,6 +123,11 @@ export async function getMonthlyTicketQuota(
 export interface SeatAvailability {
   available: boolean; // 空きがあれば true (新規追加してよい)
   limit: number; // このプランのスタッフ上限 (UI/エラー表示用。無制限なら -1)
+  // §7.1.1 フォローアップ (2026-07-10): 現時点で追加できる残り枠数 (無制限プランは Infinity)。
+  // 一括招待 (create-invitations-bulk.ts) がバッチ全体で何件の agent 招待を発行できるかを
+  // 事前に見積もるために追加した。1 件ずつの発行 (create-invitation.ts) は従来どおり
+  // available (真偽値) だけを見ればよい
+  remaining: number;
 }
 
 // 指定テナントのスタッフシートに空きがあるかを判定する。
@@ -139,15 +144,18 @@ export async function checkSeatAvailability(
   // フェイルセーフ: テナントが取得できない場合は判定を行わず「空きあり」を返し、
   // 後続の DB 操作 (FK 制約) 側で本来の失敗理由が表面化するのに任せる
   // (User.tenantId → Tenant は Prisma スキーマで cascade 削除のため通常発生しない)
-  if (!tenant) return { available: true, limit: -1 };
+  if (!tenant) return { available: true, limit: -1, remaining: Infinity };
   // このテナントの現在のスタッフ (agent + admin) 数を数える
   const currentUserCount = await repos.users.countByTenant(tenantId);
   // §7.2 Free trial 中なら Standard 相当のシート数を適用する
   const effectivePlan = resolveEffectivePlan(tenant.subscriptionPlan, tenant.trialEndsAt);
-  // 上限判定結果とプランの上限値を返す
+  // このプランのスタッフ上限 (無制限プランは Infinity)
+  const limit = getUserLimit(effectivePlan);
+  // 上限判定結果とプランの上限値・残り枠数を返す (残り枠は 0 未満にならないようクランプする)
   return {
     available: !isUserLimitReached(effectivePlan, currentUserCount),
-    limit: getUserLimit(effectivePlan),
+    limit,
+    remaining: Math.max(0, limit - currentUserCount),
   };
 }
 

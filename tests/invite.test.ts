@@ -34,6 +34,17 @@ describe('extractEmailCandidates', () => {
     expect(extractEmailCandidates('Email\na@example.com')).toEqual(['a@example.com']);
   });
 
+  // /code-review ultra 指摘対応: ヘッダ除外は入力の 1 行目だけに適用する。
+  // リストの途中に偶然「メール」とだけ書かれた行があっても、静かに無視せず候補として残す
+  // (そうしないと、その行の意図した中身がコピペミスで欠けていることに管理者が気づけない)
+  it('1行目以外の「メール」等はヘッダとして除外しない', () => {
+    expect(extractEmailCandidates('a@example.com\nメール\nb@example.com')).toEqual([
+      'a@example.com',
+      'メール',
+      'b@example.com',
+    ]);
+  });
+
   // 大文字小文字を無視した重複は除去し、最初に現れた表記を残す
   it('大文字小文字を無視して重複を除去する', () => {
     const raw = 'a@example.com\nA@Example.com\na@example.com';

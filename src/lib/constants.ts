@@ -4,8 +4,12 @@ import type { TicketStatus, TenantMode, Role, SettingsAuditAction } from '@/doma
 // Lite モードの 3 値型と型ガード関数を取り込み、mode-aware ラベル関数で使う
 import { isLiteStatus, type LiteStatus } from '@/domain/ticket-status';
 
-// チケット状態の英語キーに対応する日本語表示ラベル (Pro モード、現行 7 値)
-export const STATUS_LABELS: Record<string, string> = {
+// チケット状態の英語キーに対応する日本語表示ラベル (Pro モード、現行 7 値)。
+// /code-review ultra 指摘対応 (2026-07-10): Record<string, string> のままだと
+// TicketStatus (domain/types.ts) にキーを追加/変更してもコンパイラが検知できず、
+// resolveStatusFromLabel の as TicketStatus キャストが無効な文字列を作りかねなかった。
+// TicketStatus をキー型にすることで、両者の食い違いをコンパイル時に検出できるようにする
+export const STATUS_LABELS: Record<TicketStatus, string> = {
   New: '新規',
   Open: 'オープン',
   WaitingForUser: 'ユーザー待ち',

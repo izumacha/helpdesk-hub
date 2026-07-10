@@ -51,6 +51,15 @@ const PRIORITY_MAP: Record<string, Priority> = {
   低: 'Low', // 「低」→ Low
 };
 
+// エラーメッセージにセル値をそのまま埋め込むとレスポンスが肥大化しうるため、100 文字を超える場合は
+// 末尾を省略記号に置き換えて切り詰める共通ヘルパー (優先度・期限日・状況の 3 列で同じ処理が重複していたため抽出)
+function truncateForDisplay(value: string): string {
+  // 100 文字以内ならそのまま返す
+  if (value.length <= 100) return value;
+  // 100 文字目までを取り、末尾に省略記号を付ける
+  return `${value.slice(0, 100)}…`;
+}
+
 // YYYY-MM-DD 形式の日付文字列をローカル時刻の Date に変換する純粋関数
 // `new Date('YYYY-MM-DD')` は UTC 0 時として解釈されるため JST 環境では前日になる問題を回避する
 function parseDateLocal(dateStr: string): Date | null {
@@ -137,8 +146,7 @@ function validateImportRow(
   // Object.hasOwn を使い、Object.prototype 上のキー (__proto__ 等) を誤って通過させない
   if (priorityRaw && !Object.hasOwn(PRIORITY_MAP, priorityRaw)) {
     // エラーメッセージにセル値を反映する際は 100 文字に切り詰め、レスポンス肥大化を防ぐ
-    const priorityDisplay =
-      priorityRaw.length > 100 ? `${priorityRaw.slice(0, 100)}…` : priorityRaw;
+    const priorityDisplay = truncateForDisplay(priorityRaw);
     return {
       ok: false,
       message: `優先度の値が正しくありません: "${priorityDisplay}"（高・中・低 のいずれかを指定してください）`,
@@ -158,8 +166,7 @@ function validateImportRow(
       if (parsed === null) {
         // 変換に失敗した (不正な形式) 場合はエラーとして記録する
         // エラーメッセージにセル値を反映する際は 100 文字に切り詰め、レスポンス肥大化を防ぐ
-        const dueDateDisplay =
-          dueDateRaw.length > 100 ? `${dueDateRaw.slice(0, 100)}…` : dueDateRaw;
+        const dueDateDisplay = truncateForDisplay(dueDateRaw);
         return {
           ok: false,
           message: `期限日の形式が正しくありません: "${dueDateDisplay}"（YYYY-MM-DD 形式で入力してください）`,
@@ -187,12 +194,25 @@ function validateImportRow(
     const resolved = resolveStatusFromLabel(statusRaw, mode);
     if (resolved === null) {
       // 優先度と同じ方針: タイポや意図しない値を静かに既定値へフォールバックさせず、エラー行にする
-      const statusDisplay = statusRaw.length > 100 ? `${statusRaw.slice(0, 100)}…` : statusRaw;
+      const statusDisplay = truncateForDisplay(statusRaw);
       // 入力できる値をエラーメッセージに具体的に示す (現在モードのラベル一覧)
       const validLabels = getStatusLabelsForMode(mode).join('・');
       return {
         ok: false,
         message: `状況の値が正しくありません: "${statusDisplay}"（${validLabels} のいずれかを指定してください）`,
+      };
+    }
+    // /code-review ultra 指摘対応 (2026-07-10): 「エスカレーション」はステータスの一種に
+    // 見えるが、実際には escalatedAt/escalationReason の記録や全エージェントへの通知
+    // (escalateTicket, src/features/tickets/actions/update-ticket.ts) を伴う専用フローを
+    // 持つ。CSV インポートはこれらの付随情報を収集していないため、そのまま Escalated で
+    // 起票すると escalatedAt が null のまま「エスカレーション」バッジだけが付いた、
+    // 履歴の無い矛盾したチケットができてしまう。状況列からの直接起票は許可しない
+    if (resolved === 'Escalated') {
+      return {
+        ok: false,
+        message:
+          '状況「エスカレーション」は CSV インポートでは指定できません（対応中などの別の状況で取り込み、必要であれば取り込み後に画面からエスカレーションしてください）',
       };
     }
     status = resolved;

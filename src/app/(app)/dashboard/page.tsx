@@ -17,7 +17,9 @@ import { applyTabFilter } from '@/features/tickets/tab-filter';
 // データ層が公開しているチケット一覧フィルタ型 (件数取得の引数)
 import type { TicketListFilter } from '@/data/ports/ticket-repository';
 // 拠点の型 (Phase 4 多拠点。§4.1 フォローアップで Lite ダッシュボードにも拠点フィルタを追加する)
-import type { Location } from '@/domain/types';
+// TicketStatus 型 (statCards の型付けに使う。STATUS_LABELS が Record<TicketStatus, string> に
+// なったため、任意の string ではなく実際の TicketStatus であることを明示する必要がある)
+import type { Location, TicketStatus } from '@/domain/types';
 // §7.1.2 フォローアップ: テナントの実効プラン (Free trial 昇格込み) を解決する共通ヘルパー
 import { resolveTenantPlan } from '@/lib/tenant-plan';
 // メール取り込みがそのプランで許可されているか (Standard 以上。settings/page.tsx と同じ判定)
@@ -142,7 +144,8 @@ export default async function DashboardPage({ searchParams }: Props) {
   const nameMap = Object.fromEntries(assigneeNames.map((u) => [u.id, u.name]));
 
   // ステータスカードに表示する順序付き配列 (byStatus からそのまま取り出す)
-  const statCards = [
+  // status を TicketStatus 型で明示し、STATUS_LABELS[card.status] の型安全な参照を保つ
+  const statCards: { status: TicketStatus; count: number }[] = [
     { status: 'New', count: stats.byStatus.New },
     { status: 'Open', count: stats.byStatus.Open },
     { status: 'WaitingForUser', count: stats.byStatus.WaitingForUser },

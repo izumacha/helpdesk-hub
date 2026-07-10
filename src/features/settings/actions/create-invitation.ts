@@ -58,11 +58,16 @@ export async function issueInvitation(input: {
   role: Role; // 付与する権限 (requester | agent)
   email?: string; // 案内メール宛先 (未指定なら発行のみ)
   baseUrl: string; // 受諾ページ URL のベース (呼び出し側で resolveAppBaseUrl() 済みの値)
+  // /code-review ultra 指摘対応 (2026-07-10): 一括招待 (create-invitations-bulk.ts) は
+  // バッチ全体で 1 回だけシート枠を見積もってから呼び出すため、ここでの再チェックは
+  // 常に同じ currentUserCount (招待発行だけではユーザー数は増えない) を読み直すだけの
+  // 無駄な SELECT になる。true のときはこの関数内のシートチェックをスキップする
+  skipSeatCheck?: boolean;
 }): Promise<CreateInvitationResult> {
-  const { tenantId, invitedById, role, email, baseUrl } = input;
+  const { tenantId, invitedById, role, email, baseUrl, skipSeatCheck } = input;
 
   // Phase 4 課金: このロールがシートを消費する場合のみ上限を確認する (requester はシート対象外)
-  if (role === 'agent') {
+  if (role === 'agent' && !skipSeatCheck) {
     // テナントのプランを取得してスタッフシートの空き状況を確認する (受諾時と共通のロジック)
     const seat = await checkSeatAvailability(repos, tenantId);
     // 上限に達している場合は招待発行そのものを拒否する

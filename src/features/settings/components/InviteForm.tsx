@@ -4,12 +4,12 @@
 import { useState, useTransition } from 'react';
 // 招待リンク発行のサーバーアクション
 import { createInvitation } from '@/features/settings/actions/create-invitation';
-// 招待可能な権限の一覧と、その日本語ラベル (一元管理された定数)
-import { INVITABLE_ROLES, ROLE_LABELS } from '@/lib/constants';
 // 権限型 (requester | agent | admin)
 import type { Role } from '@/domain/types';
 // §7.1 フォローアップ: 複数メールアドレスをまとめて招待するフォーム (CSV/貼り付け経路)
 import { BulkInviteForm } from '@/features/settings/components/BulkInviteForm';
+// 権限選択ラジオボタン群 (SingleInviteForm / BulkInviteForm で共有する共通コンポーネント)
+import { RoleRadioGroup } from '@/features/settings/components/RoleRadioGroup';
 
 // タブの識別子 ('single' = 1件ずつ、既存の挙動 / 'bulk' = CSV・複数貼り付けでまとめて発行)
 type InviteMode = 'single' | 'bulk';
@@ -116,39 +116,7 @@ function SingleInviteForm() {
   return (
     <form onSubmit={handleSubmit} className="space-y-4">
       {/* 権限選択 (メンバー / 担当者) */}
-      <fieldset className="space-y-2">
-        {/* スクリーンリーダー向けにグループの目的を伝える凡例 */}
-        <legend className="text-sm font-medium text-slate-700">招待する人の権限</legend>
-        <div className="flex flex-wrap gap-3">
-          {INVITABLE_ROLES.map((r) => {
-            // この選択肢が現在選択中か
-            const isChecked = role === r;
-            return (
-              <label
-                key={r}
-                // 選択中はティールで強調する
-                className={`flex cursor-pointer items-center gap-2 rounded-lg border px-4 py-2 text-sm transition ${
-                  isChecked
-                    ? 'border-teal-400 bg-teal-50/60 ring-1 ring-teal-200'
-                    : 'border-slate-200 bg-white hover:border-teal-200'
-                }`}
-              >
-                {/* ラジオボタン本体 (name を揃えて単一選択にする) */}
-                <input
-                  type="radio"
-                  name="role"
-                  value={r}
-                  checked={isChecked}
-                  onChange={() => setRole(r)}
-                  className="h-4 w-4 accent-teal-600"
-                />
-                {/* 権限ラベル (メンバー / 担当者) */}
-                <span className="font-medium text-slate-800">{ROLE_LABELS[r]}</span>
-              </label>
-            );
-          })}
-        </div>
-      </fieldset>
+      <RoleRadioGroup legend="招待する人の権限" name="role" value={role} onChange={setRole} />
 
       {/* 宛先メール (任意) */}
       <div className="space-y-1">
