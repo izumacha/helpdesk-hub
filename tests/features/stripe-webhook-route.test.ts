@@ -9,6 +9,8 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { createMemoryContext, type Store } from '@/data/adapters/memory';
 import type { Repos, UnitOfWork } from '@/data/ports/unit-of-work';
+// システムアクター (actorId=null) の表示名。ハードコードせず一元管理定数と突き合わせる
+import { SETTINGS_AUDIT_SYSTEM_ACTOR_NAME } from '@/lib/constants';
 
 const TENANT = 'default-tenant';
 
@@ -106,6 +108,13 @@ describe('POST /api/webhooks/stripe', () => {
     const tenant = store.tenants.get(TENANT)!;
     expect(tenant.subscriptionPlan).toBe('free');
     expect(tenant.mode).toBe('lite');
+    // §4.3 フォローアップ: 自動ダウングレードによる mode 強制変更も監査ログに残ること
+    // (actorId は操作したユーザーが存在しないため null = システムアクター)
+    const auditLogs = await repos.settingsAudit.findAllByTenant({ tenantId: TENANT });
+    expect(auditLogs).toHaveLength(1);
+    expect(auditLogs[0].action).toBe('tenant_mode_update');
+    expect(auditLogs[0].actorId).toBeNull();
+    expect(auditLogs[0].actorName).toBe(SETTINGS_AUDIT_SYSTEM_ACTOR_NAME);
   });
 
   // 更新イベント (customer.subscription.updated) で Pro → Standard にダウングレードしても同様
@@ -156,6 +165,8 @@ describe('POST /api/webhooks/stripe', () => {
     const tenant = store.tenants.get(TENANT)!;
     expect(tenant.subscriptionPlan).toBe('pro');
     expect(tenant.mode).toBe('pro');
+    // mode が変わっていないので監査ログも記録されない (無関係なイベントで監査ログを埋めない)
+    expect(await repos.settingsAudit.findAllByTenant({ tenantId: TENANT })).toHaveLength(0);
   });
 
   // 既に Lite モードのテナントがダウングレードしても、mode は変更不要 (既に lite) のまま

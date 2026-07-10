@@ -16,6 +16,8 @@ import { getTutorialVideoUrl } from '@/lib/tutorial-video';
 import { applyTabFilter } from '@/features/tickets/tab-filter';
 // データ層が公開しているチケット一覧フィルタ型 (件数取得の引数)
 import type { TicketListFilter } from '@/data/ports/ticket-repository';
+// 拠点の型 (Phase 4 多拠点。§4.1 フォローアップで Lite ダッシュボードにも拠点フィルタを追加する)
+import type { Location } from '@/domain/types';
 
 // チュートリアルセクションに表示する「はじめかた」ステップ一覧 (Phase 3 オンボーディング)。
 // 3 ステップ固定。変更が必要なら以下の配列を直接編集する (各所に散らさない §6 定数の一元管理)。
@@ -81,6 +83,12 @@ export default async function DashboardPage({ searchParams }: Props) {
     // Phase 3 オンボーディング: エージェント向けにチュートリアルセクションを表示する
     // チケット総数が閾値未満のテナントに限定して表示する (使い始め期間のみ案内する)
     const totalTickets = isAgent ? await repos.tickets.count({}, tenantId) : 0;
+    // §4.1 フォローアップ: 多店舗テナントは Pro ダッシュボードと同様に拠点で絞り込めるようにする
+    // (Lite は既定モードであり、多拠点の SMB が最も多くこの画面を使うため Pro 限定のままでは
+    // §4.1 で埋めたはずのギャップが Lite テナントに対しては残ってしまう)
+    const locations = await repos.locations.listByTenant(tenantId);
+    // URL の locationId は当該テナントの拠点一覧に実在するものだけを有効とみなす (Pro 側と同じ検証)
+    const selectedLocationId = resolveSelectedLocationId(sp.locationId, locations);
     return (
       <LiteDashboard
         isAgent={isAgent}
@@ -88,6 +96,8 @@ export default async function DashboardPage({ searchParams }: Props) {
         tenantId={tenantId}
         now={now}
         showTutorial={isAgent && totalTickets < TUTORIAL_TICKET_THRESHOLD}
+        locations={locations}
+        selectedLocationId={selectedLocationId}
       />
     );
   }
@@ -96,10 +106,7 @@ export default async function DashboardPage({ searchParams }: Props) {
   // Phase 4 多拠点: テナントの拠点一覧を取得する (フィルタ UI の表示要否・選択肢に使う)
   const locations = await repos.locations.listByTenant(tenantId);
   // URL の locationId は当該テナントの拠点一覧に実在するものだけを有効とみなす
-  // (存在しない ID や他テナントの ID をそのまま渡しても集計スコープは tenantId が守るため
-  // 危険はないが、UI 上「フィルタが効いていないのに URL だけ残る」事故を避けるため検証する)
-  const selectedLocationId =
-    sp.locationId && locations.some((l) => l.id === sp.locationId) ? sp.locationId : undefined;
+  const selectedLocationId = resolveSelectedLocationId(sp.locationId, locations);
 
   // ダッシュボード用 3 指標 + 品質メトリクスを並列取得する
   // - byStatus: 7 状態それぞれの件数 (依頼者なら自身のチケットに限定)
@@ -167,43 +174,7 @@ export default async function DashboardPage({ searchParams }: Props) {
       </div>
 
       {/* Phase 4 多拠点: 拠点フィルタ (拠点が 1 つも登録されていないテナントには表示しない) */}
-      {locations.length > 0 && (
-        <div className="flex flex-wrap items-center gap-2">
-          <span className="text-xs font-semibold tracking-wider text-slate-500 uppercase">
-            拠点で絞り込み
-          </span>
-          {/* 「すべての拠点」ピル (未選択状態)。選択状態は色だけでなく aria-current と
-              チェックマークでも伝える (§7 a11y「色だけに意味を持たせない」) */}
-          <Link
-            href="/dashboard"
-            aria-current={selectedLocationId === undefined ? 'true' : undefined}
-            className={`rounded-full px-3 py-1 text-xs font-medium transition ${
-              selectedLocationId === undefined
-                ? 'bg-teal-700 text-white'
-                : 'bg-white text-slate-600 ring-1 ring-slate-200 hover:bg-slate-50'
-            }`}
-          >
-            {selectedLocationId === undefined && <span aria-hidden="true">✓ </span>}
-            すべての拠点
-          </Link>
-          {/* 拠点ごとのピル (同様に aria-current + チェックマークで選択状態を明示) */}
-          {locations.map((location) => (
-            <Link
-              key={location.id}
-              href={`/dashboard?locationId=${location.id}`}
-              aria-current={selectedLocationId === location.id ? 'true' : undefined}
-              className={`rounded-full px-3 py-1 text-xs font-medium transition ${
-                selectedLocationId === location.id
-                  ? 'bg-teal-700 text-white'
-                  : 'bg-white text-slate-600 ring-1 ring-slate-200 hover:bg-slate-50'
-              }`}
-            >
-              {selectedLocationId === location.id && <span aria-hidden="true">✓ </span>}
-              {location.name}
-            </Link>
-          ))}
-        </div>
-      )}
+      <LocationFilterPills locations={locations} selectedLocationId={selectedLocationId} />
 
       {/* ステータス別件数カード群 */}
       <section>
@@ -359,6 +330,71 @@ export default async function DashboardPage({ searchParams }: Props) {
   );
 }
 
+// URL の locationId が当該テナントの拠点一覧に実在するものかどうかを検証する共有ヘルパー。
+// (存在しない ID や他テナントの ID をそのまま渡しても集計スコープは tenantId が守るため危険は
+// ないが、UI 上「フィルタが効いていないのに URL だけ残る」事故を避けるため検証する)
+// /code-review ultra 指摘対応: LocationFilterPills と同様、Pro/Lite 両ブランチで書き写して
+// いた同一のバリデーション三項演算子を 1 箇所に集約する (§6 DRY)。
+function resolveSelectedLocationId(
+  rawLocationId: string | undefined, // URL クエリの生値 (未指定なら undefined)
+  locations: Location[], // テナントの拠点一覧 (実在確認に使う)
+): string | undefined {
+  // 生値が空、または一覧に存在しない ID なら「フィルタなし」扱いにする
+  return rawLocationId && locations.some((l) => l.id === rawLocationId) ? rawLocationId : undefined;
+}
+
+// 拠点フィルタのピル UI (Pro / Lite 両ダッシュボードで共有)。
+// §4.1 フォローアップでは Pro ダッシュボード専用の実装だったが、Lite (既定モード) の
+// ダッシュボードにも同じ UI を使うため 1 箇所に集約する (§6 DRY: 2 箇所目の複製が
+// 必要になった時点で共通化する方針に従う)。
+function LocationFilterPills({
+  locations,
+  selectedLocationId,
+}: {
+  locations: Location[]; // テナントの拠点一覧 (空なら何も描画しない)
+  selectedLocationId: string | undefined; // 現在選択中の拠点 ID (未選択は undefined)
+}) {
+  // 拠点が 1 つも登録されていないテナントには表示しない
+  if (locations.length === 0) return null;
+  return (
+    <div className="flex flex-wrap items-center gap-2">
+      <span className="text-xs font-semibold tracking-wider text-slate-500 uppercase">
+        拠点で絞り込み
+      </span>
+      {/* 「すべての拠点」ピル (未選択状態)。選択状態は色だけでなく aria-current と
+          チェックマークでも伝える (§7 a11y「色だけに意味を持たせない」) */}
+      <Link
+        href="/dashboard"
+        aria-current={selectedLocationId === undefined ? 'true' : undefined}
+        className={`rounded-full px-3 py-1 text-xs font-medium transition ${
+          selectedLocationId === undefined
+            ? 'bg-teal-700 text-white'
+            : 'bg-white text-slate-600 ring-1 ring-slate-200 hover:bg-slate-50'
+        }`}
+      >
+        {selectedLocationId === undefined && <span aria-hidden="true">✓ </span>}
+        すべての拠点
+      </Link>
+      {/* 拠点ごとのピル (同様に aria-current + チェックマークで選択状態を明示) */}
+      {locations.map((location) => (
+        <Link
+          key={location.id}
+          href={`/dashboard?locationId=${location.id}`}
+          aria-current={selectedLocationId === location.id ? 'true' : undefined}
+          className={`rounded-full px-3 py-1 text-xs font-medium transition ${
+            selectedLocationId === location.id
+              ? 'bg-teal-700 text-white'
+              : 'bg-white text-slate-600 ring-1 ring-slate-200 hover:bg-slate-50'
+          }`}
+        >
+          {selectedLocationId === location.id && <span aria-hidden="true">✓ </span>}
+          {location.name}
+        </Link>
+      ))}
+    </div>
+  );
+}
+
 /**
  * ミリ秒を「X 日 Y 時間」または「Y 時間 Z 分」という日本語の所要時間文字列に変換する。
  * ダッシュボードの品質メトリクスカードに使用する (issue-backlog #25)。
@@ -400,16 +436,22 @@ async function LiteDashboard({
   tenantId,
   now,
   showTutorial,
+  locations,
+  selectedLocationId,
 }: {
   isAgent: boolean; // 担当者 (agent/admin) かどうか。'mine' の絞り込み方が依頼者と変わる
   userId: string; // ログインユーザー ID ('mine' で自分の担当/起票を絞る)
   tenantId: string; // テナントスコープ (件数取得に必須)
   now: Date; // 期限超過判定の基準時刻
   showTutorial: boolean; // Phase 3: チュートリアルセクションを表示するかどうか
+  locations: Location[]; // §4.1 フォローアップ: テナントの拠点一覧 (拠点フィルタ UI の表示要否・選択肢)
+  selectedLocationId: string | undefined; // 選択中の拠点 ID (未選択は undefined = 全拠点)
 }) {
-  // 件数集計の共通土台。依頼者は自分のチケットのみ、担当者は全件 (creatorId 未指定)
+  // 件数集計の共通土台。依頼者は自分のチケットのみ、担当者は全件 (creatorId 未指定)。
+  // §4.1 フォローアップ: 拠点フィルタも Pro ダッシュボードと同様にここへ差し込む
   const baseFilter: TicketListFilter = {
     creatorId: isAgent ? undefined : userId,
+    locationId: selectedLocationId,
   };
   // 一覧タブと同一の条件を再利用して「自分の未対応」「期限切れ」のフィルタを組み立てる
   const mineFilter = applyTabFilter(baseFilter, 'mine', { isAgent, userId, now });
@@ -432,6 +474,9 @@ async function LiteDashboard({
           いま対応が必要な問い合わせをまとめています。タイルを押すと一覧を開けます。
         </p>
       </div>
+
+      {/* §4.1 フォローアップ: 多店舗テナント向けの拠点フィルタ (拠点未登録なら何も表示しない) */}
+      <LocationFilterPills locations={locations} selectedLocationId={selectedLocationId} />
 
       {/* 2 枚タイル (スマホでは縦 1 列、sm 以上で 2 列) */}
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">

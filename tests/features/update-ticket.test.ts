@@ -17,6 +17,19 @@ let sessionRole: 'requester' | 'agent' | 'admin' = 'agent';
 // テナントスコープ (テストは単一テナント前提で固定)
 const TENANT = 'default-tenant';
 
+// src/lib/webhook-fetch.ts (LINE push が内部で使う) は SSRF 対策の DNS 検証用 Dispatcher を使うため
+// undici の fetch を直接 import している。vi.stubGlobal('fetch', ...) だけでは差し替わらないため、
+// undici の fetch を globalThis.fetch (呼び出し側で差し替える) へ委譲するモックにする
+// (tests/features/attachments/post-comment-route.test.ts と同じ回避策)
+vi.mock('undici', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('undici')>();
+  return {
+    ...actual,
+    fetch: ((...args: Parameters<typeof globalThis.fetch>) =>
+      globalThis.fetch(...args)) as unknown as typeof actual.fetch,
+  };
+});
+
 // @/data モジュールを差し替え。getter で参照することで、テスト中の上書きを反映
 vi.mock('@/data', () => ({
   get repos() {
@@ -695,5 +708,101 @@ describe('updateTicketStatus メール通知 (メンバー改善 #3 回帰)', ()
     const notifications = [...store.notifications.values()];
     expect(notifications).toHaveLength(2);
     expect(notifications.every((n) => n.type === 'escalated')).toBe(true);
+  });
+});
+
+// §5.4 フォローアップ: これまで LINE push はコメント返信 (POST /api/tickets/[id]/comments) にしか
+// 実装されておらず、ステータス変更は依頼者が LINE 連携済みでもメールでしか届かなかった。
+// tests/features/attachments/post-comment-route.test.ts の LINE push テストと同じ観点
+// (連携済みなら送る / プランが許可しなければ送らない) をステータス変更でも固定する。
+describe('updateTicketStatus LINE 通知 (§5.4 フォローアップ)', () => {
+  // LINE 連携済み (lineUserId 設定済み + Pro プラン + TenantLineConfig あり) の依頼者には
+  // メールに加えて LINE Messaging API への push も行われる
+  it('LINE 連携済みの依頼者へステータス変更を push する', async () => {
+    const { ticketId } = await seed();
+    // LINE 連携は Pro/Enterprise 限定機能 (§6.1 料金プラン) なので、seed() 既定の free から昇格させる
+    const tenant = store.tenants.get(TENANT)!;
+    store.tenants.set(TENANT, { ...tenant, subscriptionPlan: 'pro' as const });
+    // 依頼者を LINE 連携済みにする
+    const requester = store.users.get('u-req-1')!;
+    const lineUserId = `U${'a'.repeat(32)}`;
+    store.users.set('u-req-1', { ...requester, lineUserId });
+    // テナントの LINE 連携設定 (アクセストークン) をシードする
+    const now = new Date();
+    store.lineConfigs.set('line_cfg_test', {
+      id: 'line_cfg_test',
+      tenantId: TENANT,
+      channelSecret: 'irrelevant-for-push',
+      channelAccessToken: 'test-access-token',
+      botUserId: `U${'b'.repeat(32)}`,
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    // fetch をモックして実際の外部送信は行わない
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      type: 'basic',
+      text: () => Promise.resolve('{}'),
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    try {
+      const { updateTicketStatus } = await import('@/features/tickets/actions/update-ticket');
+      await updateTicketStatus(ticketId, 'Open');
+
+      // LINE Messaging API へ 1 回 push されている
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      const [url, init] = fetchMock.mock.calls[0];
+      expect(url).toBe('https://api.line.me/v2/bot/message/push');
+      const body = JSON.parse(init.body);
+      expect(body.to).toBe(lineUserId);
+      // メールと同じくステータスラベルの日本語変換 (Pro モードなので New→Open は「新規」→「オープン」) を含む
+      expect(body.messages[0].text).toContain('新規 → オープン');
+    } finally {
+      // 他テストへ影響しないよう fetch のスタブを必ず元に戻す
+      vi.unstubAllGlobals();
+    }
+  });
+
+  // 回帰防止: LINE 連携は Pro/Enterprise 限定機能。TenantLineConfig 行が残っていても、
+  // テナントがダウングレード (または未アップグレード) であれば push しないこと
+  it('プランが LINE 連携を許可しない場合は push しない', async () => {
+    const { ticketId } = await seed();
+    // seed() 既定の free プランのまま (LINE 連携を許可しないプラン)
+    const requester = store.users.get('u-req-1')!;
+    const lineUserId = `U${'a'.repeat(32)}`;
+    store.users.set('u-req-1', { ...requester, lineUserId });
+    // テナントの LINE 連携設定自体は残っている状態を再現する (ダウングレード後も行は削除されない)
+    const now = new Date();
+    store.lineConfigs.set('line_cfg_test_free', {
+      id: 'line_cfg_test_free',
+      tenantId: TENANT,
+      channelSecret: 'irrelevant-for-push',
+      channelAccessToken: 'test-access-token',
+      botUserId: `U${'c'.repeat(32)}`,
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      type: 'basic',
+      text: () => Promise.resolve('{}'),
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    try {
+      const { updateTicketStatus } = await import('@/features/tickets/actions/update-ticket');
+      await updateTicketStatus(ticketId, 'Open');
+
+      // Free プランでは LINE push が送られない (メールは通常通り届く)
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(sentEmails).toHaveLength(1);
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 });

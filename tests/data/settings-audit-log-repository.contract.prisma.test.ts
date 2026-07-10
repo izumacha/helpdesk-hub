@@ -9,6 +9,7 @@
 import { describe, beforeAll, afterAll, beforeEach, expect, it } from 'vitest';
 import { PrismaClient } from '@/generated/prisma';
 import { buildPrismaRepos } from '@/data/adapters/prisma';
+import { SETTINGS_AUDIT_SYSTEM_ACTOR_NAME } from '@/lib/constants';
 
 const TENANT_A = 'default-tenant';
 const TENANT_B = 'tenant-b';
@@ -120,5 +121,23 @@ describe.runIf(SHOULD_RUN)('SettingsAuditLogRepository (prisma adapter)', () => 
     expect(logs).toHaveLength(actions.length);
     // 記録した全アクションが読み出せること (順序は新しい順なので集合として比較する)
     expect(new Set(logs.map((l) => l.action))).toEqual(new Set(actions));
+  });
+
+  // §4.3 フォローアップ (2026-07-10): Stripe Webhook 起因の自動プランダウングレードのように
+  // 操作したユーザーが存在しないシステム操作は actorId=null で記録する。SettingsAuditLog.actorId
+  // を NOT NULL から nullable に変更したマイグレーションが実 DB でも問題なく動作することを確認する
+  it('actorId が null (システム操作) でも記録・読み出しでき、操作者名は固定ラベルになる', async () => {
+    const repos = buildPrismaRepos(prisma);
+    await repos.settingsAudit.record({
+      tenantId: TENANT_A,
+      actorId: null,
+      action: 'tenant_mode_update',
+    });
+
+    const logs = await repos.settingsAudit.findAllByTenant({ tenantId: TENANT_A });
+    expect(logs).toHaveLength(1);
+    expect(logs[0].actorId).toBeNull();
+    // Prisma の include (actor リレーション) も null になるため固定のシステムラベルへ解決される
+    expect(logs[0].actorName).toBe(SETTINGS_AUDIT_SYSTEM_ACTOR_NAME);
   });
 });

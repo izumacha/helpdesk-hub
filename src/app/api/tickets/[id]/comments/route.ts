@@ -18,8 +18,13 @@ import { getEmailSender } from '@/lib/email';
 import { resolveAppBaseUrl } from '@/lib/app-url';
 // 依頼者宛「返信が届きました」メールの URL 構築 / 本文組み立て (純粋ヘルパー)
 import { buildTicketUrl, renderTicketReplyEmail } from '@/lib/ticket-email';
-// 依頼者宛「返信が届きました」LINE push の本文組み立て / 送信 (Phase 2 アウトバウンド LINE 返信)
-import { buildTicketReplyLineMessage, pushLineMessage } from '@/lib/line-push';
+// 依頼者宛「返信が届きました」LINE push の本文組み立て / 送信 (Phase 2 アウトバウンド LINE 返信)、
+// および「テナントで LINE push が使えるか (連携設定 + プランゲート)」を解決する共通ヘルパー
+import {
+  buildTicketReplyLineMessage,
+  pushLineMessage,
+  resolveLineAccessToken,
+} from '@/lib/line-push';
 // 返信メールに付与する決定的 Message-ID の生成 (スレッド継続の起点)
 import { buildReplyMessageId, resolveMessageIdDomain } from '@/lib/email-message-id';
 // エージェント権限判定 (agent または admin のとき true)
@@ -34,8 +39,6 @@ import { commentBodySchema } from '@/lib/validations/ticket';
 import { validateUploadedFiles } from '@/lib/validations/attachment';
 // MIME → 拡張子の対応表 (storageKey の組み立てで使う)
 import { MIME_TO_EXTENSION } from '@/domain/attachment';
-// LINE 連携機能のプランゲート (§6.1 料金プラン: Pro / Enterprise のみ利用可能)
-import { isLineIntegrationAllowed } from '@/lib/plan-guard';
 // Phase 4 課金: 添付累計サイズ上限チェック (チケット作成時添付と共有)
 import { checkAttachmentQuota } from '@/lib/tenant-plan';
 // Phase 4: Slack/Teams/Chatwork 外部通知のベストエフォート送信共通ヘルパー
@@ -358,18 +361,14 @@ async function sendReplyLineToRequester(args: {
   if (!creator.lineUserId) return;
 
   try {
-    // テナントの LINE 連携設定 (アクセストークン) を引く。未設定ならこのテナントは
-    // LINE push を使わないので何もしない (Pro/Enterprise 限定機能の任意設定)
-    const lineConfig = await repos.lineConfigs.findByTenant(tenantId);
-    if (!lineConfig) return;
-
-    // プランゲート: LINE 連携は Pro/Enterprise 限定機能 (§6.1 料金プラン)。受信側 Webhook
-    // (POST /api/inbound/line) は isLineIntegrationAllowed で強制しているが、この返信 push は
-    // TenantLineConfig の存在チェックのみで、プランダウングレード後も設定行が残っていれば
-    // 送信され続けてしまっていた (Stripe Webhook はプラン変更のみで LineConfig を削除しない)。
-    // UI 非表示に頼らずここでもサーバー側で強制する (§9)。
-    const tenant = await repos.tenants.findById(tenantId);
-    if (!tenant || !isLineIntegrationAllowed(tenant.subscriptionPlan)) return;
+    // テナントで LINE push が使えるか (連携設定 + プランゲート) を解決する。
+    // /code-review ultra 指摘対応: update-ticket.ts の sendStatusChangedLineToRequester と
+    // 判定ロジックが重複していたため、resolveLineAccessToken (src/lib/line-push.ts) へ共通化した。
+    // プランダウングレード後も TenantLineConfig の行自体は削除されないため (Stripe Webhook は
+    // プラン変更のみで LineConfig を削除しない)、UI 非表示に頼らずここでもサーバー側で強制する (§9)。
+    const accessToken = await resolveLineAccessToken(tenantId);
+    // null は「このテナントでは LINE push が使えない」を意味する (未設定 or プラン非対応)
+    if (!accessToken) return;
 
     // メール内リンクと同じベース URL 解決ロジックを再利用する (single source)
     const baseUrl = resolveAppBaseUrl();
@@ -382,7 +381,7 @@ async function sendReplyLineToRequester(args: {
       agentName: authorName,
     });
     // Messaging API へ push する (このテナント専用のアクセストークンを使う)
-    await pushLineMessage(lineConfig.channelAccessToken, creator.lineUserId, text);
+    await pushLineMessage(accessToken, creator.lineUserId, text);
   } catch (err) {
     // 送信失敗はサーバログに残すだけ (依頼者への通知はアプリ内にも残っている)
     console.error('[POST /api/tickets/[id]/comments] 依頼者宛 LINE 送信に失敗しました', err);

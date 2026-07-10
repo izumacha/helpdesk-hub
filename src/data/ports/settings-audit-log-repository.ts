@@ -9,15 +9,17 @@ import type { SettingsAuditAction } from '@/domain/types';
 // 監査ログを 1 件記録する際に渡す入力値
 export interface RecordSettingsAuditInput {
   tenantId: string; // 対象テナント
-  actorId: string; // 操作を行ったユーザー
+  // 操作を行ったユーザー。§4.3 フォローアップ (2026-07-10): Stripe Webhook 起因の自動プラン
+  // ダウングレードのようにユーザーが介在しないシステム操作は null (システムアクター) を渡す
+  actorId: string | null;
   action: SettingsAuditAction; // 実行された操作の種別
 }
 
 // 監査ログ一覧で使う拡張型 (関連する操作者名を含む)
 export interface SettingsAuditLogWithRefs {
   id: string; // 監査ログ ID
-  actorId: string; // 操作者 ID
-  actorName: string; // 操作者氏名 (表示用)
+  actorId: string | null; // 操作者 ID (null ならシステム操作)
+  actorName: string; // 操作者氏名 (表示用。システム操作は固定ラベルに解決済み)
   action: SettingsAuditAction; // 実行された操作の種別
   createdAt: Date; // 操作日時
 }

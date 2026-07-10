@@ -3,6 +3,8 @@ import type { SettingsAuditLogRepository } from '@/data/ports/settings-audit-log
 import type { PrismaLike } from './types';
 // 監査ログ系リポジトリ共通のページネーション上限・クランプ処理 (ticket-history-repository と共有)
 import { resolveAuditLimit } from '../audit-pagination';
+// actorId が null (システムによる自動変更) のときに表示する操作者名の一元管理定数
+import { SETTINGS_AUDIT_SYSTEM_ACTOR_NAME } from '@/lib/constants';
 
 // Prisma クライアントを使った設定変更監査ログリポジトリを生成する関数
 export function makeSettingsAuditLogRepo(db: PrismaLike): SettingsAuditLogRepository {
@@ -38,11 +40,13 @@ export function makeSettingsAuditLogRepo(db: PrismaLike): SettingsAuditLogReposi
         skip: offset, // ページネーション
       });
 
-      // Prisma 行をドメイン型 (SettingsAuditLogWithRefs) に変換して返す
+      // Prisma 行をドメイン型 (SettingsAuditLogWithRefs) に変換して返す。
+      // actorId が null (§4.3 フォローアップ: Stripe Webhook 起因の自動プランダウングレード等) の
+      // 場合、include の actor リレーションも null になるため固定ラベルへ解決する
       return rows.map((row) => ({
         id: row.id, // 監査ログ ID
-        actorId: row.actorId, // 操作者 ID
-        actorName: row.actor.name, // 操作者氏名 (include で取得済み)
+        actorId: row.actorId, // 操作者 ID (null ならシステム操作)
+        actorName: row.actor?.name ?? SETTINGS_AUDIT_SYSTEM_ACTOR_NAME, // 操作者氏名
         action: row.action, // 実行された操作の種別
         createdAt: row.createdAt, // 操作日時
       }));
