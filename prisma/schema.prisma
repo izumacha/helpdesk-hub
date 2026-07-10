@@ -498,10 +498,14 @@ model SettingsAuditLog {
   createdAt DateTime            @default(now()) // 操作日時
 
   tenantId String // 対象テナント (クロステナント漏洩防止のスコープ)
-  actorId  String // 操作を行ったユーザー
+  // 操作を行ったユーザー。§4.3 フォローアップ (2026-07-10): Stripe Webhook 起因の自動プラン
+  // ダウングレードで tenant.mode が強制的に 'pro' → 'lite' に戻される (§6 の
+  // shouldResetMode) 際、操作したユーザーが存在しない「システム操作」を表現できるよう
+  // null を許容する (null = システムによる自動変更)。
+  actorId  String?
 
   tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade) // テナント削除で監査ログも削除
-  actor  User   @relation(fields: [actorId], references: [id]) // 操作者
+  actor  User?  @relation(fields: [actorId], references: [id]) // 操作者 (null ならシステム操作)
 
   @@index([tenantId, createdAt]) // 監査ログ一覧 (テナントスコープ・新しい順) の検索用
 }

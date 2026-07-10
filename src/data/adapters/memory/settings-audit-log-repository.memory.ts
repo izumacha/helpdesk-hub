@@ -8,6 +8,8 @@ import { nextId, type Store } from './store';
 // 監査ログ系リポジトリ共通のページネーション上限・クランプ処理 (ticket-history-repository と共有。
 // Prisma 実装と同一の値を使うことでテスト/本番の挙動を一致させる)
 import { resolveAuditLimit } from '../audit-pagination';
+// actorId が null (システムによる自動変更) のときに表示する操作者名の一元管理定数
+import { SETTINGS_AUDIT_SYSTEM_ACTOR_NAME } from '@/lib/constants';
 
 // メモリストアを使った設定変更監査ログリポジトリを生成する関数
 export function makeSettingsAuditLogRepo(store: Store): SettingsAuditLogRepository {
@@ -37,12 +39,13 @@ export function makeSettingsAuditLogRepo(store: Store): SettingsAuditLogReposito
       for (const log of store.settingsAuditLogs.values()) {
         // 当該テナント以外は対象外 (クロステナント漏洩防止)
         if (log.tenantId !== filter.tenantId) continue;
-        // 操作者を取得する
-        const user = store.users.get(log.actorId);
+        // 操作者を取得する (actorId が null ならシステム操作なので lookup 自体をスキップする)
+        const user = log.actorId ? store.users.get(log.actorId) : undefined;
         rows.push({
           id: log.id, // 監査ログ ID
-          actorId: log.actorId, // 操作者 ID
-          actorName: user?.name ?? '不明', // 操作者氏名 (存在しない場合は「不明」)
+          actorId: log.actorId, // 操作者 ID (null ならシステム操作)
+          // 操作者氏名: actorId が null ならシステムアクター名、見つからなければ「不明」
+          actorName: log.actorId ? (user?.name ?? '不明') : SETTINGS_AUDIT_SYSTEM_ACTOR_NAME,
           action: log.action, // 実行された操作の種別
           createdAt: log.createdAt, // 操作日時
         });

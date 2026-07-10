@@ -6,6 +6,7 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { createMemoryContext, type Store } from '@/data/adapters/memory';
 import type { Repos } from '@/data/ports/unit-of-work';
+import { SETTINGS_AUDIT_SYSTEM_ACTOR_NAME } from '@/lib/constants';
 
 const TENANT_A = 'tenant-a';
 const TENANT_B = 'tenant-b';
@@ -96,5 +97,20 @@ describe('SettingsAuditLogRepository (memory)', () => {
 
     const logs = await repos.settingsAudit.findAllByTenant({ tenantId: TENANT_A });
     expect(logs[0].actorName).toBe('不明');
+  });
+
+  // §4.3 フォローアップ (2026-07-10): actorId=null (Stripe Webhook 起因の自動プランダウングレード
+  // のようにユーザーが介在しないシステム操作) は「不明」ではなく専用のシステムラベルに解決される
+  // (「不明」はデータ不整合、null は正常系という意味の違いを区別する)
+  it('actorId が null のときはシステムアクター名に解決される', async () => {
+    await repos.settingsAudit.record({
+      tenantId: TENANT_A,
+      actorId: null,
+      action: 'tenant_mode_update',
+    });
+
+    const logs = await repos.settingsAudit.findAllByTenant({ tenantId: TENANT_A });
+    expect(logs[0].actorId).toBeNull();
+    expect(logs[0].actorName).toBe(SETTINGS_AUDIT_SYSTEM_ACTOR_NAME);
   });
 });

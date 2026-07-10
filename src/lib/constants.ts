@@ -141,6 +141,11 @@ export const SETTINGS_AUDIT_ACTION_LABELS: Record<SettingsAuditAction, string> =
   inbound_token_regenerate: 'メール転送先アドレスを再発行',
 };
 
+// 設定変更監査ログで actorId が null (システムによる自動変更) のときに表示する操作者名。
+// §4.3 フォローアップ (2026-07-10): Stripe Webhook 起因の自動プランダウングレードのように、
+// ユーザーが介在しない設定変更を「誰が」欄でどう表示するかを一元管理する
+export const SETTINGS_AUDIT_SYSTEM_ACTOR_NAME = 'システム（自動）';
+
 // 通知種別の英語キーに対応する日本語表示ラベル
 // NotificationType enum (prisma/schema.prisma) に値を追加したらここも更新する
 export const NOTIFICATION_TYPE_LABELS: Record<string, string> = {

@@ -16,7 +16,10 @@ import type { SettingsAuditAction } from '@/domain/types';
 // (update-ticket.ts の外部通知失敗時と同じ「非クリティカルな副作用」の扱い方)
 export async function recordSettingsAudit(input: {
   tenantId: string; // 対象テナント (セッション由来のみを渡すこと。クロステナント防止)
-  actorId: string; // 操作を行ったユーザー ID
+  // 操作を行ったユーザー ID。§4.3 フォローアップ (2026-07-10): Stripe Webhook 起因の自動プラン
+  // ダウングレードのようにユーザーが介在しないシステム操作を記録する場合は null を渡す
+  // (SettingsAuditLogWithRefs.actorName が固定のシステムラベルに解決する)
+  actorId: string | null;
   action: SettingsAuditAction; // 実行された操作の種別
   logPrefix: string; // 記録失敗時のログ接頭辞 (呼び出し元を識別するため。例: '[create-location]')
 }): Promise<void> {

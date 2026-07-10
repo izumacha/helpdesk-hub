@@ -225,7 +225,9 @@ export interface TicketHistory {
 export interface SettingsAuditLog {
   id: string; // 監査ログ ID
   tenantId: string; // 対象テナント
-  actorId: string; // 操作を行ったユーザー ID
+  // 操作を行ったユーザー ID。§4.3 フォローアップ (2026-07-10): Stripe Webhook 起因の
+  // 自動プランダウングレードのようにユーザーが介在しないシステム操作を表現するため null を許容する
+  actorId: string | null;
   action: SettingsAuditAction; // 実行された操作の種別
   createdAt: Date; // 操作日時
 }

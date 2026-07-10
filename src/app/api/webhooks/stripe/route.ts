@@ -26,6 +26,8 @@ import { enforceRateLimit, RateLimitError } from '@/lib/rate-limit';
 import { isProModeAllowed } from '@/lib/plan-guard';
 // 課金プランの型
 import type { SubscriptionPlan } from '@/domain/types';
+// §4.3 フォローアップ: 設定変更監査ログへの記録を共通化するヘルパー
+import { recordSettingsAudit } from '@/lib/settings-audit';
 
 // Stripe Webhook が送ってくる主要イベント種別の定数 (typo 防止のため文字列リテラルを定数化)
 const STRIPE_EVENT_SUBSCRIPTION_CREATED = 'customer.subscription.created';
@@ -143,21 +145,36 @@ async function applyPlanChange(
     subscriptionPlan: SubscriptionPlan;
   },
 ): Promise<void> {
-  await uow.run(async (tx) => {
+  const shouldResetMode = await uow.run(async (tx) => {
     // トランザクション内で最新のテナント状態を読み直す (呼び出し元のスナップショットに頼らない)
     const tenant = await tx.tenants.findById(tenantId);
     // 呼び出し元で存在確認済みだが、念のためここでも安全側 (何もしない) に倒す
-    if (!tenant) return;
+    if (!tenant) return false;
     // Stripe 連携情報とプランを反映する
     await tx.tenants.updateStripeSubscription(tenantId, stripeFields);
     // 現在 Pro モードで運用中かつ、新プランが Pro モードを許可しないときだけモードを戻す
-    const shouldResetMode =
-      tenant.mode === 'pro' && !isProModeAllowed(stripeFields.subscriptionPlan);
-    if (shouldResetMode) {
+    const shouldReset = tenant.mode === 'pro' && !isProModeAllowed(stripeFields.subscriptionPlan);
+    if (shouldReset) {
       // Pro 専用機能を使えなくする (Lite モードへ強制的に戻す)
       await tx.tenants.updateMode(tenantId, 'lite');
     }
+    return shouldReset;
   });
+
+  // §4.3 フォローアップ (2026-07-10): モードが強制的に戻された場合は監査ログにも記録する。
+  // §4.3 で tenant_mode_update アクションを追加した際は管理者による手動切替 (update-tenant-mode.ts)
+  // しか対象にしておらず、Stripe イベント起因の自動ダウングレードは監査対象から漏れていた
+  // (「誰がいつ Pro モードに切り替えたか」を追えるはずの §4.3 の意図に反する)。
+  // ここは操作したユーザーが存在しないシステム操作のため actorId は null (システムアクター) を渡す。
+  // 監査ログの書き込み失敗は本来の処理 (プラン反映) の成否に影響させない (recordSettingsAudit の方針)
+  if (shouldResetMode) {
+    await recordSettingsAudit({
+      tenantId,
+      actorId: null,
+      action: 'tenant_mode_update',
+      logPrefix: '[stripe-webhook]',
+    });
+  }
 }
 
 // サブスクリプション作成・更新を処理する: テナントのプランと状態を最新に保つ
