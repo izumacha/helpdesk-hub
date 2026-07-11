@@ -15,7 +15,7 @@ import { buildCsvString } from '@/lib/csv';
 // ステータス日本語ラベル (mode-aware) と優先度ラベル
 import { getStatusLabel, PRIORITY_LABELS } from '@/lib/constants';
 // JST 日時フォーマット
-import { formatDateTimeJP, formatDateJP } from '@/lib/format-date';
+import { formatDateTimeJP, formatDateISO } from '@/lib/format-date';
 // TicketWithRefs 型 (一覧取得の戻り値) と TenantMode 型 (mode-aware ラベル用)
 // @/generated/prisma ではなく正準 @/domain/types から import する (lint ルール: no-restricted-imports)
 import type { TicketWithRefs, TenantMode } from '@/domain/types';
@@ -34,6 +34,9 @@ function ticketsToCsv(tickets: TicketWithRefs[], mode: TenantMode): string {
   // フォローアップ (2026-07-11): 「内容」列がエクスポートに無く、CSV インポート (「内容」列に
   // 対応済み) との往復ができなかった不備を解消するため、「件名」の直後に追加する
   // (CsvImportForm.tsx の SYSTEM_FIELDS と同じ列順に揃える)
+  // フォローアップ (2026-07-11 #2): 期限日列は従来「解決期限」という別名だったため、CSV インポート
+  // 側が既に使っている列名「期限日」に統一した (import-tickets.ts の headers.indexOf('期限日') /
+  // CsvImportForm.tsx の SYSTEM_FIELDS と同じ列名に揃える。詳細は下記データ行の値のコメント参照)
   const headers = [
     'ID',
     '件名',
@@ -44,7 +47,7 @@ function ticketsToCsv(tickets: TicketWithRefs[], mode: TenantMode): string {
     '拠点',
     '担当者',
     '起票者',
-    '解決期限',
+    '期限日',
     '起票日時',
     '更新日時',
   ];
@@ -69,8 +72,12 @@ function ticketsToCsv(tickets: TicketWithRefs[], mode: TenantMode): string {
     t.assignee?.name ?? '',
     // 起票者名 (まれに関連ユーザーが取れない場合を考慮してオプショナルチェーンを使う)
     t.creator?.name ?? '',
-    // 解決期限: 設定されていれば JST の年月日形式、未設定なら空文字
-    t.resolutionDueAt ? formatDateJP(t.resolutionDueAt) : '',
+    // 期限日 (解決期限): 設定されていれば JST の 'YYYY-MM-DD' 形式、未設定なら空文字。
+    // フォローアップ (2026-07-11 #2): 従来は formatDateJP (ja-JP ロケール、例 '2026/3/31'。
+    // 非ゼロ埋め) で出力しており、CSV インポートの parseDateLocal が要求する
+    // 'YYYY-MM-DD' 厳密形式と一致せず再インポートできなかった。formatDateISO に変更し、
+    // エクスポートした CSV をそのまま (列名・書式とも) 再インポートできるようにする。
+    t.resolutionDueAt ? formatDateISO(t.resolutionDueAt) : '',
     // 起票日時: JST の年月日 時分秒形式
     formatDateTimeJP(t.createdAt),
     // 更新日時: JST の年月日 時分秒形式

@@ -1,7 +1,29 @@
 // Vitest のテスト DSL
 import { describe, expect, it } from 'vitest';
-// 検証対象 (YYYY-MM-DD → JST 終端 Date 変換ヘルパー / JST 月初計算ヘルパー)
-import { endOfDayJST, startOfMonthJST } from '@/lib/format-date';
+// 検証対象 (YYYY-MM-DD → JST 終端 Date 変換ヘルパー / JST 月初計算ヘルパー / JST ISO日付整形ヘルパー)
+import { endOfDayJST, startOfMonthJST, formatDateISO } from '@/lib/format-date';
+
+// フォローアップ (2026-07-11 #2): CSV エクスポートの期限日を再インポート可能な 'YYYY-MM-DD' に
+// 整形するヘルパーの回帰テスト (endOfDayJST の逆変換に相当)
+describe('formatDateISO', () => {
+  // 通常の日付は 'YYYY-MM-DD' (ゼロ埋め済み) になる
+  it('returns zero-padded YYYY-MM-DD in JST', () => {
+    // 2026-03-05 10:00 UTC = 2026-03-05 19:00 JST
+    expect(formatDateISO(new Date('2026-03-05T10:00:00.000Z'))).toBe('2026-03-05');
+  });
+
+  // 月・日が1桁の場合もゼロ埋めされる (formatDateJP のような '2026/3/5' にはならない)
+  it('zero-pads single-digit month and day', () => {
+    // 2026-01-09 00:30 UTC = 2026-01-09 09:30 JST
+    expect(formatDateISO(new Date('2026-01-09T00:30:00.000Z'))).toBe('2026-01-09');
+  });
+
+  // UTC 日付をまたいで JST 側の日付が繰り上がるケース (endOfDayJST の逆変換と整合すること)
+  it('round-trips with endOfDayJST for a JST date boundary', () => {
+    const jstDate = endOfDayJST('2026-05-17')!;
+    expect(formatDateISO(jstDate)).toBe('2026-05-17');
+  });
+});
 
 // JST 終端 Date 変換の境界値テスト
 describe('endOfDayJST', () => {

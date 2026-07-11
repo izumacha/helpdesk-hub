@@ -93,6 +93,35 @@ describe('GET /api/tickets/export', () => {
     expect(csv).toContain('3階の複合機で紙が詰まって印刷できません');
   });
 
+  // 回帰テスト (フォローアップ 2026-07-11 #2): 期限日列は従来「解決期限」という別名・
+  // ja-JP ロケール書式 (例 '2026/3/5') で出力しており、CSV インポートが期待する列名「期限日」・
+  // 'YYYY-MM-DD' 厳密形式と一致せず往復できなかった。列名・書式ともインポート側と揃っていることを検証する
+  it('期限日列がインポートと同じ列名・YYYY-MM-DD形式で出力される', async () => {
+    await repos.tickets.create({
+      title: '複合機の紙詰まり',
+      body: '',
+      priority: 'Medium',
+      categoryId: null,
+      creatorId: AGENT_ID,
+      tenantId: TENANT,
+      status: 'Open',
+      // 月・日が1桁の日付でゼロ埋めが効いているか確認する
+      resolutionDueAt: new Date('2026-01-09T00:30:00.000Z'), // JST 2026-01-09 09:30
+    });
+
+    const { GET } = await import('@/app/api/tickets/export/route');
+    const res = await GET(new Request('http://localhost/api/tickets/export'));
+    const csv = await res.text();
+
+    // ヘッダーに CSV インポートと同じ列名「期限日」があること (旧列名「解決期限」ではない)
+    const headerLine = csv.replace(/^﻿/, '').split('\n')[0];
+    expect(headerLine).toContain('期限日');
+    expect(headerLine).not.toContain('解決期限');
+
+    // インポートの parseDateLocal が要求する厳密な 'YYYY-MM-DD' (ゼロ埋め済み) で出力されること
+    expect(csv).toContain('2026-01-09');
+  });
+
   // 未認証は 401
   it('未認証は401を返す', async () => {
     vi.doMock('@/lib/auth', () => ({ auth: async () => null }));
