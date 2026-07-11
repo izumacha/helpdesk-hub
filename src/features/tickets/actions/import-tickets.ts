@@ -94,6 +94,10 @@ interface ValidatedRow {
   priority: Priority; // 変換済みの優先度
   resolutionDueAt: Date | null; // 変換済みの期限日 (null = 未指定)
   locationName: string | null; // 拠点名 (trim 済み。null = 未指定。実在確認は DB を持つ呼び出し側で行う)
+  // フォローアップ (2026-07-11): カテゴリ名 (trim 済み。null = 未指定。実在確認は拠点と同じく
+  // DB を持つ呼び出し側で行う)。CSV エクスポートは「カテゴリ」列を出力するのにインポート側に
+  // 対応する読み取りが無く、エクスポート→編集→再インポートの往復でカテゴリ情報が失われていた
+  categoryName: string | null;
   // §3.1 フォローアップ (2026-07-10): 変換済みのステータス (null = 列なし/セル空 → 呼び出し側が
   // initialStatusForMode の既定値にフォールバックする)
   status: TicketStatus | null;
@@ -106,6 +110,7 @@ interface ColumnIndices {
   dueDateIndex: number; // 「期限日」列 (-1 = 未指定)
   priorityIndex: number; // 「優先度」列 (-1 = 未指定)
   locationIndex: number; // 「拠点」列 (-1 = 未指定)
+  categoryIndex: number; // 「カテゴリ」列 (-1 = 未指定。フォローアップ 2026-07-11)
   statusIndex: number; // 「状況」列 (-1 = 未指定。§3.1 フォローアップ)
 }
 
@@ -118,8 +123,15 @@ function validateImportRow(
   mode: TenantMode, // §3.1 フォローアップ: 「状況」列のラベル解釈を Lite/Pro で切り替えるために必要
 ): { ok: true; data: ValidatedRow } | { ok: false; message: string } {
   // 引数オブジェクトから各列インデックスを取り出す
-  const { titleIndex, bodyIndex, dueDateIndex, priorityIndex, locationIndex, statusIndex } =
-    indices;
+  const {
+    titleIndex,
+    bodyIndex,
+    dueDateIndex,
+    priorityIndex,
+    locationIndex,
+    categoryIndex,
+    statusIndex,
+  } = indices;
 
   // 件名セルを取り出す。前後の空白は除去する (空白だけのセルを「入力あり」と誤判定しないため)
   const titleRaw = (cells[titleIndex] ?? '').trim();
@@ -183,6 +195,12 @@ function validateImportRow(
   // 空文字 (列なし、またはセルが空) の場合は「未指定」として null にフォールバックする
   const locationName = locationRaw || null;
 
+  // カテゴリセルを取り出す (未指定なら null)。実在確認はテナントのカテゴリ一覧を持つ
+  // 呼び出し側で行う (拠点と同じ設計。この関数は DB アクセスを持たない純粋関数のまま保つ)
+  const categoryRaw = categoryIndex !== -1 ? (cells[categoryIndex] ?? '').trim() : '';
+  // 空文字 (列なし、またはセルが空) の場合は「未指定」として null にフォールバックする
+  const categoryName = categoryRaw || null;
+
   // §3.1 フォローアップ (2026-07-10): 「状況」セルをテナントの現在モードのラベルから TicketStatus へ
   // 変換する。既存の問い合わせ管理 Excel には既に完了済みの行が大量に混ざっているのが実情で、
   // これを解決できないと CSV インポートのたびに全件が「未対応/新規」になってしまい
@@ -223,7 +241,15 @@ function validateImportRow(
   // インポート時に ' を付加すると DB に汚染データが保存され、チケット件名が '=formula のように表示される。
   return {
     ok: true,
-    data: { title: titleRaw, body: bodyRaw, priority, resolutionDueAt, locationName, status },
+    data: {
+      title: titleRaw,
+      body: bodyRaw,
+      priority,
+      resolutionDueAt,
+      locationName,
+      categoryName,
+      status,
+    },
   };
 }
 
@@ -298,6 +324,9 @@ export async function importTickets(csvText: string): Promise<ImportTicketsResul
   const dueDateIndex = headers.indexOf('期限日'); // 解決期限 (YYYY-MM-DD 形式)
   const priorityIndex = headers.indexOf('優先度'); // 高 / 中 / 低
   const locationIndex = headers.indexOf('拠点'); // 拠点名 (Phase 4 多拠点。一覧/詳細/CSVエクスポートと対称の項目)
+  // フォローアップ (2026-07-11): カテゴリ名 (CSV エクスポートの「カテゴリ」列と対称の項目。
+  // 拠点と同じく名前解決が必要なため列インデックスだけここで取得する)
+  const categoryIndex = headers.indexOf('カテゴリ');
   const statusIndex = headers.indexOf('状況'); // 状況 (§3.1 フォローアップ。既存 Excel の完了済み行を再現する)
 
   // データ行 (2 行目以降) を取り出す
@@ -328,6 +357,16 @@ export async function importTickets(csvText: string): Promise<ImportTicketsResul
     }
   }
 
+  // 「カテゴリ」列がある場合のみテナントのカテゴリ一覧を取得し、カテゴリ名 → ID の対応表を作る
+  // (フォローアップ 2026-07-11。拠点と同じ「列が無ければ不要な DB アクセスを避ける」方針)
+  const categoriesByName = new Map<string, string>();
+  if (categoryIndex !== -1) {
+    const categories = await repos.categories.list(tenantId);
+    for (const category of categories) {
+      categoriesByName.set(category.name, category.id);
+    }
+  }
+
   // 集計用カウンタとエラーリストを初期化する
   let imported = 0;
   const errors: Array<{ row: number; message: string }> = [];
@@ -339,6 +378,7 @@ export async function importTickets(csvText: string): Promise<ImportTicketsResul
     dueDateIndex,
     priorityIndex,
     locationIndex,
+    categoryIndex,
     statusIndex,
   };
 
@@ -387,6 +427,7 @@ export async function importTickets(csvText: string): Promise<ImportTicketsResul
       priority,
       resolutionDueAt,
       locationName,
+      categoryName,
       status: parsedStatus,
     } = validation.data;
     // 「状況」列が未指定 (null) ならモードの既定初期ステータスにフォールバックする
@@ -412,6 +453,23 @@ export async function importTickets(csvText: string): Promise<ImportTicketsResul
       locationId = resolvedId;
     }
 
+    // カテゴリ名が指定されていれば ID に解決する。テナントに存在しないカテゴリ名は
+    // タイポや削除済みカテゴリの可能性が高く、無言で「未分類」にすると取り込んだデータの
+    // カテゴリ情報が消えたことに気づけないため、拠点と同じくエラー行として記録する
+    // (フォローアップ 2026-07-11)。
+    let categoryId: string | null = null;
+    if (categoryName !== null) {
+      const resolvedCategoryId = categoriesByName.get(categoryName);
+      if (!resolvedCategoryId) {
+        errors.push({
+          row: rowNum,
+          message: `カテゴリが見つかりません: "${categoryName}"（設定済みのカテゴリ名を指定してください）`,
+        });
+        continue;
+      }
+      categoryId = resolvedCategoryId;
+    }
+
     // Phase 4 課金: 残枠を使い切っていたらこの行以降は起票せずエラーとして記録する
     // (Web フォーム / メール / LINE 取り込みと同じ上限を CSV インポートにも適用する)
     if (quota.limited && quota.remaining <= 0) {
@@ -429,7 +487,8 @@ export async function importTickets(csvText: string): Promise<ImportTicketsResul
         title, // 件名
         body, // 本文 (空文字も許容)
         priority, // 優先度
-        categoryId: null, // CSV インポートではカテゴリ未指定 (後から設定できる)
+        // 「カテゴリ」列があれば名前解決済みの ID、無ければ未分類 (null。後から設定できる)
+        categoryId,
         creatorId, // セッションのユーザーが起票者になる
         tenantId, // テナントスコープを必ず付与する (クロステナント防止)
         // 「状況」列があればその値、無ければモードの既定初期ステータス (Lite: Open / Pro: New)
