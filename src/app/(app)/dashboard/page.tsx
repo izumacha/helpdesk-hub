@@ -145,6 +145,8 @@ export default async function DashboardPage({ searchParams }: Props) {
 
   // ステータスカードに表示する順序付き配列 (byStatus からそのまま取り出す)
   // status を TicketStatus 型で明示し、STATUS_LABELS[card.status] の型安全な参照を保つ
+  // フォローアップ (2026-07-11 #3): 「Closed」が抜けており、TicketRepository.dashboardStats が
+  // 集計している 7 状態のうち 1 状態が画面に一切表示されていなかった (下の Closed カードを参照)
   const statCards: { status: TicketStatus; count: number }[] = [
     { status: 'New', count: stats.byStatus.New },
     { status: 'Open', count: stats.byStatus.Open },
@@ -152,6 +154,9 @@ export default async function DashboardPage({ searchParams }: Props) {
     { status: 'InProgress', count: stats.byStatus.InProgress },
     { status: 'Escalated', count: stats.byStatus.Escalated },
     { status: 'Resolved', count: stats.byStatus.Resolved },
+    // フォローアップ (2026-07-11 #3): Resolved とは別の独立した終了状態のため追加する
+    // (ALLOWED_TRANSITIONS 上はどの状態からも直接 Closed へ遷移可能で、Resolved の別名ではない)
+    { status: 'Closed', count: stats.byStatus.Closed },
   ];
 
   // SLA 超過カードのトーン (件数 0 はニュートラル、>0 はロゼで強調)
@@ -175,7 +180,8 @@ export default async function DashboardPage({ searchParams }: Props) {
         <h2 className="mb-4 text-xs font-semibold tracking-wider text-slate-500 uppercase">
           ステータス別件数
         </h2>
-        <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-6">
+        {/* フォローアップ (2026-07-11 #3): statCards が 6→7 件になったため sm:4 / lg:7 列に調整 */}
+        <div className="grid grid-cols-2 gap-4 sm:grid-cols-4 lg:grid-cols-7">
           {statCards.map((card) => (
             // カードクリックで該当ステータスのフィルタ済み一覧へ遷移
             <Link
