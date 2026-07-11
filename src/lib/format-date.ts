@@ -13,6 +13,15 @@ export function formatDateJP(date: Date): string {
   return date.toLocaleDateString('ja-JP', { timeZone: 'Asia/Tokyo' });
 }
 
+// 日本時間の年月日を 'YYYY-MM-DD' 形式 (機械可読・ゼロ埋め済み) で文字列化する関数。
+// CSV エクスポート等、人間が読む formatDateJP (ja-JP ロケール、非ゼロ埋め) とは別に、
+// そのまま再パース可能な形式が必要な用途向け。
+// en-CA ロケールは yyyy-mm-dd 形式で返すため (endOfDayJST の Intl.DateTimeFormat と同じ手法)、
+// そのまま ISO 風の文字列として使える。
+export function formatDateISO(date: Date): string {
+  return date.toLocaleDateString('en-CA', { timeZone: 'Asia/Tokyo' });
+}
+
 // 'YYYY-MM-DD' 形式の文字列を「その日の JST 終端 (23:59:59.999)」を表す Date に変換する関数
 // - サーバが UTC/JST どちらで動いていても結果が変わらないよう、明示的に +09:00 オフセットを付与する
 // - 失敗 (形式不正・実在しない日付) 時は null を返す。呼び出し側は事前に Zod 検証済みの値を渡す前提
