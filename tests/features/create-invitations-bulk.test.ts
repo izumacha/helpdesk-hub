@@ -109,6 +109,35 @@ describe('createInvitationsBulk', () => {
     expect([...store.invitations.values()]).toHaveLength(3);
   });
 
+  // フォローアップ (2026-07-11): バッチ全体で監査ログは 1 件だけ (行ごとに積み上がらない)。
+  // importTickets が 200 件のインポートでも通知を 1 通にまとめるのと同じ「まとめて 1 回」方針。
+  it('成功した場合バッチ全体で監査ログが1件だけ記録される', async () => {
+    seedTenant('standard');
+    const { createInvitationsBulk } =
+      await import('@/features/settings/actions/create-invitations-bulk');
+
+    await createInvitationsBulk(
+      makeForm('requester', 'a@example.com\nb@example.com\nc@example.com'),
+    );
+
+    const auditLogs = await repos.settingsAudit.findAllByTenant({ tenantId: TENANT_ID });
+    expect(auditLogs).toHaveLength(1);
+    expect(auditLogs[0].action).toBe('invitation_issue');
+    expect(auditLogs[0].actorId).toBe(ADMIN_ID);
+  });
+
+  // バッチ全体が拒否され1件も発行されなかった場合は、何も付与していないため監査ログも記録しない
+  it('バッチ全体が拒否された場合は監査ログも記録されない', async () => {
+    seedTenant('standard');
+    const { createInvitationsBulk } =
+      await import('@/features/settings/actions/create-invitations-bulk');
+
+    await expect(createInvitationsBulk(makeForm('requester', '   \n  '))).rejects.toThrow();
+
+    const auditLogs = await repos.settingsAudit.findAllByTenant({ tenantId: TENANT_ID });
+    expect(auditLogs).toHaveLength(0);
+  });
+
   // メールアドレスを 1 件も指定しないとバッチ全体を拒否する (Zod の min(1) による)
   it('メールアドレスが1件も無い場合はエラーになる', async () => {
     seedTenant('standard');

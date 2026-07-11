@@ -173,6 +173,8 @@ export const SETTINGS_AUDIT_ACTION_LABELS: Record<SettingsAuditAction, string> =
   location_update: '拠点を更新',
   location_delete: '拠点を削除',
   inbound_token_regenerate: 'メール転送先アドレスを再発行',
+  // フォローアップ (2026-07-11)
+  invitation_issue: 'メンバー招待リンクを発行',
 };
 
 // 設定変更監査ログで actorId が null (システムによる自動変更) のときに表示する操作者名。

@@ -40,7 +40,11 @@ export type SettingsAuditAction =
   | 'location_create' // 拠点の新規作成
   | 'location_update' // 拠点の更新
   | 'location_delete' // 拠点の削除
-  | 'inbound_token_regenerate'; // メール取り込み用転送先アドレスの (再)発行
+  | 'inbound_token_regenerate' // メール取り込み用転送先アドレスの (再)発行
+  // フォローアップ (2026-07-11): SSO/LINE/通知チャネル設定と同じ「管理者による設定変更」でありながら
+  // 監査対象から漏れていた操作。招待リンク発行 (特に agent 権限付与) は新しい人物に社内の全チケットへ
+  // アクセスできる権限を与える操作であり、SSO 証明書変更等と同等以上にセキュリティ上重要
+  | 'invitation_issue'; // メンバー招待リンクの発行 (単発・一括まとめて 1 回)
 
 // Phase 4 外部通知チャネルの識別キー (Tenant.<channel>WebhookUrl 等・
 // <channel>LastFailureAt/Message 列に対応)。src/data/ports/tenant-repository.ts
