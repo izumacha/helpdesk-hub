@@ -306,6 +306,92 @@ describe('importTickets', () => {
     });
   });
 
+  // フォローアップ (2026-07-11): 「カテゴリ」列の名前解決
+  // CSV エクスポート (GET /api/tickets/export) が「カテゴリ」列を出力するのに、インポート側には
+  // 対応する読み取りが存在せず、エクスポート→編集→再インポートの往復でカテゴリ情報が消えて
+  // いた不備の回帰テスト (拠点列の回帰テストと同じ構成)。
+  describe('カテゴリ列 (フォローアップ 2026-07-11)', () => {
+    // テナントにカテゴリを 1 件登録しておくヘルパー
+    async function seedCategory(name: string): Promise<string> {
+      const category = await repos.categories.create({ tenantId: TENANT, name });
+      return category.id;
+    }
+
+    // カテゴリは Pro モード専用の概念 (TicketForm.tsx で Lite では非表示) のため、
+    // 名前解決が実際に動く以下2件は Pro モードに切り替えてから検証する
+    // (/code-review ultra 指摘対応 2026-07-11)。
+
+    // 「カテゴリ」列の値が既存のカテゴリ名と一致すれば categoryId が解決されて保存される
+    it('Pro テナントでカテゴリ名が一致すれば categoryId が解決されて保存される', async () => {
+      const tenant = store.tenants.get(TENANT)!;
+      store.tenants.set(TENANT, { ...tenant, mode: 'pro' });
+      const categoryId = await seedCategory('ハードウェア');
+      const importTickets = await loadAction();
+      const csv = `件名,カテゴリ\n複合機の紙詰まり,ハードウェア`;
+      const result = await importTickets(csv);
+
+      expect(result.imported).toBe(1);
+      expect(result.errors).toHaveLength(0);
+      const ticket = [...store.tickets.values()][0];
+      expect(ticket?.categoryId).toBe(categoryId);
+    });
+
+    // テナントに存在しないカテゴリ名 (タイポ等) はエラーとして記録され、無言で未分類にはならない
+    it('Pro テナントで存在しないカテゴリ名はエラーとして記録され起票されない', async () => {
+      const tenant = store.tenants.get(TENANT)!;
+      store.tenants.set(TENANT, { ...tenant, mode: 'pro' });
+      await seedCategory('ハードウェア');
+      const importTickets = await loadAction();
+      const csv = `件名,カテゴリ\n複合機の紙詰まり,存在しないカテゴリ`;
+      const result = await importTickets(csv);
+
+      expect(result.imported).toBe(0);
+      expect(result.errors).toHaveLength(1);
+      expect(result.errors[0].message).toContain('カテゴリが見つかりません');
+      expect(store.tickets.size).toBe(0);
+    });
+
+    // 「カテゴリ」列自体が無ければ従来どおり categoryId は null のまま (後方互換)
+    it('カテゴリ列が無ければ categoryId は null のまま取り込まれる', async () => {
+      const importTickets = await loadAction();
+      const csv = `件名\n複合機の紙詰まり`;
+      const result = await importTickets(csv);
+
+      expect(result.imported).toBe(1);
+      const ticket = [...store.tickets.values()][0];
+      expect(ticket?.categoryId).toBeNull();
+    });
+
+    // カテゴリ列があっても空セルなら未指定として扱い、エラーにはしない
+    it('カテゴリセルが空なら未指定として扱いエラーにしない', async () => {
+      await seedCategory('ハードウェア');
+      const importTickets = await loadAction();
+      const csv = `件名,カテゴリ\n複合機の紙詰まり,`;
+      const result = await importTickets(csv);
+
+      expect(result.imported).toBe(1);
+      expect(result.errors).toHaveLength(0);
+      const ticket = [...store.tickets.values()][0];
+      expect(ticket?.categoryId).toBeNull();
+    });
+
+    // 回帰テスト (/code-review ultra 指摘対応 2026-07-11): カテゴリは拠点と異なり Pro モード
+    // 専用の概念 (TicketForm.tsx で Lite では非表示、POST /api/tickets でも常に null に強制)。
+    // Lite テナント (seed() の既定) で有効なカテゴリ名を指定しても、名前解決を行わず categoryId は
+    // null のまま起票され、かつエラーにもならない (Lite では「カテゴリ」列自体が意味を持たないため)
+    it('Lite テナントではカテゴリ名が実在してもcategoryIdはnullのまま起票される', async () => {
+      await seedCategory('ハードウェア');
+      const importTickets = await loadAction();
+      const csv = `件名,カテゴリ\n複合機の紙詰まり,ハードウェア`;
+      const result = await importTickets(csv);
+
+      expect(result.imported).toBe(1);
+      expect(result.errors).toHaveLength(0);
+      const ticket = [...store.tickets.values()][0];
+      expect(ticket?.categoryId).toBeNull();
+    });
+  });
+
   // §3.1 フォローアップ (2026-07-10): 既存 Excel の完了済み行をそのまま取り込めるかを検証する
   describe('状況列 (§3.1 フォローアップ)', () => {
     // Lite テナント (seed() の既定) で「完了」を指定すると Closed で起票され、resolvedAt が

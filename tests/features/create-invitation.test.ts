@@ -149,4 +149,27 @@ describe('createInvitation', () => {
     const result = await createInvitation(makeForm('requester'));
     expect(result.url).toContain('/invite/');
   });
+
+  // フォローアップ (2026-07-11): 招待発行 (agent 権限付与になりうる) が監査ログに記録されること
+  it('発行成功時に監査ログへ記録される', async () => {
+    seedTenant('free');
+    const { createInvitation } = await import('@/features/settings/actions/create-invitation');
+
+    await createInvitation(makeForm('agent'));
+
+    const auditLogs = await repos.settingsAudit.findAllByTenant({ tenantId: TENANT_ID });
+    expect(auditLogs).toHaveLength(1);
+    expect(auditLogs[0].action).toBe('invitation_issue');
+    expect(auditLogs[0].actorId).toBe(ADMIN_ID);
+  });
+
+  // §4.2/§4.3 の共通方針: 監査ログの書き込みが失敗しても招待の発行自体は成功として扱われる
+  it('監査ログの書き込みが失敗しても発行自体は成功として扱われる', async () => {
+    seedTenant('free');
+    vi.spyOn(repos.settingsAudit, 'record').mockRejectedValueOnce(new Error('DB down'));
+    const { createInvitation } = await import('@/features/settings/actions/create-invitation');
+
+    const result = await createInvitation(makeForm('requester'));
+    expect(result.url).toContain('/invite/');
+  });
 });

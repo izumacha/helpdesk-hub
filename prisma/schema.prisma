@@ -69,6 +69,10 @@ enum SettingsAuditAction {
   location_update // 拠点の更新
   location_delete // 拠点の削除
   inbound_token_regenerate // メール取り込み用転送先アドレスの (再)発行
+  // フォローアップ (2026-07-11): 招待リンク発行 (特に agent 権限付与) は新しい人物に社内の全
+  // チケットへアクセスできる権限を与える操作であり、SSO/LINE/通知チャネル設定と同じ「管理者による
+  // 設定変更」として監査対象に含める
+  invitation_issue // メンバー招待リンクの発行 (単発・一括まとめて 1 回)
 }
 
 // FAQ 候補の状態

@@ -12,6 +12,8 @@
  *    (クロステナント招待の防止 / docs/smb-dx-pivot-plan.md §5.6)。
  *  - 発行は admin のみ (assertAdminSession)。
  *  - テナント単位の発行レート制限で招待スパム・誤連打を抑止する。
+ *  - フォローアップ (2026-07-11): agent 権限の招待は新しい人物に全チケットへのアクセスを
+ *    付与しうるため、発行成功時に SettingsAuditLog (invitation_issue) へ記録する。
  */
 
 // データ層の Composition Root (Prisma 直叩きを避けるための入口)
@@ -38,6 +40,8 @@ import { assertAdminSession } from '@/lib/role';
 import { createInvitationSchema } from '@/lib/validations/invite';
 // Phase 4 課金: プランごとのスタッフシート空き状況チェック (accept-invitation.ts と共有)
 import { checkSeatAvailability } from '@/lib/tenant-plan';
+// フォローアップ (2026-07-11): 設定変更監査ログへの記録共通ヘルパー (§4.2/§4.3 と同じ方式)
+import { recordSettingsAudit } from '@/lib/settings-audit';
 // 権限型 (issueInvitation の引数に使う)
 import type { Role } from '@/domain/types';
 
@@ -161,5 +165,22 @@ export async function createInvitation(formData: FormData): Promise<CreateInvita
   const baseUrl = resolveAppBaseUrl();
 
   // 共有ヘルパーで実際の発行処理を行う
-  return issueInvitation({ tenantId, invitedById: session.user.id, role, email, baseUrl });
+  const result = await issueInvitation({
+    tenantId,
+    invitedById: session.user.id,
+    role,
+    email,
+    baseUrl,
+  });
+
+  // フォローアップ (2026-07-11): 招待リンク発行 (agent 権限付与になりうる) を監査ログへ記録する。
+  // §4.2/§4.3 と同じ「操作が成功した後に呼び、記録失敗は本来の操作の成否に影響させない」方針
+  await recordSettingsAudit({
+    tenantId,
+    actorId: session.user.id,
+    action: 'invitation_issue',
+    logPrefix: '[create-invitation]',
+  });
+
+  return result;
 }

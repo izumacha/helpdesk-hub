@@ -36,6 +36,8 @@ import { bulkInviteEmailsSchema, invitableRoleSchema } from '@/lib/validations/i
 import { MAX_CSV_BYTES } from '@/lib/csv';
 // Phase 4 課金: プランごとのスタッフシート空き状況チェック (createInvitation と共有)
 import { checkSeatAvailability } from '@/lib/tenant-plan';
+// フォローアップ (2026-07-11): 設定変更監査ログへの記録共通ヘルパー (§4.2/§4.3 と同じ方式)
+import { recordSettingsAudit } from '@/lib/settings-audit';
 
 // 一括発行 1 行分の結果 (成功した URL、または失敗理由)
 export interface BulkInvitationRowResult {
@@ -146,6 +148,20 @@ export async function createInvitationsBulk(
       }
     }),
   );
+
+  // フォローアップ (2026-07-11): 招待リンク発行 (agent 権限付与になりうる) を監査ログへ記録する。
+  // importTickets が 200 件のインポートでも通知を 1 通にまとめるのと同じ方針で、1 行ごとではなく
+  // バッチ全体で 1 回だけ記録する (30 件の一括招待で監査ログが 30 行増えるのを避ける)。
+  // 1 件も成功しなかった (全行エラー) 場合は「実際には何も付与していない」ため記録しない。
+  const successCount = results.filter((r) => r.ok).length;
+  if (successCount > 0) {
+    await recordSettingsAudit({
+      tenantId,
+      actorId: session.user.id,
+      action: 'invitation_issue',
+      logPrefix: '[create-invitations-bulk]',
+    });
+  }
 
   // 行ごとの結果一覧を返す (画面で成功/失敗を一覧表示する。Promise.all は入力順を保つため
   // 行の順序は入力どおりに保たれる)

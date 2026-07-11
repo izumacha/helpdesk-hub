@@ -31,9 +31,13 @@ const MAX_EXPORT_ROWS = 10_000;
  */
 function ticketsToCsv(tickets: TicketWithRefs[], mode: TenantMode): string {
   // ヘッダー行: CSV エクスポートに含める列名を日本語で定義する
+  // フォローアップ (2026-07-11): 「内容」列がエクスポートに無く、CSV インポート (「内容」列に
+  // 対応済み) との往復ができなかった不備を解消するため、「件名」の直後に追加する
+  // (CsvImportForm.tsx の SYSTEM_FIELDS と同じ列順に揃える)
   const headers = [
     'ID',
     '件名',
+    '内容',
     '状況',
     '優先度',
     'カテゴリ',
@@ -51,6 +55,8 @@ function ticketsToCsv(tickets: TicketWithRefs[], mode: TenantMode): string {
     t.id,
     // 件名 (title)
     t.title,
+    // 内容 (body): CSV インジェクション対策は buildCsvString 側の escapeCSVCell で行う (§9)
+    t.body,
     // 状況: lite / pro モードに応じた日本語ラベル (getStatusLabel が一元管理)
     getStatusLabel(t.status, mode),
     // 優先度: PRIORITY_LABELS が一元管理する日本語ラベル
