@@ -60,6 +60,47 @@ function truncateForDisplay(value: string): string {
   return `${value.slice(0, 100)}…`;
 }
 
+// CSV セルを取り出し、trim して空文字なら null にする共通ヘルパー (拠点・カテゴリ列で共有)。
+// /code-review ultra 指摘対応 (2026-07-11): 「列インデックスが -1 でなければセルを取り出して
+// trim し、空文字は null に正規化する」処理が拠点・カテゴリで重複していたため共通化する (§6 DRY)。
+// 実在確認はテナントの一覧を持つ呼び出し側で行う (この関数は DB アクセスを持たない純粋関数のまま保つ)。
+function extractOptionalCell(cells: string[], index: number): string | null {
+  const raw = index !== -1 ? (cells[index] ?? '').trim() : '';
+  return raw || null;
+}
+
+// 「列が使われている場合のみ一覧取得して名前 → ID の Map を作る」処理を条件付きで行う共通ヘルパー
+// (拠点・カテゴリで共有)。/code-review ultra 指摘対応 (2026-07-11): ほぼ同じ「列が無ければ不要な
+// DB アクセスを避け、あれば一覧取得して Map 化する」処理が拠点・カテゴリで重複していたため共通化する
+// (§6 DRY)。呼び出し側で Promise.all にまとめることで、拠点とカテゴリ両方の列がある CSV でも
+// DB 往復を直列ではなく並列にできる (§8 パフォーマンス)。
+async function buildNameToIdMap(
+  shouldFetch: boolean, // 列が実際に使われる (インデックスが有効、かつ該当モードで許可されている) か
+  fetchItems: () => Promise<Array<{ id: string; name: string }>>,
+): Promise<Map<string, string>> {
+  if (!shouldFetch) return new Map();
+  const items = await fetchItems();
+  return new Map(items.map((item) => [item.name, item.id]));
+}
+
+// 名前を ID に解決し、見つからなければエラーメッセージを返す共通ヘルパー (拠点・カテゴリで共有)。
+// /code-review ultra 指摘対応 (2026-07-11): 「Map から引き、無ければタイポ等の可能性が高いとして
+// エラーメッセージを組み立てる」処理が拠点・カテゴリで重複していたため共通化する (§6 DRY)。
+function resolveNameToId(
+  name: string,
+  byName: Map<string, string>,
+  entityLabel: string, // エラーメッセージに使う日本語ラベル (例: '拠点' 'カテゴリ')
+): { ok: true; id: string } | { ok: false; message: string } {
+  const id = byName.get(name);
+  if (!id) {
+    return {
+      ok: false,
+      message: `${entityLabel}が見つかりません: "${name}"（設定済みの${entityLabel}名を指定してください）`,
+    };
+  }
+  return { ok: true, id };
+}
+
 // YYYY-MM-DD 形式の日付文字列をローカル時刻の Date に変換する純粋関数
 // `new Date('YYYY-MM-DD')` は UTC 0 時として解釈されるため JST 環境では前日になる問題を回避する
 function parseDateLocal(dateStr: string): Date | null {
@@ -189,17 +230,9 @@ function validateImportRow(
     }
   }
 
-  // 拠点セルを取り出す (未指定なら null)。実在確認はテナントの拠点一覧を持つ呼び出し側で行う
-  // (この関数は DB アクセスを持たない純粋関数のまま保つため、ここでは trim のみ)
-  const locationRaw = locationIndex !== -1 ? (cells[locationIndex] ?? '').trim() : '';
-  // 空文字 (列なし、またはセルが空) の場合は「未指定」として null にフォールバックする
-  const locationName = locationRaw || null;
-
-  // カテゴリセルを取り出す (未指定なら null)。実在確認はテナントのカテゴリ一覧を持つ
-  // 呼び出し側で行う (拠点と同じ設計。この関数は DB アクセスを持たない純粋関数のまま保つ)
-  const categoryRaw = categoryIndex !== -1 ? (cells[categoryIndex] ?? '').trim() : '';
-  // 空文字 (列なし、またはセルが空) の場合は「未指定」として null にフォールバックする
-  const categoryName = categoryRaw || null;
+  // 拠点セル・カテゴリセルを取り出す (未指定なら null。extractOptionalCell を共有)
+  const locationName = extractOptionalCell(cells, locationIndex);
+  const categoryName = extractOptionalCell(cells, categoryIndex);
 
   // §3.1 フォローアップ (2026-07-10): 「状況」セルをテナントの現在モードのラベルから TicketStatus へ
   // 変換する。既存の問い合わせ管理 Excel には既に完了済みの行が大量に混ざっているのが実情で、
@@ -346,26 +379,18 @@ export async function importTickets(csvText: string): Promise<ImportTicketsResul
   // (ここまでの検証を通過したリクエストのみ DB 参照するため、形式エラーで無駄なクエリを発生させない)
   const quota = await getMonthlyTicketQuota(tenantId);
 
-  // 「拠点」列がある場合のみテナントの拠点一覧を取得し、拠点名 → ID の対応表を作る。
-  // Web フォーム (locationId で直接指定) と異なり CSV は拠点名の文字列で来るため、名前解決が必要。
-  // 列が無ければ全テナントで発生する不要な DB アクセスを避けるためスキップする。
-  const locationsByName = new Map<string, string>();
-  if (locationIndex !== -1) {
-    const locations = await repos.locations.listByTenant(tenantId);
-    for (const location of locations) {
-      locationsByName.set(location.name, location.id);
-    }
-  }
-
-  // 「カテゴリ」列がある場合のみテナントのカテゴリ一覧を取得し、カテゴリ名 → ID の対応表を作る
-  // (フォローアップ 2026-07-11。拠点と同じ「列が無ければ不要な DB アクセスを避ける」方針)
-  const categoriesByName = new Map<string, string>();
-  if (categoryIndex !== -1) {
-    const categories = await repos.categories.list(tenantId);
-    for (const category of categories) {
-      categoriesByName.set(category.name, category.id);
-    }
-  }
+  // 「拠点」「カテゴリ」列が使われている場合のみ名前 → ID の対応表を作る (buildNameToIdMap を共有)。
+  // Web フォーム (locationId/categoryId で直接指定) と異なり CSV は名前の文字列で来るため名前解決が
+  // 必要。カテゴリは拠点と異なり Pro モード専用の概念 (TicketForm.tsx の `{!isLite && (...)}` /
+  // POST /api/tickets の `effectiveCategoryId = mode === 'lite' ? null : ...` 参照) のため、Lite
+  // テナントでは列があっても名前解決自体を行わない (categoryId は常に null にする)。
+  // 拠点・カテゴリは互いに独立した取得のため Promise.all で並列化する (§8 パフォーマンス)。
+  const [locationsByName, categoriesByName] = await Promise.all([
+    buildNameToIdMap(locationIndex !== -1, () => repos.locations.listByTenant(tenantId)),
+    buildNameToIdMap(categoryIndex !== -1 && mode !== 'lite', () =>
+      repos.categories.list(tenantId),
+    ),
+  ]);
 
   // 集計用カウンタとエラーリストを初期化する
   let imported = 0;
@@ -437,37 +462,32 @@ export async function importTickets(csvText: string): Promise<ImportTicketsResul
     // を共有し、「完了」の定義が呼び出し箇所ごとに食い違わないようにする)
     const resolvedAt = getCompletionStatuses(mode).includes(status) ? now : null;
 
-    // 拠点名が指定されていれば ID に解決する。テナントに存在しない拠点名は
-    // タイポや削除済み拠点の可能性が高く、無言で「拠点未設定」にすると
-    // 取り込んだデータの拠点情報が消えたことに気づけないため、エラー行として記録する。
+    // 拠点名が指定されていれば ID に解決する (resolveNameToId を共有)。テナントに存在しない
+    // 拠点名はタイポや削除済み拠点の可能性が高く、無言で「拠点未設定」にすると取り込んだデータの
+    // 拠点情報が消えたことに気づけないため、エラー行として記録する。
     let locationId: string | null = null;
     if (locationName !== null) {
-      const resolvedId = locationsByName.get(locationName);
-      if (!resolvedId) {
-        errors.push({
-          row: rowNum,
-          message: `拠点が見つかりません: "${locationName}"（設定済みの拠点名を指定してください）`,
-        });
+      const resolved = resolveNameToId(locationName, locationsByName, '拠点');
+      if (!resolved.ok) {
+        errors.push({ row: rowNum, message: resolved.message });
         continue;
       }
-      locationId = resolvedId;
+      locationId = resolved.id;
     }
 
-    // カテゴリ名が指定されていれば ID に解決する。テナントに存在しないカテゴリ名は
-    // タイポや削除済みカテゴリの可能性が高く、無言で「未分類」にすると取り込んだデータの
-    // カテゴリ情報が消えたことに気づけないため、拠点と同じくエラー行として記録する
-    // (フォローアップ 2026-07-11)。
+    // カテゴリ名が指定されていれば ID に解決する (resolveNameToId を共有。フォローアップ
+    // 2026-07-11)。ただしカテゴリは拠点と異なり Pro モード専用の概念であり、Lite テナントでは
+    // categoriesByName を意図的に空のまま保つ (上のマップ構築を参照)。そのため Lite では
+    // 「カテゴリ」列に値があっても解決を試みず null のまま起票する
+    // (Web フォーム/メール/LINE 取り込みの他の全経路と同じく categoryId は常に null)。
     let categoryId: string | null = null;
-    if (categoryName !== null) {
-      const resolvedCategoryId = categoriesByName.get(categoryName);
-      if (!resolvedCategoryId) {
-        errors.push({
-          row: rowNum,
-          message: `カテゴリが見つかりません: "${categoryName}"（設定済みのカテゴリ名を指定してください）`,
-        });
+    if (categoryName !== null && mode !== 'lite') {
+      const resolved = resolveNameToId(categoryName, categoriesByName, 'カテゴリ');
+      if (!resolved.ok) {
+        errors.push({ row: rowNum, message: resolved.message });
         continue;
       }
-      categoryId = resolvedCategoryId;
+      categoryId = resolved.id;
     }
 
     // Phase 4 課金: 残枠を使い切っていたらこの行以降は起票せずエラーとして記録する

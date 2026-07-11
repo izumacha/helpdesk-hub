@@ -317,8 +317,14 @@ describe('importTickets', () => {
       return category.id;
     }
 
+    // カテゴリは Pro モード専用の概念 (TicketForm.tsx で Lite では非表示) のため、
+    // 名前解決が実際に動く以下2件は Pro モードに切り替えてから検証する
+    // (/code-review ultra 指摘対応 2026-07-11)。
+
     // 「カテゴリ」列の値が既存のカテゴリ名と一致すれば categoryId が解決されて保存される
-    it('カテゴリ名が一致すれば categoryId が解決されて保存される', async () => {
+    it('Pro テナントでカテゴリ名が一致すれば categoryId が解決されて保存される', async () => {
+      const tenant = store.tenants.get(TENANT)!;
+      store.tenants.set(TENANT, { ...tenant, mode: 'pro' });
       const categoryId = await seedCategory('ハードウェア');
       const importTickets = await loadAction();
       const csv = `件名,カテゴリ\n複合機の紙詰まり,ハードウェア`;
@@ -331,7 +337,9 @@ describe('importTickets', () => {
     });
 
     // テナントに存在しないカテゴリ名 (タイポ等) はエラーとして記録され、無言で未分類にはならない
-    it('存在しないカテゴリ名はエラーとして記録され起票されない', async () => {
+    it('Pro テナントで存在しないカテゴリ名はエラーとして記録され起票されない', async () => {
+      const tenant = store.tenants.get(TENANT)!;
+      store.tenants.set(TENANT, { ...tenant, mode: 'pro' });
       await seedCategory('ハードウェア');
       const importTickets = await loadAction();
       const csv = `件名,カテゴリ\n複合機の紙詰まり,存在しないカテゴリ`;
@@ -359,6 +367,22 @@ describe('importTickets', () => {
       await seedCategory('ハードウェア');
       const importTickets = await loadAction();
       const csv = `件名,カテゴリ\n複合機の紙詰まり,`;
+      const result = await importTickets(csv);
+
+      expect(result.imported).toBe(1);
+      expect(result.errors).toHaveLength(0);
+      const ticket = [...store.tickets.values()][0];
+      expect(ticket?.categoryId).toBeNull();
+    });
+
+    // 回帰テスト (/code-review ultra 指摘対応 2026-07-11): カテゴリは拠点と異なり Pro モード
+    // 専用の概念 (TicketForm.tsx で Lite では非表示、POST /api/tickets でも常に null に強制)。
+    // Lite テナント (seed() の既定) で有効なカテゴリ名を指定しても、名前解決を行わず categoryId は
+    // null のまま起票され、かつエラーにもならない (Lite では「カテゴリ」列自体が意味を持たないため)
+    it('Lite テナントではカテゴリ名が実在してもcategoryIdはnullのまま起票される', async () => {
+      await seedCategory('ハードウェア');
+      const importTickets = await loadAction();
+      const csv = `件名,カテゴリ\n複合機の紙詰まり,ハードウェア`;
       const result = await importTickets(csv);
 
       expect(result.imported).toBe(1);

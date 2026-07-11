@@ -117,9 +117,7 @@ export async function GET(req: Request) {
     // 流量超過の場合のみ 429 を返す。それ以外は想定外エラーとして上位へ投げる
     if (err instanceof RateLimitError) {
       return new Response(
-        JSON.stringify({
-          error: 'エクスポートのリクエストが多すぎます。しばらくしてから再試行してください。',
-        }),
+        JSON.stringify({ error: 'エクスポートのリクエストが多すぎます。しばらくしてから再試行してください。' }),
         {
           status: 429,
           headers: {
