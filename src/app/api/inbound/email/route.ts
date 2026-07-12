@@ -60,6 +60,8 @@ import { isEmailInboundAllowed, resolveEffectivePlan } from '@/lib/plan-guard';
 import { notifyNewTicketOutbound } from '@/lib/outbound-notify';
 // Phase 4 課金: 月間チケット上限チェック (Web フォーム・CSV インポートと共有)
 import { getMonthlyTicketQuota } from '@/lib/tenant-plan';
+// 隔離理由の型 (§3.2 フォローアップ: 隔離記録の永続化に使う)
+import type { QuarantineReason } from '@/domain/types';
 
 // このルートは Node ランタイムで動かす (node:crypto / Prisma を使うため Edge では動かない)
 export const runtime = 'nodejs';
@@ -296,6 +298,29 @@ async function sendReceivedAck(args: {
   }
 }
 
+// §3.2 フォローアップ (2026-07-09): 隔離した受信メールを永続化する。
+// 以前は console.warn のサーバーログにしか残らず admin から一切確認できなかった (/quarantine
+// 一覧画面が唯一の閲覧手段になる)。呼び出し元の 202 レスポンスを遅延・失敗させないよう
+// ベストエフォートで記録する (SettingsAuditLog と同じ「記録失敗は本来の処理に影響させない」方針)。
+async function recordQuarantine(
+  tenantId: string,
+  reason: QuarantineReason,
+  email: { senderAddress: string; senderName: string; subject: string },
+): Promise<void> {
+  try {
+    await repos.quarantinedEmails.record({
+      tenantId,
+      reason,
+      senderAddress: email.senderAddress,
+      senderName: email.senderName,
+      subject: email.subject,
+    });
+  } catch (err) {
+    // 記録失敗はログのみ残す (隔離自体は既に確定しているため 202 応答は変えない)
+    console.error('[POST /api/inbound/email] 隔離記録の保存に失敗しました', err);
+  }
+}
+
 // POST /api/inbound/email : 受信メールを 1 件の問い合わせに変換する
 export async function POST(req: Request) {
   // 共有シークレットを環境変数から読む。未設定なら fail-closed (無防備な取り込み口を開けない)
@@ -380,6 +405,7 @@ export async function POST(req: Request) {
     console.warn('[POST /api/inbound/email] quarantined: email inbound not allowed for plan', {
       plan: effectivePlan,
     });
+    await recordQuarantine(tenant.id, 'plan_gate', email);
     return NextResponse.json({ status: 'quarantined' }, { status: 202 });
   }
 
@@ -409,6 +435,7 @@ export async function POST(req: Request) {
       dkim: authResults.dkim,
       dmarc: authResults.dmarc,
     });
+    await recordQuarantine(tenant.id, 'auth_fail', email);
     // 外部レスポンスには reason を含めない (SPF/DKIM ポリシー適用状態を推測させない §9)
     return NextResponse.json({ status: 'quarantined' }, { status: 202 });
   }
@@ -419,6 +446,7 @@ export async function POST(req: Request) {
   if (!sender || sender.tenantId !== tenant.id) {
     // 未知送信者は隔離扱い: 起票せず 202 を返す (プロバイダの再送ループを避けつつ無視する)
     console.warn('[POST /api/inbound/email] quarantined: unknown sender for tenant');
+    await recordQuarantine(tenant.id, 'unknown_sender', email);
     return NextResponse.json({ status: 'quarantined' }, { status: 202 });
   }
 
@@ -446,6 +474,8 @@ export async function POST(req: Request) {
     if (ticket) {
       // 送信者がエージェント/管理者か (通知扇形と RBAC の判定に使う)
       const senderIsAgent = isAgent(sender.role);
+      // 初回応答日時の記録に使う基準時刻 (Web フォーム経由コメント/comments/route.ts と同じ扱い)
+      const now = new Date();
       // 追記の権限: エージェント、または自分が起票したチケットのみ (第三者メンバーの混線/露出を防ぐ)。
       // 権限の無いメンバーは隔離扱い (202) にして無視する。
       // 本人性 (§9 / §8 リスク表): 共有シークレット + 取り込みトークン + 既知メンバー判定に加え、
@@ -455,6 +485,7 @@ export async function POST(req: Request) {
         console.warn(
           '[POST /api/inbound/email] quarantined: sender not allowed to append to thread',
         );
+        await recordQuarantine(tenant.id, 'thread_forbidden', email);
         return NextResponse.json({ status: 'quarantined' }, { status: 202 });
       }
       // コメント通知の送信先を決める (Web フォーム経由コメントと共通ロジック)
@@ -477,6 +508,14 @@ export async function POST(req: Request) {
           body: email.body, // メール本文
           tenantId: tenant.id, // 親チケットのテナント一致を Adapter が検証する
         });
+        // SLA: エージェントからのメール返信も初回応答として記録する (comments/route.ts と同じ扱い)。
+        // ここを漏らすと、メール経由で最初に返信したチケットが SLA 上「未応答」のまま扱われ、
+        // 品質メトリクス (平均初回応答時間) からも永久に除外されてしまう。
+        // 依頼者自身の返信は「応答」ではないため対象外。既に記録済みなら上書きしない
+        // (2 回目以降のエージェント返信で初回応答日時が後ろにズレるのを防ぐ)。
+        if (senderIsAgent && !ticket.firstRespondedAt) {
+          await r.tickets.markFirstResponded(ticket.id, now, tenant.id);
+        }
         // この受信メール自身の Message-ID も対応表へ登録する (返信の連鎖を辿れるように)
         if (email.messageId) {
           await r.emailThreads.register({
@@ -542,6 +581,7 @@ export async function POST(req: Request) {
     console.warn('[POST /api/inbound/email] quarantined: monthly ticket quota reached', {
       plan: effectivePlan,
     });
+    await recordQuarantine(tenant.id, 'quota_exceeded', email);
     return NextResponse.json({ status: 'quarantined' }, { status: 202 });
   }
 

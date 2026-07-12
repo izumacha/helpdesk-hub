@@ -32,20 +32,30 @@ export default function EmailIntegrationHelpPage() {
           {/* 流れを視覚的に表現する */}
           <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:gap-4">
             <div className="flex-1 rounded-lg bg-slate-50 p-3 text-center">
-              <span className="text-lg" aria-hidden="true">📧</span>
+              <span className="text-lg" aria-hidden="true">
+                📧
+              </span>
               <p className="mt-1 font-medium text-slate-700">依頼者がメールを送る</p>
               <p className="text-xs text-slate-500">今まで通りのメールアドレスへ転送</p>
             </div>
             {/* 矢印 */}
-            <span className="hidden text-slate-400 sm:block" aria-hidden="true">→</span>
+            <span className="hidden text-slate-400 sm:block" aria-hidden="true">
+              →
+            </span>
             <div className="flex-1 rounded-lg bg-slate-50 p-3 text-center">
-              <span className="text-lg" aria-hidden="true">⚙️</span>
+              <span className="text-lg" aria-hidden="true">
+                ⚙️
+              </span>
               <p className="mt-1 font-medium text-slate-700">自動でチケット化</p>
               <p className="text-xs text-slate-500">HelpDesk Hub が受信してチケットを作成</p>
             </div>
-            <span className="hidden text-slate-400 sm:block" aria-hidden="true">→</span>
+            <span className="hidden text-slate-400 sm:block" aria-hidden="true">
+              →
+            </span>
             <div className="flex-1 rounded-lg bg-slate-50 p-3 text-center">
-              <span className="text-lg" aria-hidden="true">✅</span>
+              <span className="text-lg" aria-hidden="true">
+                ✅
+              </span>
               <p className="mt-1 font-medium text-slate-700">担当者が対応</p>
               <p className="text-xs text-slate-500">問い合わせ一覧に表示される</p>
             </div>
@@ -114,19 +124,20 @@ export default function EmailIntegrationHelpPage() {
                 説明は、実装 (未登録送信者のメールはチケット化されない) と食い違っており、問い合わせが
                 実際には届いていないのに「そのうち処理される」と誤解させていた。実態どおりに書き換える。
                 /code-review ultra 指摘対応: 「記録も残りません」は言い過ぎ (サーバーログには残るが、
-                admin が確認できる形の記録は残らない) だったため、admin から見える結果に絞った文言にした */}
+                admin が確認できる形の記録は残らない) だったため、admin から見える結果に絞った文言にした。
+                §3.2 フォローアップ再訪 (2026-07-12): 「隔離メール」画面 (QuarantinedEmail の永続化)
+                を新設したため、admin から確認できる形の記録が実際に残るようになった。案内をこの
+                実装に合わせて更新する */}
             <li>
               組織内に登録済みのメールアドレスからのメールのみ自動でチケット化されます。
-              未登録のアドレスから送られたメールはチケット化されません。
-              社外の方や未登録のメンバーからの問い合わせは、登録済みメンバーに転送してもらうか、
-              先にメンバー登録（招待）を行ってください。
+              未登録のアドレスから送られたメールはチケット化されず、サイドバーの「隔離メール」画面から
+              送信者・件名・理由を確認できます。社外の方や未登録のメンバーからの問い合わせは、
+              登録済みメンバーに転送してもらうか、先にメンバー登録（招待）を行ってください。
             </li>
             <li>
               返信メールもスレッドとして既存チケットに追記されます（同じ件名・スレッドの場合）。
             </li>
-            <li>
-              大量のスパムメールが届く場合は管理者にご連絡ください。
-            </li>
+            <li>大量のスパムメールが届く場合は管理者にご連絡ください。</li>
           </ul>
         </div>
       </section>

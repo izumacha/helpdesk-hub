@@ -42,6 +42,7 @@ const navItems: {
   { href: '/notifications', label: '通知' },
   { href: '/settings/line', label: 'LINE連携' }, // Phase 2: 自分の LINE を連携する自己サービス (全ロール)
   { href: '/audit', label: '監査ログ', adminOnly: true }, // Phase 4: 管理者向け変更履歴
+  { href: '/quarantine', label: '隔離メール', adminOnly: true }, // §3.2 フォローアップ: 隔離した受信メール一覧
   { href: '/settings', label: '設定', adminOnly: true },
   { href: '/help', label: 'ヘルプ' }, // Phase 3: ヘルプセンター (全ロール表示)
 ];

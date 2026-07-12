@@ -46,6 +46,31 @@ export type SettingsAuditAction =
   // アクセスできる権限を与える操作であり、SSO 証明書変更等と同等以上にセキュリティ上重要
   | 'invitation_issue'; // メンバー招待リンクの発行 (単発・一括まとめて 1 回)
 
+// メール取り込みが起票せず隔離した理由。
+// prisma/schema.prisma の QuarantineReason enum および src/lib/constants.ts の
+// QUARANTINE_REASON_LABELS と常に同期すること。値を追加したら 3 箇所すべてを更新する。
+export type QuarantineReason =
+  | 'plan_gate' // メール取り込みが契約プランで許可されていない
+  | 'auth_fail' // 送信元ドメイン認証 (SPF/DKIM/DMARC) が enforce ポリシーで明示 fail
+  | 'unknown_sender' // 宛先テナントに所属しない送信者
+  | 'thread_forbidden' // 既知メンバーだが他人のチケットへの追記権限がない
+  | 'quota_exceeded'; // 月間チケット上限に到達済み
+
+// 隔離した受信メールの記録 1 件分 (DB/メモリストアが保持する完全な形。tenantId を含む)
+export interface QuarantinedEmail {
+  id: string; // 隔離記録 ID
+  tenantId: string; // 対象テナント
+  reason: QuarantineReason; // 隔離した理由
+  senderAddress: string; // 送信元メールアドレス
+  senderName: string | null; // 送信者名 (ヘッダから取れた場合のみ)
+  subject: string; // 件名
+  createdAt: Date; // 隔離した日時
+}
+
+// 隔離した受信メール 1 件分 (§3.2 フォローアップ: admin 向け一覧画面が表示する行。
+// 呼び出し側は既にテナントスコープで絞り込み済みのため tenantId を含まない)
+export type QuarantinedEmailRow = Omit<QuarantinedEmail, 'tenantId'>;
+
 // Phase 4 外部通知チャネルの識別キー (Tenant.<channel>WebhookUrl 等・
 // <channel>LastFailureAt/Message 列に対応)。src/data/ports/tenant-repository.ts
 // (recordOutboundChannelResult) と src/lib/outbound-notify.ts の唯一の参照元。
