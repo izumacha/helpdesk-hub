@@ -234,6 +234,23 @@ describe('updateTicketStatus (provider-agnostic)', () => {
     expect(t?.resolvedAt).toBeNull();
   });
 
+  // Resolved → Closed (解決済みチケットのクローズ) では resolvedAt を保持する。
+  // Pro の完了集合は ['Resolved'] のみで Closed を含まないため、'Closed' を除外しないと
+  // クローズ時に resolvedAt が消え、SLA 期限超過表示・解決件数/平均解決時間の集計漏れを招く。
+  it('preserves resolvedAt when closing a resolved ticket', async () => {
+    const { ticketId } = await seed();
+    const resolvedAt = new Date();
+    await repos.tickets.updateStatus(ticketId, 'Resolved', resolvedAt, TENANT);
+    const { updateTicketStatus } = await import('@/features/tickets/actions/update-ticket');
+
+    await updateTicketStatus(ticketId, 'Closed');
+
+    const t = await repos.tickets.findById(ticketId, TENANT);
+    expect(t?.status).toBe('Closed');
+    expect(t?.resolvedAt).toBeInstanceOf(Date);
+    expect(t?.resolvedAt?.getTime()).toBe(resolvedAt.getTime());
+  });
+
   // Resolved に関係しない遷移では resolvedAt は変化しない
   it('leaves resolvedAt untouched for transitions not involving Resolved', async () => {
     const { ticketId } = await seed();
