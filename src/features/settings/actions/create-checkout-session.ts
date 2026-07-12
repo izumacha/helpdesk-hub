@@ -17,6 +17,8 @@ import { resolveAppBaseUrl } from '@/lib/app-url';
 import type { SubscriptionPlan } from '@/domain/types';
 // 連打防止のための共通レート制限ヘルパー
 import { checkRateLimit } from '@/lib/rate-limit';
+// targetPlan の許可リスト検証スキーマ (standard | pro のみ)
+import { checkoutTargetPlanSchema } from '@/lib/validations/billing';
 
 // チェックアウトセッション作成の戻り値型
 interface CreateCheckoutResult {
@@ -50,6 +52,15 @@ export async function createCheckoutSession(
   // ここで弾かないと下のフォールバックで誤って Pro の Price ID が使われてしまうため明示的に拒否する。
   if (targetPlan === 'enterprise') {
     return { error: 'Enterprise プランは個別見積です。お問い合わせください。' };
+  }
+
+  // Server Action は POST エンドポイントとして直接呼び出せるため、TypeScript の引数型
+  // (SubscriptionPlan) はコンパイル時の契約に過ぎず実行時の保証にはならない。free/enterprise
+  // 以外の未知の値が来た場合に下のフォールバックで誤って Pro の Price ID が使われないよう、
+  // standard | pro の許可リストで検証する (§9 入力は信用しない)
+  const planCheck = checkoutTargetPlanSchema.safeParse(targetPlan);
+  if (!planCheck.success) {
+    return { error: planCheck.error.issues[0]?.message ?? 'プランの指定が正しくありません' };
   }
 
   // 対象プランの Stripe Price ID を取得する (ここに来る時点で standard | pro に絞られている)
