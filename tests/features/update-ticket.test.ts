@@ -251,6 +251,23 @@ describe('updateTicketStatus (provider-agnostic)', () => {
     expect(t?.resolvedAt?.getTime()).toBe(resolvedAt.getTime());
   });
 
+  // Closed → Open (クローズ済みチケットの再オープン) では resolvedAt をクリアする。
+  // Resolved→Closed で解決日時を保持するようにしたため、その後の再オープンで消し忘れると
+  // 稼働中チケットが SLA 解決済み表示・解決件数へ誤カウントされる。遷移先で判定して両
+  // 再オープン経路(Resolved→Open / Closed→Open)を一貫してクリアすることを担保する。
+  it('clears resolvedAt when reopening a closed ticket', async () => {
+    const { ticketId } = await seed();
+    // クローズ済みかつ解決日時ありの状態を用意する
+    await repos.tickets.updateStatus(ticketId, 'Closed', new Date(), TENANT);
+    const { updateTicketStatus } = await import('@/features/tickets/actions/update-ticket');
+
+    await updateTicketStatus(ticketId, 'Open');
+
+    const t = await repos.tickets.findById(ticketId, TENANT);
+    expect(t?.status).toBe('Open');
+    expect(t?.resolvedAt).toBeNull();
+  });
+
   // Resolved に関係しない遷移では resolvedAt は変化しない
   it('leaves resolvedAt untouched for transitions not involving Resolved', async () => {
     const { ticketId } = await seed();
