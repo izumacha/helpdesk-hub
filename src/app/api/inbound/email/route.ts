@@ -394,6 +394,21 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: '取り込み先が見つかりません' }, { status: 404 });
   }
 
+  // テナント単位で取り込み流量を制限する (シークレット漏洩時の起票スパムを抑える §9)。
+  // 超過時は 429 + Retry-After で返し、プロバイダの後刻リトライに委ねる。
+  // /code-review ultra 指摘対応: 以前はこのチェックがプランゲートより後にあり、プランゲート
+  // (隔離のみで console.warn だけの軽い分岐だった) には実質レート制限が効いていなかった。
+  // 隔離記録の永続化 (recordQuarantine) を追加した今、プランゲート分岐が DB 書き込みを伴う
+  // ようになったため、レート制限より前に置いたままだと共有シークレットを知る者がプラン未対応
+  // テナント宛に大量送信するだけで QuarantinedEmail テーブルへの書き込みを無制限に発生させられる
+  // (§9 DoS/リソース枯渇防止に反する)。他の隔離理由と同じくレート制限を先に通す順序に変更した。
+  const rateLimitResponse = checkRouteRateLimit(
+    `inbound-email:${tenant.id}`,
+    INBOUND_RATE_LIMIT,
+    '取り込みが混み合っています',
+  );
+  if (rateLimitResponse) return rateLimitResponse;
+
   // §7.2 Free trial 中 (Standard 相当) ならメール取り込みも解禁する。以降のプラン依存判定
   // (このゲートと月間チケット上限) は全てこの実効プランを使う
   const effectivePlan = resolveEffectivePlan(tenant.subscriptionPlan, tenant.trialEndsAt);
@@ -408,15 +423,6 @@ export async function POST(req: Request) {
     await recordQuarantine(tenant.id, 'plan_gate', email);
     return NextResponse.json({ status: 'quarantined' }, { status: 202 });
   }
-
-  // テナント単位で取り込み流量を制限する (シークレット漏洩時の起票スパムを抑える §9)。
-  // 超過時は 429 + Retry-After で返し、プロバイダの後刻リトライに委ねる
-  const rateLimitResponse = checkRouteRateLimit(
-    `inbound-email:${tenant.id}`,
-    INBOUND_RATE_LIMIT,
-    '取り込みが混み合っています',
-  );
-  if (rateLimitResponse) return rateLimitResponse;
 
   // 送信元ドメイン認証 (SPF/DKIM/DMARC) の検証 (§8 リスク表「送信元ドメイン検証」)。
   // プロバイダが算出した結果を消費し、ポリシーが 'enforce' のとき明示 'fail' なら隔離する。
