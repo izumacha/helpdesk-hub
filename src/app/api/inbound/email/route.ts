@@ -300,8 +300,11 @@ async function sendReceivedAck(args: {
 
 // §3.2 フォローアップ (2026-07-09): 隔離した受信メールを永続化する。
 // 以前は console.warn のサーバーログにしか残らず admin から一切確認できなかった (/quarantine
-// 一覧画面が唯一の閲覧手段になる)。呼び出し元の 202 レスポンスを遅延・失敗させないよう
-// ベストエフォートで記録する (SettingsAuditLog と同じ「記録失敗は本来の処理に影響させない」方針)。
+// 一覧画面が唯一の閲覧手段になる)。記録の書き込み自体は待ち合わせる (呼び出し元は await する) が、
+// 記録失敗が隔離レスポンス自体を失敗させないようにする (SettingsAuditLog と同じ「記録失敗は
+// 本来の処理に影響させない」方針。§9 fail-safe)。
+// /code-review ultra 指摘対応: 当初「レスポンスを遅延させない」とも書いていたが、実際には
+// await しているため応答は記録の完了を待つ。誤解を招く記述だったため実態に合わせて修正した。
 async function recordQuarantine(
   tenantId: string,
   reason: QuarantineReason,

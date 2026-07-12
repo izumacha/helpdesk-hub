@@ -123,7 +123,11 @@ export default async function QuarantinePage({ searchParams }: Props) {
                   </td>
                   <td className="px-4 py-3 text-sm text-slate-700">
                     {/* 送信者名 (取れなかった場合はアドレスのみ) + アドレス */}
-                    <div className="font-medium text-slate-900">{log.senderName}</div>
+                    {/* 送信者名が取れなかった場合 (null) はアドレスのみでも意味が通るよう
+                        フォールバック文言を表示する (/code-review ultra 指摘対応) */}
+                    <div className="font-medium text-slate-900">
+                      {log.senderName ?? '(送信者名なし)'}
+                    </div>
                     <div className="text-xs text-slate-500">{log.senderAddress}</div>
                   </td>
                   <td className="max-w-xs px-4 py-3 text-sm text-slate-700">
