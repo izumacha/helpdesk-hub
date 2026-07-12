@@ -2,6 +2,8 @@
 
 // ローディング状態を管理する
 import { useState } from 'react';
+// Blob ダウンロードの共通処理 (CsvExportButton / AuditExportButton と共有。§6 DRY)
+import { triggerBlobDownload } from '@/lib/blob-download';
 
 /**
  * 監査ログの全履歴を CSV でダウンロードするボタン。
@@ -13,10 +15,6 @@ import { useState } from 'react';
  *
  * ダウンロード処理・エラーハンドリングは CsvExportButton (tickets/export) と同じ設計を踏襲する。
  */
-
-// Firefox では link.click() 直後に revokeObjectURL() を呼ぶとダウンロードが
-// キャンセルされることがある。ブラウザがダウンロードを開始するまでの待機時間 (ミリ秒)。
-const REVOKE_URL_DELAY_MS = 100;
 
 export function AuditFullExportButton() {
   // ダウンロード中かどうかを管理する (多重クリック防止のため)
@@ -49,20 +47,7 @@ export function AuditFullExportButton() {
       // 整数以外の値は信頼せず既定値にフォールバックする
       const totalLimit = Number.isFinite(limitNum) ? limitNum.toLocaleString('ja-JP') : '10,000';
       const blob = await res.blob();
-      const url = URL.createObjectURL(blob);
-      const revokeTimer = setTimeout(() => URL.revokeObjectURL(url), REVOKE_URL_DELAY_MS);
-      try {
-        const link = document.createElement('a');
-        link.href = url;
-        link.download = `audit-log-full-${new Date().toISOString().slice(0, 10)}.csv`;
-        document.body.appendChild(link);
-        link.click();
-        document.body.removeChild(link);
-      } catch (domErr) {
-        clearTimeout(revokeTimer);
-        URL.revokeObjectURL(url);
-        throw domErr;
-      }
+      triggerBlobDownload(blob, `audit-log-full-${new Date().toISOString().slice(0, 10)}.csv`);
       // 上限件数で打ち切られていた場合はユーザーに警告を表示する
       if (truncated) {
         alert(

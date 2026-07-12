@@ -1,5 +1,6 @@
-// セッション取得
-import { auth } from '@/lib/auth';
+// 「ログイン済み・admin・自テナント」の共通ゲート (LINE/SSO 設定の認可ゲートと同じ実装を共有する。
+// /code-review ultra 指摘対応: このルートだけ auth() + セッションチェックを手書きで複製していた)
+import { assertTenantAdmin } from '@/lib/tenant-admin-gate';
 // 監査ログ機能のプランゲート (§6.1 料金プラン: Pro / Enterprise のみ利用可能)
 import { isAuditLogAllowed } from '@/lib/plan-guard';
 // テナントの現在プランを解決する共通ヘルパー
@@ -22,6 +23,15 @@ import { auditFeedRowsToCsv } from '@/features/audit/audit-csv';
 // 上限を設ける (§8 パフォーマンス / §9 DoS 防止。GET /api/tickets/export の
 // MAX_EXPORT_ROWS と同じ考え方)。
 const MAX_AUDIT_EXPORT_ROWS = 10_000;
+// /code-review ultra 指摘対応: ページングループは 1 ページあたり AUDIT_MAX_LIMIT 件ずつ蓄積するため、
+// MAX_AUDIT_EXPORT_ROWS が AUDIT_MAX_LIMIT の倍数でないと「上限をちょうど超えた」という前提の
+// 分岐 (下記ループの `logs.length &gt; MAX_AUDIT_EXPORT_ROWS`) が意図と異なる件数で発火しうる。
+// モジュール読み込み時に 1 度だけ検査して fail-fast する (audit/page.tsx の PAGE_LIMIT 検査と同じ考え方)
+if (MAX_AUDIT_EXPORT_ROWS % AUDIT_MAX_LIMIT !== 0) {
+  throw new Error(
+    'MAX_AUDIT_EXPORT_ROWS が AUDIT_MAX_LIMIT の倍数ではありません (audit/export/route.ts の設定ミス)',
+  );
+}
 
 /**
  * GET /api/audit/export
@@ -40,25 +50,18 @@ const MAX_AUDIT_EXPORT_ROWS = 10_000;
  * - 最大 MAX_AUDIT_EXPORT_ROWS 件の上限あり
  */
 export async function GET() {
-  // セッション取得 (未認証は 401)
-  const session = await auth();
-  if (!session?.user?.id || !session.user.tenantId) {
-    return new Response(JSON.stringify({ error: '認証が必要です' }), {
-      status: 401,
+  // 「ログイン済み・admin・自テナント」をまとめて検証する (画面側の /audit と同じく role の
+  // 直接比較。isAgent ではなく admin 限定にする意図的な設計は assertTenantAdmin 側で担保する)
+  const gate = await assertTenantAdmin();
+  if (!gate.ok) {
+    // 未認証 (セッション/tenantId 欠落) と権限不足を区別してステータスコードを分ける
+    const status = gate.error === '認証が必要です' ? 401 : 403;
+    return new Response(JSON.stringify({ error: gate.error }), {
+      status,
       headers: { 'Content-Type': 'application/json' },
     });
   }
-
-  const userId = session.user.id;
-  const tenantId = session.user.tenantId;
-
-  // 監査ログ画面と同じく admin 限定 (isAgent ではなく role の直接比較。意図的な設計)
-  if (session.user.role !== 'admin') {
-    return new Response(JSON.stringify({ error: 'この操作には管理者権限が必要です' }), {
-      status: 403,
-      headers: { 'Content-Type': 'application/json' },
-    });
-  }
+  const { userId, tenantId } = gate;
 
   // 監査ログはプランゲート対象の機能 (Pro / Enterprise のみ)。UI 非表示だけに頼らずサーバー側で強制する (§9)
   const plan = await resolveTenantPlan(tenantId);
@@ -94,10 +97,22 @@ export async function GET() {
     const page = await fetchAuditFeedPage(tenantId, AUDIT_MAX_LIMIT, cursor);
     logs.push(...page.logs);
     // 上限に達したら、まだ続きがあっても打ち切る (サイレント打ち切りは監査目的で
-    // 「全件取得済み」と誤認させるリスクがあるため X-Truncated ヘッダーで呼び出し元に伝える)
+    // 「全件取得済み」と誤認させるリスクがあるため X-Truncated ヘッダーで呼び出し元に伝える)。
+    // MAX_AUDIT_EXPORT_ROWS は AUDIT_MAX_LIMIT の倍数であること (上のモジュール読み込み時検査)
+    // が保証されているため logs.length はここで必ずちょうど MAX_AUDIT_EXPORT_ROWS に一致し、
+    // 超過はしない
     if (logs.length >= MAX_AUDIT_EXPORT_ROWS) {
-      truncated = page.hasMore || logs.length > MAX_AUDIT_EXPORT_ROWS;
-      logs.length = MAX_AUDIT_EXPORT_ROWS;
+      // /code-review ultra 指摘対応: fetchAuditFeedPage の hasMore は「ちょうど limit 件で
+      // 埋まった」ことしか示さない簡易ヒューリスティックのため、テナントの総件数がたまたま
+      // MAX_AUDIT_EXPORT_ROWS ちょうどだった場合に「まだ続きがある」という誤検知になりうる
+      // (/audit 画面では「もう1回読み込む」が無駄になるだけで実害が無いが、CSV エクスポートでは
+      // 「実際は全件取得済みなのに一部のみとユーザーに誤って警告する」ことになるため看過できない)。
+      // 上限にちょうど到達したときだけ、次カーソル以降に本当に行が残っているかを 1 件だけ
+      // 確認してから truncated を確定する (該当しない限りこの追加往復は発生しない)
+      truncated =
+        page.hasMore && page.nextCursor
+          ? (await fetchAuditFeedPage(tenantId, 1, page.nextCursor)).logs.length > 0
+          : false;
       break;
     }
     if (!page.hasMore || !page.nextCursor) break;

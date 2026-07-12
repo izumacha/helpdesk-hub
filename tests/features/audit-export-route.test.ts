@@ -9,6 +9,9 @@ import type { Repos } from '@/data/ports/unit-of-work';
 import { __resetRateLimits } from '@/lib/rate-limit';
 import { AUDIT_MAX_LIMIT } from '@/data/adapters/audit-pagination';
 
+// エクスポート側の上限件数 (route.ts の MAX_AUDIT_EXPORT_ROWS と同値。テスト用に複製)
+const MAX_AUDIT_EXPORT_ROWS = 10_000;
+
 const TENANT = 'default-tenant';
 const ADMIN_ID = 'u-admin-1';
 
@@ -97,6 +100,67 @@ describe('GET /api/audit/export', () => {
     expect(lines.length).toBe(totalRows + 1);
     expect(res.headers.get('X-Truncated')).toBeNull();
   });
+
+  // /code-review ultra 指摘対応: 総件数がちょうど MAX_AUDIT_EXPORT_ROWS (AUDIT_MAX_LIMIT の倍数)
+  // のとき、fetchAuditFeedPage の hasMore ヒューリスティック (「ちょうど limit 件で埋まった」)
+  // だけで truncated を判定すると、実際には全件取得済みなのに「一部のみ」と誤って警告してしまう
+  // 回帰テスト。ちょうど上限件数のログを用意し、続きが無いことを確認したうえで truncated が
+  // false になることを検証する
+  it(
+    '総件数がちょうど上限件数のときは誤って truncated にしない',
+    async () => {
+      for (let i = 0; i < MAX_AUDIT_EXPORT_ROWS; i++) {
+        await repos.settingsAudit.record({
+          tenantId: TENANT,
+          actorId: ADMIN_ID,
+          action: 'tenant_mode_update',
+        });
+      }
+
+      const { GET } = await import('@/app/api/audit/export/route');
+      const res = await GET();
+      expect(res.status).toBe(200);
+      const csv = await res.text();
+      const lines = csv
+        .replace(/^﻿/, '')
+        .split('\n')
+        .filter((l) => l.length > 0);
+      // ヘッダー1行 + ちょうど MAX_AUDIT_EXPORT_ROWS 行が含まれること
+      expect(lines.length).toBe(MAX_AUDIT_EXPORT_ROWS + 1);
+      // 続きは無いため truncated ヘッダーは付かない (誤検知の回帰防止)
+      expect(res.headers.get('X-Truncated')).toBeNull();
+    },
+    20_000,
+  );
+
+  // 上記の反対系: 総件数が上限を実際に超えている場合は正しく truncated になること
+  // (誤検知防止の修正が「常に truncated=false にする」退行になっていないことを確認する)
+  it(
+    '総件数が上限を超えているときは truncated になる',
+    async () => {
+      for (let i = 0; i < MAX_AUDIT_EXPORT_ROWS + 1; i++) {
+        await repos.settingsAudit.record({
+          tenantId: TENANT,
+          actorId: ADMIN_ID,
+          action: 'tenant_mode_update',
+        });
+      }
+
+      const { GET } = await import('@/app/api/audit/export/route');
+      const res = await GET();
+      expect(res.status).toBe(200);
+      const csv = await res.text();
+      const lines = csv
+        .replace(/^﻿/, '')
+        .split('\n')
+        .filter((l) => l.length > 0);
+      // ヘッダー1行 + 上限件数までに切り詰められること
+      expect(lines.length).toBe(MAX_AUDIT_EXPORT_ROWS + 1);
+      expect(res.headers.get('X-Truncated')).toBe('true');
+      expect(res.headers.get('X-Total-Limit')).toBe(String(MAX_AUDIT_EXPORT_ROWS));
+    },
+    20_000,
+  );
 
   // 管理者以外 (agent) は 403 (画面側と同じ role === 'admin' 直接比較の RBAC)
   it('管理者以外は403を返す', async () => {
