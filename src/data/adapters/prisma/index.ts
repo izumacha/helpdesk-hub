@@ -13,6 +13,7 @@ import { makeLineMessageRepo } from './line-message-repository.prisma';
 import { makeLocationRepo } from './location-repository.prisma';
 import { makeMagicLinkRepo } from './magic-link-repository.prisma';
 import { makeNotificationRepo } from './notification-repository.prisma';
+import { makeQuarantinedEmailRepo } from './quarantined-email-repository.prisma';
 import { makeSettingsAuditLogRepo } from './settings-audit-log-repository.prisma';
 import { makeSsoConfigRepo } from './sso-config-repository.prisma';
 import { makeTenantRepo } from './tenant-repository.prisma';
@@ -48,6 +49,7 @@ export function buildPrismaRepos(db: PrismaLike): Repos {
     ssoConfigs: makeSsoConfigRepo(db), // Phase 4 Enterprise: SAML SSO 設定
     lineConfigs: makeLineConfigRepo(db), // Phase 2 フォローアップ: テナント単位の LINE 連携設定
     settingsAudit: makeSettingsAuditLogRepo(db), // §4.2 フォローアップ: 設定変更監査ログ
+    quarantinedEmails: makeQuarantinedEmailRepo(db), // §3.2 フォローアップ: 隔離した受信メールの記録
   };
 }
 

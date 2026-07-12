@@ -15,6 +15,12 @@ const TENANT = 'default-tenant';
 const TOKEN = 'abc123';
 const MEMBER_EMAIL = 'ichiro@example.com';
 const MEMBER_ID = 'u-member-1';
+// 初回応答 SLA テスト用のエージェント (担当者役)
+const AGENT_EMAIL = 'agent@example.com';
+const AGENT_ID = 'u-agent-1';
+// 隔離記録テスト用の第三者メンバー (他人のチケットへの追記権限が無い requester)
+const OTHER_MEMBER_EMAIL = 'jiro@example.com';
+const OTHER_MEMBER_ID = 'u-member-2';
 
 // UnitOfWork 型 (スレッド継続のコメント追記でトランザクションを使う)
 import type { UnitOfWork } from '@/data/ports/unit-of-work';
@@ -113,6 +119,28 @@ function seed() {
     id: MEMBER_ID,
     email: MEMBER_EMAIL,
     name: '鈴木 一郎',
+    passwordHash: 'x',
+    role: 'requester',
+    tenantId: TENANT,
+    createdAt: now,
+    updatedAt: now,
+  });
+  // テナント所属のエージェント (初回応答 SLA テストで使う)
+  store.users.set(AGENT_ID, {
+    id: AGENT_ID,
+    email: AGENT_EMAIL,
+    name: '田中 担当',
+    passwordHash: 'x',
+    role: 'agent',
+    tenantId: TENANT,
+    createdAt: now,
+    updatedAt: now,
+  });
+  // テナント所属の第三者メンバー (隔離記録テストで使う。他人のチケットへの追記権限が無い requester)
+  store.users.set(OTHER_MEMBER_ID, {
+    id: OTHER_MEMBER_ID,
+    email: OTHER_MEMBER_EMAIL,
+    name: '次郎',
     passwordHash: 'x',
     role: 'requester',
     tenantId: TENANT,
@@ -382,6 +410,33 @@ describe('POST /api/inbound/email', () => {
     expect(comment.ticketId).toBe(ticketId);
     expect(comment.authorId).toBe(MEMBER_ID);
     expect(comment.body).toBe('まだ直りません');
+  });
+
+  // SLA: メール経由のスレッド継続でも、エージェントの返信を初回応答として記録する
+  // (Web フォーム経由コメント/comments/route.ts と同じ扱いにするための回帰テスト)
+  it('スレッド継続でエージェントが返信すると firstRespondedAt が記録される', async () => {
+    const { POST } = await import('@/app/api/inbound/email/route');
+    // 依頼者からのメールで 1 件起票する
+    const res1 = await POST(makeRequest({ ...VALID_EMAIL, messageId: '<orig-2@example.com>' }));
+    expect(res1.status).toBe(201);
+    const { ticketId } = (await res1.json()) as { ticketId: string };
+    // 起票直後は未応答 (firstRespondedAt は null)
+    expect(store.tickets.get(ticketId)?.firstRespondedAt).toBeNull();
+
+    // エージェントが起票メールへ返信する (In-Reply-To で元 Message-ID を参照)
+    const res2 = await POST(
+      makeRequest({
+        to: VALID_EMAIL.to,
+        from: `田中 担当 <${AGENT_EMAIL}>`,
+        subject: 'Re: プリンターが動きません',
+        text: '確認して対応します',
+        messageId: '<agent-reply-1@example.com>',
+        inReplyTo: '<orig-2@example.com>',
+      }),
+    );
+    expect(res2.status).toBe(200);
+    // 初回応答日時が記録されている
+    expect(store.tickets.get(ticketId)?.firstRespondedAt).not.toBeNull();
   });
 
   // スレッド継続: 同じ Message-ID の再送 (Webhook リトライ) は冪等で二重取り込みしない
@@ -699,6 +754,76 @@ describe('POST /api/inbound/email', () => {
       const res = await POST(makeRequest(VALID_EMAIL));
       expect(res.status).toBe(201);
       expect(store.tickets.size).toBe(1);
+    });
+  });
+
+  // §3.2 フォローアップ (2026-07-09): 隔離した受信メールは以前 console.warn にしか残らず、
+  // admin が /quarantine 一覧から確認できなかった。5 通りの隔離理由すべてで QuarantinedEmail が
+  // 永続化されることの回帰テスト
+  describe('隔離記録の永続化 (§3.2 フォローアップ)', () => {
+    it('プランゲートで隔離すると reason=plan_gate で記録される', async () => {
+      store.tenants.set(TENANT, { ...store.tenants.get(TENANT)!, subscriptionPlan: 'free' });
+      const { POST } = await import('@/app/api/inbound/email/route');
+      const res = await POST(makeRequest(VALID_EMAIL));
+      expect(res.status).toBe(202);
+      expect(store.quarantinedEmails.size).toBe(1);
+      const record = Array.from(store.quarantinedEmails.values())[0];
+      expect(record.reason).toBe('plan_gate');
+      expect(record.tenantId).toBe(TENANT);
+      expect(record.senderAddress).toBe(MEMBER_EMAIL);
+    });
+
+    it('送信元認証失敗で隔離すると reason=auth_fail で記録される', async () => {
+      vi.stubEnv('INBOUND_EMAIL_AUTH', 'enforce');
+      const { POST } = await import('@/app/api/inbound/email/route');
+      const res = await POST(makeRequest({ ...VALID_EMAIL, spf: 'fail' }));
+      expect(res.status).toBe(202);
+      expect(store.quarantinedEmails.size).toBe(1);
+      expect(Array.from(store.quarantinedEmails.values())[0].reason).toBe('auth_fail');
+    });
+
+    it('未知送信者で隔離すると reason=unknown_sender で記録される', async () => {
+      const { POST } = await import('@/app/api/inbound/email/route');
+      const res = await POST(
+        makeRequest({ ...VALID_EMAIL, from: '知らない人 <unknown@example.com>' }),
+      );
+      expect(res.status).toBe(202);
+      expect(store.quarantinedEmails.size).toBe(1);
+      const record = Array.from(store.quarantinedEmails.values())[0];
+      expect(record.reason).toBe('unknown_sender');
+      expect(record.senderAddress).toBe('unknown@example.com');
+    });
+
+    it('スレッド追記権限が無い送信者で隔離すると reason=thread_forbidden で記録される', async () => {
+      const { POST } = await import('@/app/api/inbound/email/route');
+      // MEMBER が起票する
+      const res1 = await POST(makeRequest({ ...VALID_EMAIL, messageId: '<orig-3@example.com>' }));
+      expect(res1.status).toBe(201);
+      // 第三者メンバー (起票者でもエージェントでもない) がそのチケットへ返信しようとする
+      const res2 = await POST(
+        makeRequest({
+          to: VALID_EMAIL.to,
+          from: `次郎 <${OTHER_MEMBER_EMAIL}>`,
+          subject: 'Re: プリンターが動きません',
+          text: '横から失礼します',
+          messageId: '<intruder-1@example.com>',
+          inReplyTo: '<orig-3@example.com>',
+        }),
+      );
+      expect(res2.status).toBe(202);
+      expect(store.quarantinedEmails.size).toBe(1);
+      const record = Array.from(store.quarantinedEmails.values())[0];
+      expect(record.reason).toBe('thread_forbidden');
+      expect(record.senderAddress).toBe(OTHER_MEMBER_EMAIL);
+    });
+
+    it('月間上限到達で隔離すると reason=quota_exceeded で記録される', async () => {
+      getMonthlyTicketQuotaMock.mockResolvedValueOnce({ limited: true, limit: 10, remaining: 0 });
+      const { POST } = await import('@/app/api/inbound/email/route');
+      const res = await POST(makeRequest(VALID_EMAIL));
+      expect(res.status).toBe(202);
+      expect(store.quarantinedEmails.size).toBe(1);
+      expect(Array.from(store.quarantinedEmails.values())[0].reason).toBe('quota_exceeded');
     });
   });
 });

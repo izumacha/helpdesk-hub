@@ -10,6 +10,7 @@ import type { LineMessageRepository } from './line-message-repository';
 import type { LocationRepository } from './location-repository';
 import type { MagicLinkRepository } from './magic-link-repository';
 import type { NotificationRepository } from './notification-repository';
+import type { QuarantinedEmailRepository } from './quarantined-email-repository';
 import type { SettingsAuditLogRepository } from './settings-audit-log-repository';
 import type { SsoConfigRepository } from './sso-config-repository';
 import type { TenantRepository } from './tenant-repository';
@@ -38,6 +39,7 @@ export interface Repos {
   ssoConfigs: SsoConfigRepository; // Phase 4 Enterprise: テナント単位の SAML SSO 設定
   lineConfigs: LineConfigRepository; // Phase 2 フォローアップ: テナント単位の LINE 連携設定
   settingsAudit: SettingsAuditLogRepository; // §4.2 フォローアップ: 設定変更監査ログ
+  quarantinedEmails: QuarantinedEmailRepository; // §3.2 フォローアップ: 隔離した受信メールの記録
 }
 
 // run() のオプション

@@ -113,6 +113,20 @@ enum AttachmentStorage {
   s3 // 互換オブジェクトストレージ (Phase 2 以降に予定)
 }
 
+// メール取り込み (POST /api/inbound/email) が起票せず隔離した理由。
+// docs/smb-dx-pivot-plan.md §3.2 フォローアップ (2026-07-09): 未登録送信者からのメールは
+// 「システムが受け取り、担当者が確認の上で処理する場合がある」とヘルプセンターで案内していたが、
+// 実装は console.warn を残すだけで永続化・admin 向け一覧が存在せず、案内どおりに機能していなかった
+// ギャップを解消するための隔離理由の列挙。追加時はここと QUARANTINE_REASON_LABELS
+// (src/lib/constants.ts) を必ず両方更新する
+enum QuarantineReason {
+  plan_gate // メール取り込みが契約プランで許可されていない (Free プラン等)
+  auth_fail // 送信元ドメイン認証 (SPF/DKIM/DMARC) が enforce ポリシーで明示 fail
+  unknown_sender // 宛先テナントに所属しない送信者
+  thread_forbidden // 既知メンバーだが他人のチケットへの追記権限がない
+  quota_exceeded // 月間チケット上限に到達済み
+}
+
 // ─────────────────────────────────────────────
 // Tenant (組織/テナント。SaaS 化のためのデータ境界)
 // ─────────────────────────────────────────────
@@ -191,6 +205,7 @@ model Tenant {
   ssoConfig         TenantSsoConfig? // Phase 4 Enterprise: SAML SSO 設定 (1 テナント 1 件・未設定なら null)
   lineConfig        TenantLineConfig? // Phase 2 フォローアップ: LINE 公式アカウント連携設定 (1 テナント 1 件・未設定なら null)
   settingsAuditLogs SettingsAuditLog[] // 設定変更監査ログ (SSO/LINE/通知チャネル設定の変更履歴)
+  quarantinedEmails QuarantinedEmail[] // §3.2 フォローアップ: 隔離した受信メールの記録
 }
 
 // Phase 4 Enterprise: テナント単位の SAML シングルサインオン (SSO) 設定。
@@ -512,6 +527,29 @@ model SettingsAuditLog {
   actor  User?  @relation(fields: [actorId], references: [id]) // 操作者 (null ならシステム操作)
 
   @@index([tenantId, createdAt]) // 監査ログ一覧 (テナントスコープ・新しい順) の検索用
+}
+
+// ─────────────────────────────────────────────
+// QuarantinedEmail (メール取り込みが隔離した受信メールの記録)
+// ─────────────────────────────────────────────
+// §3.2 フォローアップ (2026-07-09) 参照: 未登録送信者・プラン未対応・認証失敗等で起票されなかった
+// 受信メールは、以前は console.warn のサーバーログにしか残らず admin から一切確認できなかった。
+// 本文は保存しない (件名・送信者だけで admin が「招待し忘れたメンバーか」「スパムか」を判断できる
+// ため、不要な本文までは保持しない範囲最小化の方針。SettingsAuditLog が値そのものを記録しない
+// 設計と同じ考え方)。
+model QuarantinedEmail {
+  id            String           @id @default(cuid()) // 主キー
+  reason        QuarantineReason // 隔離した理由
+  senderAddress String // 送信元メールアドレス (admin がスパムか招待漏れかを判断する材料)
+  senderName    String? // 送信者名 (ヘッダから取れた場合のみ)
+  subject       String // 件名
+  createdAt     DateTime         @default(now()) // 隔離した日時
+
+  tenantId String // 対象テナント (クロステナント漏洩防止のスコープ)
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade) // テナント削除で隔離記録も削除
+
+  @@index([tenantId, createdAt]) // 一覧 (テナントスコープ・新しい順) の検索用
 }
 
 // ─────────────────────────────────────────────

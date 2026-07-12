@@ -1,6 +1,12 @@
 // チケット状態型・テナントモード型 (lite | pro)・権限型・設定監査アクション型を
 // 正準のドメイン型から 1 本でインポート
-import type { TicketStatus, TenantMode, Role, SettingsAuditAction } from '@/domain/types';
+import type {
+  TicketStatus,
+  TenantMode,
+  Role,
+  SettingsAuditAction,
+  QuarantineReason,
+} from '@/domain/types';
 // Lite モードの 3 値型と型ガード関数を取り込み、mode-aware ラベル関数で使う
 import { isLiteStatus, type LiteStatus } from '@/domain/ticket-status';
 
@@ -181,6 +187,17 @@ export const SETTINGS_AUDIT_ACTION_LABELS: Record<SettingsAuditAction, string> =
 // §4.3 フォローアップ (2026-07-10): Stripe Webhook 起因の自動プランダウングレードのように、
 // ユーザーが介在しない設定変更を「誰が」欄でどう表示するかを一元管理する
 export const SETTINGS_AUDIT_SYSTEM_ACTOR_NAME = 'システム（自動）';
+
+// メール取り込みが隔離した理由に対応する日本語表示ラベル。
+// QuarantineReason 型 (src/domain/types.ts) / QuarantineReason enum (prisma/schema.prisma)
+// に値を追加したらここも更新する (§3.2 フォローアップ)
+export const QUARANTINE_REASON_LABELS: Record<QuarantineReason, string> = {
+  plan_gate: 'プラン未対応（メール取り込みが利用できないプラン）',
+  auth_fail: '送信元ドメイン認証（SPF/DKIM/DMARC）に失敗',
+  unknown_sender: '未登録の送信者',
+  thread_forbidden: '追記権限のない送信者',
+  quota_exceeded: '月間の問い合わせ件数上限に到達',
+};
 
 // 通知種別の英語キーに対応する日本語表示ラベル
 // NotificationType enum (prisma/schema.prisma) に値を追加したらここも更新する
