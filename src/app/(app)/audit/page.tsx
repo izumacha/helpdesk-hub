@@ -2,20 +2,21 @@
 import { auth } from '@/lib/auth';
 // 認証エラー時のリダイレクト
 import { redirect } from 'next/navigation';
-// リポジトリ束 (監査ログ取得に使用)
-import { repos } from '@/data';
 // 日付フォーマットヘルパー (年月日時分秒を JST で表示する)
 import { formatDateTimeJP } from '@/lib/format-date';
 // 履歴フィールド / 設定変更アクションの日本語ラベル
 import { HISTORY_FIELD_LABELS, SETTINGS_AUDIT_ACTION_LABELS } from '@/lib/constants';
 // CSV エクスポートボタン (Client Component)
 import { AuditExportButton } from '@/features/audit/components/AuditExportButton';
+// 全履歴 CSV エクスポートボタン (Client Component。§4.2.1 フォローアップ再訪)
+import { AuditFullExportButton } from '@/features/audit/components/AuditFullExportButton';
 // 監査ログ機能のプランゲート (§6.1 料金プラン: Pro / Enterprise のみ利用可能)
 import { isAuditLogAllowed } from '@/lib/plan-guard';
 // テナントの現在プランを解決する共通ヘルパー (複数箇所での重複を避ける)
 import { resolveTenantPlan } from '@/lib/tenant-plan';
-// 監査ログ一覧が扱う統一行型 (チケット変更履歴 + 設定変更監査ログ)
-import type { AuditFeedRow } from '@/features/audit/types';
+// TicketHistory + SettingsAuditLog を 1 ページ分取得してマージする共有ロジック
+// (GET /api/audit/export の全履歴エクスポートと共有する。§6 DRY)
+import { fetchAuditFeedPage } from '@/features/audit/fetch-audit-feed-page';
 // 監査ログ系リポジトリ共通のページネーション上限 (findAllByTenant が limit をクランプする上限値)
 import { AUDIT_MAX_LIMIT } from '@/data/adapters/audit-pagination';
 
@@ -91,70 +92,17 @@ export default async function AuditPage({ searchParams }: Props) {
     );
   }
 
-  // テナント全体の変更履歴を並列取得する (上限 PAGE_LIMIT 件ずつ)。
+  // テナント全体の変更履歴を 1 ページ分取得する (上限 PAGE_LIMIT 件)。
   // §4.2 フォローアップ: チケット変更履歴だけでなく設定変更 (SSO/LINE/通知チャネル) も
   // 同じ監査ログ画面に統合する (セッション由来の tenantId のみ使用してクロステナント漏洩防止)。
-  // §4.2.1 フォローアップ (2026-07-10): before をキーセットカーソルとして両方に渡す。
-  // 2 種類の時系列をマージ表示する都合上、offset だけでは正しくページ送りできないため
-  // (findAllByTenant のコメント参照)、双方に同じ createdAt 境界を渡す方式に統一している
-  const [ticketHistory, settingsAudit] = await Promise.all([
-    repos.history.findAllByTenant({ tenantId: session.user.tenantId, limit: PAGE_LIMIT, before }),
-    repos.settingsAudit.findAllByTenant({
-      tenantId: session.user.tenantId,
-      limit: PAGE_LIMIT,
-      before,
-    }),
-  ]);
-
-  // 両者を共通の行型 (AuditFeedRow) に変換してマージし、新しい順に並べて PAGE_LIMIT 件に絞る
-  const logs: AuditFeedRow[] = [
-    ...ticketHistory.map(
-      (h): AuditFeedRow => ({
-        kind: 'ticket',
-        id: h.id,
-        createdAt: h.createdAt,
-        actorName: h.changedByName,
-        ticketId: h.ticketId,
-        ticketTitle: h.ticketTitle,
-        field: h.field,
-        oldValue: h.oldValue,
-        newValue: h.newValue,
-      }),
-    ),
-    ...settingsAudit.map(
-      (s): AuditFeedRow => ({
-        kind: 'settings',
-        id: s.id,
-        createdAt: s.createdAt,
-        actorName: s.actorName,
-        action: s.action,
-      }),
-    ),
-  ]
-    .sort((a, b) => {
-      // 日時が異なればそれだけで決まる (新しい順)
-      const timeDiff = b.createdAt.getTime() - a.createdAt.getTime();
-      if (timeDiff !== 0) return timeDiff;
-      // /code-review ultra 再指摘対応: 同時刻のタイブレークを Array.sort の安定性 +
-      // 配列の連結順序 (ticketHistory を先に concat している) という暗黙の前提に頼ると、
-      // 将来の並び替え・データソース追加で静かに壊れる。findAllByTenant 側の
-      // isBeforeAuditCursor / Prisma クエリと同じ「ticket が settings より先」という
-      // 規約を、ここでも明示的なコードとして固定する (AuditPaginationCursor 参照)
-      if (a.kind !== b.kind) return a.kind === 'ticket' ? -1 : 1;
-      // 同 kind 内は id 降順 (各リポジトリの取得順・カーソル比較と一致させる)
-      return a.id < b.id ? 1 : -1;
-    })
-    .slice(0, PAGE_LIMIT);
-
-  // §4.2.1 フォローアップ (2026-07-10): このページがちょうど PAGE_LIMIT 件で埋まっていれば、
-  // まだ表示していない古い行が残っている可能性があるとみなす (簡易ヒューリスティック。
-  // ちょうど境界と一致するとリンクが 1 回余分に出るだけで実害は無い)。
-  const hasMore = logs.length === PAGE_LIMIT;
-  // 「さらに読み込む」リンクの次カーソル = このページで最も古い行の (日時, kind, id)。
-  // kind まで含めた複合カーソルにすることで、同一ミリ秒に複数行があっても、また
-  // TicketHistory / SettingsAuditLog をまたいでもページ境界で取りこぼさない
-  // (AuditPaginationCursor のコメント参照)
-  const oldestLog = hasMore ? logs[logs.length - 1] : null;
+  // §4.2.1 フォローアップ再訪 (2026-07-12): マージ・カーソル前進ロジックは全履歴 CSV
+  // エクスポート (GET /api/audit/export) と共有するため fetchAuditFeedPage に抽出済み
+  const { logs, hasMore, nextCursor } = await fetchAuditFeedPage(
+    session.user.tenantId,
+    PAGE_LIMIT,
+    before,
+  );
+  const oldestLog = nextCursor;
 
   return (
     <div className="space-y-6">
@@ -169,10 +117,15 @@ export default async function AuditPage({ searchParams }: Props) {
             {before ? `${PAGE_LIMIT} 件ずつ表示中。` : `最新 ${PAGE_LIMIT} 件。`}
           </p>
         </div>
-        {/* CSV エクスポートボタン (Client Component)。現在表示中のページ分のみをエクスポートする
-            (全履歴の一括エクスポートは対象外。件数が多いテナントは「さらに読み込む」で
-            必要な期間まで辿ってからエクスポートする運用を想定) */}
-        <AuditExportButton logs={logs} />
+        {/* CSV エクスポートボタン (Client Component)。追加のリクエスト無しで現在表示中の
+            ページ分だけを即座にダウンロードする (素早い確認用) */}
+        <div className="flex shrink-0 gap-2">
+          <AuditExportButton logs={logs} />
+          {/* §4.2.1 フォローアップ再訪 (2026-07-12): 表示ページに限らず全履歴をサーバー側で
+              辿ってエクスポートするボタン (監査目的では「さらに読み込む」を手動で辿らせずに
+              全件を確認できる必要があるため) */}
+          <AuditFullExportButton />
+        </div>
       </div>
 
       {/* ログが 0 件の場合の空状態表示 */}
