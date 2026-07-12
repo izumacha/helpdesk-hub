@@ -125,4 +125,18 @@ describe('createCheckoutSession', () => {
       { price: 'price_pro_test', quantity: 1 },
     ]);
   });
+
+  // 監査で発見したギャップ対応: Server Action は POST エンドポイントとして直接呼び出せるため
+  // TypeScript の引数型は実行時の保証にならない。standard/pro/free/enterprise 以外の
+  // 未知の値を渡した場合、誤って Pro の Price ID にフォールバックせず拒否すること
+  it('standard/pro/free/enterprise以外の値はPriceIDにフォールバックせず拒否する', async () => {
+    const createCheckoutSession = await loadAction();
+    // @ts-expect-error 実行時の不正値(フォーム改ざん等)を意図的に渡すテスト
+    const result = await createCheckoutSession('xyz');
+
+    expect(result.error).toEqual(expect.any(String));
+    expect(result.url).toBeUndefined();
+    // Stripe API が一切呼ばれていないこと (Pro Price ID へのフォールバックが起きていない)
+    expect(capturedCreateArgs.current).toBeNull();
+  });
 });
