@@ -160,7 +160,7 @@ export function toMagicLinkToken(row: MagicLinkRow): MagicLinkToken {
   };
 }
 
-// Prisma の Invitation 行をドメイン型 Invitation に変換する関数
+// Prisma の SignupToken 行をドメイン型 SignupToken に変換する関数
 export function toSignupToken(row: SignupTokenRow): SignupToken {
   // 必要なフィールドだけを詰め替えて返す (生トークンは元から保存していないので無い)
   return {
@@ -173,6 +173,7 @@ export function toSignupToken(row: SignupTokenRow): SignupToken {
   };
 }
 
+// Prisma の Invitation 行をドメイン型 Invitation に変換する関数
 export function toInvitation(row: InvitationRow): Invitation {
   // 必要なフィールドだけを詰め替えて返す (生トークンは元から保存していないので無い)
   return {

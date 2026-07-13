@@ -21,6 +21,14 @@ export const SIGNUP_TOKEN_TTL_MS = 15 * 60 * 1000;
 export const SIGNUP_RATE_LIMIT_WINDOW_MS = 15 * 60 * 1000;
 export const SIGNUP_RATE_LIMIT_MAX = 5;
 
+// /code-review ultra 指摘対応 (2026-07-13): 上記のメール単位レート制限は、攻撃者が毎回
+// 別のメールアドレス (plus-addressing や使い捨てドメイン等) を使えば実質無制限に回避できる。
+// requestMagicLink と違いこのエンドポイントは「未登録の任意メールに実際にメール送信 + DB 行
+// 作成を行う」ため、既存ユーザー宛にしか送らないログイン用マジックリンクよりも踏み台にされる
+// リスクが高い。既存の enforceRateLimit (src/lib/rate-limit.ts) を固定キーで使い、
+// テナント/ユーザー単位ではなくエンドポイント全体で発行数を頭打ちにする (§9 公開エンドポイント保護)
+export const SIGNUP_REQUEST_GLOBAL_RATE_LIMIT = { limit: 20, windowMs: 60_000 } as const;
+
 // 指定した baseUrl と生トークンから、サインアップ完了ページの URL を組み立てる
 // 例: buildSignupCompleteUrl('http://localhost:3000', 'xxx') -> 'http://localhost:3000/signup/complete?token=xxx'
 export function buildSignupCompleteUrl(baseUrl: string, rawToken: string): string {

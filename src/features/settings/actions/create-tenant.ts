@@ -20,6 +20,8 @@ import { uow } from '@/data';
 import { auth } from '@/lib/auth';
 // 連打防止のための共通レート制限ヘルパー
 import { enforceRateLimit } from '@/lib/rate-limit';
+// Prisma の一意制約違反 (P2002) 判定の共通ヘルパー (accept-invitation.ts / complete-signup.ts と共有)
+import { isUniqueConstraintError } from '@/lib/prisma-errors';
 // 管理者権限を強制する共通アサーション
 import { assertAdminSession } from '@/lib/role';
 // テナント作成フォームの入力検証スキーマ
@@ -65,18 +67,34 @@ export async function createTenant(formData: FormData): Promise<CreateTenantResu
   // §7.2「30日間の Free trial (Standard 相当)」: 作成時刻から 30 日後を trialEndsAt に設定する。
   // これにより §7.1「30分で運用開始」オンボーディングのメール取り込み体験 (Standard 以上限定)
   // を、課金前の新規テナントでもすぐに試せるようにする
-  const result = await uow.run(async (tx) => {
-    const { tenantId } = await provisionTenantWithAdmin(tx, {
-      tenantName,
-      industry,
-      adminName,
-      adminEmail,
-      adminPassword,
-      trialEndsAt: new Date(Date.now() + FREE_TRIAL_DURATION_MS),
+  let result: CreateTenantResult;
+  try {
+    result = await uow.run(async (tx) => {
+      const { tenantId } = await provisionTenantWithAdmin(tx, {
+        tenantName,
+        industry,
+        adminName,
+        adminEmail,
+        adminPassword,
+        trialEndsAt: new Date(Date.now() + FREE_TRIAL_DURATION_MS),
+      });
+      // 作成結果を返す
+      return { tenantId, adminEmail };
     });
-    // 作成結果を返す
-    return { tenantId, adminEmail };
-  });
+  } catch (err) {
+    // /code-review ultra 指摘対応 (2026-07-13): provisionTenantWithAdmin の事前 findByEmail
+    // チェックは同一メール宛の同時作成 (このテナント作成の連打、または並行するセルフサーブ
+    // サインアップの完了) とはトランザクション分離されておらず原子的ではないため、レースで
+    // すり抜けると User.email の一意制約違反が Prisma の生エラーとしてここまで伝播しうる
+    // (accept-invitation.ts / complete-signup.ts と全く同じレースパターン)。
+    // 内部エラー文言をそのまま管理者向け UI に出さないよう、安全な日本語メッセージへ変換する
+    // (§9: 内部エラー文言の非漏洩)。それ以外の例外 (バリデーションエラー等) はそのまま伝播する
+    if (isUniqueConstraintError(err)) {
+      console.error('[create-tenant] メール一意制約違反 (競合の可能性):', err);
+      throw new Error('このメールアドレスは既に登録されています。別のメールを指定してください。');
+    }
+    throw err;
+  }
 
   // 作成したテナント ID と管理者メールを返す
   return result;

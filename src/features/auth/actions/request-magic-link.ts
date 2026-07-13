@@ -36,8 +36,8 @@ import { resolveAppBaseUrl } from '@/lib/app-url';
 import { getEmailSender } from '@/lib/email';
 // 既存ユーザー宛のマジックリンク発行・送信ロジック (§7.1 セルフサーブサインアップと共有 / §6 DRY)
 import { deliverMagicLinkIfUserExists } from '@/lib/magic-link-delivery';
-// 列挙耐性のための最低遅延ヘルパー (セルフサーブサインアップと共有 / §6 DRY)
-import { atLeast } from '@/lib/timing';
+// 列挙耐性のための最低遅延ヘルパー・遅延値 (セルフサーブサインアップと共有 / §6 DRY)
+import { atLeast, ENUMERATION_MASK_DELAY_MS } from '@/lib/timing';
 // 入力検証スキーマ
 import { requestMagicLinkSchema } from '@/lib/validations/auth';
 
@@ -46,11 +46,6 @@ import { requestMagicLinkSchema } from '@/lib/validations/auth';
 export interface RequestMagicLinkResult {
   ok: true;
 }
-
-// 「ユーザーが見つからない」経路で挿入するダミー遅延 (ms)。
-// DB lookup + token 生成 + email 送信の合計レイテンシを擬似的に揃える狙い。
-// 注意: 上記コメントの通り「最低保証」であって「固定エンベロープ」ではない
-const DUMMY_DELAY_MS = 150;
 
 // 公開する Server Action。フォームから直接呼べる形にする (FormData 経由でも JSON でも可)
 export async function requestMagicLink(input: { email: string }): Promise<RequestMagicLinkResult> {
@@ -85,7 +80,7 @@ export async function requestMagicLink(input: { email: string }): Promise<Reques
         console.error('[magic-link] delivery failed (swallowed for enumeration resistance):', err);
       }
     })(),
-    DUMMY_DELAY_MS,
+    ENUMERATION_MASK_DELAY_MS,
   );
 
   // 列挙対策のため、ユーザー有無に関わらず常に ok を返す

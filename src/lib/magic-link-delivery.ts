@@ -23,10 +23,16 @@ import {
 // 環境変数で切り替わる EmailSender の型
 import type { EmailSender } from '@/lib/email';
 
-// 実際にトークン発行 + メール送信を行う。User が見つからない or レート上限超過なら何もしない
+// 実際にトークン発行 + メール送信を行う。User が見つからない or レート上限超過なら何もしない。
+// /code-review ultra 指摘対応 (2026-07-13): requestSignup.ts の呼び出し元は分岐判定のために
+// 既に repos.users.findByEmail(email) を実行済みであることが多く、この関数内でも同じ検索を
+// 繰り返すと 1 リクエストあたり無駄な DB ラウンドトリップが発生する。呼び出し元が既に存在確認
+// 済みなら knownUserExists で結果を渡せるようにし (省略時は従来どおりこの関数内で検索する)、
+// request-magic-link.ts のような「まだ確認していない」呼び出し元の挙動は変えない
 export async function deliverMagicLinkIfUserExists(
   email: string,
   ctx: { baseUrl: string; sender: EmailSender },
+  knownUserExists?: boolean,
 ): Promise<void> {
   // 期限切れトークンを一括掃除 (ベストエフォート。User の有無に関係なく行う)
   await repos.magicLinks.deleteExpired(new Date());
@@ -42,10 +48,10 @@ export async function deliverMagicLinkIfUserExists(
   // 上限超過なら新規発行をスキップ (例外は投げない: 列挙対策で呼び出し側からは成功/失敗が見えない)
   if (recent >= MAGIC_LINK_RATE_LIMIT_MAX) return;
 
-  // メールから既存ユーザーを引く (テナント横断 lookup)
-  const user = await repos.users.findByEmail(email);
+  // 呼び出し元が既に存在確認済みならその結果を使い、未指定ならここで検索する (テナント横断 lookup)
+  const userExists = knownUserExists ?? (await repos.users.findByEmail(email)) !== null;
   // 未登録のメールに対しては何も発行しない (列挙されない)
-  if (!user) return;
+  if (!userExists) return;
 
   // 256-bit のランダムトークンを生成し、SHA-256 ハッシュを DB に記録する (Web Crypto は async)
   const rawToken = generateMagicLinkToken();

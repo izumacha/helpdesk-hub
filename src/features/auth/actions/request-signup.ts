@@ -23,6 +23,8 @@ import { resolveAppBaseUrl } from '@/lib/app-url';
 import { getEmailSender, type EmailSender } from '@/lib/email';
 // 既存ユーザー宛のマジックリンク発行・送信ロジック (request-magic-link.ts と共有 / §6 DRY)
 import { deliverMagicLinkIfUserExists } from '@/lib/magic-link-delivery';
+// 連打防止のための共通レート制限ヘルパー (create-tenant.ts 等と共有)
+import { enforceRateLimit } from '@/lib/rate-limit';
 // セルフサーブサインアップ用の純粋ヘルパー (トークン生成・ハッシュ・URL 構築・メール本文 + 各種定数)
 import {
   buildSignupCompleteUrl,
@@ -31,10 +33,11 @@ import {
   renderSignupEmail,
   SIGNUP_RATE_LIMIT_MAX,
   SIGNUP_RATE_LIMIT_WINDOW_MS,
+  SIGNUP_REQUEST_GLOBAL_RATE_LIMIT,
   SIGNUP_TOKEN_TTL_MS,
 } from '@/lib/signup';
-// 列挙耐性のための最低遅延ヘルパー (request-magic-link.ts と共有 / §6 DRY)
-import { atLeast } from '@/lib/timing';
+// 列挙耐性のための最低遅延ヘルパー・遅延値 (request-magic-link.ts と共有 / §6 DRY)
+import { atLeast, ENUMERATION_MASK_DELAY_MS } from '@/lib/timing';
 // 入力検証スキーマ
 import { requestSignupSchema } from '@/lib/validations/signup';
 
@@ -43,10 +46,6 @@ import { requestSignupSchema } from '@/lib/validations/signup';
 export interface RequestSignupResult {
   ok: true;
 }
-
-// 「新規発行」経路で挿入するダミー遅延 (ms)。request-magic-link.ts と同じ値・同じ狙い
-// (DB lookup + token 生成 + email 送信の合計レイテンシを擬似的に揃える「最低保証」)
-const DUMMY_DELAY_MS = 150;
 
 // 公開する Server Action。フォームから直接呼べる形にする
 export async function requestSignup(input: { email: string }): Promise<RequestSignupResult> {
@@ -59,6 +58,14 @@ export async function requestSignup(input: { email: string }): Promise<RequestSi
   }
   // 検証後の正規化済みメール
   const email = parsed.data.email;
+
+  // /code-review ultra 指摘対応 (2026-07-13): メール単位のレート制限 (下の deliverSignupOrLogin
+  // 内) だけでは、攻撃者が毎回異なるメールアドレスを使うことで実質無制限に回避できる。
+  // このエンドポイントは未登録の任意メールへ実際に送信 + DB 行作成を行うため、エンドポイント
+  // 全体で固定キーの頭打ちを設ける (§9 公開エンドポイント保護)。上限到達時は列挙耐性の対象外
+  // (どのメールであっても同じ「混み合っている」応答になるため詮索の手がかりにならない) として
+  // そのまま例外を伝播させる
+  enforceRateLimit('signup-request:global', SIGNUP_REQUEST_GLOBAL_RATE_LIMIT);
 
   // ── 列挙対策マスクの外で設定不備を先に表面化させる ──
   // request-magic-link.ts と同じ理由: 環境変数の妥当性チェックはここで throw し、
@@ -77,7 +84,7 @@ export async function requestSignup(input: { email: string }): Promise<RequestSi
         console.error('[signup] delivery failed (swallowed for enumeration resistance):', err);
       }
     })(),
-    DUMMY_DELAY_MS,
+    ENUMERATION_MASK_DELAY_MS,
   );
 
   // 列挙対策のため、既存/新規に関わらず常に ok を返す
@@ -96,7 +103,8 @@ async function deliverSignupOrLogin(
   // (常に「メールを確認してください」としか見えない)
   const existingUser = await repos.users.findByEmail(email);
   if (existingUser) {
-    await deliverMagicLinkIfUserExists(email, ctx);
+    // 存在確認済みであることを渡し、deliverMagicLinkIfUserExists 内での二重検索を避ける (§6 DRY)
+    await deliverMagicLinkIfUserExists(email, ctx, true);
     return;
   }
 

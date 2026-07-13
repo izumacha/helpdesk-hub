@@ -27,10 +27,16 @@ async function readLastEmailUrl(
       const lines = readFileSync(OUTBOX_PATH, 'utf8').trim().split('\n');
       for (let j = lines.length - 1; j >= 0; j--) {
         if (!lines[j]) continue;
-        const entry = JSON.parse(lines[j]) as { to: string; text: string; sentAt: string };
-        if (entry.to === email && new Date(entry.sentAt).getTime() >= sinceMs) {
-          const match = entry.text.match(urlPattern);
-          if (match) return match[0];
+        try {
+          // JSON 行を解析 (並列テスト同士が同じファイルに append するため、中途半端な行が
+          // 稀に混ざりうる。auth.spec.ts の readLastMagicLinkUrl と同じく壊れた行はスキップする)
+          const entry = JSON.parse(lines[j]) as { to: string; text: string; sentAt: string };
+          if (entry.to === email && new Date(entry.sentAt).getTime() >= sinceMs) {
+            const match = entry.text.match(urlPattern);
+            if (match) return match[0];
+          }
+        } catch {
+          // 壊れた行はスキップ (並列 append の中途半端な行など)
         }
       }
     }

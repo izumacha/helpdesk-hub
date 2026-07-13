@@ -8,6 +8,8 @@ import type { Repos } from '@/data/ports/unit-of-work';
 import type { EmailSender } from '@/lib/email';
 // サインアップトークンのハッシュ化 (fake send 内で URL に含まれるトークンを取り出すために使う)
 import { hashSignupToken } from '@/lib/signup';
+// レート制限バケットをテスト間で初期化するためのヘルパー (グローバル Map の汚染を防ぐ)
+import { __resetRateLimits } from '@/lib/rate-limit';
 
 // 各テスト前に書き換える依存。Action import 前に getter で参照させる
 let store: Store;
@@ -60,10 +62,14 @@ beforeEach(() => {
       await sendImpl(message);
     },
   });
+  // レート制限バケットはモジュールグローバルなので、他テストの影響を受けないよう初期化する
+  __resetRateLimits();
 });
 
 afterEach(() => {
   vi.unstubAllEnvs();
+  // 次のテストに影響しないよう、このテストで消費したバケットも初期化しておく
+  __resetRateLimits();
 });
 
 describe('requestSignup', () => {
@@ -190,5 +196,25 @@ describe('requestSignup', () => {
     expect(result).toEqual({ ok: true });
     expect(store.signupTokens.size).toBe(5);
     expect(sentMessages).toHaveLength(5);
+  });
+
+  // /code-review ultra 指摘対応 (2026-07-13): メール単位のレート制限は毎回異なるメール
+  // アドレスを使えば回避できてしまうため、エンドポイント全体の頭打ちが機能することを確認する。
+  // この上限超過は列挙耐性の対象外 (どのメールでも同じ「混み合っている」エラーになるため
+  // 詮索の手がかりにならない) なので、列挙耐性テストと異なり例外が伝播することを検証する
+  it('レート制限: 異なるメールアドレスを使ってもエンドポイント全体の上限 (1分20件) で頭打ちになる', async () => {
+    const requestSignup = await loadAction();
+    // 上限 (20 件) ぴったりまでは、異なるメールアドレスでも発行が許される
+    for (let i = 0; i < 20; i++) {
+      await requestSignup({ email: `flood-${i}@example.com` });
+    }
+    expect(store.signupTokens.size).toBe(20);
+
+    // 21 件目は別のメールアドレスでも、全体レート制限に引っかかり例外を投げる
+    await expect(requestSignup({ email: 'flood-overflow@example.com' })).rejects.toThrow(
+      /頻度が高すぎます/,
+    );
+    // 上限超過分は発行されていないこと
+    expect(store.signupTokens.size).toBe(20);
   });
 });
