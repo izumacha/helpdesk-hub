@@ -14,6 +14,8 @@ import { assertTenantAdmin } from '@/lib/tenant-admin-gate';
 import { checkRateLimit } from '@/lib/rate-limit';
 // 設定変更監査ログへの記録を共通化するヘルパー
 import { recordSettingsAudit } from '@/lib/settings-audit';
+// Prisma の一意制約違反 (P2002) 判定の共通ヘルパー (6 箇所に重複していた判定を一元化 / §6 DRY)
+import { isUniqueConstraintError } from '@/lib/prisma-errors';
 
 // 更新結果の戻り値型
 export interface UpdateLocationResult {
@@ -75,17 +77,13 @@ export async function updateLocation(
     // 成功を返す
     return { success: true };
   } catch (err) {
-    // 拠点名の重複エラーをユーザー向けメッセージに変換する
-    const message = err instanceof Error ? err.message : '';
-    // Prisma の一意制約違反または memory アダプタのエラーを検出する
-    if (
-      message.includes('Unique constraint') ||
-      message.includes('already exists') ||
-      message.includes('P2002')
-    ) {
+    // 拠点名の重複エラー (Prisma の一意制約違反、または memory アダプタの相当エラー) を
+    // 共通ヘルパーで検出し、ユーザー向けメッセージに変換する
+    if (isUniqueConstraintError(err)) {
       return { error: 'この拠点名はすでに使用されています' };
     }
-    // 存在しない拠点 ID のエラー
+    // 存在しない拠点 ID のエラー (この判定にのみ使うメッセージ文字列)
+    const message = err instanceof Error ? err.message : '';
     if (message.includes('RecordNotFound') || message.includes('not found')) {
       return { error: '拠点が見つかりません' };
     }
