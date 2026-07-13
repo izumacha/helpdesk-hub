@@ -32,7 +32,7 @@ import { initialStatusForMode } from '@/domain/ticket-status';
 // コメント通知の宛先決定 (Web フォーム経由コメントと共有するヘルパー)
 import { resolveCommentRecipients } from '@/lib/comment-recipients';
 // 未読件数を SSE で即時配信するヘルパー (コメント追記時の通知扇形)
-import { broadcastUnreadCountToMany } from '@/features/notifications/notify';
+import { broadcastUnreadCountToMany, notifyAgentsOfNewTicket } from '@/features/notifications/notify';
 // 受信メールの正規化ヘルパー (純粋関数) と生ヘッダ読み取り、送信元認証 (SPF/DKIM/DMARC) の判定
 import {
   parseInboundEmail,
@@ -628,9 +628,9 @@ export async function POST(req: Request) {
     return NextResponse.json({ status: 'duplicate', ticketId }, { status: 200 });
   }
 
-  // 新規起票をテナント内の全エージェントへアプリ内通知する (LINE 取り込み・CSV インポートと同じ
-  // 'imported' 種別を共有)。Slack/Teams/Chatwork 通知は任意設定のオプトイン機能のため、未設定の
-  // テナントではメール起票にエージェントが誰も気づけない非対称な穴があった (LINE/CSV は既に対応済み)。
+  // 新規起票をテナント内の全エージェントへアプリ内通知する (LINE 取り込みと共有ヘルパーを使う)。
+  // Slack/Teams/Chatwork 通知は任意設定のオプトイン機能のため、未設定のテナントではメール起票に
+  // エージェントが誰も気づけない非対称な穴があった (LINE/CSV は既に対応済み)。
   // 失敗してもチケット起票自体は確定済みのため、ログのみ残して続行する (§9 fail-safe)。
   try {
     // テナント内のエージェント/管理者一覧を取得する (LINE 取り込みと同じヘルパー)
@@ -639,39 +639,14 @@ export async function POST(req: Request) {
     const notifyTargets = isAgent(sender.role)
       ? agents.filter((a) => a.id !== sender.id) // エージェント自身の起票は本人以外へ通知
       : agents; // 依頼者からの起票は全エージェントへ通知
-    if (notifyTargets.length > 0) {
-      // 各エージェントへ通知を作成する。allSettled で 1 件失敗しても他を止めない
-      const notifyResults = await Promise.allSettled(
-        notifyTargets.map((a) =>
-          repos.notifications.create({
-            userId: a.id, // 通知受信者: 各エージェント
-            type: 'imported', // メール取り込みによる新規起票通知 (inbound チャネルは 'imported' を使う)
-            message: `メールから新しい問い合わせが届きました：${email.subject}`, // 通知文言
-            ticketId, // 紐付けチケット
-            tenantId: tenant.id, // テナントスコープ
-          }),
-        ),
-      );
-      // 通知作成に成功したエージェント ID だけを SSE 配信対象にする (失敗分は DB レコードが無いためスキップ)
-      const succeededIds = notifyTargets
-        .filter((_, i) => notifyResults[i]?.status === 'fulfilled')
-        .map((a) => a.id);
-      const failedCount = notifyTargets.length - succeededIds.length;
-      if (failedCount > 0) {
-        // 失敗件数だけログに残す
-        console.warn(
-          `[POST /api/inbound/email] ${failedCount} notification(s) failed to create for new ticket`,
-          ticketId,
-        );
-      }
-      // 未読カウントを SSE で即時配信して通知ベルに反映させる (成功分のみ)
-      if (succeededIds.length > 0) {
-        await broadcastUnreadCountToMany(succeededIds, tenant.id).catch((err) => {
-          // SSE 配信失敗はバッジ更新が遅れるだけ。ログのみ残して続行する
-          console.warn('[POST /api/inbound/email] failed to broadcast unread count', err);
-        });
-      }
-    }
+    // 通知作成・SSE 配信は LINE 取り込みと共有のヘルパーに委譲する (CLAUDE.md §6 DRY)
+    await notifyAgentsOfNewTicket({
+      tenantId: tenant.id, // テナントスコープ
+      ticketId, // 紐付けチケット
+      message: `メールから新しい問い合わせが届きました：${email.subject}`, // 通知文言
+      targets: notifyTargets, // 通知対象エージェント一覧
+      logPrefix: '[POST /api/inbound/email]', // ログの識別子
+    });
   } catch (notifyErr) {
     // 通知失敗はログのみ (チケット起票は完了しているため応答は成功扱いのまま)
     console.warn(
