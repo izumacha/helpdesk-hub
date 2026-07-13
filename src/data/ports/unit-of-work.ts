@@ -12,6 +12,7 @@ import type { MagicLinkRepository } from './magic-link-repository';
 import type { NotificationRepository } from './notification-repository';
 import type { QuarantinedEmailRepository } from './quarantined-email-repository';
 import type { SettingsAuditLogRepository } from './settings-audit-log-repository';
+import type { SignupTokenRepository } from './signup-token-repository';
 import type { SsoConfigRepository } from './sso-config-repository';
 import type { TenantRepository } from './tenant-repository';
 import type { TicketCommentRepository } from './ticket-comment-repository';
@@ -30,6 +31,7 @@ export interface Repos {
   categories: CategoryRepository; // カテゴリ操作
   tenants: TenantRepository; // テナント操作 (マルチテナント化)
   magicLinks: MagicLinkRepository; // マジックリンクトークン操作 (パスワードレス認証)
+  signupTokens: SignupTokenRepository; // §7.1 フォローアップ: セルフサーブサインアップトークン操作
   invitations: InvitationRepository; // 招待リンクトークン操作 (メンバー招待)
   attachments: AttachmentRepository; // 添付ファイル (画像) のメタ情報操作
   emailThreads: EmailThreadRepository; // メール Message-ID → チケット 対応表 (スレッド継続 / Phase 2)

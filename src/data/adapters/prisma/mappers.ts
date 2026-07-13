@@ -6,6 +6,7 @@ import type {
   MagicLinkToken,
   Notification,
   FaqCandidate,
+  SignupToken,
   Ticket,
   TicketComment,
   TicketHistory,
@@ -41,6 +42,8 @@ type FaqRow = Prisma.FaqCandidateGetPayload<Record<string, never>>;
 type MagicLinkRow = Prisma.MagicLinkTokenGetPayload<Record<string, never>>;
 // Invitation テーブルの型エイリアス
 type InvitationRow = Prisma.InvitationGetPayload<Record<string, never>>;
+// SignupToken テーブルの型エイリアス
+type SignupTokenRow = Prisma.SignupTokenGetPayload<Record<string, never>>;
 // Attachment テーブルの型エイリアス
 type AttachmentRow = Prisma.AttachmentGetPayload<Record<string, never>>;
 
@@ -153,6 +156,19 @@ export function toMagicLinkToken(row: MagicLinkRow): MagicLinkToken {
     expiresAt: row.expiresAt,
     consumedAt: row.consumedAt,
     requestedIp: row.requestedIp,
+    createdAt: row.createdAt,
+  };
+}
+
+// Prisma の SignupToken 行をドメイン型 SignupToken に変換する関数
+export function toSignupToken(row: SignupTokenRow): SignupToken {
+  // 必要なフィールドだけを詰め替えて返す (生トークンは元から保存していないので無い)
+  return {
+    id: row.id,
+    email: row.email,
+    tokenHash: row.tokenHash,
+    expiresAt: row.expiresAt,
+    consumedAt: row.consumedAt,
     createdAt: row.createdAt,
   };
 }

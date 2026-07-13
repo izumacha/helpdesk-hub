@@ -14,6 +14,7 @@ import { makeMagicLinkRepo } from './magic-link-repository.memory';
 import { makeNotificationRepo } from './notification-repository.memory';
 import { makeQuarantinedEmailRepo } from './quarantined-email-repository.memory';
 import { makeSettingsAuditLogRepo } from './settings-audit-log-repository.memory';
+import { makeSignupTokenRepo } from './signup-token-repository.memory';
 import { makeSsoConfigRepo } from './sso-config-repository.memory';
 import { cloneStore, createEmptyStore, overwriteStore, type Store } from './store';
 import { makeTenantRepo } from './tenant-repository.memory';
@@ -39,6 +40,7 @@ export function buildMemoryRepos(store: Store): Repos {
     categories: makeCategoryRepo(store),
     tenants: makeTenantRepo(store),
     magicLinks: makeMagicLinkRepo(store),
+    signupTokens: makeSignupTokenRepo(store), // §7.1 フォローアップ: セルフサーブサインアップ
     invitations: makeInvitationRepo(store),
     attachments: makeAttachmentRepo(store),
     emailThreads: makeEmailThreadRepo(store),

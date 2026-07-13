@@ -2,6 +2,8 @@
 import { LoginTabs } from '@/features/auth/components/LoginTabs';
 // 共通ブランドマーク (シンボル + ワードマーク)
 import { Logo } from '@/components/brand/Logo';
+// セルフサーブサインアップ (§7.1) への導線
+import Link from 'next/link';
 
 // ?error=... を読み取って初期エラーメッセージを決めるためのマップ
 // 値はクライアントから操作不能 (URL クエリでしか入らない) なので enum 的に固定文言を返す
@@ -66,8 +68,16 @@ export default async function LoginPage({
         {/* タブ切替 + 各フォーム本体 */}
         <LoginTabs initialError={initialError} />
 
-        {/* フッター: サポート連絡先風の補足 (装飾) */}
+        {/* セルフサーブサインアップ (§7.1) への導線: まだ組織を作っていない見込み客向け */}
         <p className="mt-6 text-center text-xs text-slate-400">
+          初めてご利用の方は
+          <Link href="/signup" className="mx-1 text-teal-700 underline hover:text-teal-800">
+            サインアップ
+          </Link>
+          してください
+        </p>
+        {/* フッター: サポート連絡先風の補足 (装飾) */}
+        <p className="mt-2 text-center text-xs text-slate-400">
           ログインに関するお問い合わせは管理者までご連絡ください
         </p>
       </div>

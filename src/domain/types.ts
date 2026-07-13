@@ -301,6 +301,18 @@ export interface MagicLinkToken {
   createdAt: Date; // 作成日時
 }
 
+// セルフサーブサインアップ (docs/smb-dx-pivot-plan.md §7.1) のワンタイムトークン 1 件分。
+// MagicLinkToken と構造は同じだが、既存ユーザーの「ログイン」ではなくテナント/管理者を
+// 新規作成する「サインアップ完了」用に発行される (常にまだ存在しないメール宛)
+export interface SignupToken {
+  id: string; // トークン ID (主キー)
+  email: string; // サインアップ希望メール (小文字正規化済み)
+  tokenHash: string; // 生トークンの SHA-256 ハッシュ
+  expiresAt: Date; // 失効時刻 (発行 15 分後)
+  consumedAt: Date | null; // サインアップ完了済み時刻。null なら未使用 (単回使用を強制)
+  createdAt: Date; // 作成日時
+}
+
 // テナントへのメンバー招待リンク 1 件分
 // 生トークンは URL のみで保持し、DB には SHA-256 ハッシュ (tokenHash) を保存する。
 // 発行時点で参加先 (tenantId) と付与権限 (role) が確定しているのが MagicLinkToken との違い。
