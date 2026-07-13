@@ -117,18 +117,30 @@ enum AttachmentStorage {
   s3 // 互換オブジェクトストレージ (Phase 2 以降に予定)
 }
 
-// メール取り込み (POST /api/inbound/email) が起票せず隔離した理由。
+// メール/LINE 取り込みが起票せず隔離した理由。
 // docs/smb-dx-pivot-plan.md §3.2 フォローアップ (2026-07-09): 未登録送信者からのメールは
 // 「システムが受け取り、担当者が確認の上で処理する場合がある」とヘルプセンターで案内していたが、
 // 実装は console.warn を残すだけで永続化・admin 向け一覧が存在せず、案内どおりに機能していなかった
 // ギャップを解消するための隔離理由の列挙。追加時はここと QUARANTINE_REASON_LABELS
-// (src/lib/constants.ts) を必ず両方更新する
+// (src/lib/constants.ts) を必ず両方更新する。
+// フォローアップ (2026-07-13): 監査で発見したギャップの解消。LINE 取り込みも同じ「console.warn の
+// サーバーログにしか残らず admin から確認できない」不備を抱えていたため、QuarantinedEmail
+// テーブルをチャネル共通の隔離記録として再利用する (下の channel フィールド参照)。no_agents は
+// LINE 特有の理由 (テナントに担当者が 1 人もいないため代理起票者を決められない) として追加した
 enum QuarantineReason {
-  plan_gate // メール取り込みが契約プランで許可されていない (Free プラン等)
-  auth_fail // 送信元ドメイン認証 (SPF/DKIM/DMARC) が enforce ポリシーで明示 fail
-  unknown_sender // 宛先テナントに所属しない送信者
-  thread_forbidden // 既知メンバーだが他人のチケットへの追記権限がない
-  quota_exceeded // 月間チケット上限に到達済み
+  plan_gate // 取り込みが契約プランで許可されていない (Free プラン等。メール/LINE 共通)
+  auth_fail // 送信元ドメイン認証 (SPF/DKIM/DMARC) が enforce ポリシーで明示 fail (メール専用)
+  unknown_sender // 宛先テナントに所属しない送信者 (メール専用)
+  thread_forbidden // 既知メンバーだが他人のチケットへの追記権限がない (メール専用)
+  quota_exceeded // 月間チケット上限に到達済み (メール/LINE 共通)
+  no_agents // テナントに担当者が 1 人もおらず代理起票者を決められない (LINE 専用)
+}
+
+// 隔離記録がどの取り込みチャネル由来かを示す種別。フォローアップ (2026-07-13):
+// QuarantinedEmail テーブルをメール専用からチャネル共通の隔離記録へ拡張する際に追加した
+enum QuarantineChannel {
+  email
+  line
 }
 
 // ─────────────────────────────────────────────
@@ -541,13 +553,19 @@ model SettingsAuditLog {
 // 本文は保存しない (件名・送信者だけで admin が「招待し忘れたメンバーか」「スパムか」を判断できる
 // ため、不要な本文までは保持しない範囲最小化の方針。SettingsAuditLog が値そのものを記録しない
 // 設計と同じ考え方)。
+// フォローアップ (2026-07-13): 監査で発見したギャップの解消。LINE 取り込みの隔離記録も
+// このテーブルへ集約する (channel で判別)。メール専用だった senderAddress/subject は
+// LINE 記録では埋まらないため nullable にし、LINE 専用の lineUserId を追加した
+// (テーブル名・Port 名は移行コストを避けるため据え置くが、実体はチャネル共通の隔離記録)
 model QuarantinedEmail {
-  id            String           @id @default(cuid()) // 主キー
+  id            String            @id @default(cuid()) // 主キー
+  channel       QuarantineChannel @default(email) // 隔離記録の発生元チャネル
   reason        QuarantineReason // 隔離した理由
-  senderAddress String // 送信元メールアドレス (admin がスパムか招待漏れかを判断する材料)
-  senderName    String? // 送信者名 (ヘッダから取れた場合のみ)
-  subject       String // 件名
-  createdAt     DateTime         @default(now()) // 隔離した日時
+  senderAddress String? // 送信元メールアドレス (メール専用。LINE 記録では null)
+  senderName    String? // 送信者名 (ヘッダから取れた場合のみ。メール専用)
+  lineUserId    String? // LINE ユーザー ID (LINE 専用。メール記録では null)
+  subject       String? // 件名 (メール専用。LINE 記録では null。本文同様 LINE には件名概念が無い)
+  createdAt     DateTime          @default(now()) // 隔離した日時
 
   tenantId String // 対象テナント (クロステナント漏洩防止のスコープ)
 

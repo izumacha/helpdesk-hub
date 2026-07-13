@@ -12,10 +12,12 @@ export function makeQuarantinedEmailRepo(db: PrismaLike): QuarantinedEmailReposi
       await db.quarantinedEmail.create({
         data: {
           tenantId: input.tenantId,
+          channel: input.channel,
           reason: input.reason,
-          senderAddress: input.senderAddress,
-          senderName: input.senderName,
-          subject: input.subject,
+          senderAddress: input.senderAddress ?? null,
+          senderName: input.senderName ?? null,
+          lineUserId: input.lineUserId ?? null,
+          subject: input.subject ?? null,
         },
       });
     },
@@ -45,9 +47,11 @@ export function makeQuarantinedEmailRepo(db: PrismaLike): QuarantinedEmailReposi
 
       return rows.map((row) => ({
         id: row.id,
+        channel: row.channel,
         reason: row.reason,
         senderAddress: row.senderAddress,
         senderName: row.senderName,
+        lineUserId: row.lineUserId,
         subject: row.subject,
         createdAt: row.createdAt,
       }));

@@ -24,6 +24,7 @@ describe('QuarantinedEmailRepository (memory)', () => {
   it('records and reads back a quarantined email', async () => {
     await repos.quarantinedEmails.record({
       tenantId: TENANT_A,
+      channel: 'email',
       reason: 'unknown_sender',
       senderAddress: 'unknown@example.com',
       senderName: '知らない人',
@@ -43,6 +44,7 @@ describe('QuarantinedEmailRepository (memory)', () => {
   it('returns rows newest-first', async () => {
     await repos.quarantinedEmails.record({
       tenantId: TENANT_A,
+      channel: 'email',
       reason: 'plan_gate',
       senderAddress: 'a@example.com',
       senderName: 'A',
@@ -52,6 +54,7 @@ describe('QuarantinedEmailRepository (memory)', () => {
     await new Promise((resolve) => setTimeout(resolve, 2));
     await repos.quarantinedEmails.record({
       tenantId: TENANT_A,
+      channel: 'email',
       reason: 'quota_exceeded',
       senderAddress: 'b@example.com',
       senderName: 'B',
@@ -66,6 +69,7 @@ describe('QuarantinedEmailRepository (memory)', () => {
   it('does not leak rows across tenants', async () => {
     await repos.quarantinedEmails.record({
       tenantId: TENANT_A,
+      channel: 'email',
       reason: 'auth_fail',
       senderAddress: 'a@example.com',
       senderName: 'A',
@@ -85,18 +89,22 @@ describe('QuarantinedEmailRepository (memory)', () => {
     store.quarantinedEmails.set('qte_older', {
       id: 'qte_older',
       tenantId: TENANT_A,
+      channel: 'email',
       reason: 'plan_gate',
       senderAddress: 'a@example.com',
       senderName: 'A',
+      lineUserId: null,
       subject: '古い方',
       createdAt: older,
     });
     store.quarantinedEmails.set('qte_newer', {
       id: 'qte_newer',
       tenantId: TENANT_A,
+      channel: 'email',
       reason: 'quota_exceeded',
       senderAddress: 'b@example.com',
       senderName: 'B',
+      lineUserId: null,
       subject: '新しい方',
       createdAt: newer,
     });
@@ -117,27 +125,33 @@ describe('QuarantinedEmailRepository (memory)', () => {
     store.quarantinedEmails.set('qte_b', {
       id: 'qte_b',
       tenantId: TENANT_A,
+      channel: 'email',
       reason: 'plan_gate',
       senderAddress: 'b@example.com',
       senderName: 'B',
+      lineUserId: null,
       subject: 'B',
       createdAt: sameInstant,
     });
     store.quarantinedEmails.set('qte_a', {
       id: 'qte_a',
       tenantId: TENANT_A,
+      channel: 'email',
       reason: 'plan_gate',
       senderAddress: 'a@example.com',
       senderName: 'A',
+      lineUserId: null,
       subject: 'A',
       createdAt: sameInstant,
     });
     store.quarantinedEmails.set('qte_c', {
       id: 'qte_c',
       tenantId: TENANT_A,
+      channel: 'email',
       reason: 'plan_gate',
       senderAddress: 'c@example.com',
       senderName: 'C',
+      lineUserId: null,
       subject: 'C',
       createdAt: sameInstant,
     });
@@ -152,5 +166,26 @@ describe('QuarantinedEmailRepository (memory)', () => {
       before: { createdAt: sameInstant, id: 'qte_b' },
     });
     expect(page2.map((r) => r.id)).toEqual(['qte_a']);
+  });
+
+  // フォローアップ (2026-07-13): 監査で発見したギャップの解消。LINE 取り込みもこのテーブルを
+  // channel='line' で共有する。メール専用フィールド (senderAddress/senderName/subject) が
+  // 埋まらなくても LINE 専用の lineUserId で記録・読み出しできることを確認する
+  it('LINE 由来の隔離記録 (channel=line) を記録・読み出しできる', async () => {
+    await repos.quarantinedEmails.record({
+      tenantId: TENANT_A,
+      channel: 'line',
+      reason: 'no_agents',
+      lineUserId: 'U00000000000000000000000000000001',
+    });
+
+    const rows = await repos.quarantinedEmails.findAllByTenant({ tenantId: TENANT_A });
+    expect(rows).toHaveLength(1);
+    expect(rows[0].channel).toBe('line');
+    expect(rows[0].reason).toBe('no_agents');
+    expect(rows[0].lineUserId).toBe('U00000000000000000000000000000001');
+    expect(rows[0].senderAddress).toBeNull();
+    expect(rows[0].senderName).toBeNull();
+    expect(rows[0].subject).toBeNull();
   });
 });

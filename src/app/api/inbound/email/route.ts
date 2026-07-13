@@ -350,6 +350,7 @@ async function recordQuarantine(
   try {
     await repos.quarantinedEmails.record({
       tenantId,
+      channel: 'email', // フォローアップ (2026-07-13): LINE 取り込みとテーブルを共有するため明示する
       reason,
       senderAddress: email.senderAddress,
       senderName: email.senderName,

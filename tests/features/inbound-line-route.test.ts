@@ -206,6 +206,13 @@ describe('POST /api/inbound/line', () => {
     const res = await POST(makeRequest('プリンターが動きません', LINE_ID_UNLINKED));
     expect(res.status).toBe(200);
     expect(store.tickets.size).toBe(0);
+    // フォローアップ (2026-07-13): 監査で発見したギャップの解消。以前は console.warn の
+    // サーバーログにしか残らず admin から確認できなかったため、隔離記録が永続化されることを確認する
+    expect(store.quarantinedEmails.size).toBe(1);
+    const record = Array.from(store.quarantinedEmails.values())[0];
+    expect(record.channel).toBe('line');
+    expect(record.reason).toBe('plan_gate');
+    expect(record.tenantId).toBe(TENANT);
   });
 
   // 未連携ユーザーの通常メッセージはプロキシ担当者を起票者にして起票する
@@ -555,6 +562,12 @@ describe('POST /api/inbound/line', () => {
       const res = await POST(makeRequest('プリンターが動きません', LINE_ID_UNLINKED));
       expect(res.status).toBe(200);
       expect(store.tickets.size).toBe(0);
+      // フォローアップ (2026-07-13): 監査で発見したギャップの解消。隔離記録が永続化されること
+      expect(store.quarantinedEmails.size).toBe(1);
+      const record = Array.from(store.quarantinedEmails.values())[0];
+      expect(record.channel).toBe('line');
+      expect(record.reason).toBe('quota_exceeded');
+      expect(record.lineUserId).toBe(LINE_ID_UNLINKED);
     });
 
     it('残枠があれば通常どおり起票する', async () => {
@@ -564,6 +577,22 @@ describe('POST /api/inbound/line', () => {
       expect(res.status).toBe(200);
       expect(store.tickets.size).toBe(1);
     });
+  });
+
+  // フォローアップ (2026-07-13): 監査で発見したギャップの解消。担当者が 1 人もいないテナントの
+  // 隔離記録が永続化されることを確認する (以前は console.warn のサーバーログにしか残らなかった)
+  it('担当者が1人もいないテナントは隔離記録を残して 200 を返す', async () => {
+    // シード済みの唯一の担当者を削除し、代理起票者を決められない状態にする
+    store.users.delete(AGENT_ID);
+    const { POST } = await import('@/app/api/inbound/line/route');
+    const res = await POST(makeRequest('プリンターが動きません', LINE_ID_UNLINKED));
+    expect(res.status).toBe(200);
+    expect(store.tickets.size).toBe(0);
+    expect(store.quarantinedEmails.size).toBe(1);
+    const record = Array.from(store.quarantinedEmails.values())[0];
+    expect(record.channel).toBe('line');
+    expect(record.reason).toBe('no_agents');
+    expect(record.tenantId).toBe(TENANT);
   });
 
   // フォローアップ (2026-07-13): 監査で発見したギャップの解消。§1.2 ペルソナ「現場リーダー」の

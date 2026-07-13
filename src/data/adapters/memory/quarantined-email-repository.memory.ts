@@ -26,10 +26,12 @@ export function makeQuarantinedEmailRepo(store: Store): QuarantinedEmailReposito
       const row: QuarantinedEmail = {
         id: nextId(store, 'qte'), // 'qte_...' 形式の一意 ID
         tenantId: input.tenantId,
+        channel: input.channel,
         reason: input.reason,
-        senderAddress: input.senderAddress,
-        senderName: input.senderName,
-        subject: input.subject,
+        senderAddress: input.senderAddress ?? null,
+        senderName: input.senderName ?? null,
+        lineUserId: input.lineUserId ?? null,
+        subject: input.subject ?? null,
         createdAt: new Date(),
       };
       store.quarantinedEmails.set(row.id, row);
@@ -48,9 +50,11 @@ export function makeQuarantinedEmailRepo(store: Store): QuarantinedEmailReposito
         if (filter.before && !isBeforeCursor(q.createdAt, q.id, filter.before)) continue;
         rows.push({
           id: q.id,
+          channel: q.channel,
           reason: q.reason,
           senderAddress: q.senderAddress,
           senderName: q.senderName,
+          lineUserId: q.lineUserId,
           subject: q.subject,
           createdAt: q.createdAt,
         });

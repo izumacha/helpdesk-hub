@@ -50,28 +50,39 @@ export type SettingsAuditAction =
   // subscriptionPlan 自体の変更は一度も監査対象になっていなかった
   | 'subscription_plan_update'; // サブスクリプションプランの変更 (Stripe Webhook 起因)
 
-// メール取り込みが起票せず隔離した理由。
+// メール/LINE 取り込みが起票せず隔離した理由。
 // prisma/schema.prisma の QuarantineReason enum および src/lib/constants.ts の
 // QUARANTINE_REASON_LABELS と常に同期すること。値を追加したら 3 箇所すべてを更新する。
+// フォローアップ (2026-07-13): LINE 取り込みも同じ隔離記録テーブルを共有するようにしたため
+// no_agents (LINE 専用) を追加した
 export type QuarantineReason =
-  | 'plan_gate' // メール取り込みが契約プランで許可されていない
-  | 'auth_fail' // 送信元ドメイン認証 (SPF/DKIM/DMARC) が enforce ポリシーで明示 fail
-  | 'unknown_sender' // 宛先テナントに所属しない送信者
-  | 'thread_forbidden' // 既知メンバーだが他人のチケットへの追記権限がない
-  | 'quota_exceeded'; // 月間チケット上限に到達済み
+  | 'plan_gate' // 取り込みが契約プランで許可されていない (メール/LINE 共通)
+  | 'auth_fail' // 送信元ドメイン認証 (SPF/DKIM/DMARC) が enforce ポリシーで明示 fail (メール専用)
+  | 'unknown_sender' // 宛先テナントに所属しない送信者 (メール専用)
+  | 'thread_forbidden' // 既知メンバーだが他人のチケットへの追記権限がない (メール専用)
+  | 'quota_exceeded' // 月間チケット上限に到達済み (メール/LINE 共通)
+  | 'no_agents'; // テナントに担当者が 1 人もおらず代理起票者を決められない (LINE 専用)
 
-// 隔離した受信メールの記録 1 件分 (DB/メモリストアが保持する完全な形。tenantId を含む)
+// 隔離記録の発生元チャネル。フォローアップ (2026-07-13): QuarantinedEmail をメール専用から
+// チャネル共通の隔離記録へ拡張する際に追加した
+export type QuarantineChannel = 'email' | 'line';
+
+// 隔離した受信メール/LINE メッセージの記録 1 件分 (DB/メモリストアが保持する完全な形。
+// tenantId を含む)。メール専用フィールド (senderAddress/senderName/subject) と LINE 専用
+// フィールド (lineUserId) はどちらも channel に応じて片方だけが埋まる (もう片方は null)
 export interface QuarantinedEmail {
   id: string; // 隔離記録 ID
   tenantId: string; // 対象テナント
+  channel: QuarantineChannel; // 隔離記録の発生元チャネル
   reason: QuarantineReason; // 隔離した理由
-  senderAddress: string; // 送信元メールアドレス
-  senderName: string | null; // 送信者名 (ヘッダから取れた場合のみ)
-  subject: string; // 件名
+  senderAddress: string | null; // 送信元メールアドレス (メール専用。LINE 記録では null)
+  senderName: string | null; // 送信者名 (ヘッダから取れた場合のみ。メール専用)
+  lineUserId: string | null; // LINE ユーザー ID (LINE 専用。メール記録では null)
+  subject: string | null; // 件名 (メール専用。LINE 記録では null)
   createdAt: Date; // 隔離した日時
 }
 
-// 隔離した受信メール 1 件分 (§3.2 フォローアップ: admin 向け一覧画面が表示する行。
+// 隔離した受信メール/LINE メッセージ 1 件分 (§3.2 フォローアップ: admin 向け一覧画面が表示する行。
 // 呼び出し側は既にテナントスコープで絞り込み済みのため tenantId を含まない)
 export type QuarantinedEmailRow = Omit<QuarantinedEmail, 'tenantId'>;
 
