@@ -1,21 +1,18 @@
 // JSON レスポンスを返すヘルパー
 import { NextResponse } from 'next/server';
-// crypto ベースの UUID 生成 (保存先キー組み立て用)
-import { randomUUID } from 'node:crypto';
 // セッション取得
 import { auth } from '@/lib/auth';
 // リポジトリ束 (tickets/categories/attachments など)
 import { repos, uow } from '@/data';
-// 添付ファイル本体の StoragePort (Edge runtime 汚染回避のため別モジュールから取り込む)
-import { storage } from '@/data/storage';
 // 優先度から解決期限・初回応答期限を計算する SLA ヘルパー
 import { calculateFirstResponseDueAt, calculateResolutionDueAt } from '@/lib/sla';
 // 新規チケット入力の Zod スキーマ
 import { createTicketSchema } from '@/lib/validations/ticket';
 // 添付ファイル検証ヘルパー
 import { validateUploadedFiles } from '@/lib/validations/attachment';
-// MIME → 拡張子の対応表 (storageKey の組み立てで使用)
-import { MIME_TO_EXTENSION } from '@/domain/attachment';
+// 添付ファイルのストレージ保存 / 失敗時クリーンアップの共通ヘルパー (POST /api/tickets/[id]/comments・
+// POST /api/inbound/email と共有。/code-review ultra 指摘対応: 3 箇所目の重複を解消)
+import { persistAttachments, cleanupWrittenAttachments } from '@/lib/attachment-persistence';
 // 新規起票時の初期ステータスを mode から決める共通ルール (メール取り込みと単一の源を共有)
 import { initialStatusForMode } from '@/domain/ticket-status';
 // テナントの動作モード (lite | pro) を取得するヘルパー
@@ -312,43 +309,23 @@ export async function POST(req: Request) {
         firstResponseDueAt,
       });
       // 添付ファイルを 1 件ずつ「ストレージ書き込み → メタ INSERT」の順に処理する
-      for (const v of attachmentValidation.files) {
-        // 保存先キーを組み立てる (例: tenantId/ticketId/<uuid>.jpg)
-        const ext = MIME_TO_EXTENSION[v.mimeType];
-        const key = `${tenantId}/${t.id}/${randomUUID()}.${ext}`;
-        // File 本体のバイト列を ArrayBuffer 経由で Uint8Array に変換する
-        const buf = new Uint8Array(await v.file.arrayBuffer());
-        // ストレージへ書き込む (失敗時は catch でクリーンアップ)
-        await storage.put(key, buf, { contentType: v.mimeType, size: v.size });
-        // ロールバック対象として書き込み済みキーを記録する (DB INSERT 失敗時に削除する)
-        writtenKeys.push(key);
-        // メタ情報を DB に保存する (storage="local" 固定)
-        await r.attachments.create({
-          ticketId: t.id,
-          commentId: null,
-          uploaderId: userId,
-          tenantId,
-          mimeType: v.mimeType,
-          size: v.size,
-          originalName: v.originalName,
-          storageKey: key,
-          storage: 'local',
-        });
-      }
+      // (POST /api/tickets/[id]/comments・POST /api/inbound/email と共有するヘルパー。
+      // /code-review ultra 指摘対応: 3 箇所で個別実装されていた重複を解消)
+      await persistAttachments(
+        r,
+        attachmentValidation.files,
+        t.id,
+        null, // 新規チケットへの添付 (コメントには紐づかない)
+        userId,
+        tenantId,
+        writtenKeys,
+      );
       // チケットを uow の戻り値として返す (呼び出し元で 201 ボディに使う)
       return t;
     });
   } catch (err) {
     // DB は自動ロールバック済。ストレージに書き込んだファイルを best-effort で削除する
-    await Promise.all(
-      writtenKeys.map((key) =>
-        storage.delete(key).catch((cleanupErr) => {
-          // ストレージ削除失敗はエラーとしてログに残す (リトライ用 GC は将来の課題)
-          // warn ではなく error: ロールバック失敗は警告ではなく本物のエラー
-          console.error('[POST /api/tickets] failed to clean up storage', { key, cleanupErr });
-        }),
-      ),
-    );
+    await cleanupWrittenAttachments(writtenKeys, '[POST /api/tickets]');
     // 元のエラーをサーバログに出して 500 を返す
     console.error('[POST /api/tickets] attachment save failed', err);
     return NextResponse.json({ error: '添付ファイルの保存に失敗しました' }, { status: 500 });

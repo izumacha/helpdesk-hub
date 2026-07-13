@@ -1,15 +1,11 @@
 // JSON / 201 レスポンスを返すヘルパー
 import { NextResponse } from 'next/server';
-// crypto ベースの UUID 生成 (保存先キー組み立て用)
-import { randomUUID } from 'node:crypto';
 // ページキャッシュを無効化する Next.js の関数
 import { revalidatePath } from 'next/cache';
 // セッション取得
 import { auth } from '@/lib/auth';
 // リポジトリ束 + UoW (トランザクション境界)
 import { repos, uow } from '@/data';
-// 添付ファイル本体の StoragePort (Edge runtime 汚染回避のため別モジュールから取り込む)
-import { storage } from '@/data/storage';
 // 未読件数を SSE で即時配信するヘルパー
 import { broadcastUnreadCountToMany } from '@/features/notifications/notify';
 // 環境変数で切り替わる EmailSender 実装を取得するファクトリ (依頼者宛メール送信用)
@@ -37,8 +33,9 @@ import { enforceRateLimit, RateLimitError } from '@/lib/rate-limit';
 import { commentBodySchema } from '@/lib/validations/ticket';
 // 添付ファイル検証ヘルパー
 import { validateUploadedFiles } from '@/lib/validations/attachment';
-// MIME → 拡張子の対応表 (storageKey の組み立てで使う)
-import { MIME_TO_EXTENSION } from '@/domain/attachment';
+// 添付ファイルのストレージ保存 / 失敗時クリーンアップの共通ヘルパー (POST /api/tickets・
+// POST /api/inbound/email と共有。/code-review ultra 指摘対応: 3 箇所目の重複を解消)
+import { persistAttachments, cleanupWrittenAttachments } from '@/lib/attachment-persistence';
 // Phase 4 課金: 添付累計サイズ上限チェック (チケット作成時添付と共有)
 import { checkAttachmentQuota } from '@/lib/tenant-plan';
 // Phase 4: Slack/Teams/Chatwork 外部通知のベストエフォート送信共通ヘルパー
@@ -165,28 +162,17 @@ export async function POST(req: Request, { params }: Params) {
       }
 
       // 添付ファイルがあれば 1 件ずつ「ストレージ書き込み → メタ INSERT」の順に処理する
-      for (const v of attachmentValidation.files) {
-        // 保存先キーを組み立てる (例: tenantId/ticketId/<uuid>.jpg)
-        const ext = MIME_TO_EXTENSION[v.mimeType];
-        const key = `${tenantId}/${ticketId}/${randomUUID()}.${ext}`;
-        // File 本体のバイト列を ArrayBuffer 経由で Uint8Array に変換する
-        const buf = new Uint8Array(await v.file.arrayBuffer());
-        // ストレージへ書き込む (失敗時は uow がロールバック + 後段で削除)
-        await storage.put(key, buf, { contentType: v.mimeType, size: v.size });
-        writtenKeys.push(key);
-        // メタ情報を DB に保存 (commentId をセットしてコメント添付として記録)
-        await r.attachments.create({
-          ticketId,
-          commentId: comment.id,
-          uploaderId: authorId,
-          tenantId,
-          mimeType: v.mimeType,
-          size: v.size,
-          originalName: v.originalName,
-          storageKey: key,
-          storage: 'local',
-        });
-      }
+      // (POST /api/tickets・POST /api/inbound/email と共有するヘルパー。
+      // /code-review ultra 指摘対応: 3 箇所で個別実装されていた重複を解消)
+      await persistAttachments(
+        r,
+        attachmentValidation.files,
+        ticketId,
+        comment.id, // コメントへの添付として記録する
+        authorId,
+        tenantId,
+        writtenKeys,
+      );
 
       // 通知対象に「コメントが追加された」旨を一斉送付する
       await Promise.all(
@@ -203,16 +189,7 @@ export async function POST(req: Request, { params }: Params) {
     });
   } catch (err) {
     // DB は自動ロールバック済。ストレージに書き込んだファイルを best-effort で削除する
-    await Promise.all(
-      writtenKeys.map((key) =>
-        storage.delete(key).catch((cleanupErr) => {
-          console.warn('[POST /api/tickets/[id]/comments] failed to clean up storage', {
-            key,
-            cleanupErr,
-          });
-        }),
-      ),
-    );
+    await cleanupWrittenAttachments(writtenKeys, '[POST /api/tickets/[id]/comments]');
     // 元のエラーをサーバログに残して 500 を返す
     console.error('[POST /api/tickets/[id]/comments] save failed', err);
     return NextResponse.json({ error: 'コメントの保存に失敗しました' }, { status: 500 });

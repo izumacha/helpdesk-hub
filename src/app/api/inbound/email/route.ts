@@ -22,17 +22,28 @@ import { timingSafeEqual } from 'node:crypto';
 import { revalidatePath } from 'next/cache';
 // データ層 (テナント / ユーザー / チケットのリポジトリ束 + トランザクション境界)
 import { repos, uow } from '@/data';
-// Webhook 再送に対する冪等起票の共通ヘルパー (LINE/メールで共有)
+// Webhook 再送に対する冪等起票の共通ヘルパー (LINE/メールで共有)。フォローアップ (2026-07-13):
+// 添付ファイルをチケット起票と同一トランザクションで保存するための onCreated フックを追加した
 import {
   createTicketIdempotent,
   emailMessageIdempotencyOps,
 } from '@/lib/idempotent-ticket-creation';
+// 添付ファイルの寛容版検証ヘルパー (件数/MIME/サイズ/マジックバイト。Web フォーム・コメント投稿の
+// 全件一括版 validateUploadedFiles とは異なり、1 件でも違反があっても全体を失敗させない。
+// この Webhook にはユーザーへ即座にフィードバックして再送信させられる画面が無いため)
+import { validateUploadedFilesLenient } from '@/lib/validations/attachment';
+// 添付ファイルのストレージ保存 / 失敗時クリーンアップの共通ヘルパー (POST /api/tickets・
+// POST /api/tickets/[id]/comments と共有。/code-review ultra 指摘対応: 3 箇所目の重複を解消)
+import { persistAttachments, cleanupWrittenAttachments } from '@/lib/attachment-persistence';
 // 新規起票時の初期ステータスを mode から決める共通ルール (Web フォーム起票と単一の源を共有)
 import { initialStatusForMode } from '@/domain/ticket-status';
 // コメント通知の宛先決定 (Web フォーム経由コメントと共有するヘルパー)
 import { resolveCommentRecipients } from '@/lib/comment-recipients';
 // 未読件数を SSE で即時配信するヘルパー (コメント追記時の通知扇形)
-import { broadcastUnreadCountToMany, notifyAgentsOfNewTicket } from '@/features/notifications/notify';
+import {
+  broadcastUnreadCountToMany,
+  notifyAgentsOfNewTicket,
+} from '@/features/notifications/notify';
 // 受信メールの正規化ヘルパー (純粋関数) と生ヘッダ読み取り、送信元認証 (SPF/DKIM/DMARC) の判定
 import {
   parseInboundEmail,
@@ -58,8 +69,9 @@ import { formatTicketRef } from '@/lib/ticket-ref';
 import { isEmailInboundAllowed, resolveEffectivePlan } from '@/lib/plan-guard';
 // Phase 4: Slack/Teams/Chatwork 外部通知ヘルパー (Web フォーム・LINE 取り込み・CSV インポートと共有)
 import { notifyNewTicketOutbound } from '@/lib/outbound-notify';
-// Phase 4 課金: 月間チケット上限チェック (Web フォーム・CSV インポートと共有)
-import { getMonthlyTicketQuota } from '@/lib/tenant-plan';
+// Phase 4 課金: 月間チケット上限チェック (Web フォーム・CSV インポートと共有)。
+// フォローアップ (2026-07-13): 添付累計サイズ上限チェックも Web フォーム・コメント投稿と共有する
+import { getMonthlyTicketQuota, checkAttachmentQuota } from '@/lib/tenant-plan';
 // 隔離理由の型 (§3.2 フォローアップ: 隔離記録の永続化に使う)
 import type { QuarantineReason } from '@/domain/types';
 
@@ -121,6 +133,12 @@ interface InboundFields {
   authenticationResults?: string | null; // 送信元認証: 生 Authentication-Results ヘッダ (汎用)
   autoSubmitted?: string | null; // RFC 3834 の Auto-Submitted ヘッダ (自動応答メール判定 = ループ防止)
   precedence?: string | null; // Precedence ヘッダ (bulk/list/junk なら自動配信・メーリングリスト判定)
+  // フォローアップ (2026-07-13): 監査で発見したギャップの解消。SendGrid Inbound Parse は
+  // 添付ファイルを "attachments" (件数) + "attachment1".."attachmentN" (File) フィールドで送るが、
+  // 従来これらを一切読んでおらず、写真を送るだけで済ませたい SMB ペルソナ (§1.2) の主要ユースケース
+  // (問い合わせに画像を添付) がメール経由では実現できていなかった (JSON パスには File 型が無いため
+  // 常に空配列。multipart のみ)
+  attachments: File[];
 }
 
 // 受信メール 1 通分のフィールドを、JSON / multipart のどちらのボディからでも取り出して共通形に揃える。
@@ -173,6 +191,22 @@ async function readInboundFields(req: Request): Promise<InboundFields> {
     // SendGrid 等は個別の Message-ID / In-Reply-To フィールドを持たないことがあるため、
     // 生ヘッダ (headers フィールド) からのフォールバック抽出も用意する (スレッド継続用)。
     const rawHeaders = str(form.get('headers'));
+    // フォローアップ (2026-07-13): 添付ファイルを抽出する。SendGrid Inbound Parse は
+    // "attachments" フィールドに件数を、"attachment1".."attachmentN" に各ファイルを渡す規約。
+    // 件数フィールドの値をそのままループ回数にすると、細工した巨大な値を送られたときに無駄な
+    // ループが走るため、実利用であり得ない上限で頭打ちする (§9 DoS 対策の一環。実際の添付件数
+    // 上限は後段の validateUploadedFiles の MAX_ATTACHMENTS_PER_UPLOAD が別途強制する)。
+    const ATTACHMENT_LOOKUP_MAX = 20;
+    const attachmentCountRaw = parseInt(str(form.get('attachments')) ?? '', 10);
+    const attachmentCount =
+      Number.isFinite(attachmentCountRaw) && attachmentCountRaw > 0
+        ? Math.min(attachmentCountRaw, ATTACHMENT_LOOKUP_MAX)
+        : 0;
+    const attachments: File[] = [];
+    for (let i = 1; i <= attachmentCount; i++) {
+      const entry = form.get(`attachment${i}`);
+      if (entry instanceof File) attachments.push(entry);
+    }
     // 宛先 (ルーティング): envelope の RCPT を優先する (ヘッダ To より実配送先として確実)。
     // 送信者 (本人特定): ヘッダ From を優先する (人間が送った差出人。envelope from=MAIL FROM は
     // 戻り先で本人性が弱い)。本人性は既知メンバー判定に加え、INBOUND_EMAIL_AUTH=enforce のとき
@@ -194,6 +228,7 @@ async function readInboundFields(req: Request): Promise<InboundFields> {
       // 自動応答判定用ヘッダ (multipart では生ヘッダから読む。ループ防止に使う)
       autoSubmitted: readRawHeader(rawHeaders, 'Auto-Submitted'),
       precedence: readRawHeader(rawHeaders, 'Precedence'),
+      attachments, // 添付ファイル (フォローアップ 2026-07-13)
     };
   }
   // それ以外は JSON ボディとして読む (テスト・自前連携向け)。
@@ -237,6 +272,8 @@ async function readInboundFields(req: Request): Promise<InboundFields> {
     // 自動応答判定用ヘッダ (camelCase / ヘッダ表記の両方を受ける)
     autoSubmitted: pick('autoSubmitted') ?? pick('auto-submitted'),
     precedence: pick('precedence') ?? pick('Precedence'),
+    // JSON には File 型が無いため常に空配列 (JSON パスはテスト・内部連携専用。上のコメント参照)
+    attachments: [],
   };
 }
 
@@ -459,6 +496,40 @@ export async function POST(req: Request) {
     return NextResponse.json({ status: 'quarantined' }, { status: 202 });
   }
 
+  // フォローアップ (2026-07-13): 監査で発見したギャップの解消。添付ファイルを検証する。
+  // Web フォーム/コメント投稿と異なり、この Webhook にはユーザーへ即時フィードバックする画面が無い
+  // (送信者はプロバイダの応答を見ない)。そのため寛容版 (validateUploadedFilesLenient) を使い、
+  // 1 件でも違反があってもメール全体 (起票/追記) を止めず、違反したファイルだけを除外して処理を
+  // 継続する。/code-review ultra 指摘対応: 当初は全件一括版 (validateUploadedFiles) を使い
+  // 検証失敗時に添付を全て捨てていたが、有効な写真が複数枚あるメールで 1 件でも非対応形式が
+  // 混在すると有効な写真まで巻き添えで消えてしまい、写真添付という本機能の目的を損なっていた。
+  const attachmentValidation = await validateUploadedFilesLenient(fields.attachments);
+  let validatedAttachments = attachmentValidation.files;
+  const { droppedCount } = attachmentValidation;
+  if (droppedCount > 0) {
+    console.warn('[POST /api/inbound/email] some attachments were rejected and dropped', {
+      droppedCount,
+      keptCount: validatedAttachments.length,
+    });
+  }
+  // 添付が残っていれば、テナントの累計サイズ上限 (§6.1 Standard「添付1GB」) も確認する。
+  // Web フォームと同じ理由で必ず rawPlan (tenant.subscriptionPlan) を渡す (effectivePlan だと
+  // Free trial 中に Free=無制限 → Standard=1GB へ上限が逆に厳しくなってしまう。tenant-plan.ts 参照)
+  if (validatedAttachments.length > 0) {
+    const newAttachmentBytes = validatedAttachments.reduce((sum, f) => sum + f.size, 0);
+    const attachmentQuotaCheck = await checkAttachmentQuota(
+      tenant.id,
+      newAttachmentBytes,
+      tenant.subscriptionPlan,
+    );
+    if (!attachmentQuotaCheck.ok) {
+      console.warn('[POST /api/inbound/email] attachments exceed quota, continuing without them', {
+        reason: attachmentQuotaCheck.message,
+      });
+      validatedAttachments = [];
+    }
+  }
+
   // 冪等性: この受信メールの Message-ID を既に取り込み済みなら、二重起票/二重コメントを避ける。
   // Webhook は at-least-once 配送 (再送あり) なので、同じ Message-ID を見たら過去のチケットを返す。
   // 注意: Message-ID が取れない (null) メールはこの重複判定が効かず、新規起票パスと同じ at-least-once
@@ -506,34 +577,58 @@ export async function POST(req: Request) {
       );
       // 通知メッセージ (Web フォーム経由コメントと同じ文言に揃える)
       const message = `チケット「${ticket.title}」に新しいコメントが追加されました`;
-      // コメント追記 + Message-ID 登録をトランザクションで行う。
+      // フォローアップ (2026-07-13): 添付ファイルのストレージ書き込みはトランザクション外の
+      // 副作用のため、失敗時に後始末できるよう書き込み済みキーを蓄えておく
+      // (POST /api/tickets/[id]/comments と同じ方針)
+      const writtenKeys: string[] = [];
+      // コメント追記 + 添付メタ INSERT + Message-ID 登録をトランザクションで行う。
       // 通知は「最善努力 (best-effort)」なので、トランザクション外で処理する。
       // 通知作成の失敗でコメント本体がロールバックされるのは本末転倒なためここで分離する (§9 fail-safe)。
-      await uow.run(async (r) => {
-        // 受信メール本文を既存チケットへのコメントとして追記する
-        await r.comments.create({
-          ticketId: ticket.id, // 紐づく既存チケット
-          authorId: sender.id, // 追記者 = 送信者 (既知メンバー)
-          body: email.body, // メール本文
-          tenantId: tenant.id, // 親チケットのテナント一致を Adapter が検証する
-        });
-        // SLA: エージェントからのメール返信も初回応答として記録する (comments/route.ts と同じ扱い)。
-        // ここを漏らすと、メール経由で最初に返信したチケットが SLA 上「未応答」のまま扱われ、
-        // 品質メトリクス (平均初回応答時間) からも永久に除外されてしまう。
-        // 依頼者自身の返信は「応答」ではないため対象外。既に記録済みなら上書きしない
-        // (2 回目以降のエージェント返信で初回応答日時が後ろにズレるのを防ぐ)。
-        if (senderIsAgent && !ticket.firstRespondedAt) {
-          await r.tickets.markFirstResponded(ticket.id, now, tenant.id);
-        }
-        // この受信メール自身の Message-ID も対応表へ登録する (返信の連鎖を辿れるように)
-        if (email.messageId) {
-          await r.emailThreads.register({
-            messageId: email.messageId,
-            ticketId: ticket.id,
-            tenantId: tenant.id,
+      try {
+        await uow.run(async (r) => {
+          // 受信メール本文を既存チケットへのコメントとして追記する
+          const comment = await r.comments.create({
+            ticketId: ticket.id, // 紐づく既存チケット
+            authorId: sender.id, // 追記者 = 送信者 (既知メンバー)
+            body: email.body, // メール本文
+            tenantId: tenant.id, // 親チケットのテナント一致を Adapter が検証する
           });
-        }
-      });
+          // SLA: エージェントからのメール返信も初回応答として記録する (comments/route.ts と同じ扱い)。
+          // ここを漏らすと、メール経由で最初に返信したチケットが SLA 上「未応答」のまま扱われ、
+          // 品質メトリクス (平均初回応答時間) からも永久に除外されてしまう。
+          // 依頼者自身の返信は「応答」ではないため対象外。既に記録済みなら上書きしない
+          // (2 回目以降のエージェント返信で初回応答日時が後ろにズレるのを防ぐ)。
+          if (senderIsAgent && !ticket.firstRespondedAt) {
+            await r.tickets.markFirstResponded(ticket.id, now, tenant.id);
+          }
+          // フォローアップ (2026-07-13): 検証済み添付ファイルをこのコメントに紐づけて保存する
+          if (validatedAttachments.length > 0) {
+            await persistAttachments(
+              r,
+              validatedAttachments,
+              ticket.id,
+              comment.id, // コメントへの添付として記録する
+              sender.id,
+              tenant.id,
+              writtenKeys,
+            );
+          }
+          // この受信メール自身の Message-ID も対応表へ登録する (返信の連鎖を辿れるように)
+          if (email.messageId) {
+            await r.emailThreads.register({
+              messageId: email.messageId,
+              ticketId: ticket.id,
+              tenantId: tenant.id,
+            });
+          }
+        });
+      } catch (err) {
+        // DB は自動ロールバック済。ストレージに書き込んだファイルを best-effort で削除する
+        await cleanupWrittenAttachments(writtenKeys, '[POST /api/inbound/email]');
+        // 元のエラーをサーバログに残して 500 を返す (プロバイダは再送する)
+        console.error('[POST /api/inbound/email] thread comment save failed', err);
+        return NextResponse.json({ error: 'コメントの保存に失敗しました' }, { status: 500 });
+      }
       // トランザクション完了後にベストエフォートで通知を作成する。
       // 失敗してもコメント自体は既にコミット済みなので、ログだけ残して続行する。
       // allSettled を使い 1 件の失敗で他の受信者への通知が止まらないようにする。
@@ -603,28 +698,70 @@ export async function POST(req: Request) {
   // 初回応答期限も同じく優先度 Medium ベースで自動算出する
   const firstResponseDueAt = calculateFirstResponseDueAt('Medium', now);
 
-  // 受信メールを 1 件の問い合わせとして作成する (起票 + 対応表登録を原子的に行う)
-  const { id: ticketId, alreadyExisted } = await createTicketIdempotent(
-    emailMessageIdempotencyOps,
-    email.messageId, // 冪等化キー (無い場合は null)
-    tenant.id,
-    {
-      title: email.subject, // 件名 (空メールは既定タイトルに正規化済み)
-      body: email.body, // 本文テキスト
-      priority: 'Medium', // メール取り込みは優先度を Medium 固定 (Lite の既定と揃える)
-      categoryId: null, // メール取り込みではカテゴリ未分類
-      creatorId: sender.id, // 起票者は送信者本人 (既知メンバー)
-      tenantId: tenant.id, // 取り込み先テナント
-      status: initialStatus, // Lite は 'Open'、Pro は undefined (既定 New)
-      resolutionDueAt, // 解決期限 (優先度ベース)
-      firstResponseDueAt, // 初回応答期限 (優先度ベース)
-    },
-  );
+  // フォローアップ (2026-07-13): 添付ファイルのストレージ書き込みはトランザクション外の副作用の
+  // ため、失敗時に後始末できるよう書き込み済みキーを蓄えておく (POST /api/tickets と同じ方針)
+  const writtenKeys: string[] = [];
+  let ticketId: string;
+  let alreadyExisted: boolean;
+  try {
+    // 受信メールを 1 件の問い合わせとして作成する (起票 + 添付メタ INSERT + 対応表登録を
+    // onCreated フック経由で同一トランザクション内で原子的に行う)
+    const created = await createTicketIdempotent(
+      emailMessageIdempotencyOps,
+      email.messageId, // 冪等化キー (無い場合は null)
+      tenant.id,
+      {
+        title: email.subject, // 件名 (空メールは既定タイトルに正規化済み)
+        body: email.body, // 本文テキスト
+        priority: 'Medium', // メール取り込みは優先度を Medium 固定 (Lite の既定と揃える)
+        categoryId: null, // メール取り込みではカテゴリ未分類
+        creatorId: sender.id, // 起票者は送信者本人 (既知メンバー)
+        tenantId: tenant.id, // 取り込み先テナント
+        status: initialStatus, // Lite は 'Open'、Pro は undefined (既定 New)
+        resolutionDueAt, // 解決期限 (優先度ベース)
+        firstResponseDueAt, // 初回応答期限 (優先度ベース)
+      },
+      {
+        // フォローアップ (2026-07-13): 検証済み添付ファイルをこの新規チケットに紐づけて保存する
+        onCreated:
+          validatedAttachments.length > 0
+            ? (tx, newTicketId) =>
+                persistAttachments(
+                  tx,
+                  validatedAttachments,
+                  newTicketId,
+                  null, // 新規起票への添付 (コメントには紐づかない)
+                  sender.id,
+                  tenant.id,
+                  writtenKeys,
+                )
+            : undefined,
+      },
+    );
+    ticketId = created.id;
+    alreadyExisted = created.alreadyExisted;
+  } catch (err) {
+    // /code-review ultra 指摘対応 (2026-07-13): 冪等化キーの有無に関わらず、DB は自動ロールバック
+    // 済み (createTicketIdempotent がキー無し経路もトランザクション化したため、チケット行だけが
+    // 添付無しで残ることは無い)。ストレージへの書き込みだけはトランザクション外の副作用のため、
+    // 書き込み済みキーを個別に best-effort で削除する
+    await cleanupWrittenAttachments(writtenKeys, '[POST /api/inbound/email]');
+    console.error('[POST /api/inbound/email] ticket creation failed', err);
+    return NextResponse.json({ error: '問い合わせの作成に失敗しました' }, { status: 500 });
+  }
 
   if (alreadyExisted) {
     // 書き込み競合により、別リクエストが既に起票・受領返信済みと判明したケース。
     // 二重にチケットや受領メールを作らないよう、ここでは何もせず既存チケット ID を返す
     console.info('[POST /api/inbound/email] resolved write conflict as duplicate', ticketId);
+    // /code-review ultra 指摘対応 (2026-07-13): このリクエスト自身の (敗れた) トランザクション内で
+    // onCreated が添付ファイルを既にストレージへ書き込んでいた場合、DB 側はロールバックされても
+    // ストレージの書き込みはトランザクション外の副作用のため残ってしまう。writtenKeys にはこの
+    // リクエスト自身が書き込んだキーだけが積まれる (勝者側の書き込みとは無関係) ため、常に
+    // 安全にクリーンアップできる (何も書いていなければ空配列で no-op)
+    if (writtenKeys.length > 0) {
+      await cleanupWrittenAttachments(writtenKeys, '[POST /api/inbound/email]');
+    }
     return NextResponse.json({ status: 'duplicate', ticketId }, { status: 200 });
   }
 
