@@ -168,11 +168,26 @@ describe('POST /api/inbound/line', () => {
     __resetRateLimits();
     // 連携コード冪等化は DB (lineLinkCodeRefs) 永続化に切り替わったため、createMemoryContext() で
     // 毎回新しい空ストアが作られる時点で自動的に初期化される (グローバル Map のリセットは不要)
+
+    // /code-review ultra 指摘対応 (2026-07-13): 受領確認 push (LINE Push API) が起票成功時に
+    // 無条件で発火するようになったため、fetch をスタブしていないテストでも実際に
+    // https://api.line.me へ HTTP リクエストが飛んでしまっていた (CLAUDE.md §11 「外部 API は
+    // モックして実際には呼ばない」違反。push 失敗は fail-safe で握り潰されるためテスト結果には
+    // 現れず、CI のネットワーク制限下での遅延・不安定化にサイレントにつながっていた)。
+    // ファイル全体の既定として無害な成功レスポンスを返す fetch モックをここでインストールし、
+    // 個別の呼び出し内容を検証したい describe ブロックは自身の beforeEach で上書きする。
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({ ok: true, status: 200, text: () => Promise.resolve('ok') }),
+    );
   });
 
   afterEach(() => {
     // 次のテストファイルに影響しないよう、このファイルで消費したバケットも初期化しておく
     __resetRateLimits();
+    // 上でインストールした既定の fetch スタブ (および各 describe ブロックが上書きしたもの) を
+    // 次のテストに影響しないよう必ず元に戻す
+    vi.unstubAllGlobals();
   });
 
   // セキュリティ回帰テスト: destination (署名検証前の値) をレート制限のキーに使うと、
@@ -722,6 +737,12 @@ describe('POST /api/inbound/line', () => {
       vi.unstubAllGlobals();
     });
 
+    // Content API 呼び出しだけを抜き出す/数えるヘルパー (受領確認の LINE Push API 呼び出しは
+    // 別 URL なので対象外にする)。/code-review ultra 指摘対応 (2026-07-13): 同じフィルタ条件が
+    // このブロック内の複数テストに書き写されていたため、ここへ集約する (§6 DRY)
+    const contentApiCallsOf = (mock: ReturnType<typeof vi.fn>) =>
+      mock.mock.calls.filter(([url]) => String(url).includes('/content'));
+
     it('画像メッセージから添付ファイルが保存される', async () => {
       const imageBytes = new Uint8Array([...PNG_MAGIC, 1, 2, 3]);
       fetchMock.mockResolvedValue(
@@ -735,10 +756,7 @@ describe('POST /api/inbound/line', () => {
       expect(body.ticketIds).toHaveLength(1);
 
       // Content API を正しい URL・Authorization ヘッダで呼んでいること
-      // (受領確認の LINE Push API 呼び出しは別 URL なので対象外にする)
-      const contentApiCalls = fetchMock.mock.calls.filter(([url]) =>
-        String(url).includes('/content'),
-      );
+      const contentApiCalls = contentApiCallsOf(fetchMock);
       expect(contentApiCalls).toHaveLength(1);
       const [url, init] = contentApiCalls[0];
       expect(url).toBe('https://api-data.line.me/v2/bot/message/img-1/content');
@@ -817,11 +835,7 @@ describe('POST /api/inbound/line', () => {
       const body = (await res.json()) as { ticketIds: string[] };
       expect(body.ticketIds).toHaveLength(1);
       // 外部ホストの画像は SSRF 対策のため Content API を呼ばない
-      // (受領確認の LINE Push API 呼び出しは起票成功時に別途発火するため対象外にする)
-      const contentApiCalls = fetchMock.mock.calls.filter(([url]) =>
-        String(url).includes('/content'),
-      );
-      expect(contentApiCalls).toHaveLength(0);
+      expect(contentApiCallsOf(fetchMock)).toHaveLength(0);
       expect(store.attachments.size).toBe(0);
     });
 
@@ -831,22 +845,18 @@ describe('POST /api/inbound/line', () => {
         new Response(imageBytes, { status: 200, headers: { 'content-type': 'image/png' } }),
       );
 
-      // Content API 呼び出しだけを数えるヘルパー (受領確認の LINE Push API 呼び出しは対象外にする)
-      const countContentApiCalls = () =>
-        fetchMock.mock.calls.filter(([url]) => String(url).includes('/content')).length;
-
       const { POST } = await import('@/app/api/inbound/line/route');
       const res1 = await POST(makeImageRequest(LINE_ID_UNLINKED, 'img-dup-1'));
       const body1 = (await res1.json()) as { ticketIds: string[] };
       expect(body1.ticketIds).toHaveLength(1);
-      expect(countContentApiCalls()).toBe(1);
+      expect(contentApiCallsOf(fetchMock)).toHaveLength(1);
 
       // 同じメッセージ ID で再送 (LINE の at-least-once 配送を模す)
       const res2 = await POST(makeImageRequest(LINE_ID_UNLINKED, 'img-dup-1'));
       const body2 = (await res2.json()) as { ticketIds: string[] };
       expect(body2.ticketIds).toEqual(body1.ticketIds);
       // 重複判定は早期リターンするため Content API を再度呼ばない
-      expect(countContentApiCalls()).toBe(1);
+      expect(contentApiCallsOf(fetchMock)).toHaveLength(1);
       // チケット・添付とも 1 件のまま (二重起票・二重添付なし)
       expect(store.tickets.size).toBe(1);
       expect(store.attachments.size).toBe(1);
