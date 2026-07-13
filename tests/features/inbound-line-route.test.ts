@@ -651,6 +651,32 @@ describe('POST /api/inbound/line', () => {
       expect(storage.entries.size).toBe(0);
     });
 
+    // /code-review ultra 指摘対応の回帰テスト (2026-07-13): 以前は fetch 呼び出しだけを try/catch
+    // していたため、ヘッダ受信後にボディのストリーム読み取り中に接続断・タイムアウトが起きると
+    // 例外が捕捉されずに POST まで伝播し、この Webhook が常に 200 を返すべき契約 (再送ループを
+    // 止めるための前提) を破っていた。ボディ読み取り中の失敗でも 200 + 添付なしで起票を継続すること
+    // (POST が 500 にならないこと) を確認する
+    it('Content API のボディ読み取り中に失敗しても 500 にならず添付なしで起票を継続する', async () => {
+      // ヘッダは正常に受信できたが、ボディのストリーム読み取り中に接続が切れるケースを模す
+      const brokenStream = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.error(new Error('simulated mid-stream connection reset'));
+        },
+      });
+      fetchMock.mockResolvedValue(
+        new Response(brokenStream, { status: 200, headers: { 'content-type': 'image/png' } }),
+      );
+
+      const { POST } = await import('@/app/api/inbound/line/route');
+      const res = await POST(makeImageRequest(LINE_ID_UNLINKED, 'img-broken-stream'));
+      // ボディ読み取りが失敗しても 500 にはならず、常に 200 を返す契約が守られること
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { ticketIds: string[] };
+      expect(body.ticketIds).toHaveLength(1);
+      expect(store.attachments.size).toBe(0);
+      expect(storage.entries.size).toBe(0);
+    });
+
     it('許可外 MIME の画像は無視され、添付なしで起票される', async () => {
       // PNG マジックバイトを持たない (整合しない) バイト列 = 中身偽装防御に弾かれる
       const bogusBytes = new Uint8Array([1, 2, 3, 4]);

@@ -449,6 +449,34 @@ describe('importTickets', () => {
       expect(sentEmails[0]?.text).toContain('2 件');
     });
 
+    // /code-review ultra 指摘対応の回帰テスト (2026-07-13): 以前は担当割当メール送信の
+    // listAgentEmails 呼び出しが try/catch で囲まれておらず、DB エラー等が発生すると
+    // importTickets 全体の Promise.all まで例外が伝播し、チケット作成が既に成功しているのに
+    // CSV インポート自体が失敗したように見えてしまっていた。担当割当メール処理が失敗しても
+    // インポート結果 (imported/errors) は正しく返ること (例外が伝播しないこと) を確認する
+    it('担当割当メール送信中にエラーが起きてもインポート結果は正常に返る', async () => {
+      repos = {
+        ...repos,
+        users: {
+          ...repos.users,
+          listAgentEmails: async () => {
+            throw new Error('DB 接続エラー (シミュレーション)');
+          },
+        },
+      };
+      const importTickets = await loadAction();
+      const csv = `件名,担当者\n複合機の紙詰まり,エージェント2`;
+      const result = await importTickets(csv);
+
+      // メール送信処理が失敗しても、チケット作成自体は成功として返ること
+      expect(result.imported).toBe(1);
+      expect(result.errors).toHaveLength(0);
+      const ticket = [...store.tickets.values()][0];
+      expect(ticket?.assigneeId).toBe('u-agt-2');
+      // メールは送られていないこと (送信処理自体が例外で中断したため)
+      expect(sentEmails).toHaveLength(0);
+    });
+
     // インポート実行者が自分自身を担当者に設定した場合は、既に自分の操作だと分かっているため
     // 通知不要 (otherAgents と同じ「自分の操作を自分に通知しない」方針)
     it('インポート実行者が自分自身を担当者に設定しても assigned 通知は送られない', async () => {

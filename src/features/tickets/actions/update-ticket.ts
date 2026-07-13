@@ -41,6 +41,8 @@ import {
 } from '@/lib/ticket-email';
 // EmailSender 実装を取得するファクトリ (環境変数で console / smtp を切り替え)
 import { getEmailSender } from '@/lib/email';
+// 複数宛先への一斉メール送信共通ヘルパー (CSV インポートの担当割当メールと共有。§6 DRY)
+import { sendBatchEmail } from '@/lib/batch-email';
 // メールに埋め込むリンクのベース URL を解決するヘルパー
 import { resolveAppBaseUrl } from '@/lib/app-url';
 // Phase 4: Slack/Teams 外部通知ヘルパー (失敗してもチケット操作を止めない)
@@ -680,26 +682,21 @@ export async function escalateTicket(ticketId: string, reason: string) {
     // チケット詳細ページの URL (メール本文・外部通知の両方で使い回す)
     const ticketUrl = buildTicketUrl(baseUrl, ticketId);
     await Promise.allSettled([
-      // 経路 1: 操作者以外の全エージェントへメール送信 (1 通の失敗が他へ波及しないよう内側でも allSettled)
+      // 経路 1: 操作者以外の全エージェントへメール送信 (1 通の失敗が他へ波及しないよう内側でも allSettled)。
+      // /code-review ultra 指摘対応 (2026-07-13): CSV インポートの担当割当メール
+      // (notifyAssignedAgentsByEmail) と同型の「id→email 解決済みの宛先一覧へ Promise.allSettled
+      // で送信し、失敗件数をログに残す」処理だったため、共通ヘルパー sendBatchEmail へ抽出した
+      // (2 箇所目の重複。CLAUDE.md §6 DRY)
       (async () => {
         try {
-          // 件名 / 本文 (Text / HTML) を純粋ヘルパーで構築
-          const { subject, text, html } = renderEscalatedEmail({
-            ticketTitle: title,
-            ticketUrl,
-            reason: trimmedReason,
-          });
           // 操作者本人 (エスカレーションを実行したエージェント) は自分の操作を知っているため除く
           const recipients = agents.filter((a) => a.id !== session.user.id);
-          const results = await Promise.allSettled(
-            recipients.map((a) => getEmailSender().send({ to: a.email, subject, text, html })),
+          // 全員へ同じ文面を送るため render 関数は引数 (宛先) を無視してよい
+          await sendBatchEmail(
+            recipients,
+            () => renderEscalatedEmail({ ticketTitle: title, ticketUrl, reason: trimmedReason }),
+            '[escalateTicket]',
           );
-          const failedCount = results.filter((r) => r.status === 'rejected').length;
-          if (failedCount > 0) {
-            console.warn(
-              `[escalateTicket] ${failedCount} 件のエージェント宛メール送信に失敗しました`,
-            );
-          }
         } catch (err) {
           // 本文組み立て自体に失敗した場合もログのみに留める (アプリ内通知は既に成立している)
           console.error('[escalateTicket] エージェント宛メール送信に失敗しました', err);

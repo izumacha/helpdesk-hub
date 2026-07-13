@@ -398,6 +398,51 @@ async function findDuplicateLineTicket(
   return existingTicketId;
 }
 
+// 画像メッセージの添付を取得・検証し、検証済みファイル一覧を返す (取得・検証に失敗すれば空配列)。
+// /code-review ultra 指摘対応 (2026-07-13): processLineEvent 内に「取得 → 検証 → 上限チェック」の
+// 3 段ネストで書かれていて読みづらかったため、早期 return で平坦化した専用ヘルパーへ抽出した。
+// 呼び出し元は取得・検証の失敗を例外ではなく空配列で受け取り、添付なしで起票を継続する (§9 fail-safe)。
+async function resolveLineImageAttachment(
+  channelAccessToken: string, // Content API 取得に使うテナントの長期アクセストークン
+  attachmentMessageId: string, // Content API の取得キー (画像メッセージの ID)
+  targetTenantId: string, // 添付累計サイズ上限チェックのスコープ
+  subscriptionPlan: SubscriptionPlan, // 添付累計サイズ上限チェックに使う契約プラン
+): Promise<ValidatedAttachment[]> {
+  // Content API から画像本体を取得する。失敗 (HTTP エラー・タイムアウト・サイズ超過等) なら
+  // fetchLineMessageContent 自身がログを残して null を返すので、ここでは空配列で早期リターンする
+  const content = await fetchLineMessageContent(channelAccessToken, attachmentMessageId);
+  if (!content) return [];
+
+  // Content API が返す実際の Content-Type を申告 MIME として渡し、既存の検証パイプライン
+  // (許可 MIME 判定 + マジックバイト整合チェック) をそのまま再利用する (§6 DRY)。
+  // Uint8Array のコピーコンストラクタを経由して ArrayBuffer 裏付けの型にする
+  // (TS の lib.dom 型定義上、素の Uint8Array<ArrayBufferLike> は BlobPart に直接代入できないため。
+  // src/app/api/attachments/[id]/route.ts の配信時と同じ回避策)
+  const file = new File([new Uint8Array(content.bytes)], `line-${attachmentMessageId}`, {
+    type: content.contentType,
+  });
+  const attachmentValidation = await validateUploadedFilesLenient([file]);
+  if (attachmentValidation.droppedCount > 0) {
+    console.warn('[POST /api/inbound/line] image attachment rejected by validation', {
+      messageId: attachmentMessageId,
+    });
+  }
+  const validatedAttachments = attachmentValidation.files;
+  // 検証を通過した添付が無ければ、上限チェックするまでもなくここで終える
+  if (validatedAttachments.length === 0) return [];
+
+  // 添付累計サイズ上限チェック (Web フォーム・メール取り込みと共有 §6.1 料金プラン)
+  const totalBytes = validatedAttachments.reduce((sum, f) => sum + f.size, 0);
+  const quotaCheck = await checkAttachmentQuota(targetTenantId, totalBytes, subscriptionPlan);
+  if (!quotaCheck.ok) {
+    console.warn('[POST /api/inbound/line] image attachment exceeds quota, continuing without it', {
+      reason: quotaCheck.message,
+    });
+    return [];
+  }
+  return validatedAttachments;
+}
+
 // LINE Webhook イベント 1 件を処理する。起票 (または重複判定) できた場合はチケット ID を返し、
 // スタンプ/空メッセージ/連携コード処理/起票失敗など「起票しない」イベントは null を返す。
 // POST から呼び出す前提の内部ヘルパーのため export しない。
@@ -567,43 +612,16 @@ async function processLineEvent(
 
   // 画像添付があれば、チケット起票より前に取得・検証しておく (メール取り込みと同じ順序)。
   // 取得・検証に失敗しても添付なしで起票を継続する (§9 fail-safe)。
-  let validatedAttachments: ValidatedAttachment[] = [];
-  if (attachmentMessageId) {
-    const content = await fetchLineMessageContent(ctx.channelAccessToken, attachmentMessageId);
-    if (content) {
-      // Content API が返す実際の Content-Type を申告 MIME として渡し、既存の検証パイプライン
-      // (許可 MIME 判定 + マジックバイト整合チェック) をそのまま再利用する (§6 DRY)
-      // Uint8Array のコピーコンストラクタを経由して ArrayBuffer 裏付けの型にする
-      // (TS の lib.dom 型定義上、素の Uint8Array<ArrayBufferLike> は BlobPart に直接代入できないため。
-      // src/app/api/attachments/[id]/route.ts の配信時と同じ回避策)
-      const file = new File([new Uint8Array(content.bytes)], `line-${attachmentMessageId}`, {
-        type: content.contentType,
-      });
-      const attachmentValidation = await validateUploadedFilesLenient([file]);
-      if (attachmentValidation.droppedCount > 0) {
-        console.warn('[POST /api/inbound/line] image attachment rejected by validation', {
-          messageId: attachmentMessageId,
-        });
-      }
-      validatedAttachments = attachmentValidation.files;
-      // 添付累計サイズ上限チェック (Web フォーム・メール取り込みと共有 §6.1 料金プラン)
-      if (validatedAttachments.length > 0) {
-        const totalBytes = validatedAttachments.reduce((sum, f) => sum + f.size, 0);
-        const quotaCheck = await checkAttachmentQuota(
-          targetTenantId,
-          totalBytes,
-          ctx.subscriptionPlan,
-        );
-        if (!quotaCheck.ok) {
-          console.warn(
-            '[POST /api/inbound/line] image attachment exceeds quota, continuing without it',
-            { reason: quotaCheck.message },
-          );
-          validatedAttachments = [];
-        }
-      }
-    }
-  }
+  // /code-review ultra 指摘対応 (2026-07-13): 取得 → 検証 → 上限チェックの 3 段ネストが深く
+  // 読みづらかったため、早期 return で平坦化した専用ヘルパーへ抽出した
+  const validatedAttachments = attachmentMessageId
+    ? await resolveLineImageAttachment(
+        ctx.channelAccessToken,
+        attachmentMessageId,
+        targetTenantId,
+        ctx.subscriptionPlan,
+      )
+    : [];
 
   // Phase 4 課金: 月間チケット上限チェック (Web フォーム・CSV インポート・メール取り込みと共有)。
   // tenant-plan.ts のコメントで「全ての起票入口で共有する」と明記されているにもかかわらず、

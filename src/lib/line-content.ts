@@ -26,9 +26,12 @@ const LINE_CONTENT_API_BASE = 'https://api-data.line.me/v2/bot/message';
 // コンテンツ取得のタイムアウト (ミリ秒)。画像は line-push.ts の push (5秒) より大きいため少し長めにする
 const LINE_CONTENT_FETCH_TIMEOUT_MS = 10_000;
 
-// 読み取りバイト数の上限。添付サイズ上限ちょうどの画像を誤って「超過」と誤判定しないよう、
-// 上限そのものではなく「上限を超える (upperBound+1 バイト目) を読めたか」で超過を確定させる
-const READ_CAP_BYTES = MAX_ATTACHMENT_SIZE_BYTES + 1;
+// 読み取りバイト数の上限。readBodyCappedBytes は「受信済みバイト数が上限を超えたか
+// (received > maxBytes)」で打ち切るため、上限ちょうどのファイルは超過にならず最後まで読み切れ、
+// 1 バイトでも超えた時点で打ち切られる。この比較だけで境界値を正しく扱えるため、上限値自体に
+// +1 等の調整は不要 (以前は +1 していたが、received > (MAX+1) という比較になり実質 MAX+2 バイト
+// まで許してしまう off-by-one だった)
+const READ_CAP_BYTES = MAX_ATTACHMENT_SIZE_BYTES;
 
 // 取得できたコンテンツ (バイト列 + LINE サーバが返す実際の Content-Type)
 export interface LineMessageContent {
@@ -44,9 +47,14 @@ export async function fetchLineMessageContent(
   accessToken: string,
   messageId: string,
 ): Promise<LineMessageContent | null> {
-  let response: Awaited<ReturnType<typeof undiciFetch>>;
+  // /code-review ultra 指摘対応 (2026-07-13): 以前は fetch 呼び出しだけを try/catch していたため、
+  // ヘッダ受信後にボディのストリーム読み取り中 (readBodyCappedBytes 内) でタイムアウト・接続断が
+  // 起きると例外が捕捉されずに呼び出し元 (processLineEvent → POST) まで伝播し、この Webhook が
+  // 常に 200 を返すという契約 (LINE の再送ループを止めるための前提) を破ってしまっていた。
+  // fetch とボディ読み取りの両方をまとめて 1 つの try で囲み、どちらの失敗も「添付なしで
+  // 起票を継続する」フォールバックに正しく合流させる。
   try {
-    response = await undiciFetch(`${LINE_CONTENT_API_BASE}/${messageId}/content`, {
+    const response = await undiciFetch(`${LINE_CONTENT_API_BASE}/${messageId}/content`, {
       method: 'GET',
       // 長期アクセストークンを Bearer 認証で渡す (line-push.ts と同じ LINE API 仕様)
       headers: { Authorization: `Bearer ${accessToken}` },
@@ -57,32 +65,33 @@ export async function fetchLineMessageContent(
       // SSRF 対策: DNS 解決した実際の接続先 IP を検証する (DNS リバインディング対策)
       dispatcher: ssrfSafeDispatcher,
     });
+
+    // redirect: 'manual' のとき、リダイレクト応答は opaqueredirect になる (webhook-fetch.ts と同じ判定)
+    if (response.type === 'opaqueredirect' || (response.status >= 300 && response.status < 400)) {
+      console.warn('[line-content] redirect response rejected (SSRF guard)');
+      return null;
+    }
+    if (!response.ok) {
+      console.warn(`[line-content] failed to fetch message content: HTTP ${response.status}`);
+      return null;
+    }
+
+    // LINE サーバが返す実際の Content-Type (申告ベースではなく実測値なので、後段の
+    // validateUploadedFilesLenient のマジックバイト検証と合わせて二重に信頼性を確認できる)
+    const contentType = response.headers.get('content-type') ?? '';
+    const bytes = await readBodyCappedBytes(response, READ_CAP_BYTES);
+    if (bytes === null) {
+      // 上限超過は「巨大すぎる添付」として添付なしにフォールバックさせる (DoS 対策 §9)
+      console.warn('[line-content] message content exceeds size limit, dropping attachment');
+      return null;
+    }
+    return { bytes, contentType };
   } catch (err) {
-    // タイムアウト・DNS 失敗・接続エラー等はログに残し、添付なしにフォールバックさせる
+    // タイムアウト・DNS 失敗・接続エラー・ボディ読み取り中の切断等をまとめてログに残し、
+    // 添付なしにフォールバックさせる
     console.warn('[line-content] failed to fetch message content', err);
     return null;
   }
-
-  // redirect: 'manual' のとき、リダイレクト応答は opaqueredirect になる (webhook-fetch.ts と同じ判定)
-  if (response.type === 'opaqueredirect' || (response.status >= 300 && response.status < 400)) {
-    console.warn('[line-content] redirect response rejected (SSRF guard)');
-    return null;
-  }
-  if (!response.ok) {
-    console.warn(`[line-content] failed to fetch message content: HTTP ${response.status}`);
-    return null;
-  }
-
-  // LINE サーバが返す実際の Content-Type (申告ベースではなく実測値なので、後段の
-  // validateUploadedFilesLenient のマジックバイト検証と合わせて二重に信頼性を確認できる)
-  const contentType = response.headers.get('content-type') ?? '';
-  const bytes = await readBodyCappedBytes(response, READ_CAP_BYTES);
-  if (bytes === null) {
-    // 上限超過は「巨大すぎる添付」として添付なしにフォールバックさせる (DoS 対策 §9)
-    console.warn('[line-content] message content exceeds size limit, dropping attachment');
-    return null;
-  }
-  return { bytes, contentType };
 }
 
 // undici の Response 型と lib.dom の Response 型は ReadableStream 型が微妙に非互換のため、
