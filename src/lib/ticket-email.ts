@@ -308,3 +308,44 @@ export function renderEscalatedEmail(input: {
   // 3 点セットを返す
   return { subject, text, html };
 }
+
+// CSV インポートのように、複数チケットの担当割当をまとめて 1 通で知らせるメール本文を生成する
+// 純粋関数 (副作用なし)。
+//
+// フォローアップ (2026-07-13): 監査で発見したギャップの解消。画面からの手動アサイン
+// (updateTicketAssignee → renderAssignedEmail) は担当者へメールが届くのに対し、CSV インポートで
+// 「担当者」列から初期担当者を設定してもアプリ内通知しか届かず、アプリを開かない担当者は
+// 気づけなかった。renderAssignedEmail は 1 件のチケットタイトルを前提にした文面のため、
+// 複数チケットをまとめて知らせるこちらでは件数ベースの文面にする (タイトルの二重入れ子を避ける)。
+export function renderAssignedBatchEmail(input: {
+  count: number; // まとめて割り当てられたチケット件数
+  ticketsUrl: string; // 一覧ページの URL (個々のチケットに紐づかないため一覧への導線にする)
+}): { subject: string; text: string; html: string } {
+  // 件名: 接頭辞 + 件数を含めた担当割当の件名 (件数は数値のみのためサニタイズ不要)
+  const subject = `${SUBJECT_PREFIX} CSV インポートで${input.count}件のチケットの担当者に割り当てられました`;
+
+  // テキスト本文 (HTML 非対応クライアント向けフォールバック)
+  const text = [
+    `CSV インポートで ${input.count} 件のチケットの担当者に割り当てられました。`,
+    '',
+    '一覧から内容を確認してください。',
+    `${input.ticketsUrl}`,
+    '',
+    'このメールに心当たりがない場合は破棄してください。',
+  ].join('\n');
+
+  // HTML 本文に差し込む外部由来文字列を個別にエスケープする (XSS / 文面崩れ防止)
+  const escapedBatchUrl = escapeHtml(input.ticketsUrl);
+
+  // HTML 本文 (renderAssignedEmail と同じボタン装飾に揃える)
+  const html = `
+    <p>CSV インポートで ${input.count} 件のチケットの担当者に割り当てられました。</p>
+    <p>一覧を確認し、対応を開始してください。</p>
+    <p><a href="${escapedBatchUrl}" style="display:inline-block;padding:10px 16px;background:#0f766e;color:#ffffff;border-radius:6px;text-decoration:none;font-weight:600;">一覧を開く</a></p>
+    <p style="font-size:13px;color:#475569;">うまく開けない場合はこちらの URL をブラウザに貼り付けてください:<br><span style="word-break:break-all;">${escapedBatchUrl}</span></p>
+    <p style="font-size:13px;color:#64748b;">このメールに心当たりがない場合は破棄してください。</p>
+  `.trim();
+
+  // 3 点セットを返す
+  return { subject, text, html };
+}

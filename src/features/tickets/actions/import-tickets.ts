@@ -38,6 +38,12 @@ import { getMonthlyTicketQuota } from '@/lib/tenant-plan';
 import { notifyOutboundBestEffort } from '@/lib/outbound-notify';
 // 優先度から初回応答期限を計算する SLA ヘルパー (Web フォーム・メール・LINE 取り込みと共有)
 import { calculateFirstResponseDueAt } from '@/lib/sla';
+// フォローアップ (2026-07-13): 監査で発見したギャップの解消。担当割当メールを
+// updateTicketAssignee (画面からの手動アサイン) と同じ経路で送るためのヘルパー群。
+// sendBatchEmail はエスカレーション一斉メール (escalateTicket) と共有する送信共通処理 (§6 DRY)
+import { sendBatchEmail } from '@/lib/batch-email';
+import { renderAssignedBatchEmail } from '@/lib/ticket-email';
+import { resolveAppBaseUrl } from '@/lib/app-url';
 
 // 1 インポートあたりの最大行数 (これを超えたらエラー)
 const MAX_ROWS = 200;
@@ -151,6 +157,59 @@ async function notifyImportBatch(
     await broadcastUnreadCountToMany(recipientIds, tenantId);
   } catch (err) {
     console.warn(`${logPrefix} SSE broadcast に失敗しました（チケット作成は成功）:`, err);
+  }
+}
+
+// CSV インポートで担当者に割り当てられたエージェントへメールで通知するベストエフォート・ヘルパー。
+// フォローアップ (2026-07-13): 監査で発見したギャップの解消。画面からの手動アサイン
+// (updateTicketAssignee) は担当者へアプリ内通知に加えてメールも届くのに対し、CSV インポートで
+// 「担当者」列から初期担当者を設定してもアプリ内通知しか届かず、アプリを開かない担当者は
+// 気づけなかった (§2 ギャップ分析表「アプリ開かない前提 → メール通知を主軸に切替」に反する)。
+// 個々のチケットごとには送らず、担当件数をまとめて 1 通にする (notifyImportBatch と同じ方針)。
+async function notifyAssignedAgentsByEmail(
+  assignedAgentIds: string[], // メール送信対象のエージェント ID 一覧 (呼び出し元で自己除外済み)
+  tenantId: string, // テナントスコープ
+  assignedCounts: Map<string, number>, // エージェントごとの割当件数
+): Promise<void> {
+  // 対象が居なければ何もしない (早期リターン)
+  if (assignedAgentIds.length === 0) return;
+  // /code-review ultra 指摘対応 (2026-07-13): 以前はベース URL 解決だけを try/catch していたため、
+  // 続く listAgentEmails (DB 呼び出し) が失敗すると例外が捕捉されずに importTickets 全体の
+  // Promise.all まで伝播し、チケット作成が既に成功しているにもかかわらず CSV インポート自体が
+  // 失敗したように見えてしまっていた (notifyImportBatch 等、同ファイルの他のベストエフォート
+  // 処理と方針が食い違っていた)。ベース URL 解決から送信完了までをまとめて 1 つの try で囲む。
+  try {
+    // ベース URL を解決する (production で NEXTAUTH_URL 未設定なら throw される)
+    const baseUrl = resolveAppBaseUrl();
+    // メール送信先には email が必要 (agentsForAssignee/listAgents が返す UserSummary には email が
+    // 含まれないため、エスカレーション一斉メールと同じ専用メソッドで id→email を解決する)
+    const agentEmails = await repos.users.listAgentEmails(tenantId);
+    const assignedIdSet = new Set(assignedAgentIds);
+    const recipients = agentEmails.filter((a) => assignedIdSet.has(a.id));
+    // 退職・削除等で email が引けなかったエージェントがいればログに残す (CLAUDE.md §6:
+    // エラーを握り潰さない。何件送れなかったかが分かれば十分なので件数のみ記録する)
+    const missingCount = assignedAgentIds.length - recipients.length;
+    if (missingCount > 0) {
+      console.warn(
+        `[importTickets] 担当割当メール: ${missingCount} 件のエージェントの email が見つかりませんでした`,
+      );
+    }
+    // 送信・失敗件数ログはエスカレーション一斉メールと共有の共通ヘルパーに委譲する (§6 DRY)
+    await sendBatchEmail(
+      recipients,
+      (agent) =>
+        renderAssignedBatchEmail({
+          count: assignedCounts.get(agent.id) ?? 0,
+          ticketsUrl: `${baseUrl}/tickets`, // 単一チケットに紐づかないため一覧ページへリンクする
+        }),
+      '[importTickets] 担当割当メール',
+    );
+  } catch (err) {
+    // ベース URL 解決失敗・email 一覧取得失敗等はメール送信全体を諦める
+    // (チケット作成の成否には影響しない。呼び出し元は Promise.all で並行実行するため、
+    // ここで例外を伝播させると他のベストエフォート処理まで巻き込んで importTickets 全体が
+    // 失敗したように見えてしまう)
+    console.error('[importTickets] 担当割当メール送信処理に失敗しました', err);
   }
 }
 
@@ -721,7 +780,9 @@ export async function importTickets(csvText: string): Promise<ImportTicketsResul
 
     // /code-review ultra 指摘対応 (2026-07-13): 上記 2 種類の通知は互いに独立した宛先・内容の
     // I/O であり、notifyImportBatch 共通ヘルパーへの抽出と合わせて Promise.all で並行実行する
-    // (§8 パフォーマンス)
+    // (§8 パフォーマンス)。フォローアップ (2026-07-13): 監査で発見したギャップの解消。担当割当は
+    // 手動アサインと同じくメールも送る (notifyAssignedAgentsByEmail) ので、これも独立した I/O として
+    // 同じ Promise.all に加える
     await Promise.all([
       notifyImportBatch(
         otherAgentIds,
@@ -738,6 +799,7 @@ export async function importTickets(csvText: string): Promise<ImportTicketsResul
           `CSV インポートで ${assignedCounts.get(agentId)} 件のチケットが担当者に割り当てられました`,
         '[importTickets] 担当割当通知',
       ),
+      notifyAssignedAgentsByEmail(assignedAgentIds, tenantId, assignedCounts),
     ]);
   }
 

@@ -65,8 +65,27 @@ import { notifyAgentsOfNewTicket } from '@/features/notifications/notify';
 import { isLineIntegrationAllowed, resolveEffectivePlan } from '@/lib/plan-guard';
 // Phase 4: Slack/Teams/Chatwork 外部通知ヘルパー (Web フォーム・メール取り込み・CSV インポートと共有)
 import { notifyNewTicketOutbound } from '@/lib/outbound-notify';
-// Phase 4 課金: 月間チケット上限チェック (Web フォーム・CSV インポートと共有)
-import { getMonthlyTicketQuota, type MonthlyTicketQuota } from '@/lib/tenant-plan';
+// Phase 4 課金: 月間チケット上限チェック (Web フォーム・CSV インポートと共有)。
+// フォローアップ (2026-07-13): 添付累計サイズ上限チェックも Web フォーム・メール取り込みと共有する
+import {
+  getMonthlyTicketQuota,
+  checkAttachmentQuota,
+  type MonthlyTicketQuota,
+} from '@/lib/tenant-plan';
+// フォローアップ (2026-07-13): 監査で発見したギャップの解消。LINE の画像メッセージ (スマホで
+// 撮った写真) を Messaging API の Content エンドポイントから取得するヘルパー
+import { fetchLineMessageContent } from '@/lib/line-content';
+// 添付ファイルの寛容版検証ヘルパー (メール取り込みと共有。1 件でも違反があっても全体を失敗させない。
+// この Webhook にはユーザーへ即座にフィードバックして再送信させられる画面が無いため)
+import {
+  validateUploadedFilesLenient,
+  type ValidatedAttachment,
+} from '@/lib/validations/attachment';
+// 添付ファイルのストレージ保存 / 失敗時クリーンアップの共通ヘルパー (POST /api/tickets・
+// POST /api/inbound/email と共有)
+import { persistAttachments, cleanupWrittenAttachments } from '@/lib/attachment-persistence';
+// 課金プランの型 (添付累計サイズ上限チェック checkAttachmentQuota に渡す)
+import type { SubscriptionPlan } from '@/domain/types';
 // このルートは Node ランタイムで動かす (node:crypto / Prisma を使うため Edge では動かない)
 export const runtime = 'nodejs';
 
@@ -106,6 +125,17 @@ interface LineTextMessage {
   text: string; // メッセージ本文
 }
 
+// LINE Webhook が送ってくる画像メッセージの型 (フォローアップ 2026-07-13)。
+// バイト列は含まれず、id を使って Messaging API の Content エンドポイントから別途取得する。
+// contentProvider.type が 'external' の場合は LINE がホストしていない画像 (LIFF 等からの外部 URL)
+// のため、Content エンドポイントでは取得できず対象外にする (任意の外部 URL を fetch すると
+// SSRF の懸念があるため、固定ホストの Content API 経由で取得できるものだけをサポート範囲にする)
+interface LineImageMessage {
+  type: 'image'; // 画像メッセージであることを示す種別
+  id: string; // メッセージ ID (Content API の取得キーにもなる)
+  contentProvider?: { type?: string }; // 'line' (既定) | 'external'
+}
+
 // LINE Webhook のイベント 1 件分の型。
 // 署名検証済みでも JSON の構造は信用しないため (§9)、各フィールドは任意 (optional) として扱い、
 // 実行時に存在チェックしてから参照する。follow / unfollow / postback 等の非メッセージイベントや、
@@ -119,7 +149,8 @@ interface LineMessageEvent {
     groupId?: string; // グループ ID (group タイプの場合のみ存在)
     roomId?: string; // ルーム ID (room タイプの場合のみ存在)
   };
-  message?: LineTextMessage | { type?: string }; // メッセージの中身 (テキスト以外は type だけ参照)
+  // メッセージの中身 (テキスト/画像以外はスタンプ等なので type だけ参照してスキップする)
+  message?: LineTextMessage | LineImageMessage | { type?: string };
   timestamp?: number; // Unix ミリ秒のイベント発生時刻
 }
 
@@ -143,6 +174,8 @@ interface LineEventContext {
   resolutionDueAt: ReturnType<typeof calculateResolutionDueAt>; // 優先度 Medium ベースの解決期限
   firstResponseDueAt: ReturnType<typeof calculateFirstResponseDueAt>; // 優先度 Medium ベースの初回応答期限
   quota: MonthlyTicketQuota; // 月間チケット上限の残枠 (イベントごとに消費するミュータブルなカウンタ)
+  channelAccessToken: string; // フォローアップ (2026-07-13): 画像添付を Content API から取得するために使う
+  subscriptionPlan: SubscriptionPlan; // 添付累計サイズ上限チェック (checkAttachmentQuota) に使う
 }
 
 // LINE Webhook の署名を検証する関数 (LINE Developers ドキュメント準拠)
@@ -330,6 +363,8 @@ export async function POST(req: Request) {
     resolutionDueAt, // 優先度 Medium ベースの解決期限
     firstResponseDueAt, // 優先度 Medium ベースの初回応答期限
     quota, // 月間チケット上限の残枠
+    channelAccessToken: lineConfig.channelAccessToken, // 画像添付の Content API 取得に使う
+    subscriptionPlan: tenant.subscriptionPlan, // 添付累計サイズ上限チェックに使う
   };
   const ticketIds: string[] = [];
   for (const event of body.events) {
@@ -343,6 +378,69 @@ export async function POST(req: Request) {
   // の Serializable トランザクションで、連携コード処理 (起票を伴わない) は repos.lineLinkCodes
   // (LineLinkCodeRef テーブルへの DB 永続化) でそれぞれ担保している。
   return NextResponse.json({ ticketIds }, { status: 200 });
+}
+
+// このメッセージ ID を既に取り込み済みなら対応するチケット ID を返す (未処理なら null)。
+// テキスト/画像の両メッセージ種別が同じ冪等化早期チェック (fast path) を必要とするため、
+// processLineEvent 内で 2 箇所目の重複になるより前にここへ共通化する (§6 DRY)。
+async function findDuplicateLineTicket(
+  messageId: string,
+  targetTenantId: string,
+): Promise<string | null> {
+  const existingTicketId = await repos.lineMessages.findTicketIdByMessageId(
+    messageId,
+    targetTenantId,
+  );
+  if (existingTicketId) {
+    // 既知のメッセージ ID: 二重起票を避けて既存チケット ID を返す
+    console.info(`[POST /api/inbound/line] duplicate message id, skipping re-create: ${messageId}`);
+  }
+  return existingTicketId;
+}
+
+// 画像メッセージの添付を取得・検証し、検証済みファイル一覧を返す (取得・検証に失敗すれば空配列)。
+// /code-review ultra 指摘対応 (2026-07-13): processLineEvent 内に「取得 → 検証 → 上限チェック」の
+// 3 段ネストで書かれていて読みづらかったため、早期 return で平坦化した専用ヘルパーへ抽出した。
+// 呼び出し元は取得・検証の失敗を例外ではなく空配列で受け取り、添付なしで起票を継続する (§9 fail-safe)。
+async function resolveLineImageAttachment(
+  channelAccessToken: string, // Content API 取得に使うテナントの長期アクセストークン
+  attachmentMessageId: string, // Content API の取得キー (画像メッセージの ID)
+  targetTenantId: string, // 添付累計サイズ上限チェックのスコープ
+  subscriptionPlan: SubscriptionPlan, // 添付累計サイズ上限チェックに使う契約プラン
+): Promise<ValidatedAttachment[]> {
+  // Content API から画像本体を取得する。失敗 (HTTP エラー・タイムアウト・サイズ超過等) なら
+  // fetchLineMessageContent 自身がログを残して null を返すので、ここでは空配列で早期リターンする
+  const content = await fetchLineMessageContent(channelAccessToken, attachmentMessageId);
+  if (!content) return [];
+
+  // Content API が返す実際の Content-Type を申告 MIME として渡し、既存の検証パイプライン
+  // (許可 MIME 判定 + マジックバイト整合チェック) をそのまま再利用する (§6 DRY)。
+  // Uint8Array のコピーコンストラクタを経由して ArrayBuffer 裏付けの型にする
+  // (TS の lib.dom 型定義上、素の Uint8Array<ArrayBufferLike> は BlobPart に直接代入できないため。
+  // src/app/api/attachments/[id]/route.ts の配信時と同じ回避策)
+  const file = new File([new Uint8Array(content.bytes)], `line-${attachmentMessageId}`, {
+    type: content.contentType,
+  });
+  const attachmentValidation = await validateUploadedFilesLenient([file]);
+  if (attachmentValidation.droppedCount > 0) {
+    console.warn('[POST /api/inbound/line] image attachment rejected by validation', {
+      messageId: attachmentMessageId,
+    });
+  }
+  const validatedAttachments = attachmentValidation.files;
+  // 検証を通過した添付が無ければ、上限チェックするまでもなくここで終える
+  if (validatedAttachments.length === 0) return [];
+
+  // 添付累計サイズ上限チェック (Web フォーム・メール取り込みと共有 §6.1 料金プラン)
+  const totalBytes = validatedAttachments.reduce((sum, f) => sum + f.size, 0);
+  const quotaCheck = await checkAttachmentQuota(targetTenantId, totalBytes, subscriptionPlan);
+  if (!quotaCheck.ok) {
+    console.warn('[POST /api/inbound/line] image attachment exceeds quota, continuing without it', {
+      reason: quotaCheck.message,
+    });
+    return [];
+  }
+  return validatedAttachments;
 }
 
 // LINE Webhook イベント 1 件を処理する。起票 (または重複判定) できた場合はチケット ID を返し、
@@ -367,87 +465,142 @@ async function processLineEvent(
   if (event?.type !== 'message') return null;
   // メッセージ本体を取り出す (欠落していてもよいよう optional 扱い)
   const message = event.message;
-  // テキストメッセージ以外 (スタンプ / 画像 / 動画 等) や message 欠落イベントはスキップする
-  if (message?.type !== 'text') return null;
+  // テキスト / 画像以外 (スタンプ・動画・音声・ファイル・位置情報等) や message 欠落イベントはスキップする。
+  // フォローアップ (2026-07-13): 監査で発見したギャップの解消。画像 (スマホで撮った写真) は
+  // §1.2 ペルソナ「現場リーダー」の最優先ユースケースであり、メール取り込み (PR #207) で
+  // 実現済みの添付対応を LINE にも揃える
+  if (message?.type !== 'text' && message?.type !== 'image') return null;
 
-  // テキストメッセージとして型を確定させる (type==='text' を確認済み)
-  const textMessage = message as LineTextMessage;
   // LINE ユーザー ID を取得する (source / userId が無い場合は '不明' とする)。
   // LINE の正規形式は 'U' + 32 桁 16 進数。署名検証済みでも形式外の値をそのままチケット本文に
   // 埋め込むと将来の出力経路 (HTML メール等) でインジェクションになりうるため §9 に従い検証する
   const rawUserId = event.source?.userId ?? '';
   // 形式が一致する場合のみ採用し、それ以外は '不明' に置き換える
   const lineUserId = LINE_USER_ID_PATTERN.test(rawUserId) ? rawUserId : '不明';
-  // text が文字列でない (欠落・型不正) イベントは起票できないためスキップする
-  if (typeof textMessage.text !== 'string') return null;
 
-  // 空白のみのメッセージはタイトルが空文字列になるため起票対象外としてスキップする
-  // (LINE は空文字メッセージを送信できる場合があり、Zod min(1) を持たないこのパスでは別途ガードが必要)
-  const trimmedText = textMessage.text.trim();
-  if (!trimmedText) return null;
+  // メッセージ種別 (テキスト/画像) ごとにタイトル・本文・冪等化キー・添付候補を組み立てる。
+  // 重複判定 (findDuplicateLineTicket) はどちらの種別でも同じロジックのため各分岐内で呼び出す。
+  let messageId: string | null;
+  let title: string;
+  let ticketBody: string;
+  // 画像添付の Content API 取得キー (テキストメッセージ、または LINE 以外がホストする画像では
+  // null のまま = 添付なしで起票を続行する)
+  let attachmentMessageId: string | null = null;
 
-  // 冪等化キー (このメッセージが再送かどうかの突き合わせに使う)。
-  // id が欠落/非文字列 (想定外の応答) のときは突き合わせできないため null にする
-  const messageId = typeof textMessage.id === 'string' && textMessage.id ? textMessage.id : null;
+  if (message.type === 'text') {
+    // テキストメッセージとして型を確定させる。message の宣言型は
+    // `LineTextMessage | LineImageMessage | { type?: string }` であり、最後の汎用メンバーの
+    // type が string 型 (リテラルでない) のため、type==='text' の絞り込みだけでは
+    // TypeScript が text/id プロパティの存在を保証できない (絞り込み後も汎用メンバーが残る)
+    const textMessage = message as LineTextMessage;
+    // text が文字列でない (欠落・型不正) イベントは起票できないためスキップする
+    if (typeof textMessage.text !== 'string') return null;
 
-  // 冪等化の早期チェック (fast path): このメッセージ ID を既に取り込み済みなら、
-  // 連携コード判定や起票者解決などの以降の処理を行わずに既存チケット ID を返す。
-  // LINE は Webhook 応答が遅延/未受信だと同一メッセージを 5 分以内に再送する (at-least-once)。
-  // これは事前チェックに過ぎず、実際の二重起票防止は createTicketIdempotent 内の
-  // Serializable トランザクションが保証する (このチェック単体では TOCTOU の窓が残るため)。
-  if (messageId) {
-    const existingTicketId = await repos.lineMessages.findTicketIdByMessageId(
-      messageId,
-      targetTenantId,
-    );
-    if (existingTicketId) {
-      // 既知のメッセージ ID: 二重起票を避けて既存チケット ID を返す
-      console.info(
-        `[POST /api/inbound/line] duplicate message id, skipping re-create: ${messageId}`,
-      );
-      return existingTicketId;
+    // 空白のみのメッセージはタイトルが空文字列になるため起票対象外としてスキップする
+    // (LINE は空文字メッセージを送信できる場合があり、Zod min(1) を持たないこのパスでは別途ガードが必要)
+    const trimmedText = textMessage.text.trim();
+    if (!trimmedText) return null;
+
+    // 冪等化キー (このメッセージが再送かどうかの突き合わせに使う)。
+    // id が欠落/非文字列 (想定外の応答) のときは突き合わせできないため null にする
+    messageId = typeof textMessage.id === 'string' && textMessage.id ? textMessage.id : null;
+
+    // 冪等化の早期チェック (fast path): このメッセージ ID を既に取り込み済みなら、
+    // 連携コード判定や起票者解決などの以降の処理を行わずに既存チケット ID を返す。
+    // LINE は Webhook 応答が遅延/未受信だと同一メッセージを 5 分以内に再送する (at-least-once)。
+    // これは事前チェックに過ぎず、実際の二重起票防止は createTicketIdempotent 内の
+    // Serializable トランザクションが保証する (このチェック単体では TOCTOU の窓が残るため)。
+    if (messageId) {
+      const existingTicketId = await findDuplicateLineTicket(messageId, targetTenantId);
+      if (existingTicketId) return existingTicketId;
     }
-  }
 
-  // メンバー紐付け: テキストが発行済みワンタイムコードなら、起票せず lineUserId をメンバーへ紐付ける。
-  // (lineUserId が取得できないイベントは紐付けようがないので、この処理を飛ばして通常起票へ進む)
-  if (lineUserId !== '不明') {
-    // 受信テキストを正規化 (ハイフン・空白除去 + 大文字化) してコードの形か軽く判定する
-    const normalizedCode = normalizeLineLinkCode(trimmedText);
-    if (looksLikeLineLinkCode(normalizedCode)) {
-      // 連携コード処理は起票を伴わないため lineMessages 対応表の冪等化対象外になる。
-      // この messageId を連携コードとして処理済みなら、再度 linkLineUserByCode を
-      // 呼ばずに即座にスキップする (再送で「コードは消費済み → invalid → 誤起票」になるのを防ぐ)
-      if (messageId && (await repos.lineLinkCodes.wasProcessed(messageId))) {
-        console.info(
-          `[POST /api/inbound/line] duplicate link-code message, skipping: ${messageId}`,
-        );
-        return null;
+    // メンバー紐付け: テキストが発行済みワンタイムコードなら、起票せず lineUserId をメンバーへ紐付ける。
+    // (lineUserId が取得できないイベントは紐付けようがないので、この処理を飛ばして通常起票へ進む)
+    if (lineUserId !== '不明') {
+      // 受信テキストを正規化 (ハイフン・空白除去 + 大文字化) してコードの形か軽く判定する
+      const normalizedCode = normalizeLineLinkCode(trimmedText);
+      if (looksLikeLineLinkCode(normalizedCode)) {
+        // 連携コード処理は起票を伴わないため lineMessages 対応表の冪等化対象外になる。
+        // この messageId を連携コードとして処理済みなら、再度 linkLineUserByCode を
+        // 呼ばずに即座にスキップする (再送で「コードは消費済み → invalid → 誤起票」になるのを防ぐ)
+        if (messageId && (await repos.lineLinkCodes.wasProcessed(messageId))) {
+          console.info(
+            `[POST /api/inbound/line] duplicate link-code message, skipping: ${messageId}`,
+          );
+          return null;
+        }
+        // 形が一致したらハッシュ化し、有効な発行行があれば原子的に紐付ける
+        const codeHash = await hashLineLinkCode(normalizedCode);
+        const link = await repos.users.linkLineUserByCode({
+          codeHash,
+          tenantId: targetTenantId,
+          lineUserId,
+          now,
+        });
+        // 連携成功 / 競合 (コードとして処理済み) のときは、このメッセージを問い合わせにしない
+        if (link.status === 'linked' || link.status === 'conflict') {
+          // 連携結果をログに残す (利用者は Web 設定画面の「連携済み」表示で連携状態を確認する)
+          console.info(
+            `[POST /api/inbound/line] line link ${link.status} for tenant`,
+            targetTenantId,
+          );
+          // この messageId を「連携コードとして処理済み」に記録する (再送時の誤起票防止)。
+          // /code-review ultra 指摘対応: DB 永続化 (lineLinkCodes) に切り替えたことで、
+          // 連携成功直後にプロセス再起動/デプロイが挟まっても記録が失われず、単一インスタンスの
+          // 場合はもちろん、複数インスタンス間でも共有される (水平スケール環境でも安全)
+          if (messageId) await repos.lineLinkCodes.markProcessed(messageId);
+          return null;
+        }
+        // invalid (コードの形だが有効な発行行が無い) は通常の問い合わせとして下の起票へ進む
+        // (typo 等の本来の invalid はメッセージ ID 冪等化の対象になるため再送で二重起票しない)。
       }
-      // 形が一致したらハッシュ化し、有効な発行行があれば原子的に紐付ける
-      const codeHash = await hashLineLinkCode(normalizedCode);
-      const link = await repos.users.linkLineUserByCode({
-        codeHash,
-        tenantId: targetTenantId,
-        lineUserId,
-        now,
-      });
-      // 連携成功 / 競合 (コードとして処理済み) のときは、このメッセージを問い合わせにしない
-      if (link.status === 'linked' || link.status === 'conflict') {
-        // 連携結果をログに残す (利用者は Web 設定画面の「連携済み」表示で連携状態を確認する)
-        console.info(
-          `[POST /api/inbound/line] line link ${link.status} for tenant`,
-          targetTenantId,
-        );
-        // この messageId を「連携コードとして処理済み」に記録する (再送時の誤起票防止)。
-        // /code-review ultra 指摘対応: DB 永続化 (lineLinkCodes) に切り替えたことで、
-        // 連携成功直後にプロセス再起動/デプロイが挟まっても記録が失われず、単一インスタンスの
-        // 場合はもちろん、複数インスタンス間でも共有される (水平スケール環境でも安全)
-        if (messageId) await repos.lineLinkCodes.markProcessed(messageId);
-        return null;
-      }
-      // invalid (コードの形だが有効な発行行が無い) は通常の問い合わせとして下の起票へ進む
-      // (typo 等の本来の invalid はメッセージ ID 冪等化の対象になるため再送で二重起票しない)。
+    }
+
+    // チケットタイトルはメッセージテキストの先頭 MAX_TITLE_LENGTH 文字にする
+    title =
+      trimmedText.length > MAX_TITLE_LENGTH
+        ? `${trimmedText.slice(0, MAX_TITLE_LENGTH)}…`
+        : trimmedText;
+
+    // メッセージ本文をサーバー側でも上限に丸める (LINE の送信上限 5000 文字よりも大きい 10000 文字で守る)
+    // プラットフォーム上限だけに頼らずサーバー側でも明示的に制限して DB への過大な書き込みを防ぐ。
+    // trimmedText を使うことで先頭・末尾の空白を除いてから切り詰める (message.text のままだと
+    // 空白だけのメッセージが上の空白チェックをすり抜けた場合にチケット本文が空白だらけになる)。
+    const safeText =
+      trimmedText.length > MAX_BODY_LENGTH
+        ? `${trimmedText.slice(0, MAX_BODY_LENGTH)}…`
+        : trimmedText;
+
+    // チケット本文: LINE ユーザー ID と全メッセージテキストを含める (担当者が手動連絡できるよう)
+    ticketBody = `[LINE 経由の問い合わせ]\nLINE ユーザー ID: ${lineUserId}\n\n${safeText}`;
+  } else {
+    // 画像メッセージとして型を確定させる (text ブランチの LineTextMessage キャストと同じ理由)
+    const imageMessage = message as LineImageMessage;
+    // 冪等化キーはテキストと同じくメッセージ ID を使う
+    messageId = typeof imageMessage.id === 'string' && imageMessage.id ? imageMessage.id : null;
+
+    // 冪等化の早期チェック (テキストと同じロジック。findDuplicateLineTicket に共通化済み)
+    if (messageId) {
+      const existingTicketId = await findDuplicateLineTicket(messageId, targetTenantId);
+      if (existingTicketId) return existingTicketId;
+    }
+
+    // 画像メッセージには本文テキストが無いため固定のタイトル・本文にする
+    title = 'LINE から画像の問い合わせが届きました';
+    ticketBody = `[LINE 経由の問い合わせ]\nLINE ユーザー ID: ${lineUserId}\n\n(画像が送信されました。添付ファイルをご確認ください)`;
+
+    // contentProvider.type が 'line' (既定/省略時) の画像だけ Content API から取得できる。
+    // 'external' (LIFF 等が外部ホストへアップロードした画像) は取得手段が任意の外部 URL になり
+    // SSRF の懸念があるため対象外とする (固定ホストの Content API 経由で取得できるものだけを
+    // サポート範囲にする)。取得できなくても本文だけで起票を継続する (§9 fail-safe)
+    const providerType = imageMessage.contentProvider?.type;
+    if (messageId && (providerType === undefined || providerType === 'line')) {
+      attachmentMessageId = messageId;
+    } else if (messageId) {
+      console.info(
+        `[POST /api/inbound/line] external content provider image skipped: ${messageId}`,
+      );
     }
   }
 
@@ -457,23 +610,18 @@ async function processLineEvent(
     lineUserId !== '不明' ? await repos.users.findByLineUserId(targetTenantId, lineUserId) : null;
   const creatorId = linkedMember ? linkedMember.id : proxyCreator.id;
 
-  // チケットタイトルはメッセージテキストの先頭 MAX_TITLE_LENGTH 文字にする
-  const title =
-    trimmedText.length > MAX_TITLE_LENGTH
-      ? `${trimmedText.slice(0, MAX_TITLE_LENGTH)}…`
-      : trimmedText;
-
-  // メッセージ本文をサーバー側でも上限に丸める (LINE の送信上限 5000 文字よりも大きい 10000 文字で守る)
-  // プラットフォーム上限だけに頼らずサーバー側でも明示的に制限して DB への過大な書き込みを防ぐ。
-  // trimmedText を使うことで先頭・末尾の空白を除いてから切り詰める (textMessage.text のままだと
-  // 空白だけのメッセージが上の空白チェックをすり抜けた場合にチケット本文が空白だらけになる)。
-  const safeText =
-    trimmedText.length > MAX_BODY_LENGTH
-      ? `${trimmedText.slice(0, MAX_BODY_LENGTH)}…`
-      : trimmedText;
-
-  // チケット本文: LINE ユーザー ID と全メッセージテキストを含める (担当者が手動連絡できるよう)
-  const ticketBody = `[LINE 経由の問い合わせ]\nLINE ユーザー ID: ${lineUserId}\n\n${safeText}`;
+  // 画像添付があれば、チケット起票より前に取得・検証しておく (メール取り込みと同じ順序)。
+  // 取得・検証に失敗しても添付なしで起票を継続する (§9 fail-safe)。
+  // /code-review ultra 指摘対応 (2026-07-13): 取得 → 検証 → 上限チェックの 3 段ネストが深く
+  // 読みづらかったため、早期 return で平坦化した専用ヘルパーへ抽出した
+  const validatedAttachments = attachmentMessageId
+    ? await resolveLineImageAttachment(
+        ctx.channelAccessToken,
+        attachmentMessageId,
+        targetTenantId,
+        ctx.subscriptionPlan,
+      )
+    : [];
 
   // Phase 4 課金: 月間チケット上限チェック (Web フォーム・CSV インポート・メール取り込みと共有)。
   // tenant-plan.ts のコメントで「全ての起票入口で共有する」と明記されているにもかかわらず、
@@ -486,13 +634,18 @@ async function processLineEvent(
     return null;
   }
 
+  // 添付ファイルのストレージ書き込みはトランザクション外の副作用のため、失敗時に後始末できるよう
+  // 書き込み済みキーを蓄えておく (POST /api/tickets・POST /api/inbound/email と同じ方針)
+  const writtenKeys: string[] = [];
+
   // 新規チケットを起票する (Web フォーム・メール取り込みと同じ PORT 経由)。
   // 1 件の起票失敗で全体を 500 にすると LINE がバッチ全体を再送し、既に起票済みのチケットが
   // 重複する。そのため起票は try/catch で囲み、失敗は文脈付きでログに残して null を返す
   // (呼び出し側 POST は必ず 200 を返す。再送そのものは createTicketIdempotent の Serializable
   // トランザクションが二重起票を防ぐ)。
   try {
-    // 起票 (+ メッセージ ID 登録) を 1 トランザクションで原子的に行う。
+    // 起票 (+ 添付メタ INSERT + メッセージ ID 登録) を onCreated フック経由で 1 トランザクションで
+    // 原子的に行う (メールの添付対応 PR #207 で追加済みの仕組みをそのまま再利用する)。
     // alreadyExisted が true のときは、書き込み競合で中断された後の再確認で「他リクエストが
     // 既に起票済み」と判明したケース (通知は既にそちらのリクエストで送られているはず)
     const { id: ticketId, alreadyExisted } = await createTicketIdempotent(
@@ -510,10 +663,33 @@ async function processLineEvent(
         resolutionDueAt, // 優先度 Medium ベースの解決期限
         firstResponseDueAt, // 優先度 Medium ベースの初回応答期限
       },
+      {
+        // フォローアップ (2026-07-13): 検証済み画像添付をこの新規チケットに紐づけて保存する
+        onCreated:
+          validatedAttachments.length > 0
+            ? (tx, newTicketId) =>
+                persistAttachments(
+                  tx,
+                  validatedAttachments,
+                  newTicketId,
+                  null, // 新規起票への添付 (コメントには紐づかない)
+                  creatorId,
+                  targetTenantId,
+                  writtenKeys,
+                )
+            : undefined,
+      },
     );
     if (alreadyExisted) {
       // 既に他リクエストが起票・通知済みのため、通知は送らずチケット ID だけ返す
       console.info(`[POST /api/inbound/line] resolved write conflict as duplicate: ${messageId}`);
+      // /code-review ultra 指摘対応 (2026-07-13): このリクエスト自身の (敗れた) トランザクション内で
+      // onCreated が添付ファイルを既にストレージへ書き込んでいた場合、DB 側はロールバックされても
+      // ストレージの書き込みはトランザクション外の副作用のため残ってしまう (メール取り込みと同じ不備)。
+      // writtenKeys にはこのリクエスト自身が書き込んだキーだけが積まれるため常に安全にクリーンアップできる
+      if (writtenKeys.length > 0) {
+        await cleanupWrittenAttachments(writtenKeys, '[POST /api/inbound/line]');
+      }
       return ticketId;
     }
     // 上限のあるプランでは残枠を消費する (無制限プランは remaining が Infinity のため減算不要だが、
@@ -547,6 +723,10 @@ async function processLineEvent(
     await notifyNewTicketOutbound(targetTenantId, { id: ticketId, title, priority: 'Medium' });
     return ticketId;
   } catch (err) {
+    // DB は自動ロールバック済み (createTicketIdempotent がキー無し経路もトランザクション化して
+    // いるため、チケット行だけが添付無しで残ることは無い)。ストレージへの書き込みだけは
+    // トランザクション外の副作用のため、書き込み済みキーを個別に best-effort で削除する
+    await cleanupWrittenAttachments(writtenKeys, '[POST /api/inbound/line]');
     // 起票失敗は握り潰さずログに残す。再送による重複起票を避けるため呼び出し側は 200 で受領する
     console.error('[POST /api/inbound/line] failed to create ticket from event', err);
     return null;

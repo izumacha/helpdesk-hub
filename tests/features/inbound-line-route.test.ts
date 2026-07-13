@@ -5,6 +5,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createHmac } from 'node:crypto';
 import { createMemoryContext, type Store } from '@/data/adapters/memory';
+// メモリストレージ (画像添付バイナリ用。フォローアップ 2026-07-13)
+import { createMemoryStorage, type MemoryStoragePort } from '@/data/adapters/memory/storage.memory';
 import type { Repos, UnitOfWork } from '@/data/ports/unit-of-work';
 import { hashLineLinkCode, normalizeLineLinkCode } from '@/lib/line-link';
 // レート制限バケットをテスト間で初期化するためのヘルパー (グローバル Map の汚染を防ぐ)
@@ -52,6 +54,8 @@ const LINE_ID_NEW = 'U00000000000000000000000000000003'; // 新規連携対象
 let store: Store;
 let repos: Repos;
 let uow: UnitOfWork;
+// 画像添付のバイナリ本体を保持するメモリストレージ (フォローアップ 2026-07-13)
+let storage: MemoryStoragePort;
 
 // @/data を差し替え (getter で beforeEach の上書きを反映)。
 // ルートは冪等な起票を uow.run (Serializable トランザクション) で行うため uow も必要
@@ -61,6 +65,13 @@ vi.mock('@/data', () => ({
   },
   get uow() {
     return uow;
+  },
+}));
+
+// storage は別モジュール (Edge runtime 汚染回避のため route.ts が個別 import している)
+vi.mock('@/data/storage', () => ({
+  get storage() {
+    return storage;
   },
 }));
 
@@ -144,6 +155,8 @@ describe('POST /api/inbound/line', () => {
     store = ctx.store;
     repos = ctx.repos;
     uow = ctx.uow;
+    // 画像添付用のメモリストレージも毎回作り直す (フォローアップ 2026-07-13)
+    storage = createMemoryStorage();
     seed();
     // レート制限バケットはモジュールグローバルなので、他ファイルのテストの影響を受けないよう初期化する
     __resetRateLimits();
@@ -550,6 +563,168 @@ describe('POST /api/inbound/line', () => {
       const res = await POST(makeRequest('プリンターが動きません', LINE_ID_UNLINKED));
       expect(res.status).toBe(200);
       expect(store.tickets.size).toBe(1);
+    });
+  });
+
+  // フォローアップ (2026-07-13): 監査で発見したギャップの解消。§1.2 ペルソナ「現場リーダー」の
+  // 最優先ユースケース「写真を撮って送るだけで終わってほしい」はメール取り込み (PR #207) で
+  // 実現済みだが、このペルソナが実際に最も使う LINE 経由では画像メッセージを一切取り込んでおらず
+  // 実現できていなかった不備の回帰テスト。
+  describe('画像添付 (フォローアップ 2026-07-13)', () => {
+    // 検証パイプライン (マジックバイト整合チェック) を通すための PNG シグネチャ
+    const PNG_MAGIC = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+
+    // 1 件の画像メッセージイベントを含む署名付きリクエストを組み立てる
+    function makeImageRequest(
+      userId: string,
+      messageId: string,
+      contentProvider?: { type?: string },
+      destination: string = BOT_USER_ID,
+    ): Request {
+      const body = JSON.stringify({
+        destination,
+        events: [
+          {
+            type: 'message',
+            source: { type: 'user', userId },
+            message: { type: 'image', id: messageId, contentProvider },
+          },
+        ],
+      });
+      return new Request('http://localhost/api/inbound/line', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-line-signature': sign(body) },
+        body,
+      });
+    }
+
+    let fetchMock: ReturnType<typeof vi.fn>;
+    beforeEach(() => {
+      // Content API 取得 (fetchLineMessageContent) は undici 経由で globalThis.fetch に届く
+      // (ファイル冒頭の undici モック参照)
+      fetchMock = vi.fn();
+      vi.stubGlobal('fetch', fetchMock);
+    });
+    afterEach(() => {
+      vi.unstubAllGlobals();
+    });
+
+    it('画像メッセージから添付ファイルが保存される', async () => {
+      const imageBytes = new Uint8Array([...PNG_MAGIC, 1, 2, 3]);
+      fetchMock.mockResolvedValue(
+        new Response(imageBytes, { status: 200, headers: { 'content-type': 'image/png' } }),
+      );
+
+      const { POST } = await import('@/app/api/inbound/line/route');
+      const res = await POST(makeImageRequest(LINE_ID_UNLINKED, 'img-1'));
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { ticketIds: string[] };
+      expect(body.ticketIds).toHaveLength(1);
+
+      // Content API を正しい URL・Authorization ヘッダで呼んでいること
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      const [url, init] = fetchMock.mock.calls[0];
+      expect(url).toBe('https://api-data.line.me/v2/bot/message/img-1/content');
+      expect(init.headers.Authorization).toBe('Bearer test-access-token');
+
+      // チケットに紐づく添付が 1 件、commentId は null (新規起票への添付) で記録される
+      const attachments = [...store.attachments.values()].filter(
+        (a) => a.ticketId === body.ticketIds[0],
+      );
+      expect(attachments).toHaveLength(1);
+      expect(attachments[0].commentId).toBeNull();
+      // storage にバイト列が実際に書き込まれていること
+      expect(storage.entries.size).toBe(1);
+    });
+
+    it('Content API 取得に失敗しても添付なしで起票を継続する', async () => {
+      // HTTP エラー (例: アクセストークン失効) を模す
+      fetchMock.mockResolvedValue(new Response(null, { status: 401 }));
+
+      const { POST } = await import('@/app/api/inbound/line/route');
+      const res = await POST(makeImageRequest(LINE_ID_UNLINKED, 'img-2'));
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { ticketIds: string[] };
+      // 添付取得に失敗してもチケット自体は起票される (§9 fail-safe)
+      expect(body.ticketIds).toHaveLength(1);
+      expect(store.attachments.size).toBe(0);
+      expect(storage.entries.size).toBe(0);
+    });
+
+    // /code-review ultra 指摘対応の回帰テスト (2026-07-13): 以前は fetch 呼び出しだけを try/catch
+    // していたため、ヘッダ受信後にボディのストリーム読み取り中に接続断・タイムアウトが起きると
+    // 例外が捕捉されずに POST まで伝播し、この Webhook が常に 200 を返すべき契約 (再送ループを
+    // 止めるための前提) を破っていた。ボディ読み取り中の失敗でも 200 + 添付なしで起票を継続すること
+    // (POST が 500 にならないこと) を確認する
+    it('Content API のボディ読み取り中に失敗しても 500 にならず添付なしで起票を継続する', async () => {
+      // ヘッダは正常に受信できたが、ボディのストリーム読み取り中に接続が切れるケースを模す
+      const brokenStream = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.error(new Error('simulated mid-stream connection reset'));
+        },
+      });
+      fetchMock.mockResolvedValue(
+        new Response(brokenStream, { status: 200, headers: { 'content-type': 'image/png' } }),
+      );
+
+      const { POST } = await import('@/app/api/inbound/line/route');
+      const res = await POST(makeImageRequest(LINE_ID_UNLINKED, 'img-broken-stream'));
+      // ボディ読み取りが失敗しても 500 にはならず、常に 200 を返す契約が守られること
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { ticketIds: string[] };
+      expect(body.ticketIds).toHaveLength(1);
+      expect(store.attachments.size).toBe(0);
+      expect(storage.entries.size).toBe(0);
+    });
+
+    it('許可外 MIME の画像は無視され、添付なしで起票される', async () => {
+      // PNG マジックバイトを持たない (整合しない) バイト列 = 中身偽装防御に弾かれる
+      const bogusBytes = new Uint8Array([1, 2, 3, 4]);
+      fetchMock.mockResolvedValue(
+        new Response(bogusBytes, { status: 200, headers: { 'content-type': 'image/png' } }),
+      );
+
+      const { POST } = await import('@/app/api/inbound/line/route');
+      const res = await POST(makeImageRequest(LINE_ID_UNLINKED, 'img-3'));
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { ticketIds: string[] };
+      expect(body.ticketIds).toHaveLength(1);
+      expect(store.attachments.size).toBe(0);
+      expect(storage.entries.size).toBe(0);
+    });
+
+    it('外部ホストの画像 (contentProvider=external) は Content API を呼ばず添付なしで起票する', async () => {
+      const { POST } = await import('@/app/api/inbound/line/route');
+      const res = await POST(makeImageRequest(LINE_ID_UNLINKED, 'img-4', { type: 'external' }));
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { ticketIds: string[] };
+      expect(body.ticketIds).toHaveLength(1);
+      // 外部ホストの画像は SSRF 対策のため Content API を呼ばない
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(store.attachments.size).toBe(0);
+    });
+
+    it('同一メッセージ ID の再送は冪等に処理し、Content API を再度呼ばない', async () => {
+      const imageBytes = new Uint8Array([...PNG_MAGIC, 1, 2, 3]);
+      fetchMock.mockResolvedValue(
+        new Response(imageBytes, { status: 200, headers: { 'content-type': 'image/png' } }),
+      );
+
+      const { POST } = await import('@/app/api/inbound/line/route');
+      const res1 = await POST(makeImageRequest(LINE_ID_UNLINKED, 'img-dup-1'));
+      const body1 = (await res1.json()) as { ticketIds: string[] };
+      expect(body1.ticketIds).toHaveLength(1);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+
+      // 同じメッセージ ID で再送 (LINE の at-least-once 配送を模す)
+      const res2 = await POST(makeImageRequest(LINE_ID_UNLINKED, 'img-dup-1'));
+      const body2 = (await res2.json()) as { ticketIds: string[] };
+      expect(body2.ticketIds).toEqual(body1.ticketIds);
+      // 重複判定は早期リターンするため Content API を再度呼ばない
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      // チケット・添付とも 1 件のまま (二重起票・二重添付なし)
+      expect(store.tickets.size).toBe(1);
+      expect(store.attachments.size).toBe(1);
     });
   });
 });
