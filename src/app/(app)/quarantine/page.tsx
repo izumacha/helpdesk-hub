@@ -6,8 +6,8 @@ import { redirect } from 'next/navigation';
 import { repos } from '@/data';
 // 日付フォーマットヘルパー (年月日時分秒を JST で表示する)
 import { formatDateTimeJP } from '@/lib/format-date';
-// 隔離理由の日本語ラベル
-import { QUARANTINE_REASON_LABELS } from '@/lib/constants';
+// 隔離理由・チャネルの日本語ラベル
+import { QUARANTINE_REASON_LABELS, QUARANTINE_CHANNEL_LABELS } from '@/lib/constants';
 // 監査ログ系リポジトリ共通のページネーション上限 (findAllByTenant が limit をクランプする上限値)
 import { AUDIT_MAX_LIMIT } from '@/data/adapters/audit-pagination';
 
@@ -27,9 +27,12 @@ interface Props {
   }>;
 }
 
-// 隔離メール一覧ページ (管理者専用)
+// 隔離メール/LINE メッセージ一覧ページ (管理者専用)
 // docs/smb-dx-pivot-plan.md §3.2 フォローアップ: 未登録送信者・プラン未対応・認証失敗等で
 // 起票されなかった受信メールを admin が確認できる一覧を提供する。
+// フォローアップ (2026-07-13): 監査で発見したギャップの解消。LINE 取り込みも同じ「console.warn の
+// サーバーログにしか残らず admin から確認できない」不備を抱えていたため、この一覧に LINE 由来の
+// 隔離記録 (経路列で判別) も表示するようにした。
 export default async function QuarantinePage({ searchParams }: Props) {
   const sp = await searchParams;
   // before/beforeId は URL から来る外部入力なので、不正な値でも落ちないよう検証する
@@ -73,18 +76,19 @@ export default async function QuarantinePage({ searchParams }: Props) {
       <div>
         <h1 className="text-2xl font-bold text-slate-900">隔離メール</h1>
         <p className="mt-1 text-sm text-slate-500">
-          プラン未対応・未登録の送信者・認証失敗などで問い合わせ化されなかった受信メールを表示しています。
+          プラン未対応・未登録の送信者・認証失敗などで問い合わせ化されなかったメール/LINE
+          メッセージを表示しています。
           {before ? `${PAGE_LIMIT} 件ずつ表示中。` : `最新 ${PAGE_LIMIT} 件。`}
         </p>
       </div>
 
       {logs.length === 0 ? (
         <div className="rounded-2xl bg-white py-20 text-center text-slate-400 ring-1 ring-slate-200">
-          <p className="text-sm">隔離されたメールはありません。</p>
+          <p className="text-sm">隔離された記録はありません。</p>
         </div>
       ) : (
         <div className="overflow-x-auto rounded-2xl bg-white shadow-sm ring-1 ring-slate-100">
-          <table className="min-w-full divide-y divide-slate-200" aria-label="隔離メールの一覧">
+          <table className="min-w-full divide-y divide-slate-200" aria-label="隔離記録の一覧">
             <thead className="bg-slate-50">
               <tr>
                 <th
@@ -92,6 +96,12 @@ export default async function QuarantinePage({ searchParams }: Props) {
                   className="px-4 py-3 text-left text-xs font-semibold tracking-wider text-slate-500 uppercase"
                 >
                   日時
+                </th>
+                <th
+                  scope="col"
+                  className="px-4 py-3 text-left text-xs font-semibold tracking-wider text-slate-500 uppercase"
+                >
+                  経路
                 </th>
                 <th
                   scope="col"
@@ -121,17 +131,35 @@ export default async function QuarantinePage({ searchParams }: Props) {
                       {formatDateTimeJP(log.createdAt)}
                     </time>
                   </td>
+                  <td className="px-4 py-3 text-sm whitespace-nowrap text-slate-600">
+                    {QUARANTINE_CHANNEL_LABELS[log.channel]}
+                  </td>
                   <td className="px-4 py-3 text-sm text-slate-700">
-                    {/* 送信者名 (取れなかった場合はアドレスのみ) + アドレス */}
-                    {/* 送信者名が取れなかった場合 (null) はアドレスのみでも意味が通るよう
-                        フォールバック文言を表示する (/code-review ultra 指摘対応) */}
-                    <div className="font-medium text-slate-900">
-                      {log.senderName ?? '(送信者名なし)'}
-                    </div>
-                    <div className="text-xs text-slate-500">{log.senderAddress}</div>
+                    {/* フォローアップ (2026-07-13): channel によって送信者の表現が異なる
+                        (メールは senderName/senderAddress、LINE は lineUserId) */}
+                    {log.channel === 'email' ? (
+                      <>
+                        {/* 送信者名が取れなかった場合 (null) はアドレスのみでも意味が通るよう
+                            フォールバック文言を表示する (/code-review ultra 指摘対応) */}
+                        <div className="font-medium text-slate-900">
+                          {log.senderName ?? '(送信者名なし)'}
+                        </div>
+                        {/* /code-review ultra 指摘対応 (2026-07-13): senderName/subject と同じく
+                            null を安全に表示するフォールバックを付ける (RecordQuarantinedEmailInput
+                            は channel='email' で常に非 null を要求するが、表示側は DB 由来の値を
+                            そのまま信用せず念のため備える) */}
+                        <div className="text-xs text-slate-500">
+                          {log.senderAddress ?? '(送信元アドレスなし)'}
+                        </div>
+                      </>
+                    ) : (
+                      <div className="font-medium text-slate-900">
+                        LINE ユーザー ID: {log.lineUserId ?? '(不明)'}
+                      </div>
+                    )}
                   </td>
                   <td className="max-w-xs px-4 py-3 text-sm text-slate-700">
-                    <span className="line-clamp-1">{log.subject}</span>
+                    <span className="line-clamp-1">{log.subject ?? '(件名なし)'}</span>
                   </td>
                   <td className="px-4 py-3 text-sm whitespace-nowrap text-slate-600">
                     {QUARANTINE_REASON_LABELS[log.reason]}

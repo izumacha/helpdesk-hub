@@ -7,16 +7,31 @@ import { resolveAuditLimit } from '../audit-pagination';
 // Prisma クライアントを使った隔離済み受信メールリポジトリを生成する関数
 export function makeQuarantinedEmailRepo(db: PrismaLike): QuarantinedEmailRepository {
   return {
-    // 隔離記録を 1 件保存する (戻り値なし)
+    // 隔離記録を 1 件保存する (戻り値なし)。
+    // input は channel で判別されるユニオン型のため、channel ごとに他方のチャネル専用
+    // フィールドを明示的に null で埋める (DB 側は依然としてチャネル非依存の 1 テーブル)
     async record(input) {
       await db.quarantinedEmail.create({
-        data: {
-          tenantId: input.tenantId,
-          reason: input.reason,
-          senderAddress: input.senderAddress,
-          senderName: input.senderName,
-          subject: input.subject,
-        },
+        data:
+          input.channel === 'email'
+            ? {
+                tenantId: input.tenantId,
+                channel: 'email',
+                reason: input.reason,
+                senderAddress: input.senderAddress,
+                senderName: input.senderName,
+                lineUserId: null,
+                subject: input.subject,
+              }
+            : {
+                tenantId: input.tenantId,
+                channel: 'line',
+                reason: input.reason,
+                senderAddress: null,
+                senderName: null,
+                lineUserId: input.lineUserId,
+                subject: null,
+              },
       });
     },
 
@@ -45,9 +60,11 @@ export function makeQuarantinedEmailRepo(db: PrismaLike): QuarantinedEmailReposi
 
       return rows.map((row) => ({
         id: row.id,
+        channel: row.channel,
         reason: row.reason,
         senderAddress: row.senderAddress,
         senderName: row.senderName,
+        lineUserId: row.lineUserId,
         subject: row.subject,
         createdAt: row.createdAt,
       }));

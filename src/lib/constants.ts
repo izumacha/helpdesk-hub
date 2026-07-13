@@ -6,6 +6,7 @@ import type {
   Role,
   SettingsAuditAction,
   QuarantineReason,
+  QuarantineChannel,
 } from '@/domain/types';
 // Lite モードの 3 値型と型ガード関数を取り込み、mode-aware ラベル関数で使う
 import { isLiteStatus, type LiteStatus } from '@/domain/ticket-status';
@@ -194,11 +195,20 @@ export const SETTINGS_AUDIT_SYSTEM_ACTOR_NAME = 'システム（自動）';
 // QuarantineReason 型 (src/domain/types.ts) / QuarantineReason enum (prisma/schema.prisma)
 // に値を追加したらここも更新する (§3.2 フォローアップ)
 export const QUARANTINE_REASON_LABELS: Record<QuarantineReason, string> = {
-  plan_gate: 'プラン未対応（メール取り込みが利用できないプラン）',
+  // フォローアップ (2026-07-13): LINE 取り込みも同じ隔離記録を使うため、メール限定の
+  // 文言だったものをチャネル非依存の表現に揃えた
+  plan_gate: 'プラン未対応（この取り込み経路が利用できないプラン）',
   auth_fail: '送信元ドメイン認証（SPF/DKIM/DMARC）に失敗',
   unknown_sender: '未登録の送信者',
   thread_forbidden: '追記権限のない送信者',
   quota_exceeded: '月間の問い合わせ件数上限に到達',
+  no_agents: '担当者が未設定（代理起票者を決められない）',
+};
+
+// 隔離記録の発生元チャネルに対応する日本語表示ラベル (admin 向け隔離記録一覧の「経路」列で使う)
+export const QUARANTINE_CHANNEL_LABELS: Record<QuarantineChannel, string> = {
+  email: 'メール',
+  line: 'LINE',
 };
 
 // 通知種別の英語キーに対応する日本語表示ラベル

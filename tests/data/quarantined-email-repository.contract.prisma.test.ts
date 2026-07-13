@@ -41,6 +41,7 @@ describe.runIf(SHOULD_RUN)('QuarantinedEmailRepository (prisma adapter)', () => 
     const repos = buildPrismaRepos(prisma);
     await repos.quarantinedEmails.record({
       tenantId: TENANT_A,
+      channel: 'email',
       reason: 'plan_gate',
       senderAddress: 'a@example.com',
       senderName: 'A',
@@ -48,6 +49,7 @@ describe.runIf(SHOULD_RUN)('QuarantinedEmailRepository (prisma adapter)', () => 
     });
     await repos.quarantinedEmails.record({
       tenantId: TENANT_A,
+      channel: 'email',
       reason: 'unknown_sender',
       senderAddress: 'b@example.com',
       senderName: 'B',
@@ -66,6 +68,7 @@ describe.runIf(SHOULD_RUN)('QuarantinedEmailRepository (prisma adapter)', () => 
     const repos = buildPrismaRepos(prisma);
     await repos.quarantinedEmails.record({
       tenantId: TENANT_A,
+      channel: 'email',
       reason: 'auth_fail',
       senderAddress: 'a@example.com',
       senderName: 'A',
@@ -82,6 +85,7 @@ describe.runIf(SHOULD_RUN)('QuarantinedEmailRepository (prisma adapter)', () => 
     for (let i = 0; i < 3; i++) {
       await repos.quarantinedEmails.record({
         tenantId: TENANT_A,
+        channel: 'email',
         reason: 'quota_exceeded',
         senderAddress: `u${i}@example.com`,
         senderName: `U${i}`,
@@ -93,8 +97,9 @@ describe.runIf(SHOULD_RUN)('QuarantinedEmailRepository (prisma adapter)', () => 
     expect(rows).toHaveLength(2);
   });
 
-  // 全 5 種の QuarantineReason が実 DB の enum に対して問題なく書き込み・読み出しできること
-  it('全5種の隔離理由が書き込み・読み出しできる', async () => {
+  // 全 6 種の QuarantineReason が実 DB の enum に対して問題なく書き込み・読み出しできること。
+  // フォローアップ (2026-07-13): LINE 専用の no_agents を追加したため 5 種→6 種になった
+  it('全6種の隔離理由が書き込み・読み出しできる', async () => {
     const repos = buildPrismaRepos(prisma);
     const reasons = [
       'plan_gate',
@@ -102,10 +107,12 @@ describe.runIf(SHOULD_RUN)('QuarantinedEmailRepository (prisma adapter)', () => 
       'unknown_sender',
       'thread_forbidden',
       'quota_exceeded',
+      'no_agents',
     ] as const;
     for (const reason of reasons) {
       await repos.quarantinedEmails.record({
         tenantId: TENANT_A,
+        channel: 'email',
         reason,
         senderAddress: 'a@example.com',
         senderName: 'A',
@@ -122,6 +129,7 @@ describe.runIf(SHOULD_RUN)('QuarantinedEmailRepository (prisma adapter)', () => 
     const repos = buildPrismaRepos(prisma);
     await repos.quarantinedEmails.record({
       tenantId: TENANT_A,
+      channel: 'email',
       reason: 'unknown_sender',
       senderAddress: 'noheader@example.com',
       senderName: null,
@@ -140,6 +148,7 @@ describe.runIf(SHOULD_RUN)('QuarantinedEmailRepository (prisma adapter)', () => 
       data: {
         id: 'qte_b',
         tenantId: TENANT_A,
+        channel: 'email',
         reason: 'plan_gate',
         senderAddress: 'b@example.com',
         senderName: 'B',
@@ -151,6 +160,7 @@ describe.runIf(SHOULD_RUN)('QuarantinedEmailRepository (prisma adapter)', () => 
       data: {
         id: 'qte_a',
         tenantId: TENANT_A,
+        channel: 'email',
         reason: 'plan_gate',
         senderAddress: 'a@example.com',
         senderName: 'A',
@@ -162,6 +172,7 @@ describe.runIf(SHOULD_RUN)('QuarantinedEmailRepository (prisma adapter)', () => 
       data: {
         id: 'qte_c',
         tenantId: TENANT_A,
+        channel: 'email',
         reason: 'plan_gate',
         senderAddress: 'c@example.com',
         senderName: 'C',
@@ -186,6 +197,7 @@ describe.runIf(SHOULD_RUN)('QuarantinedEmailRepository (prisma adapter)', () => 
     const repos = buildPrismaRepos(prisma);
     await repos.quarantinedEmails.record({
       tenantId: TENANT_B,
+      channel: 'email',
       reason: 'plan_gate',
       senderAddress: 'a@example.com',
       senderName: 'A',
@@ -196,5 +208,26 @@ describe.runIf(SHOULD_RUN)('QuarantinedEmailRepository (prisma adapter)', () => 
 
     const remaining = await prisma.quarantinedEmail.findMany({ where: { tenantId: TENANT_B } });
     expect(remaining).toHaveLength(0);
+  });
+
+  // フォローアップ (2026-07-13): 監査で発見したギャップの解消。LINE 取り込みもこのテーブルを
+  // channel='line' で共有する。メール専用の NOT NULL 制約を外した senderAddress/subject が
+  // 実 DB で null のまま書き込み・読み出しできることを確認する
+  it('LINE 由来の隔離記録 (channel=line) を記録・読み出しできる', async () => {
+    const repos = buildPrismaRepos(prisma);
+    await repos.quarantinedEmails.record({
+      tenantId: TENANT_A,
+      channel: 'line',
+      reason: 'no_agents',
+      lineUserId: 'U00000000000000000000000000000001',
+    });
+
+    const rows = await repos.quarantinedEmails.findAllByTenant({ tenantId: TENANT_A });
+    expect(rows).toHaveLength(1);
+    expect(rows[0].channel).toBe('line');
+    expect(rows[0].reason).toBe('no_agents');
+    expect(rows[0].lineUserId).toBe('U00000000000000000000000000000001');
+    expect(rows[0].senderAddress).toBeNull();
+    expect(rows[0].subject).toBeNull();
   });
 });

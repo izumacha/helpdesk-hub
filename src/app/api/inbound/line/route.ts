@@ -84,8 +84,12 @@ import {
 // 添付ファイルのストレージ保存 / 失敗時クリーンアップの共通ヘルパー (POST /api/tickets・
 // POST /api/inbound/email と共有)
 import { persistAttachments, cleanupWrittenAttachments } from '@/lib/attachment-persistence';
-// 課金プランの型 (添付累計サイズ上限チェック checkAttachmentQuota に渡す)
-import type { SubscriptionPlan } from '@/domain/types';
+// 課金プランの型 (添付累計サイズ上限チェック checkAttachmentQuota に渡す)。
+// フォローアップ (2026-07-13): 監査で発見したギャップの解消。LINE 取り込みが起票せず隔離した記録も
+// メール取り込みと共有の QuarantinedEmail テーブルへ永続化するため QuarantineReason 型を使う
+import type { SubscriptionPlan, QuarantineReason } from '@/domain/types';
+// 隔離記録の書き込み共通ヘルパー (メール取り込みと共有。§6 DRY)
+import { recordQuarantineSafe } from '@/lib/quarantine';
 // このルートは Node ランタイムで動かす (node:crypto / Prisma を使うため Edge では動かない)
 export const runtime = 'nodejs';
 
@@ -318,6 +322,7 @@ export async function POST(req: Request) {
     console.warn('[POST /api/inbound/line] ignored: LINE integration not allowed for plan', {
       plan: tenant.subscriptionPlan,
     });
+    await recordLineQuarantine(targetTenantId, 'plan_gate', null);
     return NextResponse.json({ status: 'ignored', reason: 'plan_not_allowed' }, { status: 200 });
   }
 
@@ -329,6 +334,7 @@ export async function POST(req: Request) {
     // 担当者が 1 人もいないテナントは起票者を決められない。再送しても状況は変わらない
     // (設定不備) ため、LINE の再送ループを避けるべく 200 で「受領のみ」して破棄する。
     console.warn('[POST /api/inbound/line] no agents found for tenant:', targetTenantId);
+    await recordLineQuarantine(targetTenantId, 'no_agents', null);
     return NextResponse.json({ status: 'ignored', reason: 'no_agents' }, { status: 200 });
   }
   // 名前順で最初の担当者 (agent/admin) を未紐付けユーザー向けの代理起票者とする
@@ -378,6 +384,25 @@ export async function POST(req: Request) {
   // の Serializable トランザクションで、連携コード処理 (起票を伴わない) は repos.lineLinkCodes
   // (LineLinkCodeRef テーブルへの DB 永続化) でそれぞれ担保している。
   return NextResponse.json({ ticketIds }, { status: 200 });
+}
+
+// 起票せず隔離した LINE メッセージ/バッチを永続化する。
+// フォローアップ (2026-07-13): 監査で発見したギャップの解消。以前はプランゲート・担当者未設定・
+// 月間上限到達のいずれも console.warn のサーバーログにしか残らず、admin が「なぜ LINE の
+// 問い合わせが取り込まれないか」を確認する手段が無かった (メール取り込みの §3.2 フォローアップと
+// 同じ不備)。メール取り込みと共有の QuarantinedEmail テーブルへ channel='line' で記録する
+// (record() 自体は SettingsAuditLog と同じ「記録失敗は本来の処理に影響させない」方針)。
+// フォローアップ (2026-07-13): try/catch + ログの定型部分はメール取り込みの recordQuarantine と
+// 同型の重複だったため src/lib/quarantine.ts::recordQuarantineSafe へ共通化した (§6 DRY)
+async function recordLineQuarantine(
+  tenantId: string,
+  reason: QuarantineReason,
+  lineUserId: string | null, // 特定の送信者に紐づかないバッチ単位の隔離 (プランゲート等) では null
+): Promise<void> {
+  await recordQuarantineSafe(
+    { tenantId, channel: 'line', reason, lineUserId },
+    '[POST /api/inbound/line]',
+  );
 }
 
 // このメッセージ ID を既に取り込み済みなら対応するチケット ID を返す (未処理なら null)。
@@ -631,6 +656,11 @@ async function processLineEvent(
   // ctx.quota (POST 側で 1 度だけ取得) の残枠をイベントごとに消費する簡易カウンタとして扱う。
   if (ctx.quota.limited && ctx.quota.remaining <= 0) {
     console.warn(`[POST /api/inbound/line] ignored: monthly ticket quota reached: ${messageId}`);
+    await recordLineQuarantine(
+      targetTenantId,
+      'quota_exceeded',
+      lineUserId !== '不明' ? lineUserId : null,
+    );
     return null;
   }
 
