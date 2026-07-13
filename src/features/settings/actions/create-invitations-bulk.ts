@@ -139,11 +139,25 @@ export async function createInvitationsBulk(
         });
         return { email, ok: true, url };
       } catch (err) {
-        // 1 行の失敗 (トークン重複などの想定外エラー) で他の行の発行を止めない (部分成功を許容する)
+        // 1 行の失敗 (トークン重複などの想定外エラー) で他の行の発行を止めない (部分成功を許容する)。
+        // /code-review ultra 指摘対応 (2026-07-13): err.message をそのままクライアントへ返すと
+        // 想定外エラー時に Prisma の内部エラー文言 (接続情報等) が漏れうる (§9 セキュリティ)。
+        // create-location.ts 等の他アクションと同じく、既知の一意制約違反だけ安全な日本語
+        // メッセージへ変換し、それ以外は生の err.message を返さず汎用メッセージへ丸める。
+        const message = err instanceof Error ? err.message : '';
+        // Prisma の一意制約違反 (P2002、招待トークン衝突など) を検出する
+        const isUniqueConstraintError =
+          message.includes('Unique constraint') || message.includes('P2002');
+        // 想定外エラーはサーバー側ログにだけ詳細を残す (クライアントには漏らさない)
+        if (!isUniqueConstraintError) {
+          console.error('[create-invitations-bulk] 招待発行エラー:', email, err);
+        }
         return {
           email,
           ok: false,
-          error: err instanceof Error ? err.message : '招待の発行に失敗しました',
+          error: isUniqueConstraintError
+            ? 'この招待の発行に失敗しました (重複)'
+            : '招待の発行に失敗しました',
         };
       }
     }),

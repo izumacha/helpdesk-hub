@@ -146,7 +146,18 @@ export async function acceptInvitation(
     if (uow.isTransactionConflict(err)) {
       throw new Error('混み合っているため受諾できませんでした。もう一度お試しください。');
     }
-    // 書き込み競合以外 (バリデーションエラー・上限到達など) はそのまま伝播する
+    // /code-review ultra 指摘対応 (2026-07-13): tx 内の findByEmail 事前チェックをすり抜けて
+    // 同一メールの同時受諾が競合すると、User.email の一意制約違反が Prisma の生エラーとして
+    // ここまで伝播しうる。他の throw new Error(...) は本アクション自身が投げる安全な日本語
+    // メッセージのみなので、一意制約違反だけを検出して事前チェックと同じ安全なメッセージへ
+    // 変換する (§9: 内部エラー文言をクライアントに漏らさない)。それ以外はそのまま伝播する。
+    const message = err instanceof Error ? err.message : '';
+    if (message.includes('Unique constraint') || message.includes('P2002')) {
+      console.error('[accept-invitation] メール一意制約違反 (競合受諾の可能性):', err);
+      throw new Error('このメールアドレスは既に登録されています。ログインしてください。');
+    }
+    // 書き込み競合・一意制約違反以外 (バリデーションエラー・上限到達など、本アクション自身が
+    // 投げた安全な日本語メッセージ) はそのまま伝播する
     throw err;
   }
 
