@@ -392,11 +392,93 @@ describe('importTickets', () => {
     });
   });
 
+  // フォローアップ (2026-07-13): 「担当者」列の名前解決
+  // CSV エクスポート (GET /api/tickets/export) が「担当者」列を出力するのに、インポート側には
+  // 対応する読み取りが存在せず、エクスポート→編集→再インポートの往復で担当者情報が消えて
+  // いた不備の回帰テスト (拠点列の回帰テストと同じ構成)。担当者は拠点と同じく Lite/Pro
+  // 両モードで使える概念のため、Lite テナント (seed() の既定) のまま検証する。
+  describe('担当者列 (フォローアップ 2026-07-13)', () => {
+    // 「担当者」列の値が既存のエージェント名と一致すれば assigneeId が解決されて保存される
+    it('担当者名が一致すれば assigneeId が解決されて保存される', async () => {
+      const importTickets = await loadAction();
+      const csv = `件名,担当者\n複合機の紙詰まり,エージェント2`;
+      const result = await importTickets(csv);
+
+      expect(result.imported).toBe(1);
+      expect(result.errors).toHaveLength(0);
+      const ticket = [...store.tickets.values()][0];
+      expect(ticket?.assigneeId).toBe('u-agt-2');
+    });
+
+    // テナントに存在しない担当者名 (タイポ・退職済み等) はエラーとして記録され、
+    // 無言で未アサインにはならない
+    it('存在しない担当者名はエラーとして記録され起票されない', async () => {
+      const importTickets = await loadAction();
+      const csv = `件名,担当者\n複合機の紙詰まり,存在しない担当者`;
+      const result = await importTickets(csv);
+
+      expect(result.imported).toBe(0);
+      expect(result.errors).toHaveLength(1);
+      expect(result.errors[0].message).toContain('担当者が見つかりません');
+      expect(store.tickets.size).toBe(0);
+    });
+
+    // 「担当者」列自体が無ければ従来どおり assigneeId は null (未アサイン) のまま (後方互換)
+    it('担当者列が無ければ assigneeId は null のまま取り込まれる', async () => {
+      const importTickets = await loadAction();
+      const csv = `件名\n複合機の紙詰まり`;
+      const result = await importTickets(csv);
+
+      expect(result.imported).toBe(1);
+      const ticket = [...store.tickets.values()][0];
+      expect(ticket?.assigneeId).toBeNull();
+    });
+
+    // 担当者列があっても空セルなら未指定として扱い、エラーにはしない
+    it('担当者セルが空なら未指定として扱いエラーにしない', async () => {
+      const importTickets = await loadAction();
+      const csv = `件名,担当者\n複合機の紙詰まり,`;
+      const result = await importTickets(csv);
+
+      expect(result.imported).toBe(1);
+      expect(result.errors).toHaveLength(0);
+      const ticket = [...store.tickets.values()][0];
+      expect(ticket?.assigneeId).toBeNull();
+    });
+
+    // /code-review ultra 指摘対応 (2026-07-13): 同姓同名のエージェントが複数存在する場合、
+    // 名前 → ID の Map で無言でどちらか一方に misassign されてしまうと、拠点/カテゴリの
+    // 誤りより深刻 (チケットの所有権を誤らせる) な回帰になる。エラー行として記録され、
+    // どちらのエージェントにも起票されないことを確認する。
+    it('同姓同名のエージェントが複数いる場合はエラーとして記録され起票されない', async () => {
+      // u-agt-2 (エージェント2) と同じ表示名を持つ 3 人目のエージェントを追加する
+      const now = new Date();
+      store.users.set('u-agt-3', {
+        id: 'u-agt-3',
+        email: 'agent3@example.com',
+        name: 'エージェント2', // u-agt-2 と同じ表示名 (同姓同名)
+        passwordHash: 'x',
+        role: 'agent',
+        tenantId: TENANT,
+        createdAt: now,
+        updatedAt: now,
+      });
+      const importTickets = await loadAction();
+      const csv = `件名,担当者\n複合機の紙詰まり,エージェント2`;
+      const result = await importTickets(csv);
+
+      expect(result.imported).toBe(0);
+      expect(result.errors).toHaveLength(1);
+      expect(result.errors[0].message).toContain('担当者名が重複しています');
+      expect(store.tickets.size).toBe(0);
+    });
+  });
+
   // §3.1 フォローアップ (2026-07-10): 既存 Excel の完了済み行をそのまま取り込めるかを検証する
   describe('状況列 (§3.1 フォローアップ)', () => {
     // Lite テナント (seed() の既定) で「完了」を指定すると Closed で起票され、resolvedAt が
     // インポート時刻でセットされる (getCompletionStatuses(mode) との整合を確認)
-    it('Lite テナントで「完了」を指定すると Closed かつ resolvedAt 付きで起票される', async () => {
+    it('Lite テナントで「完了」を指定すると Closed かつ resolvedAt / firstRespondedAt 付きで起票される', async () => {
       const importTickets = await loadAction();
       const csv = `件名,状況\n複合機の紙詰まり,完了`;
       const before = Date.now();
@@ -411,10 +493,21 @@ describe('importTickets', () => {
       const resolvedAtMs = ticket!.resolvedAt!.getTime();
       expect(resolvedAtMs).toBeGreaterThanOrEqual(before);
       expect(resolvedAtMs).toBeLessThanOrEqual(after);
+      // フォローアップ (2026-07-13): 完了系ステータスは初回応答も済んでいるはずなので
+      // firstRespondedAt もインポート時刻でセットされる (SLA バッジ・品質メトリクスの回帰防止)
+      expect(ticket?.firstRespondedAt).toBeInstanceOf(Date);
+      // /code-review ultra 指摘対応 (2026-07-13): resolvedAt/firstRespondedAt は createdAt と
+      // 同じ取り込み時刻を明示的に使うため、createdAt より前になってはいけない
+      // (前になると平均解決時間・平均初回応答時間の AVG(x - createdAt) が負値になる回帰)
+      expect(resolvedAtMs).toBeGreaterThanOrEqual(ticket!.createdAt.getTime());
+      expect(ticket!.firstRespondedAt!.getTime()).toBeGreaterThanOrEqual(
+        ticket!.createdAt.getTime(),
+      );
     });
 
-    // 未完了系のラベル (「対応中」) を指定すると、そのステータスで起票されるが resolvedAt は null のまま
-    it('未完了系のラベルを指定すると resolvedAt を設定せずに起票される', async () => {
+    // 未完了系だが初期状態ではないラベル (「対応中」) を指定すると、resolvedAt は null のままだが
+    // firstRespondedAt はインポート時刻でセットされる (既に着手済みの行のため)
+    it('未完了系のラベル (対応中) を指定すると resolvedAt は null のまま firstRespondedAt がセットされる', async () => {
       const importTickets = await loadAction();
       const csv = `件名,状況\n複合機の紙詰まり,対応中`;
       const result = await importTickets(csv);
@@ -423,10 +516,16 @@ describe('importTickets', () => {
       const ticket = [...store.tickets.values()][0];
       expect(ticket?.status).toBe('InProgress');
       expect(ticket?.resolvedAt).toBeNull();
+      expect(ticket?.firstRespondedAt).toBeInstanceOf(Date);
+      // /code-review ultra 指摘対応 (2026-07-13): firstRespondedAt が createdAt より前にならないこと
+      expect(ticket!.firstRespondedAt!.getTime()).toBeGreaterThanOrEqual(
+        ticket!.createdAt.getTime(),
+      );
     });
 
-    // 「状況」列自体が無ければ従来どおりモードの既定初期ステータス (Lite: Open) で起票される (後方互換)
-    it('状況列が無ければ既定の初期ステータスで起票される', async () => {
+    // 「状況」列自体が無ければ従来どおりモードの既定初期ステータス (Lite: Open) で起票される (後方互換)。
+    // 初期状態のままなので resolvedAt / firstRespondedAt はどちらも未設定のまま
+    it('状況列が無ければ既定の初期ステータスで起票され、resolvedAt / firstRespondedAt は未設定のまま', async () => {
       const importTickets = await loadAction();
       const csv = `件名\n複合機の紙詰まり`;
       const result = await importTickets(csv);
@@ -435,6 +534,7 @@ describe('importTickets', () => {
       const ticket = [...store.tickets.values()][0];
       expect(ticket?.status).toBe('Open');
       expect(ticket?.resolvedAt).toBeNull();
+      expect(ticket?.firstRespondedAt).toBeNull();
     });
 
     // 状況セルが空なら未指定として扱い、既定の初期ステータスにフォールバックする (エラーにしない)
@@ -487,6 +587,8 @@ describe('importTickets', () => {
       const ticket = [...store.tickets.values()][0];
       expect(ticket?.status).toBe('Resolved');
       expect(ticket?.resolvedAt).toBeInstanceOf(Date);
+      // フォローアップ (2026-07-13): Pro の完了状態 (Resolved) も初回応答済みとして記録される
+      expect(ticket?.firstRespondedAt).toBeInstanceOf(Date);
     });
 
     // /code-review ultra 指摘対応 (2026-07-10): 「エスカレーション」は escalatedAt/理由の記録や

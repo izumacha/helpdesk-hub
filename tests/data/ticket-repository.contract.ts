@@ -106,6 +106,44 @@ export function runTicketRepositoryContract(
       expect(found?.status).toBe('Open');
     });
 
+    // フォローアップ (2026-07-13, /code-review ultra 指摘対応): CSV インポートが追加した
+    // assigneeId / firstRespondedAt / createdAt の明示指定が、Prisma / メモリ両アダプタで
+    // 同じように永続化されることを確認する (この契約テストは runTicketRepositoryContract 経由で
+    // 両アダプタに対して実行されるため、片方の adapter だけが実装を怠っても検出できる)。
+    it('create honors explicit assigneeId / firstRespondedAt / createdAt', async () => {
+      const { requester, agentA, categoryId } = await ctx.seedBasicFixture();
+      // 明示的に過去の時刻を作成日時として指定する
+      const explicitCreatedAt = new Date('2026-01-01T00:00:00.000Z');
+      const created = await ctx.repos.tickets.create({
+        title: 'CSV インポートされたチケット',
+        body: '既に対応中だった問い合わせ',
+        priority: 'Medium',
+        creatorId: requester.id,
+        categoryId,
+        tenantId: TENANT_ID,
+        status: 'InProgress',
+        assigneeId: agentA.id,
+        firstRespondedAt: explicitCreatedAt,
+        createdAt: explicitCreatedAt,
+      });
+      // 指定した担当者・初回応答日時・作成日時がそのまま保存されること
+      expect(created.assignee?.id).toBe(agentA.id);
+      expect(created.firstRespondedAt?.toISOString()).toBe(explicitCreatedAt.toISOString());
+      expect(created.createdAt.toISOString()).toBe(explicitCreatedAt.toISOString());
+      // firstRespondedAt が createdAt より前にならないこと (回帰防止)
+      expect(created.firstRespondedAt!.getTime()).toBeGreaterThanOrEqual(
+        created.createdAt.getTime(),
+      );
+
+      // 取り直しても同じ値のまま永続化されていること
+      // (findById は関連情報を含まない素の Ticket を返すため assigneeId で確認する。
+      // 関連込みの確認は上の created.assignee?.id で既に行っている)
+      const found = await ctx.repos.tickets.findById(created.id, TENANT_ID);
+      expect(found?.assigneeId).toBe(agentA.id);
+      expect(found?.firstRespondedAt?.toISOString()).toBe(explicitCreatedAt.toISOString());
+      expect(found?.createdAt.toISOString()).toBe(explicitCreatedAt.toISOString());
+    });
+
     // list の creatorId フィルタと並び順 (新しい順) が正しいこと
     it('list applies creatorId filter and returns most-recent first', async () => {
       const { requester, agentA, categoryId } = await ctx.seedBasicFixture();

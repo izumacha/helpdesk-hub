@@ -6,6 +6,7 @@ import {
   getAllowedLiteTransitions,
   getAllowedTransitions,
   getCompletionStatuses,
+  hasRespondedByImportStatus,
   isLiteStatus,
   isValidLiteTransition,
   isValidTransition,
@@ -201,5 +202,31 @@ describe('getCompletionStatuses', () => {
   // Lite は Closed (Lite の「完了」) と旧 Pro データの Resolved の両方を完了扱いとする
   it('Lite では Closed と旧データの Resolved を完了扱いとする', () => {
     expect(getCompletionStatuses('lite')).toEqual(['Closed', 'Resolved']);
+  });
+});
+
+// hasRespondedByImportStatus: CSV インポート (import-tickets.ts) が「状況」列から
+// 初回応答済みとみなすかを判定する単一定義 (フォローアップ 2026-07-13)
+describe('hasRespondedByImportStatus', () => {
+  // Pro の初期状態 (New) は未応答とみなす
+  it('Pro で初期状態 (New) は未応答とみなす', () => {
+    expect(hasRespondedByImportStatus('New', 'pro')).toBe(false);
+  });
+
+  // Pro で初期状態以外 (Open 等) は応答済みとみなす
+  it('Pro で初期状態以外は応答済みとみなす', () => {
+    expect(hasRespondedByImportStatus('Open', 'pro')).toBe(true);
+    expect(hasRespondedByImportStatus('Resolved', 'pro')).toBe(true);
+  });
+
+  // Lite の初期状態 (Open=未対応) は未応答とみなす
+  it('Lite で初期状態 (Open) は未応答とみなす', () => {
+    expect(hasRespondedByImportStatus('Open', 'lite')).toBe(false);
+  });
+
+  // Lite で初期状態以外 (InProgress/Closed 等) は応答済みとみなす
+  it('Lite で初期状態以外は応答済みとみなす', () => {
+    expect(hasRespondedByImportStatus('InProgress', 'lite')).toBe(true);
+    expect(hasRespondedByImportStatus('Closed', 'lite')).toBe(true);
   });
 });

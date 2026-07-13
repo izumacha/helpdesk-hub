@@ -103,3 +103,15 @@ export function initialStatusForMode(mode: TenantMode): TicketStatus | undefined
 export function getCompletionStatuses(mode: TenantMode): TicketStatus[] {
   return mode === 'lite' ? ['Closed', 'Resolved'] : ['Resolved'];
 }
+
+// フォローアップ (2026-07-13): CSV インポートで「状況」列が初期状態以外を指定していた場合、
+// 既に初回対応が済んでいたとみなせるかどうかの単一ルール（「起票直後」の initialStatusForMode を
+// 裏返した判定）。/code-review ultra 指摘対応: 当初 import-tickets.ts に直書きしていたインライン
+// 三項演算子をここへ抽出し、getCompletionStatuses と同じくドメイン層を唯一の源にする
+// （実際の応答有無を判定する markFirstResponded 系 (コメント投稿ベース) とは別の、
+// CSV インポート専用の近似ルールである点に注意。両者は「初回対応済みか」を異なる入力から
+// 推定する別々の判定であり、意図的に共有していない）。
+export function hasRespondedByImportStatus(status: TicketStatus, mode: TenantMode): boolean {
+  // 初期状態のままなら未応答、それ以外なら既に着手/完了済みとみなす
+  return status !== (initialStatusForMode(mode) ?? 'New');
+}
