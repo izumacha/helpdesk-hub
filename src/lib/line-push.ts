@@ -58,6 +58,21 @@ export async function resolveLineAccessToken(tenantId: string): Promise<string |
 // 超過しうるためサーバー側でも明示的に切り詰める。
 const LINE_TEXT_MESSAGE_MAX_LENGTH = 5000;
 
+// LINE テキストメッセージの本文を上限文字数に切り詰める共通ヘルパー (副作用なし)。
+// /code-review ultra 指摘対応 (2026-07-13): 同じ切り詰めロジックが buildTicketReplyLineMessage /
+// buildTicketReceivedLineMessage / buildTicketStatusChangedLineMessage /
+// buildTicketPriorityChangedLineMessage の 4 箇所に重複していたため集約する (§6 DRY)。
+// `text.slice()` は UTF-16 コード単位で切るため、絵文字等のサロゲートペア文字の途中で
+// 切断すると壊れた文字が残る。Array.from() はコードポイント単位で反復するため、
+// サロゲートペアを保ったまま安全に切り詰められる。
+function truncateLineText(text: string): string {
+  const codePoints = Array.from(text);
+  // LINE の文字数上限を超える場合は末尾を省略する (上限超過は 400 エラーになるため事前に丸める)
+  return codePoints.length > LINE_TEXT_MESSAGE_MAX_LENGTH
+    ? `${codePoints.slice(0, LINE_TEXT_MESSAGE_MAX_LENGTH - 1).join('')}…`
+    : text;
+}
+
 // 担当者の返信を LINE のテキストメッセージ本文として組み立てる純粋関数 (副作用なし)
 export function buildTicketReplyLineMessage(input: {
   ticketTitle: string; // 問い合わせの件名
@@ -75,10 +90,30 @@ export function buildTicketReplyLineMessage(input: {
     input.ticketUrl,
   ].join('\n');
 
-  // LINE の文字数上限を超える場合は末尾を省略する (上限超過は 400 エラーになるため事前に丸める)
-  return text.length > LINE_TEXT_MESSAGE_MAX_LENGTH
-    ? `${text.slice(0, LINE_TEXT_MESSAGE_MAX_LENGTH - 1)}…`
-    : text;
+  return truncateLineText(text);
+}
+
+// 新規起票の受領確認を LINE のテキストメッセージ本文として組み立てる純粋関数 (副作用なし)。
+// フォローアップ (2026-07-13): 監査で発見したギャップの解消。メール取り込みは受領自動返信
+// (renderTicketReceivedEmail) で「起票されたこと」を送信元に伝えるが、LINE 取り込みには
+// 同等の確認が無く、問い合わせが届いたかどうかをユーザーが確認できなかった。
+export function buildTicketReceivedLineMessage(input: {
+  ticketTitle: string; // 問い合わせの件名
+  ticketRef: string; // 受付番号 (例: "#ab12cd34" / 画面・受領メールと同じ短縮 ID 表記)
+  ticketUrl: string; // チケット詳細ページの URL (連携済みユーザーのみ開ける導線)
+}): string {
+  // LINE はプレーンテキストのみのため、改行区切りの簡潔な文面にする (受領メールの text 版相当)
+  const text = [
+    'お問い合わせを受け付けました。担当者が確認のうえご連絡します。',
+    '',
+    `受付番号: ${input.ticketRef}`,
+    `件名: ${input.ticketTitle}`,
+    '',
+    '対応状況の確認はこちら:',
+    input.ticketUrl,
+  ].join('\n');
+
+  return truncateLineText(text);
 }
 
 // ステータス変更を LINE のテキストメッセージ本文として組み立てる純粋関数 (副作用なし)。
@@ -101,10 +136,7 @@ export function buildTicketStatusChangedLineMessage(input: {
     input.ticketUrl,
   ].join('\n');
 
-  // LINE の文字数上限を超える場合は末尾を省略する (buildTicketReplyLineMessage と同じ安全策)
-  return text.length > LINE_TEXT_MESSAGE_MAX_LENGTH
-    ? `${text.slice(0, LINE_TEXT_MESSAGE_MAX_LENGTH - 1)}…`
-    : text;
+  return truncateLineText(text);
 }
 
 // 優先度変更を LINE のテキストメッセージ本文として組み立てる純粋関数 (副作用なし)。
@@ -127,10 +159,7 @@ export function buildTicketPriorityChangedLineMessage(input: {
     input.ticketUrl,
   ].join('\n');
 
-  // LINE の文字数上限を超える場合は末尾を省略する (buildTicketReplyLineMessage と同じ安全策)
-  return text.length > LINE_TEXT_MESSAGE_MAX_LENGTH
-    ? `${text.slice(0, LINE_TEXT_MESSAGE_MAX_LENGTH - 1)}…`
-    : text;
+  return truncateLineText(text);
 }
 
 // 指定した LINE ユーザーへテキストメッセージを push する。
