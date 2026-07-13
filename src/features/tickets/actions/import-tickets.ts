@@ -435,6 +435,11 @@ export async function importTickets(csvText: string): Promise<ImportTicketsResul
   // 集計用カウンタとエラーリストを初期化する
   let imported = 0;
   const errors: Array<{ row: number; message: string }> = [];
+  // フォローアップ (2026-07-13): 「担当者」列で割り当てた件数をエージェント別に集計する。
+  // updateTicketAssignee (画面からの手動アサイン) は担当者へ 'assigned' 通知を送るが、
+  // CSV インポートで初期担当者を設定してもこれまで一切通知していなかった (監査で発見したギャップ)。
+  // インポート後にまとめて 1 通ずつ送るための集計 (行ごとに送ると 200 件で 200 通になり得る)
+  const assignedCounts = new Map<string, number>();
 
   // ヘッダ列インデックスをまとめてバリデーション関数へ渡す
   const columnIndices: ColumnIndices = {
@@ -608,6 +613,11 @@ export async function importTickets(csvText: string): Promise<ImportTicketsResul
       });
       // 成功カウンタをインクリメント
       imported += 1;
+      // フォローアップ (2026-07-13): 担当者が割り当てられた行はエージェント別に集計しておく
+      // (通知はインポート後にまとめて 1 通ずつ送る)
+      if (assigneeId) {
+        assignedCounts.set(assigneeId, (assignedCounts.get(assigneeId) ?? 0) + 1);
+      }
       // 上限のあるプランでは残枠を消費する (無制限プランは remaining が Infinity のため減算不要だが、
       // 明示的にガードして意図を示す)
       if (quota.limited) quota.remaining -= 1;
@@ -692,6 +702,43 @@ export async function importTickets(csvText: string): Promise<ImportTicketsResul
       } catch (err) {
         // SSE broadcast の失敗はチケット作成の成否に影響しない。通知ベルの更新が遅れるだけなのでログのみ。
         console.warn('[importTickets] SSE broadcast に失敗しました（チケット作成は成功）:', err);
+      }
+    }
+
+    // フォローアップ (2026-07-13): 監査で発見したギャップの解消。「担当者」列で割り当てた
+    // エージェントには、上の「N件のチケットが追加されました」という全エージェント向けの汎用通知
+    // だけでは「自分が担当することになった」ことが伝わらない。updateTicketAssignee (画面からの
+    // 手動アサイン) が担当者へ 'assigned' 通知を送るのと同じ意図で、担当者ごとに 1 通ずつ
+    // (行ごとではなく) まとめて通知する (200 件でも担当者数分の通知で済む)。
+    // インポート実行者自身が自分を担当に設定した場合は、既にそれを知っているため対象外にする
+    // (上の otherAgents と同じ「自分の操作を自分に通知しない」方針)。
+    const assignedAgentIds = [...assignedCounts.keys()].filter((id) => id !== creatorId);
+    if (assignedAgentIds.length > 0) {
+      const assignResults = await Promise.allSettled(
+        assignedAgentIds.map((agentId) =>
+          repos.notifications.create({
+            userId: agentId, // 受信者: 割り当てられたエージェント本人
+            type: 'assigned', // 担当割当通知 (NotificationType.assigned)
+            message: `CSV インポートで ${assignedCounts.get(agentId)} 件のチケットが担当者に割り当てられました`,
+            ticketId: null, // 複数チケットにまたがるため null (バッチ通知と同じ扱い)
+            tenantId,
+          }),
+        ),
+      );
+      // 失敗件数をログに残す (チケット作成の成否には影響しない。上の otherAgents と同じ方針)
+      const failedAssignCount = assignResults.filter((r) => r.status === 'rejected').length;
+      if (failedAssignCount > 0) {
+        console.warn(
+          `[importTickets] ${failedAssignCount} 件の担当割当通知の書き込みに失敗しました`,
+        );
+      }
+      try {
+        await broadcastUnreadCountToMany(assignedAgentIds, tenantId);
+      } catch (err) {
+        console.warn(
+          '[importTickets] 担当割当通知の SSE broadcast に失敗しました（チケット作成は成功）:',
+          err,
+        );
       }
     }
   }

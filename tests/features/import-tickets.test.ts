@@ -410,6 +410,39 @@ describe('importTickets', () => {
       expect(ticket?.assigneeId).toBe('u-agt-2');
     });
 
+    // フォローアップ (2026-07-13): 監査で発見したギャップの解消。担当者に割り当てられたエージェントへ
+    // 'assigned' 通知が (行ごとではなく件数をまとめて 1 通) 届くことを確認する
+    it('担当者に割り当てられたエージェントへ assigned 通知が届く', async () => {
+      const importTickets = await loadAction();
+      const csv = `件名,担当者\n複合機の紙詰まり,エージェント2\nPC が起動しない,エージェント2`;
+      const result = await importTickets(csv);
+
+      expect(result.imported).toBe(2);
+      expect(result.errors).toHaveLength(0);
+      // u-agt-2 (エージェント2) 宛に 'assigned' 種別の通知が 1 通だけ作成されていること (2 件まとめて)
+      const assignedNotifications = [...store.notifications.values()].filter(
+        (n) => n.userId === 'u-agt-2' && n.type === 'assigned',
+      );
+      expect(assignedNotifications).toHaveLength(1);
+      expect(assignedNotifications[0]?.message).toContain('2');
+      expect(assignedNotifications[0]?.tenantId).toBe(TENANT);
+    });
+
+    // インポート実行者が自分自身を担当者に設定した場合は、既に自分の操作だと分かっているため
+    // 通知不要 (otherAgents と同じ「自分の操作を自分に通知しない」方針)
+    it('インポート実行者が自分自身を担当者に設定しても assigned 通知は送られない', async () => {
+      const importTickets = await loadAction();
+      // seed() の既定でセッションユーザーは u-agt-1 (エージェント1)
+      const csv = `件名,担当者\n複合機の紙詰まり,エージェント1`;
+      const result = await importTickets(csv);
+
+      expect(result.imported).toBe(1);
+      const assignedNotifications = [...store.notifications.values()].filter(
+        (n) => n.userId === 'u-agt-1' && n.type === 'assigned',
+      );
+      expect(assignedNotifications).toHaveLength(0);
+    });
+
     // テナントに存在しない担当者名 (タイポ・退職済み等) はエラーとして記録され、
     // 無言で未アサインにはならない
     it('存在しない担当者名はエラーとして記録され起票されない', async () => {
