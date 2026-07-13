@@ -145,11 +145,13 @@ async function applyPlanChange(
     subscriptionPlan: SubscriptionPlan;
   },
 ): Promise<void> {
-  const shouldResetMode = await uow.run(async (tx) => {
+  const { shouldResetMode, planChanged } = await uow.run(async (tx) => {
     // トランザクション内で最新のテナント状態を読み直す (呼び出し元のスナップショットに頼らない)
     const tenant = await tx.tenants.findById(tenantId);
     // 呼び出し元で存在確認済みだが、念のためここでも安全側 (何もしない) に倒す
-    if (!tenant) return false;
+    if (!tenant) return { shouldResetMode: false, planChanged: false };
+    // /code-review ultra 指摘対応 (2026-07-13): 監査ログに残すため、更新前のプランを保持しておく
+    const previousPlan = tenant.subscriptionPlan;
     // Stripe 連携情報とプランを反映する
     await tx.tenants.updateStripeSubscription(tenantId, stripeFields);
     // 現在 Pro モードで運用中かつ、新プランが Pro モードを許可しないときだけモードを戻す
@@ -158,7 +160,10 @@ async function applyPlanChange(
       // Pro 専用機能を使えなくする (Lite モードへ強制的に戻す)
       await tx.tenants.updateMode(tenantId, 'lite');
     }
-    return shouldReset;
+    return {
+      shouldResetMode: shouldReset,
+      planChanged: previousPlan !== stripeFields.subscriptionPlan,
+    };
   });
 
   // §4.3 フォローアップ (2026-07-10): モードが強制的に戻された場合は監査ログにも記録する。
@@ -166,15 +171,33 @@ async function applyPlanChange(
   // しか対象にしておらず、Stripe イベント起因の自動ダウングレードは監査対象から漏れていた
   // (「誰がいつ Pro モードに切り替えたか」を追えるはずの §4.3 の意図に反する)。
   // ここは操作したユーザーが存在しないシステム操作のため actorId は null (システムアクター) を渡す。
-  // 監査ログの書き込み失敗は本来の処理 (プラン反映) の成否に影響させない (recordSettingsAudit の方針)
-  if (shouldResetMode) {
-    await recordSettingsAudit({
-      tenantId,
-      actorId: null,
-      action: 'tenant_mode_update',
-      logPrefix: '[stripe-webhook]',
-    });
-  }
+  // 監査ログの書き込み失敗は本来の処理 (プラン反映) の成否に影響させない (recordSettingsAudit の方針)。
+  //
+  // フォローアップ (2026-07-13): 監査で発見したギャップの解消。§4.2-§4.6 が SSO/LINE/通知チャネル/
+  // テナントモード/拠点/招待リンクまで監査対象を広げてきた一方、それらより上位の「組織設定」である
+  // subscriptionPlan 自体の変更 (アップグレード/ダウングレード/解約) は tenant_mode_update の
+  // 副作用としてしか記録されず (Pro モードで運用中のダウングレードのみ)、プラン変更そのものは
+  // 一度も監査対象になっていなかった。Enterprise プランが謳う「監査強化」の実態と乖離するため、
+  // プランが実際に変わった場合は常に (mode リセットの有無に関わらず) 記録する。
+  // 2 つの監査ログ書き込みは互いに独立した I/O なので Promise.all で並行実行する (§8 パフォーマンス)
+  await Promise.all([
+    shouldResetMode
+      ? recordSettingsAudit({
+          tenantId,
+          actorId: null,
+          action: 'tenant_mode_update',
+          logPrefix: '[stripe-webhook]',
+        })
+      : Promise.resolve(),
+    planChanged
+      ? recordSettingsAudit({
+          tenantId,
+          actorId: null,
+          action: 'subscription_plan_update',
+          logPrefix: '[stripe-webhook]',
+        })
+      : Promise.resolve(),
+  ]);
 }
 
 // サブスクリプション作成・更新を処理する: テナントのプランと状態を最新に保つ

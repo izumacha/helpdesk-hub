@@ -109,12 +109,16 @@ describe('POST /api/webhooks/stripe', () => {
     expect(tenant.subscriptionPlan).toBe('free');
     expect(tenant.mode).toBe('lite');
     // §4.3 フォローアップ: 自動ダウングレードによる mode 強制変更も監査ログに残ること
-    // (actorId は操作したユーザーが存在しないため null = システムアクター)
+    // (actorId は操作したユーザーが存在しないため null = システムアクター)。
+    // フォローアップ (2026-07-13): プラン自体の変更 (pro→free) も別エントリとして記録されること
     const auditLogs = await repos.settingsAudit.findAllByTenant({ tenantId: TENANT });
-    expect(auditLogs).toHaveLength(1);
-    expect(auditLogs[0].action).toBe('tenant_mode_update');
-    expect(auditLogs[0].actorId).toBeNull();
-    expect(auditLogs[0].actorName).toBe(SETTINGS_AUDIT_SYSTEM_ACTOR_NAME);
+    expect(auditLogs).toHaveLength(2);
+    const actions = auditLogs.map((l) => l.action).sort();
+    expect(actions).toEqual(['subscription_plan_update', 'tenant_mode_update']);
+    for (const log of auditLogs) {
+      expect(log.actorId).toBeNull();
+      expect(log.actorName).toBe(SETTINGS_AUDIT_SYSTEM_ACTOR_NAME);
+    }
   });
 
   // 更新イベント (customer.subscription.updated) で Pro → Standard にダウングレードしても同様
@@ -140,6 +144,12 @@ describe('POST /api/webhooks/stripe', () => {
     const tenant = store.tenants.get(TENANT)!;
     expect(tenant.subscriptionPlan).toBe('standard');
     expect(tenant.mode).toBe('lite');
+    // フォローアップ (2026-07-13): mode 強制変更に加え、プラン変更 (pro→standard) も記録される
+    const auditLogs = await repos.settingsAudit.findAllByTenant({ tenantId: TENANT });
+    expect(auditLogs.map((l) => l.action).sort()).toEqual([
+      'subscription_plan_update',
+      'tenant_mode_update',
+    ]);
   });
 
   // Pro のまま更新される (昇格/継続) 場合は mode を変更しない
@@ -190,6 +200,11 @@ describe('POST /api/webhooks/stripe', () => {
     const tenant = store.tenants.get(TENANT)!;
     expect(tenant.subscriptionPlan).toBe('free');
     expect(tenant.mode).toBe('lite');
+    // フォローアップ (2026-07-13): mode は既に lite のため tenant_mode_update は記録されないが、
+    // プラン自体は standard→free に変わっているため subscription_plan_update は記録される
+    const auditLogs = await repos.settingsAudit.findAllByTenant({ tenantId: TENANT });
+    expect(auditLogs).toHaveLength(1);
+    expect(auditLogs[0].action).toBe('subscription_plan_update');
   });
 
   // Enterprise は Stripe 管理外: 解約イベントが来てもプランを降格せず、mode も変更しない
@@ -213,6 +228,9 @@ describe('POST /api/webhooks/stripe', () => {
     const tenant = store.tenants.get(TENANT)!;
     expect(tenant.subscriptionPlan).toBe('enterprise');
     expect(tenant.mode).toBe('pro');
+    // フォローアップ (2026-07-13): プランも mode も変化していないので監査ログは記録されない
+    // (無関係なイベントで監査ログを埋めない)
+    expect(await repos.settingsAudit.findAllByTenant({ tenantId: TENANT })).toHaveLength(0);
   });
 
   // 署名ヘッダが無いリクエストは 400 で拒否する (なりすまし対策)
