@@ -41,6 +41,19 @@ const { broadcastMock } = vi.hoisted(() => ({
   broadcastMock: vi.fn().mockResolvedValue(undefined),
 }));
 
+// 担当割当メール (フォローアップ 2026-07-13) の送信を捕捉する。実ファイルへ書き込む console
+// ドライバを避け、送信内容を配列に貯めて検証する (update-ticket.test.ts と同じ方式)。
+const { sentEmails } = vi.hoisted(() => ({
+  sentEmails: [] as Array<{ to: string; subject: string; text: string }>,
+}));
+vi.mock('@/lib/email', () => ({
+  getEmailSender: () => ({
+    send: async (message: { to: string; subject: string; text: string }) => {
+      sentEmails.push(message);
+    },
+  }),
+}));
+
 // @/data を差し替え。getter で参照することでテスト中の上書きが反映される
 vi.mock('@/data', () => ({
   get repos() {
@@ -148,6 +161,8 @@ beforeEach(() => {
   vi.resetModules();
   // SSE ブロードキャスト呼び出しの記録をリセットする
   broadcastMock.mockClear();
+  // 前のテストで貯まった送信済みメールをクリアする (フォローアップ 2026-07-13)
+  sentEmails.length = 0;
   // テナント・ユーザーのフィクスチャを投入する
   seed();
 });
@@ -426,6 +441,12 @@ describe('importTickets', () => {
       expect(assignedNotifications).toHaveLength(1);
       expect(assignedNotifications[0]?.message).toContain('2');
       expect(assignedNotifications[0]?.tenantId).toBe(TENANT);
+      // フォローアップ (2026-07-13): アプリ内通知に加えて、手動アサインと同じくメールも
+      // (件数をまとめて) 1 通だけ届くこと
+      expect(sentEmails).toHaveLength(1);
+      expect(sentEmails[0]?.to).toBe('agent2@example.com');
+      expect(sentEmails[0]?.subject).toContain('2件');
+      expect(sentEmails[0]?.text).toContain('2 件');
     });
 
     // インポート実行者が自分自身を担当者に設定した場合は、既に自分の操作だと分かっているため
@@ -441,6 +462,8 @@ describe('importTickets', () => {
         (n) => n.userId === 'u-agt-1' && n.type === 'assigned',
       );
       expect(assignedNotifications).toHaveLength(0);
+      // 自己割当ではメールも送らない (アプリ内通知と同じ「自分の操作を自分に通知しない」方針)
+      expect(sentEmails).toHaveLength(0);
     });
 
     // テナントに存在しない担当者名 (タイポ・退職済み等) はエラーとして記録され、
