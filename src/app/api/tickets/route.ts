@@ -32,6 +32,12 @@ import {
 // Phase 4: Slack/Teams/Chatwork 外部通知ヘルパー (失敗してもチケット作成は止めない。
 // メール取り込み・LINE 取り込み・CSV インポートと共有する)
 import { notifyNewTicketOutbound } from '@/lib/outbound-notify';
+// 監査で発見したギャップ: メール/LINE 取り込みは新規起票をエージェントへアプリ内通知するが、
+// 最も利用頻度が高い Web フォーム経由の起票だけがこの通知を送っていなかった。
+// メール取り込みと共有するヘルパーを使い、同じ形で通知する (CLAUDE.md §6 DRY)
+import { notifyAgentsOfNewTicket } from '@/features/notifications/notify';
+// エージェント判定 (通知対象からの起票者自身の除外に使用)
+import { isAgent } from '@/lib/role';
 // 新規作成されたチケットの型 (通知本文の組み立てに使う最小限のフィールドのみ参照)
 import type { Ticket } from '@/domain/types';
 // Route Handler 向け共通レート制限ラッパー (ticket-comment 等と同じ 429 契約)
@@ -42,6 +48,36 @@ import { checkRouteRateLimit } from '@/lib/route-rate-limit';
 // 最も利用頻度が高くファイル添付・外部通知まで引き起こすチケット作成だけが未対応だった
 // (CLAUDE.md §8/§9 DoS・スパム防止)。コメント投稿と同じ閾値 (60 秒 20 件) に揃える
 const TICKET_CREATE_RATE_LIMIT = { limit: 20, windowMs: 60_000 } as const;
+
+// Web フォーム経由の新規起票をテナント内の全エージェントへアプリ内通知するベストエフォート・ヘルパー。
+// 添付なし/添付ありの 2 経路から同じ形で呼べるよう共通化する (CLAUDE.md §6 DRY)。
+// 失敗してもチケット作成自体は完了済みのため、ログのみ残して続行する (§9 fail-safe)
+async function notifyAgentsOfWebTicket(
+  tenantId: string,
+  ticket: Ticket,
+  creatorId: string,
+  creatorRole: string | null | undefined,
+): Promise<void> {
+  try {
+    // テナント内のエージェント/管理者一覧を取得する (メール/LINE 取り込みと同じヘルパー)
+    const agents = await repos.users.listAgents(tenantId);
+    // 通知対象: 起票者自身がエージェントなら本人以外、依頼者からの起票なら全エージェントへ通知する
+    const notifyTargets = isAgent(creatorRole)
+      ? agents.filter((a) => a.id !== creatorId)
+      : agents;
+    // 通知作成・SSE 配信はメール/LINE 取り込みと共有のヘルパーに委譲する
+    await notifyAgentsOfNewTicket({
+      tenantId,
+      ticketId: ticket.id,
+      message: `新しい問い合わせが届きました：${ticket.title}`,
+      targets: notifyTargets,
+      logPrefix: '[POST /api/tickets]',
+    });
+  } catch (notifyErr) {
+    // 通知失敗はログのみ (チケット起票は完了しているため応答は成功扱いのまま)
+    console.error('[POST /api/tickets] failed to notify agents of new ticket', notifyErr);
+  }
+}
 
 // 422 (バリデーションエラー) を共通フォーマットで返すヘルパー
 function validationError(message: string, path: (string | number)[]) {
@@ -235,6 +271,8 @@ export async function POST(req: Request) {
     });
     // Phase 4: 外部チャネルへ新規問い合わせを通知する (ベストエフォート、失敗してもレスポンスには影響しない)
     await notifyNewTicketOutbound(tenantId, ticket);
+    // テナント内エージェントへアプリ内通知 (ベストエフォート、失敗してもレスポンスには影響しない)
+    await notifyAgentsOfWebTicket(tenantId, ticket, userId, session.user.role);
     return NextResponse.json(ticket, { status: 201 });
   }
 
@@ -311,6 +349,8 @@ export async function POST(req: Request) {
   // ここに到達するのはチケット + 添付の作成が完全に成功した場合のみ。
   // 外部通知は try/catch の外で行い、添付ロールバック処理と失敗要因を混同しない
   await notifyNewTicketOutbound(tenantId, createdTicket);
+  // テナント内エージェントへアプリ内通知 (ベストエフォート、失敗してもレスポンスには影響しない)
+  await notifyAgentsOfWebTicket(tenantId, createdTicket, userId, session.user.role);
   // 成功: 作成された行を 201 で返す
   return NextResponse.json(createdTicket, { status: 201 });
 }

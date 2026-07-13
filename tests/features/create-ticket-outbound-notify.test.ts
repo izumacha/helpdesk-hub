@@ -6,6 +6,8 @@
 //   1. Slack Webhook 設定済みテナントで起票すると fetch が 1 回呼ばれる
 //   2. 外部通知未設定テナントで起票しても fetch は呼ばれない (無駄打ちしない)
 //   3. 外部通知の送信失敗はチケット作成のレスポンスに影響しない (ベストエフォート)
+//   4. 回帰防止: メール/LINE 取り込みと違い、Web フォーム経由の起票だけがエージェントへの
+//      アプリ内通知 (imported) を送っていなかった不備の修正確認
 
 // Vitest の DSL とモック機能
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -17,6 +19,8 @@ import type { Repos, UnitOfWork } from '@/data/ports/unit-of-work';
 // 主に使うテナント ID と依頼者 ID
 const TENANT = 'default-tenant';
 const REQUESTER = 'u-req-1';
+// アプリ内通知テスト用のエージェント ID
+const AGENT = 'u-agent-1';
 // テスト用 Slack Webhook URL (実際には送信されない。SSRF ガードを通す公開ホスト)
 const SLACK_WEBHOOK_URL = 'https://hooks.slack.com/services/T000/B000/xxx';
 
@@ -83,6 +87,17 @@ async function seedTenant(slackWebhookUrl: string | null) {
     name: '山田 太郎',
     passwordHash: 'x',
     role: 'requester',
+    tenantId: TENANT,
+    createdAt: now,
+    updatedAt: now,
+  });
+  // エージェントユーザーを投入 (アプリ内通知の宛先確認用)
+  store.users.set(AGENT, {
+    id: AGENT,
+    email: 'agent@example.com',
+    name: '佐藤 担当',
+    passwordHash: 'x',
+    role: 'agent',
     tenantId: TENANT,
     createdAt: now,
     updatedAt: now,
@@ -177,5 +192,30 @@ describe('POST /api/tickets (外部通知)', () => {
     expect(res.status).toBe(201);
     const created = await res.json();
     expect(created.title).toBe('ネットワークに繋がらない');
+  });
+});
+
+describe('POST /api/tickets (アプリ内通知)', () => {
+  it('新規起票時にテナント内の全エージェントへ imported 通知を作成する', async () => {
+    // 外部通知は未設定のテナントでも、アプリ内通知は独立して送られることを確認する
+    await seedTenant(null);
+    const { POST } = await import('@/app/api/tickets/route');
+
+    const res = await POST(
+      buildJsonRequest({
+        title: '複合機が印刷できない',
+        body: '朝から紙詰まりが続く',
+        priority: 'Medium',
+      }),
+    );
+
+    expect(res.status).toBe(201);
+    const created = await res.json();
+    // エージェント (AGENT) 宛に 'imported' 種別の通知が作成されていること
+    const notifications = [...store.notifications.values()].filter((n) => n.userId === AGENT);
+    expect(notifications).toHaveLength(1);
+    expect(notifications[0]?.type).toBe('imported');
+    expect(notifications[0]?.ticketId).toBe(created.id);
+    expect(notifications[0]?.tenantId).toBe(TENANT);
   });
 });
