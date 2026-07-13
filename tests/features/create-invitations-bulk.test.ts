@@ -284,4 +284,41 @@ describe('createInvitationsBulk', () => {
 
     await expect(createInvitationsBulk(makeForm('requester', 'a@example.com'))).rejects.toThrow();
   });
+
+  // /code-review ultra 指摘対応 (2026-07-13): 行単位の想定外エラーで issueInvitation が
+  // Prisma の生エラー (例: 一意制約違反) を投げても、err.message をそのままクライアントへ
+  // 返さないこと (§9: 内部エラー文言の非漏洩)。他行は影響を受けず成功すること (部分成功) も確認する。
+  it('行単位の想定外エラーは生のエラー文言を返さず安全なメッセージに変換する', async () => {
+    seedTenant('standard');
+    // 直前のテスト (管理者以外は実行できない) が vi.doMock で auth() を requester に差し替えて
+    // おり、vi.doMock は vi.resetModules() を挟んでも解除されない (テスト実行順序に依存しない
+    // ようにするため) admin セッションへ明示的に戻す
+    vi.doMock('@/lib/auth', () => ({
+      auth: async () => ({ user: { id: ADMIN_ID, role: 'admin', tenantId: TENANT_ID } }),
+    }));
+    // issueInvitation を差し替え、特定の 1 行だけ Prisma 風の生エラーを投げさせる
+    vi.doMock('@/features/settings/actions/create-invitation', () => ({
+      issueInvitation: async (input: { email?: string }) => {
+        if (input.email === 'boom@example.com') {
+          // Prisma の一意制約違反エラーを模した生メッセージ (DB スキーマ情報を含む想定)
+          throw new Error('Unique constraint failed on the fields: (`tokenHash`)');
+        }
+        return { url: `https://example.com/invite/${input.email}` };
+      },
+    }));
+    const { createInvitationsBulk } =
+      await import('@/features/settings/actions/create-invitations-bulk');
+
+    const result = await createInvitationsBulk(
+      makeForm('requester', 'ok@example.com\nboom@example.com'),
+    );
+
+    // 正常行は成功する (部分成功)
+    const okRow = result.results.find((r) => r.email === 'ok@example.com');
+    expect(okRow?.ok).toBe(true);
+    // 失敗行は生の Prisma エラー文言を含まず、安全な日本語メッセージに変換されている
+    const failedRow = result.results.find((r) => r.email === 'boom@example.com');
+    expect(failedRow?.ok).toBe(false);
+    expect(failedRow?.error).not.toMatch(/tokenHash|Unique constraint/);
+  });
 });

@@ -36,6 +36,8 @@ import { bulkInviteEmailsSchema, invitableRoleSchema } from '@/lib/validations/i
 import { MAX_CSV_BYTES } from '@/lib/csv';
 // Phase 4 課金: プランごとのスタッフシート空き状況チェック (createInvitation と共有)
 import { checkSeatAvailability } from '@/lib/tenant-plan';
+// Prisma の一意制約違反 (P2002) 判定の共通ヘルパー (6 箇所に重複していた判定を一元化 / §6 DRY)
+import { isUniqueConstraintError } from '@/lib/prisma-errors';
 // フォローアップ (2026-07-11): 設定変更監査ログへの記録共通ヘルパー (§4.2/§4.3 と同じ方式)
 import { recordSettingsAudit } from '@/lib/settings-audit';
 
@@ -139,11 +141,23 @@ export async function createInvitationsBulk(
         });
         return { email, ok: true, url };
       } catch (err) {
-        // 1 行の失敗 (トークン重複などの想定外エラー) で他の行の発行を止めない (部分成功を許容する)
+        // 1 行の失敗 (トークン重複などの想定外エラー) で他の行の発行を止めない (部分成功を許容する)。
+        // /code-review ultra 指摘対応 (2026-07-13): err.message をそのままクライアントへ返すと
+        // 想定外エラー時に Prisma の内部エラー文言 (接続情報等) が漏れうる (§9 セキュリティ)。
+        // create-location.ts 等の他アクションと同じく、既知の一意制約違反だけ安全な日本語
+        // メッセージへ変換し、それ以外は生の err.message を返さず汎用メッセージへ丸める。
+        // Prisma の一意制約違反 (P2002、招待トークン衝突など) を共通ヘルパーで検出する
+        const uniqueConstraint = isUniqueConstraintError(err);
+        // 想定外エラーはサーバー側ログにだけ詳細を残す (クライアントには漏らさない)
+        if (!uniqueConstraint) {
+          console.error('[create-invitations-bulk] 招待発行エラー:', email, err);
+        }
         return {
           email,
           ok: false,
-          error: err instanceof Error ? err.message : '招待の発行に失敗しました',
+          error: uniqueConstraint
+            ? 'この招待の発行に失敗しました (重複)'
+            : '招待の発行に失敗しました',
         };
       }
     }),

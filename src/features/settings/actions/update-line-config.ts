@@ -15,6 +15,8 @@ import { LINE_USER_ID_PATTERN } from '@/lib/line-link';
 import { checkRateLimit } from '@/lib/rate-limit';
 // 設定変更監査ログへの記録を共通化するヘルパー
 import { recordSettingsAudit } from '@/lib/settings-audit';
+// Prisma の一意制約違反 (P2002) 判定の共通ヘルパー (6 箇所に重複していた判定を一元化 / §6 DRY)
+import { isUniqueConstraintError } from '@/lib/prisma-errors';
 
 // 入力長の上限 (DoS・異常入力対策)
 const CHANNEL_SECRET_MAX = 256; // チャネルシークレットの最大長
@@ -106,9 +108,9 @@ export async function updateLineConfig(
     // 成功を返す
     return { success: true };
   } catch (err) {
-    // botUserId の重複 (他テナントが既に同じチャネルを登録済み) をユーザー向けメッセージに変換する
-    const message = err instanceof Error ? err.message : '';
-    if (message.includes('Unique constraint') || message.includes('P2002')) {
+    // botUserId の重複 (他テナントが既に同じチャネルを登録済み) を共通ヘルパーで検出し、
+    // ユーザー向けメッセージに変換する
+    if (isUniqueConstraintError(err)) {
       return { error: 'この Bot User ID は既に別のテナントで登録されています' };
     }
     // その他の失敗はログに残して汎用メッセージを返す (内部詳細を漏らさない)

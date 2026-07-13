@@ -26,6 +26,8 @@ import { resolveTenantPlan } from '@/lib/tenant-plan';
 import { isEmailInboundAllowed } from '@/lib/plan-guard';
 // 設定変更監査ログへの記録を共通化するヘルパー
 import { recordSettingsAudit } from '@/lib/settings-audit';
+// Prisma の一意制約違反 (P2002) 判定の共通ヘルパー (6 箇所に重複していた判定を一元化 / §6 DRY)
+import { isUniqueConstraintError } from '@/lib/prisma-errors';
 
 // メール取り込み用トークンを (再)発行するサーバーアクション。フォーム入力は使わないため
 // formData は受け取らず、管理者権限のみを確認して即座に新トークンを発行する
@@ -58,10 +60,10 @@ export async function regenerateInboundToken(): Promise<void> {
   } catch (err) {
     // inboundToken は @unique 列のため、極めて低確率だが生成したトークンが既存の値と
     // 衝突した場合は一意制約違反になる (create-location.ts / update-line-config.ts と同じ
-    // 検出パターン)。内部詳細 (Prisma のエラー文言) はクライアントに漏らさない (§9)
-    const message = err instanceof Error ? err.message : '';
+    // 検出パターン、共通ヘルパーで判定)。内部詳細 (Prisma のエラー文言) はクライアントに
+    // 漏らさない (§9)
     console.error('[regenerate-inbound-token] トークン発行に失敗しました:', err);
-    if (message.includes('Unique constraint') || message.includes('P2002')) {
+    if (isUniqueConstraintError(err)) {
       throw new Error('発行に失敗しました。もう一度お試しください。');
     }
     throw new Error('転送先アドレスの発行に失敗しました。しばらく後にもう一度お試しください。');

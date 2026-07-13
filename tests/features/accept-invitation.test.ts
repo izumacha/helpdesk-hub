@@ -1,7 +1,8 @@
 // Vitest のテスト DSL とモック機能
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-// メモリ実装の context (store/repos/uow)
-import { createMemoryContext, type Store } from '@/data/adapters/memory';
+// メモリ実装の context (store/repos/uow)。buildMemoryRepos は競合エラーの回帰テストで
+// tx.users.create だけを差し替えたカスタム uow を組み立てるために使う
+import { buildMemoryRepos, createMemoryContext, type Store } from '@/data/adapters/memory';
 // リポジトリ束 / UnitOfWork の型
 import type { Repos, UnitOfWork } from '@/data/ports/unit-of-work';
 // 招待トークンのハッシュ化 (DB 保存値と同じ SHA-256 を作るために使う)
@@ -273,5 +274,43 @@ describe('acceptInvitation', () => {
     // 招待はロールバックで未消費のまま残っている (再利用可能)
     const invitation = await repos.invitations.findByTokenHash(tokenHash);
     expect(invitation?.consumedAt).toBeNull();
+  });
+
+  // /code-review ultra 指摘対応 (2026-07-13): 事前の findByEmail 重複チェックをすり抜けて
+  // (= 同時受諾レース) tx.users.create が DB の一意制約違反を投げても、Prisma の生エラー
+  // 文言をクライアントへそのまま返さず、事前チェックと同じ安全な日本語メッセージに変換される
+  // こと (§9: 内部エラー文言の非漏洩) を、1 回の呼び出しで投げられたエラーを直接検査して確認する
+  // (uow.isTransactionConflict は false を返すレースなので、そちらの分岐には入らない)。
+  it('メール一意制約違反がレースで競合しても生のエラー文言を返さない', async () => {
+    const rawToken = await seedInvitation({
+      tenantId: TENANT_B,
+      role: 'requester',
+      email: 'race@example.com',
+    });
+    // tx.users.create だけを差し替えたカスタム uow (それ以外は通常のメモリ実装のまま)
+    uow = {
+      async run(fn) {
+        const tx = buildMemoryRepos(store);
+        tx.users.create = async () => {
+          // Prisma の一意制約違反エラーを模した生メッセージ (DB スキーマ情報を含む想定)
+          throw new Error('Unique constraint failed on the fields: (`email`)');
+        };
+        return fn(tx);
+      },
+      isTransactionConflict: () => false,
+    };
+
+    const acceptInvitation = await loadAction();
+    // 投げられたエラーを直接捕まえ、メッセージの中身を検査する
+    const err: unknown = await acceptInvitation(
+      rawToken,
+      makeForm({ name: 'レース太郎', password: 'password123' }),
+    ).catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(Error);
+    // 事前チェックと同じ安全な日本語メッセージに変換されていること
+    expect((err as Error).message).toMatch(/既に登録/);
+    // 生の Prisma エラー文言 (フィールド名等) が漏れていないこと
+    expect((err as Error).message).not.toMatch(/email`|Unique constraint/);
   });
 });
