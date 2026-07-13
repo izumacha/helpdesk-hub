@@ -7,6 +7,7 @@ import type {
   Notification,
   QuarantinedEmail,
   SettingsAuditLog,
+  SignupToken,
   Tenant,
   TenantLineConfig,
   TenantSsoConfig,
@@ -58,6 +59,7 @@ export interface Store {
   faq: Map<string, FaqCandidate>; // FAQ 候補
   notifications: Map<string, Notification>; // 通知
   magicLinks: Map<string, MagicLinkToken>; // マジックリンクトークン (パスワードレス認証)
+  signupTokens: Map<string, SignupToken>; // セルフサーブサインアップトークン (§7.1)
   invitations: Map<string, Invitation>; // 招待リンクトークン (メンバー招待)
   attachments: Map<string, Attachment>; // 添付ファイルのメタ情報 (画像)
   emailThreadRefs: Map<string, EmailThreadRefRow>; // メール Message-ID → チケット 対応表 (Phase 2)
@@ -87,6 +89,7 @@ export function createEmptyStore(): Store {
     faq: new Map(),
     notifications: new Map(),
     magicLinks: new Map(),
+    signupTokens: new Map(),
     invitations: new Map(),
     attachments: new Map(),
     emailThreadRefs: new Map(),
@@ -114,6 +117,7 @@ export function cloneStore(src: Store): Store {
     faq: new Map(src.faq),
     notifications: new Map(src.notifications),
     magicLinks: new Map(src.magicLinks),
+    signupTokens: new Map(src.signupTokens),
     invitations: new Map(src.invitations),
     attachments: new Map(src.attachments),
     emailThreadRefs: new Map(src.emailThreadRefs),
@@ -140,6 +144,7 @@ export function overwriteStore(dst: Store, src: Store): void {
   dst.faq = new Map(src.faq);
   dst.notifications = new Map(src.notifications);
   dst.magicLinks = new Map(src.magicLinks);
+  dst.signupTokens = new Map(src.signupTokens);
   dst.invitations = new Map(src.invitations);
   dst.attachments = new Map(src.attachments);
   dst.emailThreadRefs = new Map(src.emailThreadRefs);

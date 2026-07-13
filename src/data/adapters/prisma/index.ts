@@ -15,6 +15,7 @@ import { makeMagicLinkRepo } from './magic-link-repository.prisma';
 import { makeNotificationRepo } from './notification-repository.prisma';
 import { makeQuarantinedEmailRepo } from './quarantined-email-repository.prisma';
 import { makeSettingsAuditLogRepo } from './settings-audit-log-repository.prisma';
+import { makeSignupTokenRepo } from './signup-token-repository.prisma';
 import { makeSsoConfigRepo } from './sso-config-repository.prisma';
 import { makeTenantRepo } from './tenant-repository.prisma';
 import { makeTicketCommentRepo } from './ticket-comment-repository.prisma';
@@ -40,6 +41,7 @@ export function buildPrismaRepos(db: PrismaLike): Repos {
     categories: makeCategoryRepo(db),
     tenants: makeTenantRepo(db),
     magicLinks: makeMagicLinkRepo(db),
+    signupTokens: makeSignupTokenRepo(db), // §7.1 フォローアップ: セルフサーブサインアップ
     invitations: makeInvitationRepo(db),
     attachments: makeAttachmentRepo(db),
     emailThreads: makeEmailThreadRepo(db),

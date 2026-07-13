@@ -5,7 +5,7 @@
  *
  * 新しい組織 (テナント) と、その初代管理者 (admin) ユーザーを 1 件ずつ作成する。
  * Phase 3 オンボーディングとして、業種テンプレに応じたカテゴリ投入に加え、
- * 操作感を掴むためのサンプルチケットを自動作成する。
+ * 操作感を掴むためのサンプルチケットを自動作成する (実体は provisionTenantWithAdmin に集約)。
  *
  * セキュリティ要点:
  *  - 実行は admin のみ (assertAdminSession)。作成テナントは呼び出し元テナントと独立。
@@ -14,8 +14,6 @@
  *  - パスワードは bcrypt でハッシュ化して保存する (平文は保存しない / §9)。
  */
 
-// bcrypt によるパスワードハッシュ化 (seed と同じ cost 12)
-import { hash } from 'bcryptjs';
 // データ層の Composition Root (リポジトリ束とトランザクション境界)
 import { uow } from '@/data';
 // 現在のセッション (ログイン中ユーザー) を取得
@@ -26,32 +24,10 @@ import { enforceRateLimit } from '@/lib/rate-limit';
 import { assertAdminSession } from '@/lib/role';
 // テナント作成フォームの入力検証スキーマ
 import { createTenantSchema } from '@/lib/validations/invite';
-// メール取り込み用の転送アドレストークンを払い出すヘルパー (Phase 2)
-import { generateInboundToken } from '@/lib/inbound-email';
-// 業種テンプレートの検索関数 (Phase 3 業種テンプレ自動投入)
-import { findIndustryTemplate } from '@/lib/industry-templates';
-// 優先度から解決期限・初回応答期限を計算する SLA ヘルパー (サンプルチケットの期限算出に使う)
-import { calculateFirstResponseDueAt, calculateResolutionDueAt } from '@/lib/sla';
 // §7.2 Free trial の期間 (30 日) をミリ秒で表す定数
 import { FREE_TRIAL_DURATION_MS } from '@/lib/plan-guard';
-// 新規起票時の初期ステータスを mode から決める共通ルール (サンプルチケットと揃える)
-import { initialStatusForMode } from '@/domain/ticket-status';
-
-// サンプルチケットの定義 (Phase 3 オンボーディング)。
-// 新規テナントに操作感を掴ませるために自動投入する 2 件のチケット。
-// 内容は業種に関わらず汎用的な例とし、Lite モードに合わせた平易な日本語にする。
-const SAMPLE_TICKETS = [
-  {
-    // 1 件目: システムの操作確認を促す導入チケット
-    title: 'はじめての問い合わせ（サンプル）',
-    body: 'これはサンプルのチケットです。実際の問い合わせが届いたら、件名・内容・期限を確認して「対応中」に変更してみましょう。\n\n対応が完了したら「完了」に変更することで、この問い合わせを閉じることができます。',
-  },
-  {
-    // 2 件目: メール転送機能の説明チケット
-    title: 'メールから自動で問い合わせが届きます（サンプル）',
-    body: '設定画面に表示されている転送アドレス宛にメールを転送すると、自動でここに問い合わせが届きます。\n\nGmail や Outlook の「自動転送」機能を使うと、既存のメールアドレスに届いた問い合わせをそのままこのシステムで管理できます。',
-  },
-] as const;
+// テナント + 初代管理者作成の共通ロジック (§7.1 セルフサーブサインアップと共有 / §6 DRY)
+import { provisionTenantWithAdmin } from '@/lib/tenant-provisioning';
 
 // createTenant の戻り値型 (作成したテナント ID と初代管理者メールを返す)
 export interface CreateTenantResult {
@@ -86,109 +62,20 @@ export async function createTenant(formData: FormData): Promise<CreateTenantResu
 
   // テナント作成 → 初代管理者作成を 1 トランザクションで行う。
   // ユーザー作成 (メール重複等) で失敗したらテナント作成もロールバックして孤児を残さない。
+  // §7.2「30日間の Free trial (Standard 相当)」: 作成時刻から 30 日後を trialEndsAt に設定する。
+  // これにより §7.1「30分で運用開始」オンボーディングのメール取り込み体験 (Standard 以上限定)
+  // を、課金前の新規テナントでもすぐに試せるようにする
   const result = await uow.run(async (tx) => {
-    // 先にメール重複を確認 (テナントを作る前に弾けるならその方が無駄がない)
-    const existing = await tx.users.findByEmail(adminEmail);
-    if (existing) {
-      throw new Error('このメールアドレスは既に登録されています。別のメールを指定してください。');
-    }
-
-    // 新しいテナント (組織) を作成する。mode 未指定で SMB 既定の lite になる。
-    // メール取り込み (Phase 2) の専用転送アドレス用トークンを払い出して紐付ける
-    // (作成時に発行しておくことで、運用者は最初から取り込みアドレスを案内できる)。
-    // §7.2「30日間の Free trial (Standard 相当)」: 作成時刻から 30 日後を trialEndsAt に設定する。
-    // これにより §7.1「30分で運用開始」オンボーディングのメール取り込み体験 (Standard 以上限定)
-    // を、課金前の新規テナントでもすぐに試せるようにする
-    const tenant = await tx.tenants.create({
-      name: tenantName,
-      industry: industry ?? null,
-      inboundToken: generateInboundToken(),
+    const { tenantId } = await provisionTenantWithAdmin(tx, {
+      tenantName,
+      industry,
+      adminName,
+      adminEmail,
+      adminPassword,
       trialEndsAt: new Date(Date.now() + FREE_TRIAL_DURATION_MS),
     });
-    // パスワードを bcrypt でハッシュ化する (cost 12)
-    const passwordHash = await hash(adminPassword, 12);
-    // 初代管理者 (admin) を作成テナントに所属させて作る。戻り値を保持して後のサンプル起票で使う
-    const adminUser = await tx.users.create({
-      email: adminEmail,
-      name: adminName,
-      passwordHash,
-      role: 'admin',
-      tenantId: tenant.id,
-    });
-    // この後のサンプル起票・FAQ シードチケットで使う基準時刻 (1 回だけ取得して使い回す)
-    const now = new Date();
-    // 業種テンプレートが指定されている場合はカテゴリ + よくある質問を初期投入する
-    // (Phase 3 業種テンプレ: 選択した業種に紐づくカテゴリ・FAQ を作成する)
-    if (industry) {
-      // 指定 ID のテンプレートを取得する (存在しなければ undefined)
-      const template = findIndustryTemplate(industry);
-      // テンプレートが見つかった場合のみカテゴリ・FAQ を順次作成する
-      if (template) {
-        // Prisma のインタラクティブトランザクション内では 1 つの接続を直列に使うため
-        // Promise.all で並列クエリを投げると "Transaction already closed" になる場合がある。
-        // for...of + await で直列実行して安全性を保つ (カテゴリ・FAQ は数件なので性能上問題なし)
-        for (const name of template.categories) {
-          // カテゴリを 1 件ずつトランザクション内で作成する
-          await tx.categories.create({ name, tenantId: tenant.id });
-        }
-
-        // 「よくある質問」は FaqCandidate.ticketId が必須 (1 チケット 1 候補) のため、
-        // テンプレートの Q&A ごとに「解決済み」のシードチケットを 1 件作ってから FAQ 候補を作成し、
-        // 公開 (Published) 状態へ更新する。サンプルチケット (SAMPLE_TICKETS) と同じ起票ロジックを使う。
-        for (const faq of template.faqs) {
-          // FAQ の元になるシードチケットを解決済み (Closed) で作成する
-          // 注意: tickets.create は resolvedAt を常に null で作成する (設定するには別途
-          // updateStatus が必要)。resolutionDueAt を指定すると、resolvedAt が null のまま
-          // 期限だけ過去の時刻になり、getSlaState() が「期限切れ」と誤判定してしまう
-          // (status は Closed なのに SLA バッジだけ overdue になる矛盾)。
-          // 解決済みシードチケットに本来 SLA 期限は不要なため、resolutionDueAt は指定しない。
-          const faqTicket = await tx.tickets.create({
-            title: faq.question, // 質問文をそのままタイトルに使う
-            body: faq.answer, // 回答文を本文として残す (チケット詳細からも参照できる)
-            priority: 'Medium', // 既定の優先度
-            categoryId: null, // FAQ シードはカテゴリ未分類
-            creatorId: adminUser.id, // 初代管理者を起票者とする
-            tenantId: tenant.id, // 所属テナント
-            status: 'Closed', // 「よくある質問」は解決済みチケットから化けるという業務フローに合わせる
-          });
-          // FAQ 候補を作成 (既定は Candidate) してから即座に Published へ更新する
-          const faqCandidate = await tx.faq.create({
-            ticketId: faqTicket.id,
-            createdById: adminUser.id,
-            question: faq.question,
-            answer: faq.answer,
-            tenantId: tenant.id,
-          });
-          await tx.faq.updateStatus(faqCandidate.id, 'Published', tenant.id);
-        }
-      }
-    }
-
-    // Phase 3 オンボーディング: サンプルチケットを自動投入して操作感を体験できるようにする。
-    // 起票者には初代管理者 (adminUser) を設定する。
-    // サンプルチケットは Lite モードの既定動作に合わせて初期化する (Pro でも同じ)。
-    const initialStatus = initialStatusForMode(tenant.mode);
-    // サンプルチケットの解決期限・初回応答期限は優先度 Medium ベースで自動計算する
-    // (now は上で取得済みのものを再利用)
-    const resolutionDueAt = calculateResolutionDueAt('Medium', now);
-    const firstResponseDueAt = calculateFirstResponseDueAt('Medium', now);
-    // サンプルチケットを 1 件ずつ直列で作成する (トランザクション内の複数クエリは直列が安全)
-    for (const sample of SAMPLE_TICKETS) {
-      await tx.tickets.create({
-        title: sample.title, // サンプルタイトル
-        body: sample.body, // サンプル本文
-        priority: 'Medium', // 既定の優先度 (Medium)
-        categoryId: null, // サンプルはカテゴリ未分類
-        creatorId: adminUser.id, // 初代管理者を起票者とする
-        tenantId: tenant.id, // 所属テナント
-        status: initialStatus, // Lite は 'Open'、Pro は DB 既定 'New'
-        resolutionDueAt, // 自動計算した解決期限
-        firstResponseDueAt, // 自動計算した初回応答期限
-      });
-    }
-
     // 作成結果を返す
-    return { tenantId: tenant.id, adminEmail };
+    return { tenantId, adminEmail };
   });
 
   // 作成したテナント ID と管理者メールを返す
