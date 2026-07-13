@@ -18,7 +18,7 @@ import { getCurrentTenantMode } from '@/lib/tenant';
 // RFC 4180 準拠の CSV パーサ と共有定数 (サーバー / クライアント共通実装)
 import { parseCsvLine, MAX_CSV_BYTES } from '@/lib/csv';
 // 優先度・ステータス・テナントモードのドメイン型
-import type { Priority, TicketStatus, TenantMode } from '@/domain/types';
+import type { Priority, TicketStatus, TenantMode, NotificationType } from '@/domain/types';
 // モードに応じた初期ステータスを返す共通関数（メール取り込み・LINE 取り込みと同一ロジックを共有し DRY を維持する）。
 // getCompletionStatuses は §3.1 フォローアップ (2026-07-10) で追加: インポート時に「状況」列が
 // 完了系ステータスを指定していた場合、resolvedAt をインポート時刻で設定するために使う
@@ -103,6 +103,55 @@ function resolveNameToId(
     };
   }
   return { ok: true, id };
+}
+
+// CSV インポート完了後、対象ユーザー群へバッチ通知 (1 通ずつ) を送るベストエフォート・ヘルパー。
+// /code-review ultra 指摘対応 (2026-07-13): 「全エージェントへの追加通知 ('imported')」と
+// 「担当者への割当通知 ('assigned')」が、DB 書き込み → 失敗のエージェント別詳細ログ → SSE
+// 未読件数配信、という同型の処理をそれぞれ個別に実装しており 2 箇所目の重複になっていたため、
+// ここに共通化する (§6 DRY)。通知書き込み・SSE 配信の失敗はいずれもチケット作成の成否に
+// 影響させないベストエフォートとして扱う (呼び出し元と同じ方針)。
+async function notifyImportBatch(
+  recipientIds: string[], // 通知対象ユーザー ID 一覧 (呼び出し元で自己除外済み)
+  tenantId: string, // テナントスコープ
+  type: NotificationType, // 通知種別 ('imported' | 'assigned')
+  messageFor: (recipientId: string) => string, // 受信者ごとの通知文言を組み立てる関数
+  logPrefix: string, // ログの先頭に付ける識別子 (例: '[importTickets] 担当割当通知')
+): Promise<void> {
+  // 対象が居なければ何もしない (早期リターン)
+  if (recipientIds.length === 0) return;
+  // 各ユーザーへの通知を並列で DB に書き込む。Promise.allSettled を使い、1 件の書き込み失敗が
+  // 他ユーザーへの通知配信や SSE broadcast をブロックしないようにする
+  const results = await Promise.allSettled(
+    recipientIds.map((userId) =>
+      repos.notifications.create({
+        userId,
+        type,
+        message: messageFor(userId),
+        ticketId: null, // バッチ通知は単一チケットに紐づかないため null
+        tenantId,
+      }),
+    ),
+  );
+  // 失敗した通知件数と、ユーザーごとの失敗理由をサーバーログに記録する
+  // (チケット作成の成否には影響しない。CLAUDE.md §6: エラーを握り潰さない)
+  const failedCount = results.filter((r) => r.status === 'rejected').length;
+  if (failedCount > 0) {
+    console.warn(`${logPrefix} ${failedCount} 件の通知書き込みに失敗しました`);
+    results.forEach((r, i) => {
+      if (r.status === 'rejected') {
+        console.warn(`${logPrefix} ユーザー ${recipientIds[i]} への通知書き込みに失敗:`, r.reason);
+      }
+    });
+  }
+  // 未読件数を SSE で即時配信して通知ベルに反映させる。
+  // broadcast は通知 DB 書き込みより後に行う必要があるため、上の Promise.allSettled を待ってから実行する。
+  // ここで例外が発生してもチケット作成は完了済みなので、ユーザーに失敗として返さず警告ログに留める。
+  try {
+    await broadcastUnreadCountToMany(recipientIds, tenantId);
+  } catch (err) {
+    console.warn(`${logPrefix} SSE broadcast に失敗しました（チケット作成は成功）:`, err);
+  }
 }
 
 // YYYY-MM-DD 形式の日付文字列をローカル時刻の Date に変換する純粋関数
@@ -659,51 +708,7 @@ export async function importTickets(csvText: string): Promise<ImportTicketsResul
     // それを再利用し、同一リクエスト内で listAgents を二重に呼ばないようにする (§8 パフォーマンス)
     const agents = agentsForAssignee ?? (await repos.users.listAgents(tenantId));
     // インポート実行者自身への通知は不要なので除外する (自分が実施したことは知っているため)
-    const otherAgents = agents.filter((a) => a.id !== creatorId);
-    if (otherAgents.length > 0) {
-      // 各エージェントへの通知を並列で DB に書き込む。
-      // Promise.allSettled を使い、1 件の書き込み失敗が他エージェントへの通知配信や
-      // SSE broadcast をブロックしないようにする。チケット作成は完了済みなので
-      // 通知書き込みの一部失敗はエラーとして呼び出し元に返さずログに留める。
-      const notifyResults = await Promise.allSettled(
-        otherAgents.map((agent) =>
-          repos.notifications.create({
-            userId: agent.id, // 受信者: 各エージェント
-            type: 'imported', // CSV 一括インポート通知 (NotificationType.imported)
-            message: `${imported} 件のチケットが CSV インポートで追加されました`, // 表示文言
-            ticketId: null, // バッチインポートは単一チケットに紐づかないため null
-            tenantId, // テナントスコープ
-          }),
-        ),
-      );
-      // 失敗した通知件数をサーバーログに記録する（チケット作成の成否には影響しない）
-      const failedCount = notifyResults.filter((r) => r.status === 'rejected').length;
-      if (failedCount > 0) {
-        // 失敗件数をサマリーとして出力する (何件失敗したか数が把握できるようにする)
-        console.warn(`[importTickets] ${failedCount} 件の通知書き込みに失敗しました`);
-        // 失敗内容の詳細もログに残す (CLAUDE.md §6: エラーを握り潰さない)
-        notifyResults.forEach((r, i) => {
-          if (r.status === 'rejected') {
-            console.warn(
-              `[importTickets] エージェント ${otherAgents[i].id} への通知書き込みに失敗:`,
-              r.reason,
-            );
-          }
-        });
-      }
-      // 未読件数を SSE で即時配信して通知ベルに反映させる。
-      // broadcast は通知 DB 書き込みより後に行う必要があるため、上の Promise.all を待ってから実行する。
-      // ここで例外が発生してもチケット作成は完了済みなので、ユーザーに失敗として返さず警告ログに留める。
-      try {
-        await broadcastUnreadCountToMany(
-          otherAgents.map((a) => a.id), // 通知対象の agent ID 一覧
-          tenantId, // テナントスコープ
-        );
-      } catch (err) {
-        // SSE broadcast の失敗はチケット作成の成否に影響しない。通知ベルの更新が遅れるだけなのでログのみ。
-        console.warn('[importTickets] SSE broadcast に失敗しました（チケット作成は成功）:', err);
-      }
-    }
+    const otherAgentIds = agents.map((a) => a.id).filter((id) => id !== creatorId);
 
     // フォローアップ (2026-07-13): 監査で発見したギャップの解消。「担当者」列で割り当てた
     // エージェントには、上の「N件のチケットが追加されました」という全エージェント向けの汎用通知
@@ -711,36 +716,29 @@ export async function importTickets(csvText: string): Promise<ImportTicketsResul
     // 手動アサイン) が担当者へ 'assigned' 通知を送るのと同じ意図で、担当者ごとに 1 通ずつ
     // (行ごとではなく) まとめて通知する (200 件でも担当者数分の通知で済む)。
     // インポート実行者自身が自分を担当に設定した場合は、既にそれを知っているため対象外にする
-    // (上の otherAgents と同じ「自分の操作を自分に通知しない」方針)。
+    // (上の otherAgentIds と同じ「自分の操作を自分に通知しない」方針)。
     const assignedAgentIds = [...assignedCounts.keys()].filter((id) => id !== creatorId);
-    if (assignedAgentIds.length > 0) {
-      const assignResults = await Promise.allSettled(
-        assignedAgentIds.map((agentId) =>
-          repos.notifications.create({
-            userId: agentId, // 受信者: 割り当てられたエージェント本人
-            type: 'assigned', // 担当割当通知 (NotificationType.assigned)
-            message: `CSV インポートで ${assignedCounts.get(agentId)} 件のチケットが担当者に割り当てられました`,
-            ticketId: null, // 複数チケットにまたがるため null (バッチ通知と同じ扱い)
-            tenantId,
-          }),
-        ),
-      );
-      // 失敗件数をログに残す (チケット作成の成否には影響しない。上の otherAgents と同じ方針)
-      const failedAssignCount = assignResults.filter((r) => r.status === 'rejected').length;
-      if (failedAssignCount > 0) {
-        console.warn(
-          `[importTickets] ${failedAssignCount} 件の担当割当通知の書き込みに失敗しました`,
-        );
-      }
-      try {
-        await broadcastUnreadCountToMany(assignedAgentIds, tenantId);
-      } catch (err) {
-        console.warn(
-          '[importTickets] 担当割当通知の SSE broadcast に失敗しました（チケット作成は成功）:',
-          err,
-        );
-      }
-    }
+
+    // /code-review ultra 指摘対応 (2026-07-13): 上記 2 種類の通知は互いに独立した宛先・内容の
+    // I/O であり、notifyImportBatch 共通ヘルパーへの抽出と合わせて Promise.all で並行実行する
+    // (§8 パフォーマンス)
+    await Promise.all([
+      notifyImportBatch(
+        otherAgentIds,
+        tenantId,
+        'imported', // CSV 一括インポート通知 (NotificationType.imported)
+        () => `${imported} 件のチケットが CSV インポートで追加されました`,
+        '[importTickets] 一括追加通知',
+      ),
+      notifyImportBatch(
+        assignedAgentIds,
+        tenantId,
+        'assigned', // 担当割当通知 (NotificationType.assigned)
+        (agentId) =>
+          `CSV インポートで ${assignedCounts.get(agentId)} 件のチケットが担当者に割り当てられました`,
+        '[importTickets] 担当割当通知',
+      ),
+    ]);
   }
 
   // 成功件数とエラー一覧を返す
