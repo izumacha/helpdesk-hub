@@ -15,6 +15,12 @@ import { __resetRateLimits } from '@/lib/rate-limit';
 // 外部通知 (Slack/Teams/Chatwork) テスト用の Slack Webhook URL (実際には送信されない)
 const SLACK_WEBHOOK_URL = 'https://hooks.slack.com/services/T000/B000/xxx';
 
+// フォローアップ (2026-07-13): 受領確認 push (buildTicketReceivedLineMessage) は、seed() の
+// テナントが常に Pro プラン + LINE 連携設定を持つため、このファイルのほぼ全ての起票成功テストで
+// 副次的に発火する。Slack/Content API の fetch モック呼び出し件数を検証するテストでは、
+// この LINE Push API への呼び出しを url で除外してから数える (src/lib/line-push.ts と同じ URL)
+const LINE_PUSH_API_URL = 'https://api.line.me/v2/bot/message/push';
+
 // src/lib/webhook-fetch.ts は SSRF 対策の DNS 検証用 Dispatcher (Agent) を使うため
 // undici の fetch を直接 import している。vi.stubGlobal('fetch', ...) だけでは差し替わらない
 // ため、undici の fetch を globalThis.fetch へ委譲するモックにする (他テストへは影響しない)
@@ -509,18 +515,22 @@ describe('POST /api/inbound/line', () => {
       expect(res.status).toBe(200);
       expect(store.tickets.size).toBe(1);
 
-      // Slack Webhook へ 1 回だけ POST される
-      expect(fetchMock).toHaveBeenCalledTimes(1);
-      const [url, init] = fetchMock.mock.calls[0];
+      // Slack Webhook へ 1 回だけ POST される (受領確認の LINE Push API 呼び出しは対象外にする)
+      const slackCalls = fetchMock.mock.calls.filter(([url]) => url === SLACK_WEBHOOK_URL);
+      expect(slackCalls).toHaveLength(1);
+      const [url, init] = slackCalls[0];
       expect(url).toBe(SLACK_WEBHOOK_URL);
       expect(JSON.stringify(JSON.parse(init.body))).toContain('プリンターが動きません');
     });
 
-    it('外部通知が未設定のテナントで新規起票しても fetch は呼ばれない', async () => {
+    // フォローアップ (2026-07-13): 受領確認 push (LINE Push API) は外部通知の設定有無に
+    // 関わらず発火するため、ここでは「Slack/Teams/Chatwork への外部通知だけが呼ばれないこと」を検証する
+    it('外部通知が未設定のテナントで新規起票しても Slack 等へは fetch されない', async () => {
       const { POST } = await import('@/app/api/inbound/line/route');
       const res = await POST(makeRequest('プリンターが動きません', LINE_ID_UNLINKED));
       expect(res.status).toBe(200);
-      expect(fetchMock).not.toHaveBeenCalled();
+      const nonPushCalls = fetchMock.mock.calls.filter(([url]) => url !== LINE_PUSH_API_URL);
+      expect(nonPushCalls).toHaveLength(0);
     });
 
     // ワンタイムコードでの連携処理は起票を伴わないため、新規起票向け外部通知も送らない
@@ -549,6 +559,80 @@ describe('POST /api/inbound/line', () => {
       expect(res.status).toBe(200);
       expect(store.tickets.size).toBe(0);
       expect(fetchMock).not.toHaveBeenCalled();
+    });
+  });
+
+  // フォローアップ (2026-07-13): 監査で発見したギャップの解消。メール取り込みの受領自動返信
+  // (sendReceivedAck) と同等の「受け付けました」確認を LINE 送信者にも push する機能そのものの回帰テスト。
+  describe('受領確認 push (フォローアップ 2026-07-13)', () => {
+    let fetchMock: ReturnType<typeof vi.fn>;
+    beforeEach(() => {
+      fetchMock = vi
+        .fn()
+        .mockResolvedValue({ ok: true, status: 200, text: () => Promise.resolve('ok') });
+      vi.stubGlobal('fetch', fetchMock);
+    });
+    afterEach(() => {
+      vi.unstubAllGlobals();
+    });
+
+    it('起票成功時に送信者本人へ受領確認が push される', async () => {
+      const { POST } = await import('@/app/api/inbound/line/route');
+      const res = await POST(makeRequest('プリンターが動きません', LINE_ID_UNLINKED));
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { ticketIds: string[] };
+      expect(body.ticketIds).toHaveLength(1);
+
+      const pushCalls = fetchMock.mock.calls.filter(([url]) => url === LINE_PUSH_API_URL);
+      expect(pushCalls).toHaveLength(1);
+      const [url, init] = pushCalls[0];
+      expect(url).toBe(LINE_PUSH_API_URL);
+      expect(init.headers.Authorization).toBe('Bearer test-access-token');
+      const payload = JSON.parse(init.body);
+      // 未連携ユーザーでも LINE ユーザー ID 自体は分かっているため、本人宛てに届く
+      expect(payload.to).toBe(LINE_ID_UNLINKED);
+      expect(payload.messages[0].text).toContain('お問い合わせを受け付けました');
+      // 受付番号は formatTicketRef (src/lib/ticket-ref.ts) と同じ「先頭8文字+#」形式で入る
+      expect(payload.messages[0].text).toContain(`#${body.ticketIds[0].slice(0, 8)}`);
+    });
+
+    // 回帰防止: lineUserId が形式検証済みでない ('不明') 場合は push 先が無いため送らない
+    it('LINE ユーザー ID が形式外 (不明) の場合は push しない', async () => {
+      const { POST } = await import('@/app/api/inbound/line/route');
+      // source.userId を省略した Webhook イベントは lineUserId が '不明' になる
+      const body = JSON.stringify({
+        destination: BOT_USER_ID,
+        events: [
+          {
+            type: 'message',
+            source: { type: 'group' },
+            message: { type: 'text', id: 'm-no-user', text: 'プリンターが動きません' },
+          },
+        ],
+      });
+      const req = new Request('http://localhost/api/inbound/line', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-line-signature': sign(body) },
+        body,
+      });
+      const res = await POST(req);
+      expect(res.status).toBe(200);
+      expect(store.tickets.size).toBe(1);
+      const pushCalls = fetchMock.mock.calls.filter(([url]) => url === LINE_PUSH_API_URL);
+      expect(pushCalls).toHaveLength(0);
+    });
+
+    // 回帰防止: push 送信が失敗しても起票自体は成功させる (§9 fail-safe)
+    it('push 送信に失敗しても起票レスポンスは 200 のままになる', async () => {
+      fetchMock.mockResolvedValue({
+        ok: false,
+        status: 500,
+        text: () => Promise.resolve('error'),
+      });
+      const { POST } = await import('@/app/api/inbound/line/route');
+      const res = await POST(makeRequest('プリンターが動きません', LINE_ID_UNLINKED));
+      expect(res.status).toBe(200);
+      expect(store.tickets.size).toBe(1);
     });
   });
 
@@ -651,8 +735,12 @@ describe('POST /api/inbound/line', () => {
       expect(body.ticketIds).toHaveLength(1);
 
       // Content API を正しい URL・Authorization ヘッダで呼んでいること
-      expect(fetchMock).toHaveBeenCalledTimes(1);
-      const [url, init] = fetchMock.mock.calls[0];
+      // (受領確認の LINE Push API 呼び出しは別 URL なので対象外にする)
+      const contentApiCalls = fetchMock.mock.calls.filter(([url]) =>
+        String(url).includes('/content'),
+      );
+      expect(contentApiCalls).toHaveLength(1);
+      const [url, init] = contentApiCalls[0];
       expect(url).toBe('https://api-data.line.me/v2/bot/message/img-1/content');
       expect(init.headers.Authorization).toBe('Bearer test-access-token');
 
@@ -729,7 +817,11 @@ describe('POST /api/inbound/line', () => {
       const body = (await res.json()) as { ticketIds: string[] };
       expect(body.ticketIds).toHaveLength(1);
       // 外部ホストの画像は SSRF 対策のため Content API を呼ばない
-      expect(fetchMock).not.toHaveBeenCalled();
+      // (受領確認の LINE Push API 呼び出しは起票成功時に別途発火するため対象外にする)
+      const contentApiCalls = fetchMock.mock.calls.filter(([url]) =>
+        String(url).includes('/content'),
+      );
+      expect(contentApiCalls).toHaveLength(0);
       expect(store.attachments.size).toBe(0);
     });
 
@@ -739,18 +831,22 @@ describe('POST /api/inbound/line', () => {
         new Response(imageBytes, { status: 200, headers: { 'content-type': 'image/png' } }),
       );
 
+      // Content API 呼び出しだけを数えるヘルパー (受領確認の LINE Push API 呼び出しは対象外にする)
+      const countContentApiCalls = () =>
+        fetchMock.mock.calls.filter(([url]) => String(url).includes('/content')).length;
+
       const { POST } = await import('@/app/api/inbound/line/route');
       const res1 = await POST(makeImageRequest(LINE_ID_UNLINKED, 'img-dup-1'));
       const body1 = (await res1.json()) as { ticketIds: string[] };
       expect(body1.ticketIds).toHaveLength(1);
-      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(countContentApiCalls()).toBe(1);
 
       // 同じメッセージ ID で再送 (LINE の at-least-once 配送を模す)
       const res2 = await POST(makeImageRequest(LINE_ID_UNLINKED, 'img-dup-1'));
       const body2 = (await res2.json()) as { ticketIds: string[] };
       expect(body2.ticketIds).toEqual(body1.ticketIds);
       // 重複判定は早期リターンするため Content API を再度呼ばない
-      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(countContentApiCalls()).toBe(1);
       // チケット・添付とも 1 件のまま (二重起票・二重添付なし)
       expect(store.tickets.size).toBe(1);
       expect(store.attachments.size).toBe(1);

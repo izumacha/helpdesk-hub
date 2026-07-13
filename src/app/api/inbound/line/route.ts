@@ -90,6 +90,18 @@ import { persistAttachments, cleanupWrittenAttachments } from '@/lib/attachment-
 import type { SubscriptionPlan, QuarantineReason } from '@/domain/types';
 // 隔離記録の書き込み共通ヘルパー (メール取り込みと共有。§6 DRY)
 import { recordQuarantineSafe } from '@/lib/quarantine';
+// フォローアップ (2026-07-13): 監査で発見したギャップの解消。メール取り込みの受領自動返信と
+// 同等の「受け付けました」確認を LINE 送信者にも push するためのヘルパー
+import {
+  buildTicketReceivedLineMessage,
+  pushLineMessage,
+  resolveLineAccessToken,
+} from '@/lib/line-push';
+// メールに埋め込むリンクのベース URL を解決するヘルパー (受領確認 push の URL 組み立てに使う)
+import { resolveAppBaseUrl } from '@/lib/app-url';
+// チケット詳細ページの URL 組み立て・受付番号 (短縮 ID) の表記を揃えるヘルパー
+import { buildTicketUrl } from '@/lib/ticket-email';
+import { formatTicketRef } from '@/lib/ticket-ref';
 // このルートは Node ランタイムで動かす (node:crypto / Prisma を使うため Edge では動かない)
 export const runtime = 'nodejs';
 
@@ -751,6 +763,29 @@ async function processLineEvent(
     // Phase 4: 新規起票を Slack/Teams/Chatwork へ通知する (Web フォーム・メール・CSV と同じ経路)。
     // アプリ内通知とは独立したベストエフォート処理なので、失敗してもここまでの成功を巻き戻さない
     await notifyNewTicketOutbound(targetTenantId, { id: ticketId, title, priority: 'Medium' });
+    // フォローアップ (2026-07-13): 監査で発見したギャップの解消。メール取り込みの受領自動返信
+    // (sendReceivedAck) と同等の「受け付けました」確認を LINE 送信者にも push する。
+    // lineUserId が形式検証済み ('不明' でない) 場合のみ送る (プロキシ起票でも LINE ユーザー ID
+    // 自体は分かっているため、メンバー未連携でも受領確認は届けられる)。テナントの LINE 連携有無・
+    // プランゲートは resolveLineAccessToken が判定する (未設定/対象外プランなら null を返し何もしない)
+    if (lineUserId !== '不明') {
+      try {
+        const accessToken = await resolveLineAccessToken(targetTenantId);
+        if (accessToken) {
+          const baseUrl = resolveAppBaseUrl();
+          const receivedText = buildTicketReceivedLineMessage({
+            ticketTitle: title,
+            ticketRef: formatTicketRef(ticketId),
+            ticketUrl: buildTicketUrl(baseUrl, ticketId),
+          });
+          await pushLineMessage(accessToken, lineUserId, receivedText);
+        }
+      } catch (err) {
+        // 送信失敗はログのみ (チケット起票は完了しているため応答は成功扱いのまま。
+        // sendReceivedAck と同じ fail-safe 方針)
+        console.warn('[POST /api/inbound/line] failed to push received ack', ticketId, err);
+      }
+    }
     return ticketId;
   } catch (err) {
     // DB は自動ロールバック済み (createTicketIdempotent がキー無し経路もトランザクション化して

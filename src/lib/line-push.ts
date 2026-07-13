@@ -81,6 +81,32 @@ export function buildTicketReplyLineMessage(input: {
     : text;
 }
 
+// 新規起票の受領確認を LINE のテキストメッセージ本文として組み立てる純粋関数 (副作用なし)。
+// フォローアップ (2026-07-13): 監査で発見したギャップの解消。メール取り込みは受領自動返信
+// (renderTicketReceivedEmail) で「起票されたこと」を送信元に伝えるが、LINE 取り込みには
+// 同等の確認が無く、問い合わせが届いたかどうかをユーザーが確認できなかった。
+export function buildTicketReceivedLineMessage(input: {
+  ticketTitle: string; // 問い合わせの件名
+  ticketRef: string; // 受付番号 (例: "#ab12cd34" / 画面・受領メールと同じ短縮 ID 表記)
+  ticketUrl: string; // チケット詳細ページの URL (連携済みユーザーのみ開ける導線)
+}): string {
+  // LINE はプレーンテキストのみのため、改行区切りの簡潔な文面にする (受領メールの text 版相当)
+  const text = [
+    'お問い合わせを受け付けました。担当者が確認のうえご連絡します。',
+    '',
+    `受付番号: ${input.ticketRef}`,
+    `件名: ${input.ticketTitle}`,
+    '',
+    '対応状況の確認はこちら:',
+    input.ticketUrl,
+  ].join('\n');
+
+  // LINE の文字数上限を超える場合は末尾を省略する (buildTicketReplyLineMessage と同じ安全策)
+  return text.length > LINE_TEXT_MESSAGE_MAX_LENGTH
+    ? `${text.slice(0, LINE_TEXT_MESSAGE_MAX_LENGTH - 1)}…`
+    : text;
+}
+
 // ステータス変更を LINE のテキストメッセージ本文として組み立てる純粋関数 (副作用なし)。
 // §5.4 フォローアップ: これまで LINE push はコメント返信 (buildTicketReplyLineMessage) にしか
 // 実装されておらず、ステータス変更はメールのみだった。ギャップ分析表 (§2) の「通知」行が
