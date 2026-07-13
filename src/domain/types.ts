@@ -44,7 +44,11 @@ export type SettingsAuditAction =
   // フォローアップ (2026-07-11): SSO/LINE/通知チャネル設定と同じ「管理者による設定変更」でありながら
   // 監査対象から漏れていた操作。招待リンク発行 (特に agent 権限付与) は新しい人物に社内の全チケットへ
   // アクセスできる権限を与える操作であり、SSO 証明書変更等と同等以上にセキュリティ上重要
-  | 'invitation_issue'; // メンバー招待リンクの発行 (単発・一括まとめて 1 回)
+  | 'invitation_issue' // メンバー招待リンクの発行 (単発・一括まとめて 1 回)
+  // フォローアップ (2026-07-13): Stripe 起因のプラン変更 (アップグレード/ダウングレード/解約) は
+  // §4.4 の tenant_mode_update (Pro モード強制解除の副作用のときのみ記録) では捕捉されず、
+  // subscriptionPlan 自体の変更は一度も監査対象になっていなかった
+  | 'subscription_plan_update'; // サブスクリプションプランの変更 (Stripe Webhook 起因)
 
 // メール取り込みが起票せず隔離した理由。
 // prisma/schema.prisma の QuarantineReason enum および src/lib/constants.ts の

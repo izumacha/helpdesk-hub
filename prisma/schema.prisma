@@ -73,6 +73,10 @@ enum SettingsAuditAction {
   // チケットへアクセスできる権限を与える操作であり、SSO/LINE/通知チャネル設定と同じ「管理者による
   // 設定変更」として監査対象に含める
   invitation_issue // メンバー招待リンクの発行 (単発・一括まとめて 1 回)
+  // フォローアップ (2026-07-13): Stripe 起因のプラン変更 (アップグレード/ダウングレード/解約) は
+  // §4.4 の tenant_mode_update (Pro モード強制解除の副作用のみ) では捕捉されず、
+  // subscriptionPlan 自体の変更は一度も監査対象になっていなかった
+  subscription_plan_update // サブスクリプションプランの変更 (Stripe Webhook 起因)
 }
 
 // FAQ 候補の状態
