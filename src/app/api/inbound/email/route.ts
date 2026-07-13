@@ -74,6 +74,8 @@ import { notifyNewTicketOutbound } from '@/lib/outbound-notify';
 import { getMonthlyTicketQuota, checkAttachmentQuota } from '@/lib/tenant-plan';
 // 隔離理由の型 (§3.2 フォローアップ: 隔離記録の永続化に使う)
 import type { QuarantineReason } from '@/domain/types';
+// 隔離記録の書き込み共通ヘルパー (LINE 取り込みと共有。§6 DRY)
+import { recordQuarantineSafe } from '@/lib/quarantine';
 
 // このルートは Node ランタイムで動かす (node:crypto / Prisma を使うため Edge では動かない)
 export const runtime = 'nodejs';
@@ -342,24 +344,24 @@ async function sendReceivedAck(args: {
 // 本来の処理に影響させない」方針。§9 fail-safe)。
 // /code-review ultra 指摘対応: 当初「レスポンスを遅延させない」とも書いていたが、実際には
 // await しているため応答は記録の完了を待つ。誤解を招く記述だったため実態に合わせて修正した。
+// フォローアップ (2026-07-13): try/catch + ログの定型部分は LINE 取り込みの recordLineQuarantine と
+// 同型の重複だったため src/lib/quarantine.ts::recordQuarantineSafe へ共通化した (§6 DRY)
 async function recordQuarantine(
   tenantId: string,
   reason: QuarantineReason,
   email: { senderAddress: string; senderName: string; subject: string },
 ): Promise<void> {
-  try {
-    await repos.quarantinedEmails.record({
+  await recordQuarantineSafe(
+    {
       tenantId,
-      channel: 'email', // フォローアップ (2026-07-13): LINE 取り込みとテーブルを共有するため明示する
+      channel: 'email',
       reason,
       senderAddress: email.senderAddress,
       senderName: email.senderName,
       subject: email.subject,
-    });
-  } catch (err) {
-    // 記録失敗はログのみ残す (隔離自体は既に確定しているため 202 応答は変えない)
-    console.error('[POST /api/inbound/email] 隔離記録の保存に失敗しました', err);
-  }
+    },
+    '[POST /api/inbound/email]',
+  );
 }
 
 // POST /api/inbound/email : 受信メールを 1 件の問い合わせに変換する

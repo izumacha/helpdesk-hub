@@ -21,18 +21,31 @@ function isBeforeCursor(createdAt: Date, id: string, cursor: QuarantinedEmailCur
 // メモリストアを使った隔離済み受信メールリポジトリを生成する関数
 export function makeQuarantinedEmailRepo(store: Store): QuarantinedEmailRepository {
   return {
-    // 隔離記録を 1 件保存する
+    // 隔離記録を 1 件保存する。
+    // input は channel で判別されるユニオン型のため、channel ごとに他方のチャネル専用
+    // フィールドを明示的に null で埋める (Prisma アダプタと同じ方針)
     async record(input) {
       const row: QuarantinedEmail = {
         id: nextId(store, 'qte'), // 'qte_...' 形式の一意 ID
         tenantId: input.tenantId,
-        channel: input.channel,
-        reason: input.reason,
-        senderAddress: input.senderAddress ?? null,
-        senderName: input.senderName ?? null,
-        lineUserId: input.lineUserId ?? null,
-        subject: input.subject ?? null,
         createdAt: new Date(),
+        ...(input.channel === 'email'
+          ? {
+              channel: 'email' as const,
+              reason: input.reason,
+              senderAddress: input.senderAddress,
+              senderName: input.senderName,
+              lineUserId: null,
+              subject: input.subject,
+            }
+          : {
+              channel: 'line' as const,
+              reason: input.reason,
+              senderAddress: null,
+              senderName: null,
+              lineUserId: input.lineUserId,
+              subject: null,
+            }),
       };
       store.quarantinedEmails.set(row.id, row);
     },

@@ -144,7 +144,13 @@ export default async function QuarantinePage({ searchParams }: Props) {
                         <div className="font-medium text-slate-900">
                           {log.senderName ?? '(送信者名なし)'}
                         </div>
-                        <div className="text-xs text-slate-500">{log.senderAddress}</div>
+                        {/* /code-review ultra 指摘対応 (2026-07-13): senderName/subject と同じく
+                            null を安全に表示するフォールバックを付ける (RecordQuarantinedEmailInput
+                            は channel='email' で常に非 null を要求するが、表示側は DB 由来の値を
+                            そのまま信用せず念のため備える) */}
+                        <div className="text-xs text-slate-500">
+                          {log.senderAddress ?? '(送信元アドレスなし)'}
+                        </div>
                       </>
                     ) : (
                       <div className="font-medium text-slate-900">
