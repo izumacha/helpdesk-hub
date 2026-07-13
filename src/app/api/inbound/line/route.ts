@@ -59,8 +59,8 @@ import {
   looksLikeLineLinkCode,
   normalizeLineLinkCode,
 } from '@/lib/line-link';
-// 未読カウントを SSE で即時配信するヘルパー (新規起票後に担当者のバッジをリアルタイム更新する)
-import { broadcastUnreadCountToMany } from '@/features/notifications/notify';
+// 新規起票の担当者通知ヘルパー (メール取り込みと共有。通知作成 + SSE 配信を内包する)
+import { notifyAgentsOfNewTicket } from '@/features/notifications/notify';
 // LINE 連携機能のプランゲート (§6.1 料金プラン: Pro / Enterprise のみ利用可能)
 import { isLineIntegrationAllowed, resolveEffectivePlan } from '@/lib/plan-guard';
 // Phase 4: Slack/Teams/Chatwork 外部通知ヘルパー (Web フォーム・メール取り込み・CSV インポートと共有)
@@ -526,42 +526,14 @@ async function processLineEvent(
       const notifyTargets = linkedMember
         ? agents.filter((a) => a.id !== creatorId) // 本人起票: 他担当者のみ
         : agents; // プロキシ起票: 全担当者に通知
-      if (notifyTargets.length > 0) {
-        // 各担当者へ通知を作成する。allSettled で 1 件失敗しても他を止めない
-        const notifyResults = await Promise.allSettled(
-          notifyTargets.map((a) =>
-            repos.notifications.create({
-              userId: a.id, // 通知受信者: 各担当者
-              type: 'imported', // LINE からの取り込みによる新規起票通知 (inbound チャネルは 'imported' を使う)
-              message: `LINE から新しい問い合わせが届きました：${title}`, // 通知文言
-              ticketId, // 紐付けチケット
-              tenantId: targetTenantId, // テナントスコープ
-            }),
-          ),
-        );
-        // 通知作成に成功した担当者 ID だけを SSE 配信対象にする (失敗分は DB レコードが無いためスキップ)
-        const succeededIds = notifyTargets
-          .filter((_, i) => notifyResults[i]?.status === 'fulfilled')
-          .map((a) => a.id);
-        const failedCount = notifyTargets.length - succeededIds.length;
-        if (failedCount > 0) {
-          // 失敗件数だけログに残す
-          console.warn(
-            `[POST /api/inbound/line] ${failedCount} notification(s) failed to create for ticket`,
-            ticketId,
-          );
-        }
-        // 未読カウントを SSE で即時配信して通知ベルに反映させる (成功分のみ)
-        if (succeededIds.length > 0) {
-          await broadcastUnreadCountToMany(
-            succeededIds, // 通知作成に成功した担当者 ID 一覧
-            targetTenantId, // テナントスコープ
-          ).catch((broadcastErr) => {
-            // SSE 配信失敗はバッジ更新が遅れるだけ。ログのみ残して続行する
-            console.warn('[POST /api/inbound/line] failed to broadcast unread count', broadcastErr);
-          });
-        }
-      }
+      // 通知作成・SSE 配信はメール取り込みと共有のヘルパーに委譲する (CLAUDE.md §6 DRY)
+      await notifyAgentsOfNewTicket({
+        tenantId: targetTenantId, // テナントスコープ
+        ticketId, // 紐付けチケット
+        message: `LINE から新しい問い合わせが届きました：${title}`, // 通知文言
+        targets: notifyTargets, // 通知対象担当者一覧
+        logPrefix: '[POST /api/inbound/line]', // ログの識別子
+      });
     } catch (notifyErr) {
       // 通知失敗はログのみ (チケット起票は完了しているため応答は成功扱いのまま)
       console.warn(

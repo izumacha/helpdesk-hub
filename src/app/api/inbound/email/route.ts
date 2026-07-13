@@ -32,7 +32,7 @@ import { initialStatusForMode } from '@/domain/ticket-status';
 // コメント通知の宛先決定 (Web フォーム経由コメントと共有するヘルパー)
 import { resolveCommentRecipients } from '@/lib/comment-recipients';
 // 未読件数を SSE で即時配信するヘルパー (コメント追記時の通知扇形)
-import { broadcastUnreadCountToMany } from '@/features/notifications/notify';
+import { broadcastUnreadCountToMany, notifyAgentsOfNewTicket } from '@/features/notifications/notify';
 // 受信メールの正規化ヘルパー (純粋関数) と生ヘッダ読み取り、送信元認証 (SPF/DKIM/DMARC) の判定
 import {
   parseInboundEmail,
@@ -626,6 +626,34 @@ export async function POST(req: Request) {
     // 二重にチケットや受領メールを作らないよう、ここでは何もせず既存チケット ID を返す
     console.info('[POST /api/inbound/email] resolved write conflict as duplicate', ticketId);
     return NextResponse.json({ status: 'duplicate', ticketId }, { status: 200 });
+  }
+
+  // 新規起票をテナント内の全エージェントへアプリ内通知する (LINE 取り込みと共有ヘルパーを使う)。
+  // Slack/Teams/Chatwork 通知は任意設定のオプトイン機能のため、未設定のテナントではメール起票に
+  // エージェントが誰も気づけない非対称な穴があった (LINE/CSV は既に対応済み)。
+  // 失敗してもチケット起票自体は確定済みのため、ログのみ残して続行する (§9 fail-safe)。
+  try {
+    // テナント内のエージェント/管理者一覧を取得する (LINE 取り込みと同じヘルパー)
+    const agents = await repos.users.listAgents(tenant.id);
+    // 通知対象: 送信者自身がエージェントなら本人以外、依頼者からの起票なら全エージェントへ通知する
+    const notifyTargets = isAgent(sender.role)
+      ? agents.filter((a) => a.id !== sender.id) // エージェント自身の起票は本人以外へ通知
+      : agents; // 依頼者からの起票は全エージェントへ通知
+    // 通知作成・SSE 配信は LINE 取り込みと共有のヘルパーに委譲する (CLAUDE.md §6 DRY)
+    await notifyAgentsOfNewTicket({
+      tenantId: tenant.id, // テナントスコープ
+      ticketId, // 紐付けチケット
+      message: `メールから新しい問い合わせが届きました：${email.subject}`, // 通知文言
+      targets: notifyTargets, // 通知対象エージェント一覧
+      logPrefix: '[POST /api/inbound/email]', // ログの識別子
+    });
+  } catch (notifyErr) {
+    // 通知失敗はログのみ (チケット起票は完了しているため応答は成功扱いのまま)
+    console.warn(
+      '[POST /api/inbound/email] failed to notify agents for new ticket',
+      ticketId,
+      notifyErr,
+    );
   }
 
   // Phase 4: 新規起票を Slack/Teams/Chatwork へ通知する (Web フォーム・LINE・CSV と同じ経路)。
