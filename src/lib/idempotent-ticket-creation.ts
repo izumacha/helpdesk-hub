@@ -50,10 +50,19 @@ export async function createTicketIdempotent(
   ticketInput: CreateTicketInput,
   options?: CreateTicketIdempotentOptions,
 ): Promise<{ id: string; alreadyExisted: boolean }> {
-  // キーが取れないイベント/メールは突き合わせようがないため、従来どおり単発で起票する
+  // キーが取れないイベント/メールは突き合わせようがないため、従来どおり単発で起票する。
+  // /code-review ultra 指摘対応 (2026-07-13): 以前は tickets.create と onCreated (添付メタ INSERT 等)
+  // が別々の非トランザクション呼び出しだったため、チケット作成が確定した後に onCreated が失敗すると
+  // 「チケットは残るが添付だけ無い中途半端な状態」で例外が伝播し、呼び出し元が 500 を返して
+  // Webhook プロバイダが再送すると (このキー無し経路には重複検知が無いため) 別の重複チケットが
+  // できてしまっていた。両方を 1 トランザクションにまとめ、どちらかが失敗すれば両方ロールバック
+  // されるようにする (キーが無いため Serializable による競合検知は不要で、既定の分離レベルでよい)
   if (!key) {
-    const created = await repos.tickets.create(ticketInput);
-    if (options?.onCreated) await options.onCreated(repos, created.id);
+    const created = await uow.run(async (tx) => {
+      const t = await tx.tickets.create(ticketInput);
+      if (options?.onCreated) await options.onCreated(tx, t.id);
+      return t;
+    });
     return { id: created.id, alreadyExisted: false };
   }
 

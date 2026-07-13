@@ -984,5 +984,98 @@ describe('POST /api/inbound/email', () => {
       expect(store.attachments.size).toBe(0);
       expect(storage.entries.size).toBe(0);
     });
+
+    // /code-review ultra 指摘対応の回帰テスト (2026-07-13): 以前は validateUploadedFiles が
+    // 1 件でも不正な添付があれば全件を切り捨てていたため、有効な画像と無効なファイルが混在した
+    // メールでは有効な写真まで一緒に失われていた。validateUploadedFilesLenient は無効な分だけを
+    // 落とし、有効な添付は保存されることを確認する
+    it('有効な添付と無効な添付が混在していても、有効な分だけ保存される', async () => {
+      const goodFile = makeAttachmentFile('good.png', 'image/png', 'valid-image-bytes');
+      const badFile = makeAttachmentFile('bad.pdf', 'application/pdf', 'not-an-image');
+      const { POST } = await import('@/app/api/inbound/email/route');
+      const res = await POST(
+        makeAttachmentRequest(
+          {
+            to: VALID_EMAIL.to,
+            from: VALID_EMAIL.from,
+            subject: VALID_EMAIL.subject,
+            text: VALID_EMAIL.text,
+          },
+          [goodFile, badFile],
+        ),
+      );
+      expect(res.status).toBe(201);
+      const json = (await res.json()) as { ticketId: string };
+      // 無効な PDF は落とされ、有効な PNG だけが 1 件保存されること
+      const attachments = [...store.attachments.values()].filter(
+        (a) => a.ticketId === json.ticketId,
+      );
+      expect(attachments).toHaveLength(1);
+      expect(attachments[0].originalName).toBe('good.png');
+      expect(storage.entries.size).toBe(1);
+    });
+
+    // /code-review ultra 指摘対応の回帰テスト (2026-07-13): Serializable 分離レベルでの書き込み
+    // 競合は「コミット時点」で検知されるため、敗者側のトランザクションが onCreated (persistAttachments)
+    // で既にストレージへバイト列を書き込み終えた後に競合が発覚するケースがあり得る。DB 側の書き込みは
+    // ロールバックされてもストレージ書き込みはトランザクション外の副作用のため残ってしまっていた不備の
+    // 修正確認 (alreadyExisted 分岐での cleanupWrittenAttachments 呼び出し)
+    it('書き込み競合の敗者側が保存した添付ファイルは重複解決時にクリーンアップされる', async () => {
+      // 「別リクエストが先に確定させた」チケットをあらかじめ用意しておく
+      const winnerTicket = await repos.tickets.create({
+        title: '先勝ちリクエストが作成',
+        body: '本文',
+        priority: 'Medium',
+        categoryId: null,
+        creatorId: MEMBER_ID,
+        tenantId: TENANT,
+      });
+
+      // findTicketIdByMessageIds: 1 回目 (事前チェック) は null、2 回目 (競合後の再確認) は
+      // 先勝ちチケット ID を返す
+      const findTicketIdByMessageIds = vi
+        .fn()
+        .mockResolvedValueOnce(null)
+        .mockResolvedValue(winnerTicket.id);
+      repos = {
+        ...repos,
+        emailThreads: { ...repos.emailThreads, findTicketIdByMessageIds },
+      };
+
+      // uow.run は渡されたコールバックを実際に実行してから (= このリクエストの「敗者」
+      // トランザクションが onCreated で添付をストレージへ書き込み終えてから) 書き込み競合で
+      // 失敗させる。実際の Postgres でもコミット時点で初めて競合が検知されるため、
+      // ストレージ書き込みが完了した後に DB 側だけロールバックされる、という順序を再現する
+      const conflictError = new Error('simulated write conflict');
+      uow = {
+        run: vi.fn(async (fn) => {
+          await fn(repos);
+          throw conflictError;
+        }),
+        isTransactionConflict: (err) => err === conflictError,
+      };
+
+      const file = makeAttachmentFile('leak.png', 'image/png', 'leaked-bytes');
+      const { POST } = await import('@/app/api/inbound/email/route');
+      const res = await POST(
+        makeAttachmentRequest(
+          {
+            to: VALID_EMAIL.to,
+            from: VALID_EMAIL.from,
+            subject: VALID_EMAIL.subject,
+            text: VALID_EMAIL.text,
+            'message-id': '<race-attach-1@example.com>',
+          },
+          [file],
+        ),
+      );
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { ticketId: string; status?: string };
+      expect(body.status).toBe('duplicate');
+      expect(body.ticketId).toBe(winnerTicket.id);
+      // 敗者トランザクションが onCreated で書き込んだストレージのバイト列は、重複解決時に
+      // クリーンアップされ残らないこと
+      expect(storage.entries.size).toBe(0);
+    });
   });
 });

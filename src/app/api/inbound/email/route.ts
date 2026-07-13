@@ -16,26 +16,25 @@
 
 // JSON レスポンスヘルパー
 import { NextResponse } from 'next/server';
-// 共有シークレットの定数時間比較 / 添付ファイルの保存先キー組み立てに使う (Node ランタイム前提のルート)
-import { timingSafeEqual, randomUUID } from 'node:crypto';
+// 共有シークレットの定数時間比較に使う (Node ランタイム前提のルート)
+import { timingSafeEqual } from 'node:crypto';
 // ページキャッシュ無効化 (スレッド継続でコメント追記したチケット詳細を再描画させる)
 import { revalidatePath } from 'next/cache';
 // データ層 (テナント / ユーザー / チケットのリポジトリ束 + トランザクション境界)
 import { repos, uow } from '@/data';
-// 添付ファイル本体の StoragePort (Edge runtime 汚染回避のため別モジュールから取り込む)
-import { storage } from '@/data/storage';
 // Webhook 再送に対する冪等起票の共通ヘルパー (LINE/メールで共有)。フォローアップ (2026-07-13):
 // 添付ファイルをチケット起票と同一トランザクションで保存するための onCreated フックを追加した
 import {
   createTicketIdempotent,
   emailMessageIdempotencyOps,
 } from '@/lib/idempotent-ticket-creation';
-// 添付ファイル検証ヘルパー (件数/MIME/サイズ/マジックバイト。Web フォーム・コメント投稿と共有)
-import { validateUploadedFiles, type ValidatedAttachment } from '@/lib/validations/attachment';
-// MIME → 拡張子の対応表 (storageKey の組み立てで使用)
-import { MIME_TO_EXTENSION } from '@/domain/attachment';
-// リポジトリ束の型 (トランザクション内 tx / 非トランザクション repos 共通。添付保存ヘルパーの引数に使う)
-import type { Repos } from '@/data/ports/unit-of-work';
+// 添付ファイルの寛容版検証ヘルパー (件数/MIME/サイズ/マジックバイト。Web フォーム・コメント投稿の
+// 全件一括版 validateUploadedFiles とは異なり、1 件でも違反があっても全体を失敗させない。
+// この Webhook にはユーザーへ即座にフィードバックして再送信させられる画面が無いため)
+import { validateUploadedFilesLenient } from '@/lib/validations/attachment';
+// 添付ファイルのストレージ保存 / 失敗時クリーンアップの共通ヘルパー (POST /api/tickets・
+// POST /api/tickets/[id]/comments と共有。/code-review ultra 指摘対応: 3 箇所目の重複を解消)
+import { persistAttachments, cleanupWrittenAttachments } from '@/lib/attachment-persistence';
 // 新規起票時の初期ステータスを mode から決める共通ルール (Web フォーム起票と単一の源を共有)
 import { initialStatusForMode } from '@/domain/ticket-status';
 // コメント通知の宛先決定 (Web フォーム経由コメントと共有するヘルパー)
@@ -362,59 +361,6 @@ async function recordQuarantine(
   }
 }
 
-// フォローアップ (2026-07-13): 検証済み添付ファイル群をストレージへ書き込み、メタ情報を DB へ
-// INSERT する共通ヘルパー (POST /api/tickets・POST /api/tickets/[id]/comments と同じ
-// 「ストレージ書き込み → メタ INSERT」の順で 1 件ずつ処理するパターンを踏襲する)。
-// 必ずトランザクション内 (tx) で呼び、書き込み済みストレージキーを writtenKeys に積むこと。
-// ストレージへの書き込みは DB トランザクション外で観測できる副作用のため、呼び出し元が
-// トランザクション失敗時に writtenKeys を使って best-effort でロールバック (削除) する。
-async function persistAttachments(
-  tx: Repos,
-  files: ValidatedAttachment[],
-  ticketId: string,
-  commentId: string | null, // 新規起票への添付なら null、コメント追記への添付なら該当コメント ID
-  uploaderId: string,
-  tenantId: string,
-  writtenKeys: string[],
-): Promise<void> {
-  for (const v of files) {
-    // 保存先キーを組み立てる (例: tenantId/ticketId/<uuid>.jpg)
-    const ext = MIME_TO_EXTENSION[v.mimeType];
-    const key = `${tenantId}/${ticketId}/${randomUUID()}.${ext}`;
-    // File 本体のバイト列を ArrayBuffer 経由で Uint8Array に変換する
-    const buf = new Uint8Array(await v.file.arrayBuffer());
-    // ストレージへ書き込む (失敗時は呼び出し元が uow のロールバックと writtenKeys で後始末する)
-    await storage.put(key, buf, { contentType: v.mimeType, size: v.size });
-    writtenKeys.push(key);
-    // メタ情報を DB に保存する (storage="local" 固定)
-    await tx.attachments.create({
-      ticketId,
-      commentId,
-      uploaderId,
-      tenantId,
-      mimeType: v.mimeType,
-      size: v.size,
-      originalName: v.originalName,
-      storageKey: key,
-      storage: 'local',
-    });
-  }
-}
-
-// 添付ファイルのストレージ書き込みに失敗した際の後始末 (best-effort)。
-// DB は uow がロールバック済みだが、ストレージへの書き込みはトランザクション外の副作用のため、
-// 既に書き込み済みのファイルを個別に削除する (POST /api/tickets と同じ方針)。
-async function cleanupWrittenAttachments(writtenKeys: string[], logPrefix: string): Promise<void> {
-  await Promise.all(
-    writtenKeys.map((key) =>
-      storage.delete(key).catch((cleanupErr) => {
-        // ストレージ削除失敗はエラーとしてログに残す (warn ではなく error: ロールバック失敗は本物のエラー)
-        console.error(`${logPrefix} failed to clean up storage`, { key, cleanupErr });
-      }),
-    ),
-  );
-}
-
 // POST /api/inbound/email : 受信メールを 1 件の問い合わせに変換する
 export async function POST(req: Request) {
   // 共有シークレットを環境変数から読む。未設定なら fail-closed (無防備な取り込み口を開けない)
@@ -552,18 +498,18 @@ export async function POST(req: Request) {
 
   // フォローアップ (2026-07-13): 監査で発見したギャップの解消。添付ファイルを検証する。
   // Web フォーム/コメント投稿と異なり、この Webhook にはユーザーへ即時フィードバックする画面が無い
-  // (送信者はプロバイダの応答を見ない)。そのため validateUploadedFiles が「1 件でも違反があれば
-  // 全体を失敗扱いにする」設計であっても、ここでは検証失敗時にメール全体 (起票/追記) を止めるのでは
-  // なく、添付なしとして処理を継続する (本文だけでも問い合わせとして残す方が北極星指標 §0 に沿う)。
-  // 件数 0 (添付なし) は常に ok を返す設計のため、この分岐は「1 件以上の添付があり、かつ何かが
-  // 違反していた」場合にのみ発火する。
-  const attachmentValidation = await validateUploadedFiles(fields.attachments);
-  let validatedAttachments: ValidatedAttachment[] = attachmentValidation.ok
-    ? attachmentValidation.files
-    : [];
-  if (!attachmentValidation.ok) {
-    console.warn('[POST /api/inbound/email] attachments rejected, continuing without them', {
-      reason: attachmentValidation.message,
+  // (送信者はプロバイダの応答を見ない)。そのため寛容版 (validateUploadedFilesLenient) を使い、
+  // 1 件でも違反があってもメール全体 (起票/追記) を止めず、違反したファイルだけを除外して処理を
+  // 継続する。/code-review ultra 指摘対応: 当初は全件一括版 (validateUploadedFiles) を使い
+  // 検証失敗時に添付を全て捨てていたが、有効な写真が複数枚あるメールで 1 件でも非対応形式が
+  // 混在すると有効な写真まで巻き添えで消えてしまい、写真添付という本機能の目的を損なっていた。
+  const attachmentValidation = await validateUploadedFilesLenient(fields.attachments);
+  let validatedAttachments = attachmentValidation.files;
+  const { droppedCount } = attachmentValidation;
+  if (droppedCount > 0) {
+    console.warn('[POST /api/inbound/email] some attachments were rejected and dropped', {
+      droppedCount,
+      keptCount: validatedAttachments.length,
     });
   }
   // 添付が残っていれば、テナントの累計サイズ上限 (§6.1 Standard「添付1GB」) も確認する。
@@ -795,9 +741,10 @@ export async function POST(req: Request) {
     ticketId = created.id;
     alreadyExisted = created.alreadyExisted;
   } catch (err) {
-    // DB は自動ロールバック済 (冪等化キーが無い単発起票の場合はトランザクションが無いため、
-    // 添付メタ INSERT 失敗時にチケット行だけが残り得るが、写真無しの問い合わせとして残る方が
-    // 本文ごと消えるより望ましいため許容する。writtenKeys は個別に best-effort で削除する)
+    // /code-review ultra 指摘対応 (2026-07-13): 冪等化キーの有無に関わらず、DB は自動ロールバック
+    // 済み (createTicketIdempotent がキー無し経路もトランザクション化したため、チケット行だけが
+    // 添付無しで残ることは無い)。ストレージへの書き込みだけはトランザクション外の副作用のため、
+    // 書き込み済みキーを個別に best-effort で削除する
     await cleanupWrittenAttachments(writtenKeys, '[POST /api/inbound/email]');
     console.error('[POST /api/inbound/email] ticket creation failed', err);
     return NextResponse.json({ error: '問い合わせの作成に失敗しました' }, { status: 500 });
@@ -807,6 +754,14 @@ export async function POST(req: Request) {
     // 書き込み競合により、別リクエストが既に起票・受領返信済みと判明したケース。
     // 二重にチケットや受領メールを作らないよう、ここでは何もせず既存チケット ID を返す
     console.info('[POST /api/inbound/email] resolved write conflict as duplicate', ticketId);
+    // /code-review ultra 指摘対応 (2026-07-13): このリクエスト自身の (敗れた) トランザクション内で
+    // onCreated が添付ファイルを既にストレージへ書き込んでいた場合、DB 側はロールバックされても
+    // ストレージの書き込みはトランザクション外の副作用のため残ってしまう。writtenKeys にはこの
+    // リクエスト自身が書き込んだキーだけが積まれる (勝者側の書き込みとは無関係) ため、常に
+    // 安全にクリーンアップできる (何も書いていなければ空配列で no-op)
+    if (writtenKeys.length > 0) {
+      await cleanupWrittenAttachments(writtenKeys, '[POST /api/inbound/email]');
+    }
     return NextResponse.json({ status: 'duplicate', ticketId }, { status: 200 });
   }
 
