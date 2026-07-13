@@ -22,7 +22,11 @@ import type { Priority, TicketStatus, TenantMode } from '@/domain/types';
 // モードに応じた初期ステータスを返す共通関数（メール取り込み・LINE 取り込みと同一ロジックを共有し DRY を維持する）。
 // getCompletionStatuses は §3.1 フォローアップ (2026-07-10) で追加: インポート時に「状況」列が
 // 完了系ステータスを指定していた場合、resolvedAt をインポート時刻で設定するために使う
-import { initialStatusForMode, getCompletionStatuses } from '@/domain/ticket-status';
+import {
+  initialStatusForMode,
+  getCompletionStatuses,
+  hasRespondedByImportStatus,
+} from '@/domain/ticket-status';
 // §3.1 フォローアップ (2026-07-10): 「状況」列の日本語ラベルから TicketStatus を逆引きする
 // mode-aware ヘルパー (getStatusLabel の逆写像)、およびエラーメッセージ用の有効ラベル一覧取得
 import { resolveStatusFromLabel, getStatusLabelsForMode } from '@/lib/constants';
@@ -398,14 +402,35 @@ export async function importTickets(csvText: string): Promise<ImportTicketsResul
   // フォローアップ (2026-07-13): 「担当者」列も同じ名前解決が必要。拠点と同じく Lite/Pro
   // どちらのモードでも使える概念 (§3.1 用語表「アサイン→担当を決める」) のため、カテゴリと
   // 異なり mode によるガードは行わない。
-  // 拠点・カテゴリ・担当者は互いに独立した取得のため Promise.all で並列化する (§8 パフォーマンス)。
-  const [locationsByName, categoriesByName, agentsByName] = await Promise.all([
+  // /code-review ultra 指摘対応 (2026-07-13): 担当者は buildNameToIdMap を使わず、生のエージェント
+  // 一覧をここで取得する。理由は 2 つ: (1) 後段のインポート後通知 (§ 下部) でも同じ一覧が必要なため、
+  // ここで取得したものを再利用して二重取得を避ける (§8 パフォーマンス)。(2) 拠点/カテゴリと異なり
+  // 担当者名はチケットの所有権 (誰が対応するか) を左右するため、同姓同名のエージェントが存在する
+  // 場合に Map のキー衝突でどちらか一方へ無言で misassign されるのを防ぐ重複検出が必要。
+  // 拠点・カテゴリ・エージェント一覧は互いに独立した取得のため Promise.all で並列化する (§8)。
+  const [locationsByName, categoriesByName, agentsForAssignee] = await Promise.all([
     buildNameToIdMap(locationIndex !== -1, () => repos.locations.listByTenant(tenantId)),
     buildNameToIdMap(categoryIndex !== -1 && mode !== 'lite', () =>
       repos.categories.list(tenantId),
     ),
-    buildNameToIdMap(assigneeIndex !== -1, () => repos.users.listAgents(tenantId)),
+    assigneeIndex !== -1 ? repos.users.listAgents(tenantId) : Promise.resolve(null),
   ]);
+
+  // 「担当者」列の名前 → ID マップと、同姓同名 (重複名) の集合を作る。
+  // 拠点/カテゴリの resolveNameToId と異なり、同名が複数存在する場合はどちらか一方を無言で
+  // 選ばず、後続のループでエラー行として記録できるよう duplicateAgentNames に集める。
+  const agentsByName = new Map<string, string>();
+  const duplicateAgentNames = new Set<string>();
+  if (agentsForAssignee) {
+    const nameCounts = new Map<string, number>();
+    for (const a of agentsForAssignee) {
+      nameCounts.set(a.name, (nameCounts.get(a.name) ?? 0) + 1);
+      agentsByName.set(a.name, a.id);
+    }
+    for (const [name, count] of nameCounts) {
+      if (count > 1) duplicateAgentNames.add(name);
+    }
+  }
 
   // 集計用カウンタとエラーリストを初期化する
   let imported = 0;
@@ -483,8 +508,10 @@ export async function importTickets(csvText: string): Promise<ImportTicketsResul
     // 既にエージェントの初回対応が済んでいたはずである。CSV には応答者・応答日時の列が無いため
     // インポート時刻で近似する (resolvedAt と同じ「正確な履歴が無いので取り込み時刻で代替する」方針)。
     // これを設定しないと、Pro モードの SLA バッジ・品質メトリクス (平均初回応答時間) が
-    // インポートされた履歴チケットを永久に「未応答」として扱ってしまう (§2.1.2 と同種の欠落)
-    const firstRespondedAt = status !== initialStatus ? now : null;
+    // インポートされた履歴チケットを永久に「未応答」として扱ってしまう (§2.1.2 と同種の欠落)。
+    // /code-review ultra 指摘対応 (2026-07-13): 判定ロジックを ticket-status.ts の
+    // hasRespondedByImportStatus に抽出し、getCompletionStatuses と同じくドメイン層を唯一の源にした
+    const firstRespondedAt = hasRespondedByImportStatus(status, mode) ? now : null;
 
     // 拠点名が指定されていれば ID に解決する (resolveNameToId を共有)。テナントに存在しない
     // 拠点名はタイポや削除済み拠点の可能性が高く、無言で「拠点未設定」にすると取り込んだデータの
@@ -520,6 +547,17 @@ export async function importTickets(csvText: string): Promise<ImportTicketsResul
     // にすると取り込んだデータの担当者情報が消えたことに気づけないため、エラー行として記録する。
     let assigneeId: string | null = null;
     if (assigneeName !== null) {
+      // /code-review ultra 指摘対応 (2026-07-13): 同姓同名のエージェントが複数存在する場合、
+      // Map のキー衝突でどちらか一方へ無言で misassign されてしまう (拠点/カテゴリの誤りより
+      // 「チケットの所有権を誤らせる」ため深刻)。resolveNameToId を呼ぶ前に重複を検出し、
+      // 曖昧な名前は起票者が手動で判断できるようエラー行として記録する。
+      if (duplicateAgentNames.has(assigneeName)) {
+        errors.push({
+          row: rowNum,
+          message: `担当者名が重複しています: "${assigneeName}"（同じ名前のエージェントが複数存在するため一意に特定できません。取り込み後に画面から担当者を設定してください）`,
+        });
+        continue;
+      }
       const resolved = resolveNameToId(assigneeName, agentsByName, '担当者');
       if (!resolved.ok) {
         errors.push({ row: rowNum, message: resolved.message });
@@ -562,6 +600,11 @@ export async function importTickets(csvText: string): Promise<ImportTicketsResul
         resolvedAt,
         // フォローアップ (2026-07-13): 初期状態以外で起票する場合はインポート時刻を初回応答日時にする
         firstRespondedAt,
+        // /code-review ultra 指摘対応 (2026-07-13): 作成日時を明示的に取り込み時刻 (now) に揃える。
+        // DB 既定 (実際の INSERT 時刻) に任せると、複数行をループで作成する間に経過した時間の分だけ
+        // createdAt が now より後になり、上の resolvedAt/firstRespondedAt (どちらも now) が
+        // createdAt より「前」になって品質メトリクスの平均時間が負値になり得るため
+        createdAt: now,
       });
       // 成功カウンタをインクリメント
       imported += 1;
@@ -602,7 +645,9 @@ export async function importTickets(csvText: string): Promise<ImportTicketsResul
 
     // 同テナントの他エージェント (インポート実行者を除く) に一括追加を通知する。
     // 個別チケットごとではなく 1 通にまとめることで通知の過多を防ぐ (200 件追加でも通知は 1 通)。
-    const agents = await repos.users.listAgents(tenantId); // 当該テナントの全エージェント一覧を取得
+    // /code-review ultra 指摘対応 (2026-07-13): 「担当者」列の名前解決で既に取得済みの場合は
+    // それを再利用し、同一リクエスト内で listAgents を二重に呼ばないようにする (§8 パフォーマンス)
+    const agents = agentsForAssignee ?? (await repos.users.listAgents(tenantId));
     // インポート実行者自身への通知は不要なので除外する (自分が実施したことは知っているため)
     const otherAgents = agents.filter((a) => a.id !== creatorId);
     if (otherAgents.length > 0) {

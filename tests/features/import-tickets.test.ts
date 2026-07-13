@@ -445,6 +445,33 @@ describe('importTickets', () => {
       const ticket = [...store.tickets.values()][0];
       expect(ticket?.assigneeId).toBeNull();
     });
+
+    // /code-review ultra 指摘対応 (2026-07-13): 同姓同名のエージェントが複数存在する場合、
+    // 名前 → ID の Map で無言でどちらか一方に misassign されてしまうと、拠点/カテゴリの
+    // 誤りより深刻 (チケットの所有権を誤らせる) な回帰になる。エラー行として記録され、
+    // どちらのエージェントにも起票されないことを確認する。
+    it('同姓同名のエージェントが複数いる場合はエラーとして記録され起票されない', async () => {
+      // u-agt-2 (エージェント2) と同じ表示名を持つ 3 人目のエージェントを追加する
+      const now = new Date();
+      store.users.set('u-agt-3', {
+        id: 'u-agt-3',
+        email: 'agent3@example.com',
+        name: 'エージェント2', // u-agt-2 と同じ表示名 (同姓同名)
+        passwordHash: 'x',
+        role: 'agent',
+        tenantId: TENANT,
+        createdAt: now,
+        updatedAt: now,
+      });
+      const importTickets = await loadAction();
+      const csv = `件名,担当者\n複合機の紙詰まり,エージェント2`;
+      const result = await importTickets(csv);
+
+      expect(result.imported).toBe(0);
+      expect(result.errors).toHaveLength(1);
+      expect(result.errors[0].message).toContain('担当者名が重複しています');
+      expect(store.tickets.size).toBe(0);
+    });
   });
 
   // §3.1 フォローアップ (2026-07-10): 既存 Excel の完了済み行をそのまま取り込めるかを検証する
@@ -469,6 +496,13 @@ describe('importTickets', () => {
       // フォローアップ (2026-07-13): 完了系ステータスは初回応答も済んでいるはずなので
       // firstRespondedAt もインポート時刻でセットされる (SLA バッジ・品質メトリクスの回帰防止)
       expect(ticket?.firstRespondedAt).toBeInstanceOf(Date);
+      // /code-review ultra 指摘対応 (2026-07-13): resolvedAt/firstRespondedAt は createdAt と
+      // 同じ取り込み時刻を明示的に使うため、createdAt より前になってはいけない
+      // (前になると平均解決時間・平均初回応答時間の AVG(x - createdAt) が負値になる回帰)
+      expect(resolvedAtMs).toBeGreaterThanOrEqual(ticket!.createdAt.getTime());
+      expect(ticket!.firstRespondedAt!.getTime()).toBeGreaterThanOrEqual(
+        ticket!.createdAt.getTime(),
+      );
     });
 
     // 未完了系だが初期状態ではないラベル (「対応中」) を指定すると、resolvedAt は null のままだが
@@ -483,6 +517,10 @@ describe('importTickets', () => {
       expect(ticket?.status).toBe('InProgress');
       expect(ticket?.resolvedAt).toBeNull();
       expect(ticket?.firstRespondedAt).toBeInstanceOf(Date);
+      // /code-review ultra 指摘対応 (2026-07-13): firstRespondedAt が createdAt より前にならないこと
+      expect(ticket!.firstRespondedAt!.getTime()).toBeGreaterThanOrEqual(
+        ticket!.createdAt.getTime(),
+      );
     });
 
     // 「状況」列自体が無ければ従来どおりモードの既定初期ステータス (Lite: Open) で起票される (後方互換)。

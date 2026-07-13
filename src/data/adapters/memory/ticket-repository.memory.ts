@@ -250,7 +250,10 @@ export function makeTicketRepo(store: Store): TicketRepository {
 
     // 新規チケットを作成 (初期状態は 'New')
     async create(input) {
-      const now = new Date(); // 作成時刻
+      // /code-review ultra 指摘対応 (2026-07-13): CSV インポートは resolvedAt/firstRespondedAt が
+      // createdAt より前にならないよう、同じ取り込み時刻を明示的に渡す (Prisma アダプタと同じ方針)。
+      // 未指定なら通常どおりこの呼び出し時点の時刻を作成日時にする
+      const now = input.createdAt ?? new Date(); // 作成時刻
       // 新規チケット行を組み立て
       const ticket: Ticket = {
         id: nextId(store, 'tkt'), // 'tkt_...' 形式の一意 ID

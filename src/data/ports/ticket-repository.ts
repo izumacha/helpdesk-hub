@@ -89,6 +89,14 @@ export interface CreateTicketInput {
   // (平均初回応答時間) が永久に不正確になる (§2.1.2 フォローアップと同種の欠落)。
   // 未指定なら null (未応答のまま起票。Web フォーム/メール/LINE 取り込みの既定動作)
   firstRespondedAt?: Date | null;
+  // /code-review ultra 指摘対応 (2026-07-13): CSV インポートは resolvedAt/firstRespondedAt に
+  // 取り込みバッチ開始時点の時刻 (now) を使うが、createdAt は DB 側の @default(now()) や
+  // 各行の作成タイミングで個別に決まるため、複数行をループで作成する間に経過した時間の分だけ
+  // createdAt が now より後になり、resolvedAt/firstRespondedAt が createdAt より「前」になって
+  // 品質メトリクス (平均初回応答時間・平均解決時間) の AVG(resolvedAt - createdAt) が負値になり得る。
+  // CSV インポートはこの createdAt を明示的に同じ now で上書きし、常に
+  // resolvedAt/firstRespondedAt >= createdAt を保証する。未指定なら DB 既定 (作成時刻) のまま
+  createdAt?: Date;
 }
 
 // エスカレーション適用時の入力値

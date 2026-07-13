@@ -38,8 +38,9 @@ import { notifyNewTicketOutbound } from '@/lib/outbound-notify';
 import { notifyAgentsOfNewTicket } from '@/features/notifications/notify';
 // エージェント判定 (通知対象からの起票者自身の除外に使用)
 import { isAgent } from '@/lib/role';
-// 新規作成されたチケットの型 (通知本文の組み立てに使う最小限のフィールドのみ参照)
-import type { Ticket } from '@/domain/types';
+// 新規作成されたチケットの型 (通知本文の組み立てに使う最小限のフィールドのみ参照)。
+// Role は正準のロール型 (session.user.role と同じ型を使い、typo をコンパイル時に検出できるようにする)
+import type { Ticket, Role } from '@/domain/types';
 // Route Handler 向け共通レート制限ラッパー (ticket-comment 等と同じ 429 契約)
 import { checkRouteRateLimit } from '@/lib/route-rate-limit';
 
@@ -56,7 +57,7 @@ async function notifyAgentsOfWebTicket(
   tenantId: string,
   ticket: Ticket,
   creatorId: string,
-  creatorRole: string | null | undefined,
+  creatorRole: Role | null | undefined,
 ): Promise<void> {
   try {
     // テナント内のエージェント/管理者一覧を取得する (メール/LINE 取り込みと同じヘルパー)
@@ -74,8 +75,11 @@ async function notifyAgentsOfWebTicket(
       logPrefix: '[POST /api/tickets]',
     });
   } catch (notifyErr) {
-    // 通知失敗はログのみ (チケット起票は完了しているため応答は成功扱いのまま)
-    console.error('[POST /api/tickets] failed to notify agents of new ticket', notifyErr);
+    // /code-review ultra 指摘対応 (2026-07-13): 通知失敗はベストエフォート (チケット起票自体は
+    // 完了済みで応答は成功扱いのまま) であり、同じ性質の失敗を warn で扱うメール/LINE 取り込み
+    // (notifyAgentsOfNewTicket 呼び出し元) とログレベルを揃える。error だとアラート監視が
+    // 本来ページする必要のない非致命的な失敗にまで反応しうるため
+    console.warn('[POST /api/tickets] failed to notify agents of new ticket', notifyErr);
   }
 }
 
@@ -269,10 +273,13 @@ export async function POST(req: Request) {
       resolutionDueAt,
       firstResponseDueAt,
     });
-    // Phase 4: 外部チャネルへ新規問い合わせを通知する (ベストエフォート、失敗してもレスポンスには影響しない)
-    await notifyNewTicketOutbound(tenantId, ticket);
-    // テナント内エージェントへアプリ内通知 (ベストエフォート、失敗してもレスポンスには影響しない)
-    await notifyAgentsOfWebTicket(tenantId, ticket, userId, session.user.role);
+    // Phase 4: 外部チャネルへ新規問い合わせを通知する (ベストエフォート、失敗してもレスポンスには影響しない)。
+    // テナント内エージェントへのアプリ内通知とは互いに独立した I/O なので Promise.all で並行実行する
+    // (§8 パフォーマンス。§5.4.1 フォローアップで同種の直列積み上がりを解消した方針を踏襲する)
+    await Promise.all([
+      notifyNewTicketOutbound(tenantId, ticket),
+      notifyAgentsOfWebTicket(tenantId, ticket, userId, session.user.role),
+    ]);
     return NextResponse.json(ticket, { status: 201 });
   }
 
@@ -347,10 +354,12 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: '添付ファイルの保存に失敗しました' }, { status: 500 });
   }
   // ここに到達するのはチケット + 添付の作成が完全に成功した場合のみ。
-  // 外部通知は try/catch の外で行い、添付ロールバック処理と失敗要因を混同しない
-  await notifyNewTicketOutbound(tenantId, createdTicket);
-  // テナント内エージェントへアプリ内通知 (ベストエフォート、失敗してもレスポンスには影響しない)
-  await notifyAgentsOfWebTicket(tenantId, createdTicket, userId, session.user.role);
+  // 外部通知は try/catch の外で行い、添付ロールバック処理と失敗要因を混同しない。
+  // 2 つの通知は互いに独立した I/O なので Promise.all で並行実行する (§8 パフォーマンス)
+  await Promise.all([
+    notifyNewTicketOutbound(tenantId, createdTicket),
+    notifyAgentsOfWebTicket(tenantId, createdTicket, userId, session.user.role),
+  ]);
   // 成功: 作成された行を 201 で返す
   return NextResponse.json(createdTicket, { status: 201 });
 }
