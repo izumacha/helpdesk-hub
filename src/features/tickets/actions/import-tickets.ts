@@ -142,6 +142,10 @@ interface ValidatedRow {
   // §3.1 フォローアップ (2026-07-10): 変換済みのステータス (null = 列なし/セル空 → 呼び出し側が
   // initialStatusForMode の既定値にフォールバックする)
   status: TicketStatus | null;
+  // フォローアップ (2026-07-13): 担当者名 (trim 済み。null = 未指定。実在確認は拠点/カテゴリと
+  // 同じく DB を持つ呼び出し側で行う)。CSV エクスポートは「担当者」列を出力するのにインポート側に
+  // 対応する読み取りが無く、エクスポート→編集→再インポートの往復で担当者情報が失われていた
+  assigneeName: string | null;
 }
 
 // CSV ヘッダの列インデックス一覧
@@ -153,6 +157,7 @@ interface ColumnIndices {
   locationIndex: number; // 「拠点」列 (-1 = 未指定)
   categoryIndex: number; // 「カテゴリ」列 (-1 = 未指定。フォローアップ 2026-07-11)
   statusIndex: number; // 「状況」列 (-1 = 未指定。§3.1 フォローアップ)
+  assigneeIndex: number; // 「担当者」列 (-1 = 未指定。フォローアップ 2026-07-13)
 }
 
 // CSV 1 行分のセルを受け取り、バリデーション・型変換を行う純粋関数。
@@ -172,6 +177,7 @@ function validateImportRow(
     locationIndex,
     categoryIndex,
     statusIndex,
+    assigneeIndex,
   } = indices;
 
   // 件名セルを取り出す。前後の空白は除去する (空白だけのセルを「入力あり」と誤判定しないため)
@@ -230,9 +236,10 @@ function validateImportRow(
     }
   }
 
-  // 拠点セル・カテゴリセルを取り出す (未指定なら null。extractOptionalCell を共有)
+  // 拠点セル・カテゴリセル・担当者セルを取り出す (未指定なら null。extractOptionalCell を共有)
   const locationName = extractOptionalCell(cells, locationIndex);
   const categoryName = extractOptionalCell(cells, categoryIndex);
+  const assigneeName = extractOptionalCell(cells, assigneeIndex);
 
   // §3.1 フォローアップ (2026-07-10): 「状況」セルをテナントの現在モードのラベルから TicketStatus へ
   // 変換する。既存の問い合わせ管理 Excel には既に完了済みの行が大量に混ざっているのが実情で、
@@ -282,6 +289,7 @@ function validateImportRow(
       locationName,
       categoryName,
       status,
+      assigneeName,
     },
   };
 }
@@ -361,6 +369,9 @@ export async function importTickets(csvText: string): Promise<ImportTicketsResul
   // 拠点と同じく名前解決が必要なため列インデックスだけここで取得する)
   const categoryIndex = headers.indexOf('カテゴリ');
   const statusIndex = headers.indexOf('状況'); // 状況 (§3.1 フォローアップ。既存 Excel の完了済み行を再現する)
+  // フォローアップ (2026-07-13): 担当者名 (CSV エクスポートの「担当者」列と対称の項目。
+  // 拠点/カテゴリと同じく名前解決が必要なため列インデックスだけここで取得する)
+  const assigneeIndex = headers.indexOf('担当者');
 
   // データ行 (2 行目以降) を取り出す
   const dataLines = nonEmptyLines.slice(1);
@@ -384,12 +395,16 @@ export async function importTickets(csvText: string): Promise<ImportTicketsResul
   // 必要。カテゴリは拠点と異なり Pro モード専用の概念 (TicketForm.tsx の `{!isLite && (...)}` /
   // POST /api/tickets の `effectiveCategoryId = mode === 'lite' ? null : ...` 参照) のため、Lite
   // テナントでは列があっても名前解決自体を行わない (categoryId は常に null にする)。
-  // 拠点・カテゴリは互いに独立した取得のため Promise.all で並列化する (§8 パフォーマンス)。
-  const [locationsByName, categoriesByName] = await Promise.all([
+  // フォローアップ (2026-07-13): 「担当者」列も同じ名前解決が必要。拠点と同じく Lite/Pro
+  // どちらのモードでも使える概念 (§3.1 用語表「アサイン→担当を決める」) のため、カテゴリと
+  // 異なり mode によるガードは行わない。
+  // 拠点・カテゴリ・担当者は互いに独立した取得のため Promise.all で並列化する (§8 パフォーマンス)。
+  const [locationsByName, categoriesByName, agentsByName] = await Promise.all([
     buildNameToIdMap(locationIndex !== -1, () => repos.locations.listByTenant(tenantId)),
     buildNameToIdMap(categoryIndex !== -1 && mode !== 'lite', () =>
       repos.categories.list(tenantId),
     ),
+    buildNameToIdMap(assigneeIndex !== -1, () => repos.users.listAgents(tenantId)),
   ]);
 
   // 集計用カウンタとエラーリストを初期化する
@@ -405,6 +420,7 @@ export async function importTickets(csvText: string): Promise<ImportTicketsResul
     locationIndex,
     categoryIndex,
     statusIndex,
+    assigneeIndex,
   };
 
   // データ行を 1 件ずつ処理する (部分成功を許可するため、1 件エラーでも他を続ける)
@@ -454,6 +470,7 @@ export async function importTickets(csvText: string): Promise<ImportTicketsResul
       locationName,
       categoryName,
       status: parsedStatus,
+      assigneeName,
     } = validation.data;
     // 「状況」列が未指定 (null) ならモードの既定初期ステータスにフォールバックする
     const status = parsedStatus ?? initialStatus;
@@ -461,6 +478,13 @@ export async function importTickets(csvText: string): Promise<ImportTicketsResul
     // インポート時刻を解決日時として記録する (update-ticket.ts の完了判定と同じ getCompletionStatuses
     // を共有し、「完了」の定義が呼び出し箇所ごとに食い違わないようにする)
     const resolvedAt = getCompletionStatuses(mode).includes(status) ? now : null;
+    // フォローアップ (2026-07-13): 「状況」列がモードの初期状態 (Lite: 未対応 / Pro: 新規) 以外を
+    // 指定していた場合、その行は既に着手済み (対応中・完了等) であり、実運用の Excel 台帳では
+    // 既にエージェントの初回対応が済んでいたはずである。CSV には応答者・応答日時の列が無いため
+    // インポート時刻で近似する (resolvedAt と同じ「正確な履歴が無いので取り込み時刻で代替する」方針)。
+    // これを設定しないと、Pro モードの SLA バッジ・品質メトリクス (平均初回応答時間) が
+    // インポートされた履歴チケットを永久に「未応答」として扱ってしまう (§2.1.2 と同種の欠落)
+    const firstRespondedAt = status !== initialStatus ? now : null;
 
     // 拠点名が指定されていれば ID に解決する (resolveNameToId を共有)。テナントに存在しない
     // 拠点名はタイポや削除済み拠点の可能性が高く、無言で「拠点未設定」にすると取り込んだデータの
@@ -488,6 +512,20 @@ export async function importTickets(csvText: string): Promise<ImportTicketsResul
         continue;
       }
       categoryId = resolved.id;
+    }
+
+    // フォローアップ (2026-07-13): 担当者名が指定されていれば ID に解決する (resolveNameToId を
+    // 共有)。拠点と同じく Lite/Pro 両モードで使える概念のため mode によるガードは行わない。
+    // テナントに存在しない担当者名はタイポや退職済みメンバーの可能性が高く、無言で「未アサイン」
+    // にすると取り込んだデータの担当者情報が消えたことに気づけないため、エラー行として記録する。
+    let assigneeId: string | null = null;
+    if (assigneeName !== null) {
+      const resolved = resolveNameToId(assigneeName, agentsByName, '担当者');
+      if (!resolved.ok) {
+        errors.push({ row: rowNum, message: resolved.message });
+        continue;
+      }
+      assigneeId = resolved.id;
     }
 
     // Phase 4 課金: 残枠を使い切っていたらこの行以降は起票せずエラーとして記録する
@@ -518,8 +556,12 @@ export async function importTickets(csvText: string): Promise<ImportTicketsResul
         // (Web フォーム・メール・LINE 取り込みと同じ SLA ヘルパーを使う)
         firstResponseDueAt: calculateFirstResponseDueAt(priority, now),
         locationId, // 拠点 ID (「拠点」列があれば名前解決済み、無ければ null)
+        // フォローアップ (2026-07-13): 担当者 ID (「担当者」列があれば名前解決済み、無ければ未アサイン)
+        assigneeId,
         // §3.1 フォローアップ: 完了系ステータスで起票する場合はインポート時刻を解決日時にする
         resolvedAt,
+        // フォローアップ (2026-07-13): 初期状態以外で起票する場合はインポート時刻を初回応答日時にする
+        firstRespondedAt,
       });
       // 成功カウンタをインクリメント
       imported += 1;

@@ -72,6 +72,9 @@ export interface CreateTicketInput {
   priority: Priority; // 優先度
   categoryId: string | null; // カテゴリ (無指定は null)
   locationId?: string | null; // 拠点 ID (Phase 4 多拠点。未指定は null)
+  // フォローアップ (2026-07-13): CSV インポートで「担当者」列を名前解決した ID (未指定は null=未アサイン)。
+  // Web フォーム/メール/LINE 取り込みは起票時に担当者を指定できないため常に未指定のままになる
+  assigneeId?: string | null;
   creatorId: string; // 起票者 ID
   tenantId: string; // 所属テナント ID (マルチテナント化のキー)
   status?: TicketStatus; // 初期ステータス (未指定なら DB 既定の New。Lite では 'Open'=未対応 で起票する)
@@ -80,6 +83,12 @@ export interface CreateTicketInput {
   // §3.1 フォローアップ (2026-07-10): CSV インポートで「状況」列が完了系ステータスを指定していた
   // 場合の解決日時 (インポート時刻)。未指定なら null (未解決のまま起票)
   resolvedAt?: Date | null;
+  // フォローアップ (2026-07-13): CSV インポートで「状況」列がモードの初期状態以外を指定していた
+  // 場合の初回応答日時 (インポート時刻)。resolvedAt と対になるフィールドで、既に着手/完了済みの
+  // 行を「未応答」のまま起票してしまうと、Pro モードの SLA バッジ・品質メトリクス
+  // (平均初回応答時間) が永久に不正確になる (§2.1.2 フォローアップと同種の欠落)。
+  // 未指定なら null (未応答のまま起票。Web フォーム/メール/LINE 取り込みの既定動作)
+  firstRespondedAt?: Date | null;
 }
 
 // エスカレーション適用時の入力値

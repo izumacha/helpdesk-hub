@@ -225,12 +225,16 @@ export function makeTicketRepo(db: PrismaLike): TicketRepository {
           priority: input.priority,
           categoryId: input.categoryId,
           locationId: input.locationId ?? null, // 拠点 ID (Phase 4 多拠点。未指定なら null)
+          // フォローアップ (2026-07-13): CSV インポートで担当者名を解決した ID (未指定なら未アサイン)
+          assigneeId: input.assigneeId ?? null,
           creatorId: input.creatorId,
           tenantId: input.tenantId, // テナント所属を必ず保存
           firstResponseDueAt: input.firstResponseDueAt ?? null,
           resolutionDueAt: input.resolutionDueAt ?? null,
           // §3.1 フォローアップ: CSV インポートで完了系ステータス指定時の解決日時 (未指定なら null)
           resolvedAt: input.resolvedAt ?? null,
+          // フォローアップ (2026-07-13): CSV インポートで初期状態以外を指定時の初回応答日時 (未指定なら null)
+          firstRespondedAt: input.firstRespondedAt ?? null,
         },
         include: REFS_INCLUDE, // 作成直後に関連情報も取得
       });

@@ -262,13 +262,15 @@ export function makeTicketRepo(store: Store): TicketRepository {
         updatedAt: now,
         firstResponseDueAt: input.firstResponseDueAt ?? null,
         resolutionDueAt: input.resolutionDueAt ?? null,
-        firstRespondedAt: null,
+        // フォローアップ (2026-07-13): CSV インポートで初期状態以外を指定時の初回応答日時 (未指定なら null)
+        firstRespondedAt: input.firstRespondedAt ?? null,
         // §3.1 フォローアップ: CSV インポートで完了系ステータス指定時の解決日時 (未指定なら null)
         resolvedAt: input.resolvedAt ?? null,
         escalatedAt: null,
         escalationReason: null,
         creatorId: input.creatorId,
-        assigneeId: null, // 初期は未アサイン
+        // フォローアップ (2026-07-13): CSV インポートで担当者名を解決した ID (未指定なら未アサイン)
+        assigneeId: input.assigneeId ?? null,
         categoryId: input.categoryId,
         locationId: input.locationId ?? null, // 拠点 ID (Phase 4 多拠点。未指定なら null)
         tenantId: input.tenantId, // 所属テナントを必ず保存
