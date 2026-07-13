@@ -30,16 +30,30 @@ export interface IdempotencyOps {
   register(tx: Repos, key: string, ticketId: string, tenantId: string): Promise<void>;
 }
 
+// フォローアップ (2026-07-13): メール取り込みの添付ファイル対応で、チケット起票と添付メタ INSERT を
+// 同一トランザクションで原子的に行う必要が生じたため、起票確定直後に追加の副作用を差し込めるフックを
+// 用意する。汎用的なフック名にしているのは、LINE 取り込み等の他チャネルが将来同様の需要を持った際も
+// この仕組みを再利用できるようにするため (添付専用の名前にしない)。
+export interface CreateTicketIdempotentOptions {
+  // チケット起票確定後、同一トランザクション内 (冪等化キーが無い場合は非トランザクションの repos) で
+  // 実行する追加の副作用。ストレージ書き込みのような非トランザクション I/O をここで行う場合、
+  // 失敗時の後始末 (書き込み済みファイルの削除等) は呼び出し側の責務とする
+  // (uow は DB 書き込みをロールバックするだけで、既にストレージへ書き込み済みのファイルは削除しない)。
+  onCreated?: (tx: Repos, ticketId: string) => Promise<void>;
+}
+
 // 冪等性を保ったままチケットを起票する。
 export async function createTicketIdempotent(
   ops: IdempotencyOps, // チャネル固有の対応表操作 (LINE/メールで異なる Port 呼び分け)
   key: string | null, // 冪等化キー。取れなかった場合は null (冪等化なしで単発起票)
   tenantId: string,
   ticketInput: CreateTicketInput,
+  options?: CreateTicketIdempotentOptions,
 ): Promise<{ id: string; alreadyExisted: boolean }> {
   // キーが取れないイベント/メールは突き合わせようがないため、従来どおり単発で起票する
   if (!key) {
     const created = await repos.tickets.create(ticketInput);
+    if (options?.onCreated) await options.onCreated(repos, created.id);
     return { id: created.id, alreadyExisted: false };
   }
 
@@ -53,6 +67,9 @@ export async function createTicketIdempotent(
         // 起票してから対応表に登録する (同一トランザクション内なので原子的)
         const created = await tx.tickets.create(ticketInput);
         await ops.register(tx, key, created.id, tenantId);
+        // 起票確定後の追加副作用 (添付メタ INSERT 等) を同一トランザクション内で実行する。
+        // 重複判定 (already) で早期 return したケースでは呼ばない (別リクエストが既に処理済みのため)
+        if (options?.onCreated) await options.onCreated(tx, created.id);
         return { id: created.id, alreadyExisted: false };
       },
       { isolationLevel: 'Serializable' },

@@ -6,6 +6,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 // メモリ実装の context (store/repos)
 import { createMemoryContext, type Store } from '@/data/adapters/memory';
+// メモリストレージ (添付バイナリ用。フォローアップ 2026-07-13)
+import { createMemoryStorage, type MemoryStoragePort } from '@/data/adapters/memory/storage.memory';
 // 型のみ
 import type { Repos } from '@/data/ports/unit-of-work';
 
@@ -56,6 +58,8 @@ vi.mock('@/lib/tenant-plan', async (importOriginal) => {
 let store: Store;
 let repos: Repos;
 let uow: UnitOfWork;
+// 添付ファイルのバイナリ本体を保持するメモリストレージ (フォローアップ 2026-07-13)
+let storage: MemoryStoragePort;
 
 // @/data を差し替え (getter で beforeEach の上書きを反映)
 vi.mock('@/data', () => ({
@@ -64,6 +68,13 @@ vi.mock('@/data', () => ({
   },
   get uow() {
     return uow;
+  },
+}));
+
+// storage は別モジュール (Edge runtime 汚染回避のため route.ts が個別 import している)
+vi.mock('@/data/storage', () => ({
+  get storage() {
+    return storage;
   },
 }));
 
@@ -178,6 +189,8 @@ describe('POST /api/inbound/email', () => {
     store = ctx.store;
     repos = ctx.repos;
     uow = ctx.uow;
+    // 添付ファイル用のメモリストレージも毎回作り直す (フォローアップ 2026-07-13)
+    storage = createMemoryStorage();
     seed();
     vi.stubEnv('INBOUND_EMAIL_SECRET', SECRET);
     // 各テストで送信捕捉バッファを空にする (テスト間で送信が混ざらないように)
@@ -839,6 +852,137 @@ describe('POST /api/inbound/email', () => {
       expect(res.status).toBe(202);
       expect(store.quarantinedEmails.size).toBe(1);
       expect(Array.from(store.quarantinedEmails.values())[0].reason).toBe('quota_exceeded');
+    });
+  });
+
+  // フォローアップ (2026-07-13): 監査で発見したギャップの解消。SendGrid Inbound Parse の
+  // 添付ファイル (attachments 件数 + attachment1..N) を一切読んでおらず、スマホで撮った写真を
+  // メールに添付して送るだけで済ませたい SMB ペルソナ (§1.2) の主要ユースケースがメール経由では
+  // 実現できていなかった不備の回帰テスト。
+  describe('添付ファイル (フォローアップ 2026-07-13)', () => {
+    // 既知のマジックバイト (validateUploadedFiles の整合チェックを通すため必要。
+    // tests/features/attachments/post-comment-route.test.ts と同じ方式)
+    const PNG_MAGIC = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+
+    // 申告 MIME に対応するマジックバイトを先頭に置いた File を作る
+    function makeAttachmentFile(name: string, type: string, body: string): File {
+      const text = new TextEncoder().encode(body);
+      const data = type === 'image/png' ? new Uint8Array([...PNG_MAGIC, ...text]) : text;
+      return new File([data], name, { type });
+    }
+
+    // SendGrid Inbound Parse 形式 (attachments 件数 + attachment1..N) の multipart Request を組み立てる
+    function makeAttachmentRequest(fields: Record<string, string>, files: File[]): Request {
+      const form = new FormData();
+      for (const [k, v] of Object.entries(fields)) form.set(k, v);
+      if (files.length > 0) {
+        form.set('attachments', String(files.length));
+        files.forEach((f, i) => form.set(`attachment${i + 1}`, f, f.name));
+      }
+      return new Request('http://localhost/api/inbound/email', {
+        method: 'POST',
+        headers: { 'x-inbound-secret': SECRET },
+        body: form,
+      });
+    }
+
+    // 新規起票 + 有効な画像添付 1 枚 → チケット作成 + 添付メタ INSERT (commentId は null) +
+    // バイト列が storage に書かれること
+    it('新規起票時に有効な画像添付があれば保存される', async () => {
+      const file = makeAttachmentFile('photo.png', 'image/png', 'fake-image-bytes');
+      const { POST } = await import('@/app/api/inbound/email/route');
+      const res = await POST(
+        makeAttachmentRequest(
+          {
+            to: VALID_EMAIL.to,
+            from: VALID_EMAIL.from,
+            subject: VALID_EMAIL.subject,
+            text: VALID_EMAIL.text,
+          },
+          [file],
+        ),
+      );
+      expect(res.status).toBe(201);
+      const json = (await res.json()) as { ticketId: string };
+      // チケットに紐づく添付が 1 件、commentId は null (新規起票への添付) で記録される
+      const attachments = [...store.attachments.values()].filter(
+        (a) => a.ticketId === json.ticketId,
+      );
+      expect(attachments).toHaveLength(1);
+      expect(attachments[0].commentId).toBeNull();
+      expect(attachments[0].originalName).toBe('photo.png');
+      // storage にバイト列が実際に書き込まれていること
+      expect(storage.entries.size).toBe(1);
+    });
+
+    // スレッド追記 (既存チケットへのコメント) + 有効な画像添付 → コメントに紐づけて保存されること
+    it('スレッド追記時に有効な画像添付があればコメントに紐づけて保存される', async () => {
+      const { POST } = await import('@/app/api/inbound/email/route');
+      // 1 通目: 新規起票 (添付なし)
+      const first = await POST(
+        makeRequest({ ...VALID_EMAIL, messageId: '<attach-thread-1@example.com>' }),
+      );
+      expect(first.status).toBe(201);
+      const { ticketId } = (await first.json()) as { ticketId: string };
+
+      // 2 通目: 1 通目への返信に画像添付
+      const file = makeAttachmentFile('reply-photo.png', 'image/png', 'reply-bytes');
+      const reply = await POST(
+        makeAttachmentRequest(
+          {
+            to: VALID_EMAIL.to,
+            from: VALID_EMAIL.from,
+            subject: 'Re: プリンターが動きません',
+            text: '追加の写真です',
+            'in-reply-to': '<attach-thread-1@example.com>',
+            'message-id': '<attach-thread-2@example.com>',
+          },
+          [file],
+        ),
+      );
+      expect(reply.status).toBe(200);
+      // コメントに紐づく添付が 1 件記録されていること (commentId が非 null)
+      const attachments = [...store.attachments.values()].filter((a) => a.ticketId === ticketId);
+      expect(attachments).toHaveLength(1);
+      expect(attachments[0].commentId).not.toBeNull();
+      expect(storage.entries.size).toBe(1);
+    });
+
+    // 許可外 MIME の添付があっても、メール全体 (起票) を止めずに添付なしで処理を継続すること。
+    // Web フォーム/コメント投稿と異なりこの Webhook にはユーザーへの即時フィードバック画面が無いため、
+    // 添付だけを黙って落として本文だけは問い合わせとして残す方針 (route.ts のコメント参照)
+    it('許可外 MIME の添付は無視され、本文だけで起票される', async () => {
+      const file = makeAttachmentFile('doc.pdf', 'application/pdf', 'not-an-image');
+      const { POST } = await import('@/app/api/inbound/email/route');
+      const res = await POST(
+        makeAttachmentRequest(
+          {
+            to: VALID_EMAIL.to,
+            from: VALID_EMAIL.from,
+            subject: VALID_EMAIL.subject,
+            text: VALID_EMAIL.text,
+          },
+          [file],
+        ),
+      );
+      // 添付が拒否されても起票自体は成功する
+      expect(res.status).toBe(201);
+      const json = (await res.json()) as { ticketId: string };
+      expect(store.tickets.get(json.ticketId)?.body).toBe(VALID_EMAIL.text);
+      // 添付は 1 件も記録されない (無言で落とす)
+      expect(
+        [...store.attachments.values()].filter((a) => a.ticketId === json.ticketId),
+      ).toHaveLength(0);
+      expect(storage.entries.size).toBe(0);
+    });
+
+    // 添付が無いメールは従来どおり (回帰なし)
+    it('添付が無いメールは従来どおり起票され、attachments テーブルは空のまま', async () => {
+      const { POST } = await import('@/app/api/inbound/email/route');
+      const res = await POST(makeRequest(VALID_EMAIL));
+      expect(res.status).toBe(201);
+      expect(store.attachments.size).toBe(0);
+      expect(storage.entries.size).toBe(0);
     });
   });
 });
