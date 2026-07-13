@@ -206,6 +206,21 @@ describe('POST /api/inbound/email', () => {
     expect(ticket?.firstResponseDueAt).not.toBeNull();
   });
 
+  // 回帰防止: メール起票が Slack 等の外部通知 (オプトイン) にしか頼っておらず、
+  // LINE 取り込み・CSV インポートと違ってエージェントへのアプリ内通知が一切無かった不備の修正確認
+  it('新規起票時にテナント内の全エージェントへ imported 通知を作成する', async () => {
+    const { POST } = await import('@/app/api/inbound/email/route');
+    const res = await POST(makeRequest(VALID_EMAIL));
+    expect(res.status).toBe(201);
+    const json = (await res.json()) as { ticketId: string };
+    // エージェント (AGENT_ID) 宛に 'imported' 種別の通知が作成されていること
+    const notifications = [...store.notifications.values()].filter((n) => n.userId === AGENT_ID);
+    expect(notifications).toHaveLength(1);
+    expect(notifications[0]?.type).toBe('imported');
+    expect(notifications[0]?.ticketId).toBe(json.ticketId);
+    expect(notifications[0]?.tenantId).toBe(TENANT);
+  });
+
   // シークレット未設定 (env なし) なら fail-closed で 500
   it('シークレット未設定なら 500 を返す', async () => {
     vi.stubEnv('INBOUND_EMAIL_SECRET', '');

@@ -350,6 +350,26 @@ CSV エクスポート（`GET /api/tickets/export`）側のヘッダー・デー
 - CSV 上の列名「解決期限」はチケット詳細画面 (`/tickets/[id]`) の表示ラベルとしては引き続き使われて
   おり、この変更は CSV の列名のみを対象とする（画面表示の用語は変更していない）。
 
+#### 3.5 フォローアップ（2026-07-13）: メール取り込みの新規起票がエージェントへアプリ内通知されていなかった
+
+監査で発見したギャップ: 新規問い合わせの入口チャネル（§5.3 入口チャネルの Adapter 化）は Web フォーム・
+LINE・CSV インポート・メールの 4 系統あるが、「新規起票をエージェントへ即時に気づかせる」アプリ内通知
+（`Notification` テーブルへの `type: 'imported'` 書き込み ＋ SSE での未読件数即時配信）は LINE 取り込み
+（`processLineEvent`）と CSV インポート（`import-tickets.ts`）にしか実装されておらず、メール取り込み
+（`POST /api/inbound/email`）だけが欠けていた。メール起票が担当者に伝わる経路は Slack/Teams/Chatwork
+通知（`notifyNewTicketOutbound`）だけだったが、これはテナントごとに個別設定が必要な任意のオプトイン
+機能であり、未設定のテナント（§1 の「町工場の事務員」ペルソナのように最小構成で始める中小企業ほど
+起こりやすい）では、メールで届いた問い合わせに誰も気づけないまま `/tickets` を手動で開くまで放置され
+得た。
+
+- `src/app/api/inbound/email/route.ts`: 新規起票確定後（重複判定の直後、Slack 等の外部通知より前）に、
+  `repos.users.listAgents(tenant.id)` でテナント内の全エージェントを取得し、送信者自身がエージェントなら
+  本人以外へ、依頼者からの起票なら全エージェントへ `type: 'imported'` の通知を作成する。LINE 取り込みの
+  `notifyTargets` 判定・`Promise.allSettled` による部分失敗許容・`broadcastUnreadCountToMany` での SSE
+  即時配信を、そのまま同じ形で踏襲した（通知失敗はログのみでチケット起票自体は成功のまま継続する）。
+- `tests/features/inbound-email-route.test.ts`: 新規起票時にエージェント宛の `imported` 通知が作成される
+  ことを検証する回帰テストを追加した。
+
 ### Phase 4 — マネタイズと運用（継続）
 
 - [x] サブスク課金（Stripe Billing）: Free / Standard / Pro の 3 段階
