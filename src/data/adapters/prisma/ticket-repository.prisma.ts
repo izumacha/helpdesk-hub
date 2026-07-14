@@ -247,6 +247,10 @@ export function makeTicketRepo(db: PrismaLike): TicketRepository {
     },
 
     // 状態と解決日時を更新 (tenantId スコープ。updateMany で id+tenantId AND 一致のみ更新)
+    // 注意: このメソッド自体は遷移の妥当性を検証しない (Ports & Adapters の層分離により、
+    // ここは純粋な永続化のみを担う)。呼び出し元は必ず src/domain/ticket-status.ts の
+    // isValidTransition() / getAllowedLiteTransitions() でゲートしてから呼ぶこと
+    // (src/features/tickets/actions/update-ticket.ts::updateTicketStatus が唯一の正しい呼び出し元)。
     async updateStatus(id, status, resolvedAt, tenantId) {
       await db.ticket.updateMany({ where: { id, tenantId }, data: { status, resolvedAt } });
     },
@@ -262,6 +266,9 @@ export function makeTicketRepo(db: PrismaLike): TicketRepository {
     },
 
     // エスカレーション扱いに更新 (tenantId スコープ)
+    // 注意: updateStatus と同じく、ここでは status: 'Escalated' への遷移可否を検証しない。
+    // 呼び出し元 (src/features/tickets/actions/update-ticket.ts::escalateTicket) が
+    // isValidTransition(ticket.status, 'Escalated', mode) を事前にチェック済みであることが前提。
     async markEscalated(id, args, tenantId) {
       await db.ticket.updateMany({
         where: { id, tenantId },
