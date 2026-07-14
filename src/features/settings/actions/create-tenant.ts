@@ -30,6 +30,8 @@ import { createTenantSchema } from '@/lib/validations/invite';
 import { FREE_TRIAL_DURATION_MS } from '@/lib/plan-guard';
 // テナント + 初代管理者作成の共通ロジック (§7.1 セルフサーブサインアップと共有 / §6 DRY)
 import { provisionTenantWithAdmin } from '@/lib/tenant-provisioning';
+// フォローアップ (2026-07-14 #2): テナント作成 (admin 権限付与) を監査ログへ記録する共通ヘルパー
+import { recordSettingsAudit } from '@/lib/settings-audit';
 
 // createTenant の戻り値型 (作成したテナント ID と初代管理者メールを返す)
 export interface CreateTenantResult {
@@ -95,6 +97,16 @@ export async function createTenant(formData: FormData): Promise<CreateTenantResu
     }
     throw err;
   }
+
+  // フォローアップ (2026-07-14 #2): 監査で発見したギャップの解消。テナント作成 (新しい admin
+  // 権限の付与) を監査ログに記録する。§4.5 の invitation_issue と同じ「操作が成功した後に呼び、
+  // 記録失敗は本来の操作の成否に影響させない」方針
+  await recordSettingsAudit({
+    tenantId: result.tenantId,
+    actorId: session.user.id,
+    action: 'tenant_create',
+    logPrefix: '[create-tenant]',
+  });
 
   // 作成したテナント ID と管理者メールを返す
   return result;

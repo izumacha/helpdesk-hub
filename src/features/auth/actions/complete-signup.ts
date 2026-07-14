@@ -26,6 +26,8 @@ import { isUniqueConstraintError } from '@/lib/prisma-errors';
 import { hashSignupToken } from '@/lib/signup';
 // テナント + 初代管理者作成の共通ロジック (create-tenant.ts と共有 / §6 DRY)
 import { provisionTenantWithAdmin } from '@/lib/tenant-provisioning';
+// フォローアップ (2026-07-14 #2): テナント作成 (admin 権限付与) を監査ログへ記録する共通ヘルパー
+import { recordSettingsAudit } from '@/lib/settings-audit';
 // 完了フォームの入力検証スキーマ
 import { completeSignupSchema } from '@/lib/validations/signup';
 
@@ -62,9 +64,14 @@ export async function completeSignup(
 
   // 消費 (単回使用ガード) → テナント + ユーザー作成を 1 トランザクションで行う。
   // 途中で例外が出れば消費もロールバックされ、サインアップリンクは再利用可能なまま残る。
-  let result: CompleteSignupResult;
+  // フォローアップ (2026-07-14 #2): トランザクション内で作成した tenantId/adminId は、
+  // トランザクション外で行う監査ログ記録 (recordSettingsAudit) にも必要なため、
+  // クライアントへの戻り値 (email) と合わせて uow.run の戻り値自体に含めて持ち出す
+  // (外側の let 変数をクロージャ内で再代入する形だと TypeScript の制御フロー解析が
+  // クロージャ内の代入を追えず、代入後も null 型のまま narrow されてしまうため避ける)。
+  let provisioned: { email: string; tenantId: string; adminId: string };
   try {
-    result = await uow.run(async (tx) => {
+    provisioned = await uow.run(async (tx) => {
       // サインアップトークンを原子的に消費する。未消費かつ失効前のときだけ成功して行を返す
       const signup = await tx.signupTokens.consumeValidToken({ tokenHash, now });
       // 無効 / 失効 / 既使用ならここで中断 (どれも同じ案内にして詮索余地を減らす)
@@ -73,7 +80,7 @@ export async function completeSignup(
       }
 
       // テナント + 初代管理者を作成する (adminEmail はトークン行由来。入力からは受け取らない)
-      await provisionTenantWithAdmin(tx, {
+      const { tenantId, adminId } = await provisionTenantWithAdmin(tx, {
         tenantName,
         industry,
         adminName,
@@ -82,8 +89,8 @@ export async function completeSignup(
         trialEndsAt: new Date(now.getTime() + FREE_TRIAL_DURATION_MS),
       });
 
-      // クライアントがログインに使うメールを返す
-      return { email: signup.email };
+      // クライアントへの戻り値 (email) と監査ログ記録に使う ID をまとめて返す
+      return { email: signup.email, tenantId, adminId };
     });
   } catch (err) {
     // /code-review ultra 指摘対応 (accept-invitation.ts の前例に倣う): tx 内の findByEmail
@@ -101,8 +108,20 @@ export async function completeSignup(
     throw err;
   }
 
-  // トランザクションの結果 (作成に使ったメール) を返す
-  return result;
+  // フォローアップ (2026-07-14 #2): 監査で発見したギャップの解消。テナント作成 (新しい admin
+  // 権限の付与) を監査ログに記録する。セルフサーブサインアップには事前セッションが存在しない
+  // (トークン自体が認可の根拠) ため、actorId には「操作を行った人物 = 今まさに作成された
+  // 初代管理者自身」の ID を使う (Stripe Webhook 起因の actorId: null 「システムによる自動変更」
+  // とは異なり、実在する人物の意思による操作であることを区別する)。
+  await recordSettingsAudit({
+    tenantId: provisioned.tenantId,
+    actorId: provisioned.adminId,
+    action: 'tenant_create',
+    logPrefix: '[complete-signup]',
+  });
+
+  // クライアントがログインに使うメールを返す
+  return { email: provisioned.email };
 }
 
 // サインアップ完了ページが「このトークンが今この瞬間に有効か」を表示判定するための読み取り専用

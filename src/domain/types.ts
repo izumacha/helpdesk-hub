@@ -48,7 +48,11 @@ export type SettingsAuditAction =
   // フォローアップ (2026-07-13): Stripe 起因のプラン変更 (アップグレード/ダウングレード/解約) は
   // §4.4 の tenant_mode_update (Pro モード強制解除の副作用のときのみ記録) では捕捉されず、
   // subscriptionPlan 自体の変更は一度も監査対象になっていなかった
-  | 'subscription_plan_update'; // サブスクリプションプランの変更 (Stripe Webhook 起因)
+  | 'subscription_plan_update' // サブスクリプションプランの変更 (Stripe Webhook 起因)
+  // フォローアップ (2026-07-14 #2): テナント作成は §4.5 の invitation_issue (agent 権限付与) と
+  // 同種の「新しい権限を付与する操作」であり、それより強い admin 権限そのものを付与する操作
+  // にもかかわらず監査対象から漏れていた
+  | 'tenant_create'; // テナント + 初代管理者の作成 (運用者による作成 / セルフサーブサインアップ)
 
 // メール/LINE 取り込みが起票せず隔離した理由。
 // prisma/schema.prisma の QuarantineReason enum および src/lib/constants.ts の
