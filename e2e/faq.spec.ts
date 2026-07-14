@@ -167,8 +167,11 @@ test.describe('/faq エージェント向け編集・非公開化', () => {
     const card = page.locator('div', { hasText: ORIGINAL_QUESTION }).last();
     await card.getByRole('button', { name: `${ORIGINAL_QUESTION} を編集`, exact: true }).click();
 
-    // 質問欄を新しい文言に書き換えて保存
-    await page.getByLabel('質問').fill(EDITED_QUESTION);
+    // 質問欄を新しい文言に書き換えて保存。getByLabel('質問') は aria-label に質問文自体を
+    // 含む他のボタンとも部分一致してしまう (Playwright の getByLabel は <label> 関連付けだけで
+    // なく aria-label 属性を持つ任意の要素にもマッチするため) ので、対象カード内の最初の
+    // テキストエリア (質問欄) を直接指定する
+    await card.getByRole('textbox').first().fill(EDITED_QUESTION);
     await page.getByRole('button', { name: '保存' }).click();
 
     // 編集後の質問文が表示され、編集前の文言は消えること
