@@ -23,8 +23,8 @@ import {
 import { getCurrentTenantMode } from '@/lib/tenant';
 // ステータス・優先度などの一元管理ラベル取得関数/定数
 import { getStatusLabel, PRIORITY_LABELS } from '@/lib/constants';
-// 型のみインポート (優先度/ステータス)
-import type { Priority, TicketStatus } from '@/domain/types';
+// 型のみインポート (優先度/ステータス/チケット詳細)
+import type { Priority, TicketStatus, TicketWithRefs } from '@/domain/types';
 // レート制限 (連打防止) の共通ヘルパー
 import { enforceRateLimit } from '@/lib/rate-limit';
 // Zod スキーマ (エスカレーション理由の検証用)
@@ -587,6 +587,39 @@ export async function updateTicketAssignee(ticketId: string, newAssigneeId: stri
 // 手段自体が存在しなかった)。担当者・ステータス・優先度と同じ「事後にエージェントが変更できる」
 // パターンをカテゴリ・拠点にも追加する。
 
+// チケット + 参照先候補 (カテゴリ・拠点) を取得し、存在確認まで行う共通ヘルパー。
+// /code-review ultra 指摘対応: updateTicketCategory / updateTicketLocation が「チケット取得 →
+// 候補取得 (tenantId スコープ) → チケット不在チェック → 候補不在チェック」という同型の処理を
+// 個別に複製していたため、2 箇所目の重複が生じた時点で共通化する (§6 DRY)。担当者変更
+// (updateTicketAssignee) はロール確認・メール/Slack 通知等の追加ロジックを持ち同型ではないため
+// 対象外とする。Promise.all の完了を待ってから「チケット不在」を先にチェックする順序は元の実装と
+// 揃えている (2 つの取得を個別に await して早期 throw すると、どちらが先に reject するかに
+// よって結果が非決定的になりうるため)。
+async function loadTicketAndRef<T extends { name: string }>(params: {
+  ticketId: string;
+  tenantId: string;
+  newRefId: string | null;
+  findById: (id: string, tenantId: string) => Promise<T | null>;
+  entityLabel: string; // エラーメッセージ・診断ログに使う日本語ラベル (例: 'カテゴリ' '拠点')
+  logPrefix: string; // 診断ログの接頭辞 (例: '[updateTicketCategory]')
+}): Promise<{ ticket: TicketWithRefs; newRef: T | null }> {
+  const { ticketId, tenantId, newRefId, findById, entityLabel, logPrefix } = params;
+  // チケットと新候補を並列で取得 (どちらも tenantId スコープ)
+  const [ticket, newRef] = await Promise.all([
+    repos.tickets.findByIdWithRefs(ticketId, tenantId),
+    newRefId ? findById(newRefId, tenantId) : Promise.resolve(null),
+  ]);
+  // チケットが無ければエラー
+  if (!ticket) throw new Error('チケットが見つかりません');
+  // 参照先を付ける場合は存在 / テナント一致を確認 (findById が tenantId スコープで
+  // 他テナントの ID には null を返すため、この判定だけでクロステナント割当も弾ける)
+  if (newRefId && !newRef) {
+    console.warn(`${logPrefix} rejected`, { ticketId, id: newRefId });
+    throw new Error(`指定された${entityLabel}を設定できません`);
+  }
+  return { ticket, newRef };
+}
+
 // チケットのカテゴリを変更するサーバーアクション
 export async function updateTicketCategory(ticketId: string, newCategoryId: string | null) {
   // セッション取得
@@ -608,22 +641,15 @@ export async function updateTicketCategory(ticketId: string, newCategoryId: stri
   const mode = await getCurrentTenantMode(tenantId);
   const effectiveCategoryId = mode === 'lite' ? null : newCategoryId;
 
-  // チケットと新カテゴリ候補を並列で取得 (どちらも tenantId スコープ)
-  const [ticket, newCategory] = await Promise.all([
-    repos.tickets.findByIdWithRefs(ticketId, tenantId),
-    effectiveCategoryId
-      ? repos.categories.findById(effectiveCategoryId, tenantId)
-      : Promise.resolve(null),
-  ]);
-
-  // チケットが無ければエラー
-  if (!ticket) throw new Error('チケットが見つかりません');
-  // カテゴリを付ける場合は存在 / テナント一致を確認 (findById が tenantId スコープで
-  // 他テナントの ID には null を返すため、この判定だけでクロステナント割当も弾ける)
-  if (effectiveCategoryId && !newCategory) {
-    console.warn('[updateTicketCategory] rejected', { ticketId, categoryId: effectiveCategoryId });
-    throw new Error('指定されたカテゴリを設定できません');
-  }
+  // チケット取得 + 新カテゴリ候補の存在確認をまとめて行う (共通ヘルパー)
+  const { ticket, newRef: newCategory } = await loadTicketAndRef({
+    ticketId,
+    tenantId,
+    newRefId: effectiveCategoryId,
+    findById: repos.categories.findById,
+    entityLabel: 'カテゴリ',
+    logPrefix: '[updateTicketCategory]',
+  });
 
   // 履歴に残す旧/新のカテゴリ名 (未分類は null)
   const oldName = ticket.category?.name ?? null;
@@ -664,20 +690,15 @@ export async function updateTicketLocation(ticketId: string, newLocationId: stri
   // 拠点はカテゴリと異なり Lite/Pro 両モードで使える概念 (TicketForm.tsx の拠点欄は
   // `locations.length > 0` のみで出し分けており mode によるガードが無い) なので mode 判定は不要
 
-  // チケットと新拠点候補を並列で取得 (どちらも tenantId スコープ)
-  const [ticket, newLocation] = await Promise.all([
-    repos.tickets.findByIdWithRefs(ticketId, tenantId),
-    newLocationId ? repos.locations.findById(newLocationId, tenantId) : Promise.resolve(null),
-  ]);
-
-  // チケットが無ければエラー
-  if (!ticket) throw new Error('チケットが見つかりません');
-  // 拠点を付ける場合は存在 / テナント一致を確認 (findById が tenantId スコープで
-  // 他テナントの ID には null を返すため、この判定だけでクロステナント割当も弾ける)
-  if (newLocationId && !newLocation) {
-    console.warn('[updateTicketLocation] rejected', { ticketId, locationId: newLocationId });
-    throw new Error('指定された拠点を設定できません');
-  }
+  // チケット取得 + 新拠点候補の存在確認をまとめて行う (共通ヘルパー)
+  const { ticket, newRef: newLocation } = await loadTicketAndRef({
+    ticketId,
+    tenantId,
+    newRefId: newLocationId,
+    findById: repos.locations.findById,
+    entityLabel: '拠点',
+    logPrefix: '[updateTicketLocation]',
+  });
 
   // 履歴に残す旧/新の拠点名 (未指定は null)
   const oldName = ticket.location?.name ?? null;

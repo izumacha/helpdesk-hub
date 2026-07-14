@@ -740,6 +740,17 @@ Phase 2 の差別化の本丸であるメール/LINE 取り込みチャネルを
   記録・存在しない ID の拒否・cross-tenant 拒否）の回帰テストを追加し、カテゴリは Lite モードで
   静かに null へフォールバックすること、拠点は Lite モードでも通常どおり設定できることを
   追加で検証した。
+- `/code-review ultra` 指摘対応: `updateTicketCategory`/`updateTicketLocation` が「チケット取得 →
+  候補取得 → 存在確認」という同型の処理を個別に複製していた（2 箇所目の重複）ため、
+  `loadTicketAndRef`（`update-ticket.ts`）として共通化した。あわせて `AssigneeSelect`/
+  `CategorySelect`/`LocationSelect` が同型のプルダウン表示ロジックを 3 箇所複製していたため、
+  `EntitySelect`（`src/features/tickets/components/EntitySelect.tsx`）へ抽出し、既存の
+  `AssigneeSelect` も含めて共有するよう改修した（挙動・見た目は変更していない）。
+  なお、これら 5 種のプルダウン（状態/優先度/担当者/カテゴリ/拠点）はいずれも `<label>` との
+  プログラム的な関連付けを持たない a11y 上のギャップが `StatusSelect`/`PrioritySelect`
+  （本 PR の対象外）から既に存在しており、本 PR の新規 2 種だけを個別に直すと同一画面内で
+  対応状況が不揃いになるため、別途 5 種まとめて対応するフォローアップ課題として残す
+  （§7 accessibility の `<label>`/`aria-labelledby` 要件）。
 
 ### スケジュール感
 
