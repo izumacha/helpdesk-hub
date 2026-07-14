@@ -404,6 +404,37 @@ LINE・CSV インポート・メールの 4 系統あるが、「新規起票を
   `tests/data/user-repository.memory.test.ts` と `user-repository.contract.prisma.test.ts` に
   追加した。
 
+#### 3.7 フォローアップ（2026-07-14 #3）: 隔離記録一覧に CSV エクスポートが無く、200 件を超えると古い記録に到達できなかった
+
+監査で発見したギャップ: §3.2 フォローアップ再訪（2026-07-12）で `/quarantine` 画面と
+キーセットページネーション（「さらに読み込む」）を新設したが、CSV エクスポートは実装しなかった。
+一方 `/audit` 画面は同じ「200 件で打ち切られる一覧を、監査・investigation 目的でまとめて
+保管・共有したい」というニーズに対し、§4.2.1（キーセットページネーション追加時点）を経て
+§4.2.2 で「現在ページのみ即時ダウンロード」＋「全履歴 CSV エクスポート（`GET
+/api/audit/export`）」の 2 段構えまで発展させていた。`/quarantine` はその後継の改善を一切
+受けておらず、隔離記録が 200 件を超えるテナントの admin は「登録し忘れたメンバーからの
+問い合わせが隔離されていないか」をまとめて確認したり、スパム傾向の証跡として誰かに共有したり
+する手段が「さらに読み込む」の手作業以外に存在しなかった。
+
+- `src/features/quarantine/quarantine-csv.ts` に `quarantinedEmailRowsToCsv` を新設し、
+  `src/features/audit/audit-csv.ts`（画面とエクスポートルートで列定義を共有する純粋関数）と
+  同じ設計を踏襲した。列はメール由来（送信者名・送信元アドレス・件名）と LINE 由来
+  （LINE ユーザー ID）の両方を機械可読な別列として持つ（画面表示は 1 セルにまとめているが、
+  CSV では往復性より判別しやすさを優先した）。
+- `GET /api/quarantine/export` を新設した。`GET /api/audit/export` と同じキーセットカーソル
+  前進ループ・`MAX_QUARANTINE_EXPORT_ROWS`（10,000 件）・`assertTenantAdmin` による
+  admin 専用ゲート・専用レート制限（3 回/分）を踏襲する。`/quarantine` 画面と同じくプランゲートは
+  設けない（Free プランでの隔離を admin 自身が確認できることが「なぜ取り込まれないか」に
+  気づく導線として有用なため。§3.2 フォローアップ再訪の方針をそのまま踏襲）。
+- `src/features/quarantine/components/QuarantineExportButton.tsx`（`AuditFullExportButton.tsx`
+  と同じ設計）を追加し、`/quarantine` 画面ヘッダーに配置した。`/audit` と異なり `/quarantine`
+  には「現在ページのみ即時ダウンロード」ボタンが元々存在しなかったため、全履歴エクスポートの
+  1 ボタンのみを追加した（無かった機能を 2 つ同時に増やすと変更のスコープが広がるため、
+  §4.2.2 の 2 段構えのうち今回不足していた「全履歴」側のみを追加する）。
+- `tests/features/quarantine-export-route.test.ts` に `tests/features/audit-export-route.test.ts`
+  と同じ構成（複数ページに跨る集計・ちょうど上限件数での誤 truncated 防止・RBAC・
+  プランゲート無し・レート制限・未認証）の回帰テストを追加した。
+
 ### Phase 4 — マネタイズと運用（継続）
 
 - [x] サブスク課金（Stripe Billing）: Free / Standard / Pro の 3 段階
