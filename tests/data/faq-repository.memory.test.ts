@@ -193,4 +193,44 @@ describe('FaqRepository (memory)', () => {
     const reloaded = await repos.faq.findById(faq.id, TENANT_A);
     expect(reloaded?.status).toBe('Candidate');
   });
+
+  // updateContent: 質問/回答の本文を更新できる (フォローアップ 2026-07-14 #6)
+  it('updateContentで質問/回答を更新できる', async () => {
+    const ticket = await seedTicketAndAgent(TENANT_A, 'チケット', AGENT_A);
+    const faq = await repos.faq.create({
+      ticketId: ticket.id,
+      createdById: AGENT_A,
+      question: '元の質問',
+      answer: '元の回答',
+      tenantId: TENANT_A,
+    });
+    await repos.faq.updateContent(
+      faq.id,
+      { question: '新しい質問', answer: '新しい回答' },
+      TENANT_A,
+    );
+    const reloaded = await repos.faq.findById(faq.id, TENANT_A);
+    expect(reloaded?.question).toBe('新しい質問');
+    expect(reloaded?.answer).toBe('新しい回答');
+  });
+
+  // updateContent: 他テナントの ID は no-op (更新されない)
+  it('updateContentは他テナントのIDに対してno-opになる', async () => {
+    const ticket = await seedTicketAndAgent(TENANT_A, 'チケット', AGENT_A);
+    const faq = await repos.faq.create({
+      ticketId: ticket.id,
+      createdById: AGENT_A,
+      question: '元の質問',
+      answer: '元の回答',
+      tenantId: TENANT_A,
+    });
+    await repos.faq.updateContent(
+      faq.id,
+      { question: '書き換え試行', answer: '書き換え試行' },
+      TENANT_B,
+    );
+    const reloaded = await repos.faq.findById(faq.id, TENANT_A);
+    expect(reloaded?.question).toBe('元の質問');
+    expect(reloaded?.answer).toBe('元の回答');
+  });
 });

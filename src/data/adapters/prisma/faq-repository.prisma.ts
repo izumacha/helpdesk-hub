@@ -62,5 +62,13 @@ export function makeFaqRepo(db: PrismaLike): FaqRepository {
     async updateStatus(id, status, tenantId) {
       await db.faqCandidate.updateMany({ where: { id, tenantId }, data: { status } });
     },
+
+    // 質問/回答の本文を更新 (tenantId スコープ。他テナントの ID なら 0 件更新で no-op)
+    async updateContent(id, content, tenantId) {
+      await db.faqCandidate.updateMany({
+        where: { id, tenantId }, // テナントスコープ (必須)
+        data: { question: content.question, answer: content.answer }, // 質問/回答のみ書き換え
+      });
+    },
   };
 }

@@ -10,6 +10,8 @@ import { auth } from '@/lib/auth';
 import { isAgent } from '@/lib/role';
 // 「完了」とみなすステータス集合を mode (lite/pro) に応じて返す関数 (唯一の源。update-ticket.ts と共有)
 import { getCompletionStatuses } from '@/domain/ticket-status';
+// FAQ 状態遷移の許可判定 (唯一の源。Server Action と UI の両方から参照する)
+import { isValidFaqTransition } from '@/domain/faq-status';
 // 「FAQ 候補」機能自体の呼称を mode に応じて切り替える定数 (エラーメッセージも Lite では
 // 「よくある質問」と呼ぶ。§6 一元管理)
 import { FAQ_TERM_LABELS } from '@/lib/constants';
@@ -94,13 +96,55 @@ export async function updateFaqStatus(faqId: string, status: 'Published' | 'Reje
   const faq = await repos.faq.findById(faqId, tenantId);
   // 見つからない or 他テナントの ID ならエラー
   if (!faq) throw new Error(`${termLabel}が見つかりません`);
-  // 既に公開/却下済みのものは対象外
-  if (faq.status !== 'Candidate') {
-    throw new Error('候補ステータスのFAQのみ公開・却下できます');
+  // 遷移可否をドメイン層の遷移表 (唯一の源) で判定する。ticket-status.ts の
+  // ALLOWED_TRANSITIONS と同じパターン (フォローアップ 2026-07-14 #6)
+  if (!isValidFaqTransition(faq.status, status)) {
+    throw new Error('候補または公開済みのFAQのみ状態を変更できます');
   }
 
   // 状態を更新 (tenantId スコープで where に注入、port 経由)
   await repos.faq.updateStatus(faqId, status, tenantId);
+  // FAQ 一覧のキャッシュを無効化
+  revalidatePath('/faq');
+}
+
+// FAQ 候補の質問/回答本文を編集するサーバーアクション
+// (フォローアップ 2026-07-14 #6: 公開済み FAQ を編集・訂正する手段が一つも無く、業種テンプレの
+// 自動投入や誤操作による誤った内容が訂正不能なまま全依頼者に見え続けるギャップへの対応)
+export async function updateFaqContent(faqId: string, question: string, answer: string) {
+  // セッション取得
+  const session = await auth();
+  // 未ログイン or tenantId 不在なら拒否
+  if (!session?.user?.id || !session.user.tenantId) throw new Error('Unauthorized');
+  // エージェント/管理者以外は拒否
+  if (!isAgent(session.user.role)) {
+    throw new Error('エージェントまたは管理者のみ実行できます');
+  }
+  // セッションから tenantId を取り出して以降の where 句注入に使う
+  const tenantId = session.user.tenantId;
+  // この機能の呼称 (エラーメッセージも画面表示と揃える)
+  const termLabel = FAQ_TERM_LABELS[await getCurrentTenantMode(tenantId)];
+  // 60 秒あたり 20 回までに制限 (updateFaqStatus と同じ上限)
+  enforceRateLimit(`faq-update:${session.user.id}`, { limit: 20, windowMs: 60_000 });
+
+  // 入力値 (質問/回答) を Zod で検証 (createFaqCandidate と同じスキーマを再利用)
+  const parsed = faqCandidateSchema.safeParse({ question, answer });
+  // 検証失敗ならメッセージを日本語エラーとして投げる
+  if (!parsed.success) {
+    throw new Error(parsed.error.issues[0]?.message ?? `${termLabel}の入力値が不正です`);
+  }
+
+  // 対象 FAQ 候補を tenantId スコープで取得 (port 経由。存在確認を兼ねる)
+  const faq = await repos.faq.findById(faqId, tenantId);
+  // 見つからない or 他テナントの ID ならエラー
+  if (!faq) throw new Error(`${termLabel}が見つかりません`);
+
+  // 質問/回答を更新 (tenantId スコープで where に注入、port 経由)
+  await repos.faq.updateContent(
+    faqId,
+    { question: parsed.data.question, answer: parsed.data.answer },
+    tenantId,
+  );
   // FAQ 一覧のキャッシュを無効化
   revalidatePath('/faq');
 }

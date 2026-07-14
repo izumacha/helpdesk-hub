@@ -39,4 +39,11 @@ export interface FaqRepository {
   create(input: CreateFaqInput): Promise<FaqCandidate>;
   // 公開/却下などの状態更新 (tenantId スコープ。他テナントの ID なら 0 件更新で no-op)
   updateStatus(id: string, status: FaqStatus, tenantId: string): Promise<void>;
+  // 質問/回答の本文を更新 (tenantId スコープ。他テナントの ID なら 0 件更新で no-op)
+  // フォローアップ (2026-07-14 #6): 公開後に誤りへ気付いても訂正手段が無かったギャップ対応
+  updateContent(
+    id: string,
+    content: { question: string; answer: string },
+    tenantId: string,
+  ): Promise<void>;
 }
