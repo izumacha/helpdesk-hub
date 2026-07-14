@@ -11,6 +11,28 @@ import { updateFaqStatus } from '@/features/faq/actions/faq-actions';
 // テナントの動作モード (lite | pro) を取得するヘルパー
 import { getCurrentTenantMode } from '@/lib/tenant';
 
+// FAQ の質問文/回答文を表示する共通ブロック (依頼者向け・エージェント向け両ビューで再利用)
+function FaqQaBlock({ question, answer }: { question: string; answer: string }) {
+  return (
+    <>
+      {/* 質問文 (ページの h1 のすぐ下に来るため h2 とし、見出し階層を飛ばさない) */}
+      <h2 className="mb-2 text-base font-semibold text-slate-900">Q. {question}</h2>
+      {/* 回答文 (改行を保持したまま表示する) */}
+      <p className="text-sm leading-relaxed whitespace-pre-wrap text-slate-600">A. {answer}</p>
+    </>
+  );
+}
+
+// 0 件時の空状態カード (依頼者向け・エージェント向け両ビューで再利用)
+function FaqEmptyState({ termLabel }: { termLabel: string }) {
+  return (
+    <div className="rounded-2xl bg-white py-20 text-center text-slate-400 ring-1 ring-slate-200">
+      {/* まだ 1 件も無いことを伝える文言 */}
+      <p className="text-sm">{termLabel}はまだありません</p>
+    </div>
+  );
+}
+
 // /faq : FAQ 一覧ページ。
 // フォローアップ (2026-07-14 #5): 監査で発見したギャップの解消。以前はエージェント以上のみが
 // 閲覧可能で、依頼者は 404 で弾かれていた。§2 のギャップ分析表が謳う「またこの質問か」を
@@ -46,23 +68,20 @@ export default async function FaqPage() {
           </p>
         </div>
 
+        {/* 0 件なら空状態カード、1 件以上あれば一覧を出し分ける */}
         {publishedFaqs.length === 0 ? (
           // 0 件時の空状態 (柔らかなカード。管理画面側と同じスタイル)
-          <div className="rounded-2xl bg-white py-20 text-center text-slate-400 ring-1 ring-slate-200">
-            <p className="text-sm">{termLabel}はまだありません</p>
-          </div>
+          <FaqEmptyState termLabel={termLabel} />
         ) : (
           // 1 件以上ある場合は順に列挙 (質問と回答のみのシンプルな読み取り専用カード)
           <div className="space-y-4">
+            {/* 公開済み FAQ を 1 件ずつカードにして描画する */}
             {publishedFaqs.map((faq) => (
               <div
                 key={faq.id}
                 className="rounded-2xl bg-white p-6 shadow-sm ring-1 ring-slate-100"
               >
-                <h3 className="mb-2 text-base font-semibold text-slate-900">Q. {faq.question}</h3>
-                <p className="text-sm leading-relaxed whitespace-pre-wrap text-slate-600">
-                  A. {faq.answer}
-                </p>
+                <FaqQaBlock question={faq.question} answer={faq.answer} />
               </div>
             ))}
           </div>
@@ -85,14 +104,14 @@ export default async function FaqPage() {
         </p>
       </div>
 
+      {/* 0 件なら空状態カード、1 件以上あれば一覧を出し分ける */}
       {faqs.length === 0 ? (
         // 0 件時の空状態 (柔らかなカード)
-        <div className="rounded-2xl bg-white py-20 text-center text-slate-400 ring-1 ring-slate-200">
-          <p className="text-sm">{termLabel}はまだありません</p>
-        </div>
+        <FaqEmptyState termLabel={termLabel} />
       ) : (
         // 1 件以上ある場合は順に列挙
         <div className="space-y-4">
+          {/* FAQ 候補を 1 件ずつカードにして描画する (ステータスバッジ・操作ボタン付き) */}
           {faqs.map((faq) => (
             <div
               key={faq.id}
@@ -116,11 +135,8 @@ export default async function FaqPage() {
                 </span>
               </div>
 
-              {/* 質問と回答本文 */}
-              <h3 className="mb-2 text-base font-semibold text-slate-900">Q. {faq.question}</h3>
-              <p className="text-sm leading-relaxed whitespace-pre-wrap text-slate-600">
-                A. {faq.answer}
-              </p>
+              {/* 質問と回答本文 (依頼者向けビューと共通のブロックを再利用) */}
+              <FaqQaBlock question={faq.question} answer={faq.answer} />
 
               {/* Candidate 状態のときのみ「公開/却下」ボタンを表示 */}
               {faq.status === 'Candidate' && (

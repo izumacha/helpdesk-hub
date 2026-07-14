@@ -20,9 +20,9 @@ export interface FaqListItem extends FaqCandidate {
 // 元チケット/作成者などの内部情報は意図的に含めない (§9 最小権限・最小公開の方針。
 // quarantine の「本文は保存しない」と同じ範囲最小化の考え方)
 export interface PublishedFaqItem {
-  id: string;
-  question: string;
-  answer: string;
+  id: string; // FAQ 候補 ID
+  question: string; // 質問文
+  answer: string; // 回答文
 }
 
 // FAQ リポジトリの契約 (port)
