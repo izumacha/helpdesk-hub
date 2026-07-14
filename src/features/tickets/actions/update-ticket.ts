@@ -580,6 +580,127 @@ export async function updateTicketAssignee(ticketId: string, newAssigneeId: stri
   revalidatePath(`/tickets/${ticketId}`);
 }
 
+// フォローアップ (2026-07-14 #4): 監査で発見したギャップの解消。メール/LINE 取り込みは
+// categoryId/locationId を設定する経路を持たず (常に categoryId: null / locationId 未指定で
+// 起票する)、Web フォーム/CSV インポートと異なりこれらのチケットは永久に未分類・拠点未指定の
+// ままだった (LINE 取り込みのコメントには「担当者が後で設定」とあったが、そのための事後変更
+// 手段自体が存在しなかった)。担当者・ステータス・優先度と同じ「事後にエージェントが変更できる」
+// パターンをカテゴリ・拠点にも追加する。
+
+// チケットのカテゴリを変更するサーバーアクション
+export async function updateTicketCategory(ticketId: string, newCategoryId: string | null) {
+  // セッション取得
+  const session = await auth();
+  // エージェント以上のみ実行可 (担当者変更と同じ RBAC)
+  assertAgentRole(session);
+  // テナントスコープ用に tenantId を取り出す
+  const tenantId = session.user.tenantId;
+  // 10 秒あたり 10 回までに制限 (担当者変更と同じ値)
+  enforceRateLimit(`ticket-category:${session.user.id}:${ticketId}`, {
+    limit: 10,
+    windowMs: 10_000,
+  });
+
+  // カテゴリは Pro モード専用の概念 (TicketForm.tsx の `{!isLite && (...)}` / POST /api/tickets の
+  // `effectiveCategoryId = mode === 'lite' ? null : ...` と同じ扱い)。Lite テナントでは UI 側で
+  // カテゴリ選択欄自体を表示しないが、Server Action は直接呼び出しにも備えてサーバー側で強制する
+  // (§9: UI 非表示だけに頼らない)。CSV インポートと同じく Lite では静かに null へフォールバックする
+  const mode = await getCurrentTenantMode(tenantId);
+  const effectiveCategoryId = mode === 'lite' ? null : newCategoryId;
+
+  // チケットと新カテゴリ候補を並列で取得 (どちらも tenantId スコープ)
+  const [ticket, newCategory] = await Promise.all([
+    repos.tickets.findByIdWithRefs(ticketId, tenantId),
+    effectiveCategoryId
+      ? repos.categories.findById(effectiveCategoryId, tenantId)
+      : Promise.resolve(null),
+  ]);
+
+  // チケットが無ければエラー
+  if (!ticket) throw new Error('チケットが見つかりません');
+  // カテゴリを付ける場合は存在 / テナント一致を確認 (findById が tenantId スコープで
+  // 他テナントの ID には null を返すため、この判定だけでクロステナント割当も弾ける)
+  if (effectiveCategoryId && !newCategory) {
+    console.warn('[updateTicketCategory] rejected', { ticketId, categoryId: effectiveCategoryId });
+    throw new Error('指定されたカテゴリを設定できません');
+  }
+
+  // 履歴に残す旧/新のカテゴリ名 (未分類は null)
+  const oldName = ticket.category?.name ?? null;
+  const newName = newCategory?.name ?? null;
+
+  // カテゴリ更新・履歴記録を 1 トランザクションで実行
+  await uow.run(async (r) => {
+    // カテゴリを差し替え (解除は null。tenantId スコープで where に注入)
+    await r.tickets.updateCategory(ticketId, effectiveCategoryId, tenantId);
+    // 変更履歴を残す
+    await r.history.record({
+      ticketId,
+      changedById: session.user.id,
+      field: 'category',
+      oldValue: oldName,
+      newValue: newName,
+    });
+  });
+
+  // 詳細ページのキャッシュを無効化
+  revalidatePath(`/tickets/${ticketId}`);
+}
+
+// チケットの拠点を変更するサーバーアクション
+export async function updateTicketLocation(ticketId: string, newLocationId: string | null) {
+  // セッション取得
+  const session = await auth();
+  // エージェント以上のみ実行可 (担当者変更と同じ RBAC)
+  assertAgentRole(session);
+  // テナントスコープ用に tenantId を取り出す
+  const tenantId = session.user.tenantId;
+  // 10 秒あたり 10 回までに制限 (担当者変更と同じ値)
+  enforceRateLimit(`ticket-location:${session.user.id}:${ticketId}`, {
+    limit: 10,
+    windowMs: 10_000,
+  });
+
+  // 拠点はカテゴリと異なり Lite/Pro 両モードで使える概念 (TicketForm.tsx の拠点欄は
+  // `locations.length > 0` のみで出し分けており mode によるガードが無い) なので mode 判定は不要
+
+  // チケットと新拠点候補を並列で取得 (どちらも tenantId スコープ)
+  const [ticket, newLocation] = await Promise.all([
+    repos.tickets.findByIdWithRefs(ticketId, tenantId),
+    newLocationId ? repos.locations.findById(newLocationId, tenantId) : Promise.resolve(null),
+  ]);
+
+  // チケットが無ければエラー
+  if (!ticket) throw new Error('チケットが見つかりません');
+  // 拠点を付ける場合は存在 / テナント一致を確認 (findById が tenantId スコープで
+  // 他テナントの ID には null を返すため、この判定だけでクロステナント割当も弾ける)
+  if (newLocationId && !newLocation) {
+    console.warn('[updateTicketLocation] rejected', { ticketId, locationId: newLocationId });
+    throw new Error('指定された拠点を設定できません');
+  }
+
+  // 履歴に残す旧/新の拠点名 (未指定は null)
+  const oldName = ticket.location?.name ?? null;
+  const newName = newLocation?.name ?? null;
+
+  // 拠点更新・履歴記録を 1 トランザクションで実行
+  await uow.run(async (r) => {
+    // 拠点を差し替え (解除は null。tenantId スコープで where に注入)
+    await r.tickets.updateLocation(ticketId, newLocationId, tenantId);
+    // 変更履歴を残す
+    await r.history.record({
+      ticketId,
+      changedById: session.user.id,
+      field: 'location',
+      oldValue: oldName,
+      newValue: newName,
+    });
+  });
+
+  // 詳細ページのキャッシュを無効化
+  revalidatePath(`/tickets/${ticketId}`);
+}
+
 // チケットをエスカレーション (上位対応へ引き上げ) するサーバーアクション
 export async function escalateTicket(ticketId: string, reason: string) {
   // セッション取得

@@ -307,6 +307,20 @@ export function makeTicketRepo(store: Store): TicketRepository {
       store.tickets.set(id, { ...t, assigneeId, updatedAt: new Date() });
     },
 
+    // カテゴリを更新 (tenantId スコープ。null で未分類に戻す。フォローアップ 2026-07-14 #4)
+    async updateCategory(id, categoryId, tenantId) {
+      const t = store.tickets.get(id);
+      if (!t || t.tenantId !== tenantId) return;
+      store.tickets.set(id, { ...t, categoryId, updatedAt: new Date() });
+    },
+
+    // 拠点を更新 (tenantId スコープ。null で未指定に戻す。フォローアップ 2026-07-14 #4)
+    async updateLocation(id, locationId, tenantId) {
+      const t = store.tickets.get(id);
+      if (!t || t.tenantId !== tenantId) return;
+      store.tickets.set(id, { ...t, locationId, updatedAt: new Date() });
+    },
+
     // エスカレーション扱いに更新 (tenantId スコープ)
     async markEscalated(id, args, tenantId) {
       const t = store.tickets.get(id);

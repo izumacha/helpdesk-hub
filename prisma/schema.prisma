@@ -50,6 +50,11 @@ enum HistoryField {
   priority // 優先度変更
   assignee // 担当者変更
   escalation // エスカレーション (理由付き)
+  // フォローアップ (2026-07-14 #4): メール/LINE 取り込みで作成されたチケットは categoryId/
+  // locationId を設定する手段が無く永久に未設定のままだった。事後変更を可能にするにあたり、
+  // 他の変更可能フィールド (status/priority/assignee/escalation) と同じく履歴に残す
+  category // カテゴリ変更
+  location // 拠点変更
 }
 
 // 設定変更監査ログ (SettingsAuditLog) の対象アクション種別。
