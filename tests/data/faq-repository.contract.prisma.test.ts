@@ -112,8 +112,18 @@ describe.runIf(SHOULD_RUN)('FaqRepository (prisma adapter)', () => {
     });
     await repos.faq.updateStatus(published.id, 'Published', TENANT_A);
     // 候補のまま (Candidate) の FAQ は含めない
+    // (FaqCandidate.ticketId は 1 チケット 1 候補のユニーク制約があるため、別のチケットに紐付ける)
+    const anotherTicket = await repos.tickets.create({
+      title: 'テナントAの別チケット',
+      body: '本文',
+      priority: 'Medium',
+      creatorId: AGENT_A,
+      categoryId: null,
+      locationId: null,
+      tenantId: TENANT_A,
+    });
     await repos.faq.create({
-      ticketId: ticketA,
+      ticketId: anotherTicket.id,
       createdById: AGENT_A,
       question: '候補のままの質問',
       answer: '候補のままの回答',
