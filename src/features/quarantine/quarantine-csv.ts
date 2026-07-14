@@ -1,9 +1,12 @@
 // 隔離記録 (QuarantinedEmailRow[]) を CSV 文字列に変換する純粋関数。
 //
 // フォローアップ (2026-07-14 #3): §4.2.1/§4.2.2 で監査ログ (/audit) に追加した全履歴 CSV
-// エクスポートと同じ設計を、隔離メール一覧 (/quarantine) にも適用する。画面 (page.tsx) と
-// サーバー側の全履歴エクスポートルート (GET /api/quarantine/export) の両方がこの関数を
-// 共有する（§6 DRY: audit-csv.ts と同じ「画面とエクスポートルートで列定義を共有する」方針）。
+// エクスポートと同じ設計を、隔離メール一覧 (/quarantine) にも適用する。現時点では
+// サーバー側の全履歴エクスポートルート (GET /api/quarantine/export) のみがこの関数を使う
+// (/quarantine 画面は `<table>` を直接描画しており、/audit 画面のような「現在ページのみ
+// 即時ダウンロード」ボタンは元々存在しないため、まだ画面側の消費者はいない)。それでも
+// CSV 列定義を呼び出し側から独立した純粋関数として切り出しておくのは audit-csv.ts と同じ
+// 方針で、将来 /quarantine 画面に同種のボタンを追加する際にそのまま共有できるようにするため。
 
 // 隔離記録 1 件分の型 (テナントスコープ絞り込み済み。/quarantine ページと共有)
 import type { QuarantinedEmailRow } from '@/domain/types';

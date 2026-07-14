@@ -10,8 +10,12 @@ import type { QuarantinedEmailRow } from '@/domain/types';
 // 監査ログ系リポジトリ共通のページネーション上限 (findAllByTenant が limit をクランプする上限値。
 // quarantinedEmails.findAllByTenant も resolveAuditLimit 経由でこの値を共有する)
 import { AUDIT_MAX_LIMIT } from '@/data/adapters/audit-pagination';
-// CSV 文字列への変換 (/quarantine ページの将来的な現在ページエクスポートとも共有できる純粋関数。§6 DRY)
+// CSV 文字列への変換 (このエクスポートルート専用の純粋関数。/quarantine 画面は表を直接描画するため
+// 現時点では消費していない)
 import { quarantinedEmailRowsToCsv } from '@/features/quarantine/quarantine-csv';
+// キーセットカーソル前進ループ・CSV レスポンス組み立ての共通ヘルパー (フォローアップ 2026-07-14 #3:
+// GET /api/audit/export と同型のロジックを個別に複製していたため共通化した。§6 DRY)
+import { collectCursorPaginatedRows, buildCsvExportResponse } from '@/lib/cursor-csv-export';
 
 // 全履歴エクスポートで書き出す行数の上限。
 // 件数無制限の取得は DB 負荷・レスポンスサイズ・処理時間が無制限になるため
@@ -79,68 +83,41 @@ export async function GET() {
 
   // カーソルをサーバー側で繰り返し前進させ、上限まで全ページを蓄積する。
   // 1 ページあたり AUDIT_MAX_LIMIT 件ずつ取得することで往復回数を最小化する
-  // (/api/audit/export と同じループ構造。ただしこの一覧は単一テーブルのみで kind を持たない
-  // ため、fetchAuditFeedPage のような複数ソースのマージ処理は不要で repos を直接呼ぶ)。
-  const logs: QuarantinedEmailRow[] = [];
-  let cursor: QuarantinedEmailCursor | undefined = undefined;
-  let truncated = false;
-  for (;;) {
-    const page = await repos.quarantinedEmails.findAllByTenant({
-      tenantId,
-      limit: AUDIT_MAX_LIMIT,
-      before: cursor,
-    });
-    logs.push(...page);
-    // 上限に達したら、まだ続きがあっても打ち切る (サイレント打ち切りは監査目的で
-    // 「全件取得済み」と誤認させるリスクがあるため X-Truncated ヘッダーで呼び出し元に伝える)。
-    // MAX_QUARANTINE_EXPORT_ROWS は AUDIT_MAX_LIMIT の倍数であること (上のモジュール読み込み時
-    // 検査) が保証されているため logs.length はここで必ずちょうど MAX_QUARANTINE_EXPORT_ROWS に
-    // 一致し、超過はしない
-    if (logs.length >= MAX_QUARANTINE_EXPORT_ROWS) {
-      // ちょうど上限に到達したときだけ、次カーソル以降に本当に行が残っているかを 1 件だけ
-      // 確認してから truncated を確定する (/api/audit/export と同じ「誤って打ち切りを警告しない」方針)
+  // (/api/audit/export と同じループ構造は collectCursorPaginatedRows に共通化済み。
+  // この一覧は単一テーブルのみで kind を持たないため、findAllByTenant の結果をそのまま
+  // { rows, hasMore, nextCursor } 形へ詰め替えるだけで済む)。
+  const { rows: logs, truncated } = await collectCursorPaginatedRows<
+    QuarantinedEmailRow,
+    QuarantinedEmailCursor
+  >({
+    maxRows: MAX_QUARANTINE_EXPORT_ROWS,
+    fetchPage: async (cursor) => {
+      const page = await repos.quarantinedEmails.findAllByTenant({
+        tenantId,
+        limit: AUDIT_MAX_LIMIT,
+        before: cursor,
+      });
+      // ページがちょうど上限件数で埋まっていれば、まだ続きがある可能性があるとみなす
+      const hasMore = page.length === AUDIT_MAX_LIMIT;
       const last = page[page.length - 1];
-      truncated =
-        page.length === AUDIT_MAX_LIMIT && last
-          ? (
-              await repos.quarantinedEmails.findAllByTenant({
-                tenantId,
-                limit: 1,
-                before: { createdAt: last.createdAt, id: last.id },
-              })
-            ).length > 0
-          : false;
-      break;
-    }
-    // ページがちょうど上限件数で埋まっていなければ、これ以上データは残っていない
-    if (page.length < AUDIT_MAX_LIMIT) break;
-    const last = page[page.length - 1];
-    if (!last) break;
-    cursor = { createdAt: last.createdAt, id: last.id };
-  }
+      const nextCursor = hasMore && last ? { createdAt: last.createdAt, id: last.id } : null;
+      return { rows: page, hasMore, nextCursor };
+    },
+    // ちょうど上限に到達したときだけ、次カーソル以降に本当に行が残っているかを 1 件だけ確認する
+    // (/api/audit/export と同じ「誤って打ち切りを警告しない」方針)
+    probeForMore: async (nextCursor) =>
+      (await repos.quarantinedEmails.findAllByTenant({ tenantId, limit: 1, before: nextCursor }))
+        .length > 0,
+  });
 
   // 隔離記録の一覧を CSV 文字列に変換する
   const csv = quarantinedEmailRowsToCsv(logs);
 
-  // ファイル名に今日の JST 日付を含める (ダウンロードフォルダで日付識別できる)
-  const today = new Date()
-    .toLocaleDateString('ja-JP', {
-      timeZone: 'Asia/Tokyo',
-      year: 'numeric',
-      month: '2-digit',
-      day: '2-digit',
-    })
-    .replace(/\//g, '-'); // YYYY/MM/DD → YYYY-MM-DD
-  const filename = `quarantine-full-${today}.csv`;
-
-  const responseHeaders: HeadersInit = {
-    'Content-Type': 'text/csv; charset=utf-8',
-    'Content-Disposition': `attachment; filename="${filename}"`,
-    'Cache-Control': 'no-cache, no-store, must-revalidate',
-  };
-  if (truncated) {
-    responseHeaders['X-Truncated'] = 'true';
-    responseHeaders['X-Total-Limit'] = String(MAX_QUARANTINE_EXPORT_ROWS);
-  }
-  return new Response(csv, { status: 200, headers: responseHeaders });
+  // CSV レスポンスを組み立てて返す (ファイル名の JST 日付付与・打ち切り時のヘッダーを含む)
+  return buildCsvExportResponse({
+    csv,
+    filenamePrefix: 'quarantine-full',
+    truncated,
+    maxRows: MAX_QUARANTINE_EXPORT_ROWS,
+  });
 }

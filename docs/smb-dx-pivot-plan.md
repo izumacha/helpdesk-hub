@@ -434,6 +434,18 @@ LINE・CSV インポート・メールの 4 系統あるが、「新規起票を
 - `tests/features/quarantine-export-route.test.ts` に `tests/features/audit-export-route.test.ts`
   と同じ構成（複数ページに跨る集計・ちょうど上限件数での誤 truncated 防止・RBAC・
   プランゲート無し・レート制限・未認証）の回帰テストを追加した。
+- `/code-review ultra` 指摘対応: 当初は `GET /api/quarantine/export` を `GET /api/audit/export`
+  からキーセットカーソル前進ループ・打ち切り誤検知防止・CSV レスポンスヘッダー組み立てまで
+  丸ごと複製する形で実装していたが、これは同一ロジックの 2 箇所目の複製であり
+  （`fetch-audit-feed-page.ts` や `rate-limit.ts` の `checkRateLimit` が同種の重複を「2〜3
+  箇所目で共通化する」方針（§6 DRY）で解消してきた前例と同じ状況）、看過できないと判断した。
+  `src/lib/cursor-csv-export.ts` に `collectCursorPaginatedRows`（カーソル前進ループ + 誤検知
+  防止）・`buildCsvExportResponse`（ファイル名の JST 日付付与 + 打ち切り時ヘッダー）を抽出し、
+  `GET /api/audit/export` 側もこの共通ヘルパーを使うよう改修した（新規実装だけでなく、複製元の
+  既存実装も併せて共通化する）。あわせて `quarantine-csv.ts` の docstring が「画面
+  (page.tsx) とエクスポートルートの両方がこの関数を共有する」と audit-csv.ts の説明を
+  そのまま流用していたが、`/quarantine` 画面は表を直接描画しておりこの関数を消費していない
+  ため、実態と食い違う記述を修正した。
 
 ### Phase 4 — マネタイズと運用（継続）
 
