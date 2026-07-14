@@ -73,5 +73,18 @@ export function makeFaqRepo(store: Store): FaqRepository {
       // 状態と更新日時を書き換えて保存
       store.faq.set(id, { ...row, status, updatedAt: new Date() });
     },
+
+    // 質問/回答の本文を更新 (tenantId スコープ。テナント不一致なら no-op)
+    async updateContent(id, content, tenantId) {
+      const row = store.faq.get(id); // 更新対象を取得
+      if (!row || row.tenantId !== tenantId) return; // 不在 or 他テナントなら何もしない
+      // 質問/回答と更新日時を書き換えて保存
+      store.faq.set(id, {
+        ...row,
+        question: content.question,
+        answer: content.answer,
+        updatedAt: new Date(),
+      });
+    },
   };
 }

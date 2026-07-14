@@ -8,6 +8,8 @@ import { isAgent } from '@/lib/role';
 import { FAQ_STATUS_LABELS, FAQ_STATUS_COLORS, FAQ_TERM_LABELS } from '@/lib/constants';
 // FAQ の状態を更新するサーバーアクション
 import { updateFaqStatus } from '@/features/faq/actions/faq-actions';
+// FAQ の質問/回答本文をその場編集するクライアントコンポーネント
+import { FaqEditForm } from '@/features/faq/components/FaqEditForm';
 // テナントの動作モード (lite | pro) を取得するヘルパー
 import { getCurrentTenantMode } from '@/lib/tenant';
 
@@ -138,6 +140,10 @@ export default async function FaqPage() {
               {/* 質問と回答本文 (依頼者向けビューと共通のブロックを再利用) */}
               <FaqQaBlock question={faq.question} answer={faq.answer} />
 
+              {/* 質問/回答をその場編集するフォーム (ステータス不問。フォローアップ 2026-07-14 #6:
+                  公開後に誤りへ気付いても訂正する手段が無かったギャップ対応) */}
+              <FaqEditForm faqId={faq.id} question={faq.question} answer={faq.answer} />
+
               {/* Candidate 状態のときのみ「公開/却下」ボタンを表示 */}
               {faq.status === 'Candidate' && (
                 <div className="mt-4 flex gap-2">
@@ -157,6 +163,21 @@ export default async function FaqPage() {
                       className="rounded-lg border border-slate-200 bg-white px-3.5 py-1.5 text-xs font-medium text-slate-600 transition hover:bg-slate-50"
                     >
                       却下
+                    </button>
+                  </form>
+                </div>
+              )}
+
+              {/* Published 状態のときのみ「非公開にする」ボタンを表示 (誤って公開した内容を
+                  依頼者向け閲覧から取り下げる導線。フォローアップ 2026-07-14 #6) */}
+              {faq.status === 'Published' && (
+                <div className="mt-4">
+                  <form action={updateFaqStatus.bind(null, faq.id, 'Rejected')}>
+                    <button
+                      type="submit"
+                      className="rounded-lg border border-slate-200 bg-white px-3.5 py-1.5 text-xs font-medium text-slate-600 transition hover:bg-slate-50"
+                    >
+                      非公開にする
                     </button>
                   </form>
                 </div>

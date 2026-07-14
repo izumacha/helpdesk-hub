@@ -1,5 +1,7 @@
 // Playwright のテスト DSL と Page 型 (ページ操作の API)
 import { test, expect, Page } from '@playwright/test';
+// フォローアップ (2026-07-14 #6) 用の fixture を DB へ直接投入するため Prisma Client を使う
+import { PrismaClient } from '../src/generated/prisma';
 
 // フォローアップ (2026-07-14 #5): 監査で発見したギャップの解消。/faq は以前エージェント以上
 // のみ閲覧可能で、依頼者は 404 で弾かれていた。公開済み FAQ を依頼者自身が読めるようになった
@@ -59,5 +61,128 @@ test.describe('/faq エージェント向け管理ビュー (回帰確認)', () 
 
     // 候補 (Candidate) の行には公開/却下ボタンが表示されること
     await expect(page.getByRole('button', { name: /公開する/ }).first()).toBeVisible();
+  });
+});
+
+// フォローアップ (2026-07-14 #6): 公開後に誤りへ気付いても訂正・取り下げする手段が一つも無かった
+// ギャップの解消。編集後の質問文で新たにマッチさせたいため、共有 seed (プリンター/バッテリー) とは
+// 独立した専用 fixture を使う。
+
+// DB 直接投入用 Prisma Client
+const prisma = new PrismaClient();
+// この describe 専用の fixture ID 群
+const EDIT_TICKET_ID = 'e2e-faq-edit-ticket';
+const EDIT_FAQ_ID = 'e2e-faq-edit-faq';
+const UNPUBLISH_TICKET_ID = 'e2e-faq-unpublish-ticket';
+const UNPUBLISH_FAQ_ID = 'e2e-faq-unpublish-faq';
+const ORIGINAL_QUESTION = 'E2E編集前の質問（元）';
+const EDITED_QUESTION = 'E2E編集後の質問（新）';
+const UNPUBLISH_QUESTION = 'E2E非公開化対象の質問';
+
+// 編集/非公開化テスト用の Candidate/Published FAQ を default-tenant に投入する
+async function seedEditFixtures() {
+  const agent = await prisma.user.findUniqueOrThrow({ where: { email: 'agent1@example.com' } });
+  const tenantId = agent.tenantId;
+
+  await prisma.ticket.upsert({
+    where: { id: EDIT_TICKET_ID },
+    update: { status: 'Resolved', tenantId },
+    create: {
+      id: EDIT_TICKET_ID,
+      title: 'E2E編集用チケット',
+      body: '編集テスト用の本文',
+      status: 'Resolved',
+      priority: 'Medium',
+      creatorId: agent.id,
+      tenantId,
+    },
+  });
+  await prisma.faqCandidate.upsert({
+    where: { id: EDIT_FAQ_ID },
+    update: { question: ORIGINAL_QUESTION, answer: '編集前の回答', status: 'Candidate' },
+    create: {
+      id: EDIT_FAQ_ID,
+      question: ORIGINAL_QUESTION,
+      answer: '編集前の回答',
+      status: 'Candidate',
+      ticketId: EDIT_TICKET_ID,
+      createdById: agent.id,
+      tenantId,
+    },
+  });
+
+  await prisma.ticket.upsert({
+    where: { id: UNPUBLISH_TICKET_ID },
+    update: { status: 'Resolved', tenantId },
+    create: {
+      id: UNPUBLISH_TICKET_ID,
+      title: 'E2E非公開化用チケット',
+      body: '非公開化テスト用の本文',
+      status: 'Resolved',
+      priority: 'Medium',
+      creatorId: agent.id,
+      tenantId,
+    },
+  });
+  await prisma.faqCandidate.upsert({
+    where: { id: UNPUBLISH_FAQ_ID },
+    update: { question: UNPUBLISH_QUESTION, answer: '非公開化前の回答', status: 'Published' },
+    create: {
+      id: UNPUBLISH_FAQ_ID,
+      question: UNPUBLISH_QUESTION,
+      answer: '非公開化前の回答',
+      status: 'Published',
+      ticketId: UNPUBLISH_TICKET_ID,
+      createdById: agent.id,
+      tenantId,
+    },
+  });
+}
+
+test.describe('/faq エージェント向け編集・非公開化', () => {
+  // このブロック内のテストは同じ fixture (質問文) を編集・状態変更するため、
+  // 他テストと並行実行して競合しないよう serial 化する
+  test.describe.configure({ mode: 'serial' });
+
+  test.beforeAll(async () => {
+    await seedEditFixtures();
+  });
+
+  test.afterAll(async () => {
+    await prisma.$disconnect();
+  });
+
+  // 「編集」ボタンからその場で質問/回答を書き換えられること (公開後の訂正手段)
+  test('エージェントはFAQの質問/回答をその場編集できる', async ({ page }) => {
+    await login(page, 'agent1@example.com');
+    await page.goto('/faq');
+
+    // 対象カード内の「編集」ボタンを開く
+    const card = page.locator('div', { hasText: ORIGINAL_QUESTION }).last();
+    await card.getByRole('button', { name: '編集' }).click();
+
+    // 質問欄を新しい文言に書き換えて保存
+    await page.getByLabel('質問').fill(EDITED_QUESTION);
+    await page.getByRole('button', { name: '保存' }).click();
+
+    // 編集後の質問文が表示され、編集前の文言は消えること
+    await expect(page.getByText(EDITED_QUESTION)).toBeVisible();
+    await expect(page.getByText(ORIGINAL_QUESTION)).toHaveCount(0);
+  });
+
+  // 「非公開にする」ボタンから Published を取り下げられること
+  test('エージェントは公開済みFAQを非公開にできる', async ({ page }) => {
+    await login(page, 'agent1@example.com');
+    await page.goto('/faq');
+
+    // 対象カード内の「非公開にする」ボタンをクリック
+    const card = page.locator('div', { hasText: UNPUBLISH_QUESTION }).last();
+    await card.getByRole('button', { name: '非公開にする' }).click();
+
+    // 非公開化後は「非公開にする」ボタンも「公開する」ボタンも出ないこと (Rejected 状態)。
+    // Server Action によるソフトナビゲーションで DOM が更新されるのを自動リトライで待つ
+    const reloadedCard = page.locator('div', { hasText: UNPUBLISH_QUESTION }).last();
+    await expect(reloadedCard.getByRole('button', { name: '非公開にする' })).toHaveCount(0);
+    await expect(reloadedCard.getByRole('button', { name: '公開する' })).toHaveCount(0);
   });
 });
