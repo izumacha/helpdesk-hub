@@ -10,6 +10,8 @@ import { auth } from '@/lib/auth';
 import { isAgent } from '@/lib/role';
 // 「完了」とみなすステータス集合を mode (lite/pro) に応じて返す関数 (唯一の源。update-ticket.ts と共有)
 import { getCompletionStatuses } from '@/domain/ticket-status';
+// FAQ 状態遷移の許可判定 (唯一の源。Server Action と UI の両方から参照する)
+import { isValidFaqTransition } from '@/domain/faq-status';
 // 「FAQ 候補」機能自体の呼称を mode に応じて切り替える定数 (エラーメッセージも Lite では
 // 「よくある質問」と呼ぶ。§6 一元管理)
 import { FAQ_TERM_LABELS } from '@/lib/constants';
@@ -94,12 +96,9 @@ export async function updateFaqStatus(faqId: string, status: 'Published' | 'Reje
   const faq = await repos.faq.findById(faqId, tenantId);
   // 見つからない or 他テナントの ID ならエラー
   if (!faq) throw new Error(`${termLabel}が見つかりません`);
-  // 許可される遷移: 候補→公開/却下、公開済み→却下 (誤って公開した内容を取り下げる「非公開化」)。
-  // 却下済みからの遷移は対象外 (フォローアップ 2026-07-14 #6: 公開済みの取り下げ手段が
-  // 一つも無かったギャップ対応。候補への戻し (却下→候補) は対象外のまま、変更幅を絞る)
-  const allowed =
-    faq.status === 'Candidate' || (faq.status === 'Published' && status === 'Rejected');
-  if (!allowed) {
+  // 遷移可否をドメイン層の遷移表 (唯一の源) で判定する。ticket-status.ts の
+  // ALLOWED_TRANSITIONS と同じパターン (フォローアップ 2026-07-14 #6)
+  if (!isValidFaqTransition(faq.status, status)) {
     throw new Error('候補または公開済みのFAQのみ状態を変更できます');
   }
 

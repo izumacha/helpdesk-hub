@@ -269,15 +269,45 @@ describe('updateFaqContent', () => {
     );
   });
 
-  it('他テナントのIDに対してはエラーになる (findByIdでnullになりnot-foundを返す)', async () => {
-    const faqId = await seedFaqWithStatus('Candidate');
+  it('他テナントのIDに対してはエラーになり、その内容も書き換わらない', async () => {
+    // セッションのテナント (TENANT) とは別テナントに FAQ を作成する
+    const OTHER_TENANT = 'other-tenant';
+    const now = new Date();
+    store.users.set('u-other-agt', {
+      id: 'u-other-agt',
+      email: 'u-other-agt@example.com',
+      name: '別テナントの担当者',
+      passwordHash: 'x',
+      role: 'agent',
+      tenantId: OTHER_TENANT,
+      createdAt: now,
+      updatedAt: now,
+    });
+    const otherTicket = await repos.tickets.create({
+      title: '別テナントのチケット',
+      body: '本文',
+      priority: 'Medium',
+      creatorId: 'u-other-agt',
+      categoryId: null,
+      locationId: null,
+      tenantId: OTHER_TENANT,
+    });
+    const otherFaq = await repos.faq.create({
+      ticketId: otherTicket.id,
+      createdById: 'u-other-agt',
+      question: '他テナントの質問',
+      answer: '他テナントの回答',
+      tenantId: OTHER_TENANT,
+    });
+
     const { updateFaqContent } = await import('@/features/faq/actions/faq-actions');
-    // 別テナントを装うため findById が null を返す状況を、存在しない ID で代用して検証する
-    await expect(updateFaqContent('does-not-exist', '質問', '回答')).rejects.toThrow(
+    // 自テナント (TENANT) のセッションから他テナントの FAQ ID を指定すると見つからない扱いになる
+    await expect(updateFaqContent(otherFaq.id, '書き換え試行', '書き換え試行')).rejects.toThrow(
       /見つかりません/,
     );
-    // 元の FAQ は変更されていないこと
-    const faq = await repos.faq.findById(faqId, TENANT);
-    expect(faq?.question).toBe('元の質問');
+    // 他テナントの FAQ は変更されていないこと (クロステナント書き換えが起きていない)
+    const reloaded = await repos.faq.findById(otherFaq.id, OTHER_TENANT);
+    expect(reloaded?.question).toBe('他テナントの質問');
+    expect(reloaded?.answer).toBe('他テナントの回答');
   });
 });

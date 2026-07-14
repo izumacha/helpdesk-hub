@@ -149,8 +149,10 @@ export default async function FaqPage() {
                 <div className="mt-4 flex gap-2">
                   {/* 公開ボタン (アクションに引数をバインド) ─ ミントグリーンの主要 CTA */}
                   <form action={updateFaqStatus.bind(null, faq.id, 'Published')}>
+                    {/* 一覧内に同名ボタンが並ぶため、対象の質問文でスクリーンリーダー向けに区別する (§7 a11y) */}
                     <button
                       type="submit"
+                      aria-label={`${faq.question} を公開する`}
                       className="rounded-lg bg-emerald-600 px-3.5 py-1.5 text-xs font-semibold text-white transition hover:bg-emerald-700"
                     >
                       公開する
@@ -160,6 +162,7 @@ export default async function FaqPage() {
                   <form action={updateFaqStatus.bind(null, faq.id, 'Rejected')}>
                     <button
                       type="submit"
+                      aria-label={`${faq.question} を却下する`}
                       className="rounded-lg border border-slate-200 bg-white px-3.5 py-1.5 text-xs font-medium text-slate-600 transition hover:bg-slate-50"
                     >
                       却下
@@ -173,8 +176,10 @@ export default async function FaqPage() {
               {faq.status === 'Published' && (
                 <div className="mt-4">
                   <form action={updateFaqStatus.bind(null, faq.id, 'Rejected')}>
+                    {/* 一覧内に同名ボタンが並ぶため、対象の質問文でスクリーンリーダー向けに区別する (§7 a11y) */}
                     <button
                       type="submit"
+                      aria-label={`${faq.question} を非公開にする`}
                       className="rounded-lg border border-slate-200 bg-white px-3.5 py-1.5 text-xs font-medium text-slate-600 transition hover:bg-slate-50"
                     >
                       非公開にする
