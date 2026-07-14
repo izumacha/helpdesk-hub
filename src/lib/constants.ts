@@ -184,6 +184,8 @@ export const SETTINGS_AUDIT_ACTION_LABELS: Record<SettingsAuditAction, string> =
   invitation_issue: 'メンバー招待リンクを発行',
   // フォローアップ (2026-07-13)
   subscription_plan_update: 'サブスクリプションプランを変更',
+  // フォローアップ (2026-07-14 #2)
+  tenant_create: 'テナントを作成',
 };
 
 // 設定変更監査ログで actorId が null (システムによる自動変更) のときに表示する操作者名。

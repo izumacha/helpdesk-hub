@@ -77,6 +77,9 @@ enum SettingsAuditAction {
   // §4.4 の tenant_mode_update (Pro モード強制解除の副作用のみ) では捕捉されず、
   // subscriptionPlan 自体の変更は一度も監査対象になっていなかった
   subscription_plan_update // サブスクリプションプランの変更 (Stripe Webhook 起因)
+  // フォローアップ (2026-07-14 #2): テナント作成 (§4.5 の invitation_issue と同じく、新しい
+  // admin 権限を付与する操作。招待より強い権限付与にもかかわらず監査対象から漏れていた)
+  tenant_create // テナント + 初代管理者の作成 (運用者による作成 / セルフサーブサインアップ)
 }
 
 // FAQ 候補の状態

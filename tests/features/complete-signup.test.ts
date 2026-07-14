@@ -88,6 +88,29 @@ describe('completeSignup', () => {
     expect(sampleTickets.length).toBeGreaterThanOrEqual(2);
   });
 
+  // フォローアップ (2026-07-14 #2): 監査で発見したギャップの解消。テナント作成 (新しい admin
+  // 権限の付与) が監査ログに記録されること。セルフサーブサインアップには事前セッションが
+  // 存在しないため、actorId は「今まさに作成された初代管理者自身」の ID になる
+  // (Stripe Webhook 起因の actorId: null 「システム」とは異なり、実在する人物の操作として記録する)
+  it('作成成功時に監査ログへ記録され、actorIdは作成された初代管理者自身になる', async () => {
+    const rawToken = await seedSignupToken({ email: 'audit-founder@example.com' });
+    const { completeSignup } = await loadActions();
+    await completeSignup(
+      rawToken,
+      makeForm({
+        tenantName: '監査確認組織',
+        adminName: '監査 太郎',
+        adminPassword: 'password123',
+      }),
+    );
+
+    const created = [...store.users.values()].find((u) => u.email === 'audit-founder@example.com');
+    const auditLogs = await repos.settingsAudit.findAllByTenant({ tenantId: created!.tenantId });
+    expect(auditLogs).toHaveLength(1);
+    expect(auditLogs[0].action).toBe('tenant_create');
+    expect(auditLogs[0].actorId).toBe(created!.id);
+  });
+
   // サインアップトークンは受諾後 (完了後) に消費済みになること
   it('完了後はサインアップトークンが消費済みになる', async () => {
     const rawToken = await seedSignupToken({ email: 'once@example.com' });

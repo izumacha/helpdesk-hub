@@ -199,6 +199,27 @@ describe('createTenant', () => {
     ).rejects.toThrow(/管理者/);
   });
 
+  // フォローアップ (2026-07-14 #2): 監査で発見したギャップの解消。テナント作成 (新しい admin
+  // 権限の付与) が監査ログに記録されること (§4.5 の invitation_issue と同じ方針)
+  it('作成成功時に監査ログへ記録される', async () => {
+    const createTenant = await loadAction();
+    const result = await createTenant(
+      makeForm({
+        tenantName: '新組織',
+        industry: '',
+        adminName: '管理 太郎',
+        adminEmail: 'audit-admin@example.com',
+        adminPassword: 'password123',
+      }),
+    );
+
+    const auditLogs = await repos.settingsAudit.findAllByTenant({ tenantId: result.tenantId });
+    expect(auditLogs).toHaveLength(1);
+    expect(auditLogs[0].action).toBe('tenant_create');
+    // 操作したのは呼び出し元テナントの admin (セッションユーザー) であること
+    expect(auditLogs[0].actorId).toBe('admin-1');
+  });
+
   // メール重複時はテナント作成もロールバックされること (孤児テナントを残さない)
   it('メール重複時はテナント作成もロールバックする', async () => {
     // 既存ユーザーを先に登録しておく (同じメール)
