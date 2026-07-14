@@ -22,8 +22,16 @@ export type TicketStatus =
 // 優先度 (低/中/高)
 export type Priority = 'Low' | 'Medium' | 'High';
 
-// 履歴に記録する項目の種類 (状態/優先度/担当者/エスカレーション)
-export type HistoryField = 'status' | 'priority' | 'assignee' | 'escalation';
+// 履歴に記録する項目の種類 (状態/優先度/担当者/エスカレーション/カテゴリ/拠点)
+// フォローアップ (2026-07-14 #4): category/location はメール/LINE 取り込みチケットの
+// 事後変更 (updateTicketCategory / updateTicketLocation) を可能にした際に追加した
+export type HistoryField =
+  | 'status'
+  | 'priority'
+  | 'assignee'
+  | 'escalation'
+  | 'category'
+  | 'location';
 
 // 設定変更監査ログの対象アクション種別 (SSO/LINE 連携/通知チャネル設定の変更)。
 // prisma/schema.prisma の SettingsAuditAction enum および src/lib/constants.ts の

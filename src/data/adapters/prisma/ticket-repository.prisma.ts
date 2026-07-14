@@ -265,6 +265,16 @@ export function makeTicketRepo(db: PrismaLike): TicketRepository {
       await db.ticket.updateMany({ where: { id, tenantId }, data: { assigneeId } });
     },
 
+    // カテゴリを更新 (tenantId スコープ、null で未分類に戻す。フォローアップ 2026-07-14 #4)
+    async updateCategory(id, categoryId, tenantId) {
+      await db.ticket.updateMany({ where: { id, tenantId }, data: { categoryId } });
+    },
+
+    // 拠点を更新 (tenantId スコープ、null で未指定に戻す。フォローアップ 2026-07-14 #4)
+    async updateLocation(id, locationId, tenantId) {
+      await db.ticket.updateMany({ where: { id, tenantId }, data: { locationId } });
+    },
+
     // エスカレーション扱いに更新 (tenantId スコープ)
     // 注意: updateStatus と同じく、ここでは status: 'Escalated' への遷移可否を検証しない。
     // 呼び出し元 (src/features/tickets/actions/update-ticket.ts::escalateTicket) が

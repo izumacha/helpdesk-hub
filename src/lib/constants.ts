@@ -163,6 +163,9 @@ export const HISTORY_FIELD_LABELS: Record<string, string> = {
   priority: '優先度',
   assignee: '担当者',
   escalation: 'エスカレーション',
+  // フォローアップ (2026-07-14 #4): メール/LINE 取り込みチケットの事後変更を可能にした際に追加
+  category: 'カテゴリ',
+  location: '拠点',
 };
 
 // 設定変更監査ログのアクション種別に対応する日本語表示ラベル。

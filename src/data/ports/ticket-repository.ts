@@ -191,6 +191,11 @@ export interface TicketRepository {
   updatePriority(id: string, priority: Priority, tenantId: string): Promise<void>;
   // 担当者更新 (tenantId スコープ。null で未アサイン)
   updateAssignee(id: string, assigneeId: string | null, tenantId: string): Promise<void>;
+  // カテゴリ更新 (tenantId スコープ。null で未分類。フォローアップ 2026-07-14 #4:
+  // メール/LINE 取り込みチケットの事後変更を可能にするために追加)
+  updateCategory(id: string, categoryId: string | null, tenantId: string): Promise<void>;
+  // 拠点更新 (tenantId スコープ。null で未指定。フォローアップ 2026-07-14 #4: 同上)
+  updateLocation(id: string, locationId: string | null, tenantId: string): Promise<void>;
   // エスカレーション状態にする (tenantId スコープ)
   markEscalated(id: string, args: MarkEscalatedInput, tenantId: string): Promise<void>;
   // 初回応答日時を記録する (tenantId スコープ)。呼び出し側が「まだ未応答」を確認してから

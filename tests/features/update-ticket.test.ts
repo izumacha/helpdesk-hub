@@ -613,6 +613,179 @@ describe('updateTicketAssignee (provider-agnostic)', () => {
   });
 });
 
+// フォローアップ (2026-07-14 #4): 監査で発見したギャップの解消。メール/LINE 取り込みチケットは
+// 常にカテゴリ未設定で作成され、事後変更する手段が無かった。updateTicketAssignee と同じ構成の
+// 回帰テスト (正常系・存在しない ID の拒否・cross-tenant 拒否)。seed() のテナントは 'pro' モード。
+describe('updateTicketCategory (provider-agnostic)', () => {
+  // 正常系: カテゴリを変更すると履歴が残る
+  it('changes the category and records history', async () => {
+    const { ticketId } = await seed();
+    // seed() で 'cat-1' (アカウント) が既に設定済みなので、別カテゴリを追加してそちらへ変更する
+    store.categories.set('cat-2', {
+      id: 'cat-2',
+      name: '請求',
+      createdAt: new Date(),
+      tenantId: TENANT,
+    });
+    const { updateTicketCategory } = await import('@/features/tickets/actions/update-ticket');
+
+    await updateTicketCategory(ticketId, 'cat-2');
+
+    const t = await repos.tickets.findById(ticketId, TENANT);
+    expect(t?.categoryId).toBe('cat-2');
+
+    // 履歴 1 件 (category / アカウント → 請求)
+    const histories = [...store.histories.values()];
+    expect(histories).toHaveLength(1);
+    expect(histories[0].field).toBe('category');
+    expect(histories[0].oldValue).toBe('アカウント');
+    expect(histories[0].newValue).toBe('請求');
+  });
+
+  // 未分類への変更 (null) も履歴に残ること
+  it('clears the category (sets to null) and records history', async () => {
+    const { ticketId } = await seed();
+    const { updateTicketCategory } = await import('@/features/tickets/actions/update-ticket');
+
+    await updateTicketCategory(ticketId, null);
+
+    const t = await repos.tickets.findById(ticketId, TENANT);
+    expect(t?.categoryId).toBeNull();
+    const histories = [...store.histories.values()];
+    expect(histories[0].newValue).toBeNull();
+  });
+
+  // 存在しないカテゴリを指定すると拒否される
+  it('refuses a non-existent category', async () => {
+    const { ticketId } = await seed();
+    const { updateTicketCategory } = await import('@/features/tickets/actions/update-ticket');
+
+    await expect(updateTicketCategory(ticketId, 'cat-missing')).rejects.toThrow(
+      /指定されたカテゴリを設定できません/,
+    );
+    expect([...store.histories.values()]).toHaveLength(0);
+  });
+
+  // 別テナント所属のカテゴリを指定しても拒否される (cross-tenant 遮断)
+  it('refuses a category belonging to a different tenant', async () => {
+    const { ticketId } = await seed();
+    store.categories.set('cat-b-1', {
+      id: 'cat-b-1',
+      name: '別組織のカテゴリ',
+      createdAt: new Date(),
+      tenantId: 'tenant-b',
+    });
+    const { updateTicketCategory } = await import('@/features/tickets/actions/update-ticket');
+
+    await expect(updateTicketCategory(ticketId, 'cat-b-1')).rejects.toThrow(
+      /指定されたカテゴリを設定できません/,
+    );
+    const t = await repos.tickets.findById(ticketId, TENANT);
+    expect(t?.categoryId).toBe('cat-1'); // 変更されていない (seed() の初期値のまま)
+  });
+
+  // Lite モードでは常に categoryId が null に強制される (CSV インポートと同じ方針)
+  it('forces categoryId to null in Lite mode even if a valid category is given', async () => {
+    const { ticketId } = await seed();
+    // テナントを Lite モードへ切り替える
+    const tenant = store.tenants.get(TENANT);
+    if (tenant) store.tenants.set(TENANT, { ...tenant, mode: 'lite' });
+    const { updateTicketCategory } = await import('@/features/tickets/actions/update-ticket');
+
+    await updateTicketCategory(ticketId, 'cat-1');
+
+    const t = await repos.tickets.findById(ticketId, TENANT);
+    expect(t?.categoryId).toBeNull();
+  });
+
+  // requester (エージェント以外) は実行できない
+  it('refuses when caller is not an agent', async () => {
+    const { ticketId } = await seed();
+    sessionUserId = 'u-req-1';
+    sessionRole = 'requester';
+    const { updateTicketCategory } = await import('@/features/tickets/actions/update-ticket');
+
+    await expect(updateTicketCategory(ticketId, 'cat-1')).rejects.toThrow(
+      /エージェントまたは管理者/,
+    );
+  });
+});
+
+// フォローアップ (2026-07-14 #4): 同上。拠点は Lite/Pro 両モードで使える概念なので mode 強制は無い
+describe('updateTicketLocation (provider-agnostic)', () => {
+  // 正常系: 拠点を設定すると履歴が残る
+  it('sets the location and records history', async () => {
+    const { ticketId } = await seed();
+    const location = await repos.locations.create({ tenantId: TENANT, name: '渋谷本店' });
+    const { updateTicketLocation } = await import('@/features/tickets/actions/update-ticket');
+
+    await updateTicketLocation(ticketId, location.id);
+
+    const t = await repos.tickets.findById(ticketId, TENANT);
+    expect(t?.locationId).toBe(location.id);
+
+    const histories = [...store.histories.values()];
+    expect(histories).toHaveLength(1);
+    expect(histories[0].field).toBe('location');
+    expect(histories[0].oldValue).toBeNull();
+    expect(histories[0].newValue).toBe('渋谷本店');
+  });
+
+  // Lite モードでも拠点は変更できる (カテゴリと異なり mode によるガードが無い)
+  it('sets the location even in Lite mode', async () => {
+    const { ticketId } = await seed();
+    const tenant = store.tenants.get(TENANT);
+    if (tenant) store.tenants.set(TENANT, { ...tenant, mode: 'lite' });
+    const location = await repos.locations.create({ tenantId: TENANT, name: '大阪支店' });
+    const { updateTicketLocation } = await import('@/features/tickets/actions/update-ticket');
+
+    await updateTicketLocation(ticketId, location.id);
+
+    const t = await repos.tickets.findById(ticketId, TENANT);
+    expect(t?.locationId).toBe(location.id);
+  });
+
+  // 存在しない拠点を指定すると拒否される
+  it('refuses a non-existent location', async () => {
+    const { ticketId } = await seed();
+    const { updateTicketLocation } = await import('@/features/tickets/actions/update-ticket');
+
+    await expect(updateTicketLocation(ticketId, 'loc-missing')).rejects.toThrow(
+      /指定された拠点を設定できません/,
+    );
+    expect([...store.histories.values()]).toHaveLength(0);
+  });
+
+  // 別テナント所属の拠点を指定しても拒否される (cross-tenant 遮断)
+  it('refuses a location belonging to a different tenant', async () => {
+    const { ticketId } = await seed();
+    const otherLocation = await repos.locations.create({
+      tenantId: 'tenant-b',
+      name: '別組織の拠点',
+    });
+    const { updateTicketLocation } = await import('@/features/tickets/actions/update-ticket');
+
+    await expect(updateTicketLocation(ticketId, otherLocation.id)).rejects.toThrow(
+      /指定された拠点を設定できません/,
+    );
+    const t = await repos.tickets.findById(ticketId, TENANT);
+    expect(t?.locationId).toBeNull();
+  });
+
+  // requester (エージェント以外) は実行できない
+  it('refuses when caller is not an agent', async () => {
+    const { ticketId } = await seed();
+    const location = await repos.locations.create({ tenantId: TENANT, name: '渋谷本店' });
+    sessionUserId = 'u-req-1';
+    sessionRole = 'requester';
+    const { updateTicketLocation } = await import('@/features/tickets/actions/update-ticket');
+
+    await expect(updateTicketLocation(ticketId, location.id)).rejects.toThrow(
+      /エージェントまたは管理者/,
+    );
+  });
+});
+
 // 注: addComment Server Action のテストは POST /api/tickets/[id]/comments の Route Handler テスト
 // (tests/features/attachments/post-comment-route.test.ts) に移行済み。
 

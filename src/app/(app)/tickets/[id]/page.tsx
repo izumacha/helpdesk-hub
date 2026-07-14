@@ -29,6 +29,10 @@ import { StatusSelect } from '@/features/tickets/components/StatusSelect';
 import { PrioritySelect } from '@/features/tickets/components/PrioritySelect';
 // 担当者変更プルダウン
 import { AssigneeSelect } from '@/features/tickets/components/AssigneeSelect';
+// カテゴリ変更プルダウン (フォローアップ 2026-07-14 #4)
+import { CategorySelect } from '@/features/tickets/components/CategorySelect';
+// 拠点変更プルダウン (フォローアップ 2026-07-14 #4)
+import { LocationSelect } from '@/features/tickets/components/LocationSelect';
 // コメント投稿フォーム
 import { CommentForm } from '@/features/tickets/components/CommentForm';
 // 添付ファイル (画像) のサムネ一覧コンポーネント
@@ -68,13 +72,20 @@ export default async function TicketDetailPage({ params }: Props) {
   // セッションから tenantId を取り出して以降の port 呼び出しに伝搬する
   const tenantId = session.user.tenantId;
   // チケット本体・担当者候補・テナント mode を並列取得 (全て tenantId スコープ)
-  const [ticket, agents, mode] = await Promise.all([
+  // フォローアップ (2026-07-14 #4): カテゴリ/拠点の事後変更を可能にするため、担当者候補と
+  // 同じく「エージェント時のみ候補一覧を取得」する形でカテゴリ/拠点一覧も並列取得する
+  const [ticket, agents, mode, categories, locations] = await Promise.all([
     // 詳細用: 起票者/担当者/カテゴリ/コメント/履歴/FAQ 候補をまとめて取得
     repos.tickets.findByIdWithDetail(id, tenantId),
     // エージェント時のみ担当者候補一覧を取得 (テナント内のみ)
     isAgent ? repos.users.listAgents(tenantId) : Promise.resolve([]),
     // テナントの動作モード (lite | pro) を取得し、ステータス表記を Lite/Pro で切り替える
     getCurrentTenantMode(tenantId),
+    // エージェント時のみカテゴリ候補一覧を取得 (Pro モード専用の概念だが、mode 判定前に
+    // Promise.all で並列化するため取得自体は agents と同様に isAgent だけで判定する)
+    isAgent ? repos.categories.list(tenantId) : Promise.resolve([]),
+    // エージェント時のみ拠点候補一覧を取得 (Lite/Pro 両方で使える概念)
+    isAgent ? repos.locations.listByTenant(tenantId) : Promise.resolve([]),
   ]);
 
   // チケットが存在しなければ 404
@@ -256,16 +267,40 @@ export default async function TicketDetailPage({ params }: Props) {
                 </dd>
               </div>
 
-              {/* カテゴリ */}
+              {/* カテゴリ (Pro モードかつエージェントは変更可、それ以外は表示のみ。
+                  フォローアップ 2026-07-14 #4: メール/LINE 取り込みチケットは常にカテゴリ未設定で
+                  作成されるため、事後変更できないと永久に未分類のままだった) */}
               <div>
                 <dt className="font-medium text-gray-500">カテゴリ</dt>
-                <dd className="mt-1 text-gray-700">{ticket.category?.name ?? '―'}</dd>
+                <dd className="mt-1">
+                  {isAgent && mode === 'pro' ? (
+                    <CategorySelect
+                      ticketId={ticket.id}
+                      currentCategoryId={ticket.categoryId}
+                      categories={categories}
+                    />
+                  ) : (
+                    <span className="text-gray-700">{ticket.category?.name ?? '―'}</span>
+                  )}
+                </dd>
               </div>
 
-              {/* 拠点 (Phase 4 多拠点。未指定なら "―") */}
+              {/* 拠点 (Phase 4 多拠点。エージェントかつ拠点が 1 件以上登録済みなら変更可、
+                  それ以外は表示のみ。未指定なら "―"。フォローアップ 2026-07-14 #4: カテゴリと
+                  同じくメール/LINE 取り込みチケットの事後変更手段が無かったギャップの解消) */}
               <div>
                 <dt className="font-medium text-gray-500">拠点</dt>
-                <dd className="mt-1 text-gray-700">{ticket.location?.name ?? '―'}</dd>
+                <dd className="mt-1">
+                  {isAgent && locations.length > 0 ? (
+                    <LocationSelect
+                      ticketId={ticket.id}
+                      currentLocationId={ticket.locationId}
+                      locations={locations}
+                    />
+                  ) : (
+                    <span className="text-gray-700">{ticket.location?.name ?? '―'}</span>
+                  )}
+                </dd>
               </div>
 
               {/* 登録者 (チケット作成者) */}
