@@ -32,6 +32,17 @@ export function makeFaqRepo(db: PrismaLike): FaqRepository {
       }));
     },
 
+    // 当該テナントの公開済み (Published) FAQ 一覧を取得 (依頼者含む全メンバー向け。
+    // 元チケット/作成者は含めない範囲最小化のため select で question/answer のみに絞る)
+    async listPublished(tenantId) {
+      // select の形が PublishedFaqItem と一致するため中間変数を使わずそのまま返す
+      return db.faqCandidate.findMany({
+        where: { tenantId, status: 'Published' }, // テナントスコープ + 公開済みのみ
+        orderBy: { createdAt: 'desc' }, // 新しい順
+        select: { id: true, question: true, answer: true }, // 質問/回答/IDのみ取得 (範囲最小化)
+      });
+    },
+
     // 新規 FAQ 候補を作成 (ステータスは DB 側デフォルトで Candidate)
     async create(input) {
       const row = await db.faqCandidate.create({

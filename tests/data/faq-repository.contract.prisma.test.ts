@@ -100,6 +100,42 @@ describe.runIf(SHOULD_RUN)('FaqRepository (prisma adapter)', () => {
     expect(result[0].createdBy.name).toBe('エージェントA');
   });
 
+  // listPublished: 公開済みのみをテナントスコープで select 経由で返す (フォローアップ 2026-07-14 #5)
+  it('listPublishedは公開済みのみをテナントスコープで返す', async () => {
+    const repos = buildPrismaRepos(prisma);
+    const published = await repos.faq.create({
+      ticketId: ticketA,
+      createdById: AGENT_A,
+      question: '公開済みの質問',
+      answer: '公開済みの回答',
+      tenantId: TENANT_A,
+    });
+    await repos.faq.updateStatus(published.id, 'Published', TENANT_A);
+    // 候補のまま (Candidate) の FAQ は含めない
+    // (FaqCandidate.ticketId は 1 チケット 1 候補のユニーク制約があるため、別のチケットに紐付ける)
+    const anotherTicket = await repos.tickets.create({
+      title: 'テナントAの別チケット',
+      body: '本文',
+      priority: 'Medium',
+      creatorId: AGENT_A,
+      categoryId: null,
+      locationId: null,
+      tenantId: TENANT_A,
+    });
+    await repos.faq.create({
+      ticketId: anotherTicket.id,
+      createdById: AGENT_A,
+      question: '候補のままの質問',
+      answer: '候補のままの回答',
+      tenantId: TENANT_A,
+    });
+
+    const result = await repos.faq.listPublished(TENANT_A);
+    expect(result).toEqual([
+      { id: published.id, question: '公開済みの質問', answer: '公開済みの回答' },
+    ]);
+  });
+
   // updateStatus: tenantId スコープの updateMany が正しく更新する
   it('updateStatusで状態を更新できる', async () => {
     const repos = buildPrismaRepos(prisma);
