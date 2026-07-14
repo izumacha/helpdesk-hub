@@ -16,13 +16,25 @@ export interface FaqListItem extends FaqCandidate {
   createdBy: { name: string }; // 作成者の氏名
 }
 
+// フォローアップ (2026-07-14 #5): 依頼者 (非エージェント) 向けの公開済み FAQ 閲覧用アイテム。
+// 元チケット/作成者などの内部情報は意図的に含めない (§9 最小権限・最小公開の方針。
+// quarantine の「本文は保存しない」と同じ範囲最小化の考え方)
+export interface PublishedFaqItem {
+  id: string;
+  question: string;
+  answer: string;
+}
+
 // FAQ リポジトリの契約 (port)
 // 全メソッドが tenantId 必須化済み。テナント越境参照/更新を Adapter 層で遮断する
 export interface FaqRepository {
   // ID + tenantId で 1 件取得 (他テナントの ID なら null)
   findById(id: string, tenantId: string): Promise<FaqCandidate | null>;
-  // 当該テナントの FAQ 候補一覧を取得
+  // 当該テナントの FAQ 候補一覧を取得 (エージェント向け管理画面用。全ステータスを含む)
   list(tenantId: string): Promise<FaqListItem[]>;
+  // 当該テナントの公開済み (Published) FAQ 一覧を取得する (依頼者含む全メンバーが閲覧可能。
+  // フォローアップ 2026-07-14 #5)
+  listPublished(tenantId: string): Promise<PublishedFaqItem[]>;
   // 候補を作成 (input.tenantId 必須)
   create(input: CreateFaqInput): Promise<FaqCandidate>;
   // 公開/却下などの状態更新 (tenantId スコープ。他テナントの ID なら 0 件更新で no-op)

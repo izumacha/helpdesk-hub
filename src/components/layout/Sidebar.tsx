@@ -38,7 +38,9 @@ const navItems: {
   { href: '/dashboard', label: 'ダッシュボード' },
   { href: '/tickets', label: '問い合わせ一覧' },
   { href: '/tickets/new', label: '新規登録' },
-  { href: '/faq', label: (mode) => FAQ_TERM_LABELS[mode], agentOnly: true },
+  // フォローアップ (2026-07-14 #5): 依頼者は公開済み FAQ を閲覧できる (agentOnly ではなくなった)。
+  // /faq ページ自体がロールで「候補管理ビュー」「公開済み閲覧ビュー」を出し分ける
+  { href: '/faq', label: (mode) => FAQ_TERM_LABELS[mode] },
   { href: '/notifications', label: '通知' },
   { href: '/settings/line', label: 'LINE連携' }, // Phase 2: 自分の LINE を連携する自己サービス (全ロール)
   { href: '/audit', label: '監査ログ', adminOnly: true }, // Phase 4: 管理者向け変更履歴

@@ -35,6 +35,15 @@ export function makeFaqRepo(store: Store): FaqRepository {
       });
     },
 
+    // 当該テナントの公開済み (Published) FAQ を新しい順で一覧化 (依頼者含む全メンバー向け。
+    // 元チケット/作成者は含めない範囲最小化のため質問/回答のみ返す)
+    async listPublished(tenantId) {
+      return [...store.faq.values()]
+        .filter((f) => f.tenantId === tenantId && f.status === 'Published')
+        .sort((a, b) => +b.createdAt - +a.createdAt)
+        .map((f) => ({ id: f.id, question: f.question, answer: f.answer }));
+    },
+
     // 新規 FAQ 候補を作成してストアに登録
     async create(input) {
       // 現在時刻を createdAt/updatedAt に使用

@@ -123,6 +123,47 @@ describe('FaqRepository (memory)', () => {
     expect(result.map((f) => f.id)).toEqual([second.id, first.id]);
   });
 
+  // listPublished: 公開済み (Published) のみを返し、Candidate/Rejected は含めない
+  // (フォローアップ 2026-07-14 #5: 依頼者向け公開 FAQ 閲覧用)
+  it('listPublishedは公開済みのみをテナントスコープで返す', async () => {
+    const ticket = await seedTicketAndAgent(TENANT_A, 'チケット', AGENT_A);
+    const published = await repos.faq.create({
+      ticketId: ticket.id,
+      createdById: AGENT_A,
+      question: '公開済みの質問',
+      answer: '公開済みの回答',
+      tenantId: TENANT_A,
+    });
+    await repos.faq.updateStatus(published.id, 'Published', TENANT_A);
+    // 候補のまま (Candidate) の FAQ も同テナントに存在させる
+    await repos.faq.create({
+      ticketId: ticket.id,
+      createdById: AGENT_A,
+      question: '候補のままの質問',
+      answer: '候補のままの回答',
+      tenantId: TENANT_A,
+    });
+    // 別テナントの公開済み FAQ も存在させる (クロステナント漏洩防止の確認)
+    const agentB = 'agent-b';
+    const ticketB = await seedTicketAndAgent(TENANT_B, 'テナントBの問い合わせ', agentB);
+    const publishedB = await repos.faq.create({
+      ticketId: ticketB.id,
+      createdById: agentB,
+      question: 'テナントBの公開質問',
+      answer: 'テナントBの公開回答',
+      tenantId: TENANT_B,
+    });
+    await repos.faq.updateStatus(publishedB.id, 'Published', TENANT_B);
+
+    const result = await repos.faq.listPublished(TENANT_A);
+    expect(result).toHaveLength(1);
+    expect(result[0]).toEqual({
+      id: published.id,
+      question: '公開済みの質問',
+      answer: '公開済みの回答',
+    });
+  });
+
   // updateStatus: 状態を更新できる (Published/Rejected 等)
   it('updateStatusで状態を更新できる', async () => {
     const ticket = await seedTicketAndAgent(TENANT_A, 'チケット', AGENT_A);
