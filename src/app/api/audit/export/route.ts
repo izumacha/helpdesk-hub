@@ -17,6 +17,9 @@ import type { AuditFeedRow } from '@/features/audit/types';
 import type { AuditPaginationCursor } from '@/data/ports/audit-pagination';
 // CSV 文字列への変換 (クライアント側の現在ページエクスポートと共有する純粋関数。§6 DRY)
 import { auditFeedRowsToCsv } from '@/features/audit/audit-csv';
+// キーセットカーソル前進ループ・CSV レスポンス組み立ての共通ヘルパー (フォローアップ 2026-07-14 #3:
+// GET /api/quarantine/export と共有する。§6 DRY)
+import { collectCursorPaginatedRows, buildCsvExportResponse } from '@/lib/cursor-csv-export';
 
 // 全履歴エクスポートで書き出す行数の上限。
 // 件数無制限の取得は DB 負荷・レスポンスサイズ・処理時間が無制限になるため
@@ -90,57 +93,32 @@ export async function GET() {
 
   // カーソルをサーバー側で繰り返し前進させ、上限まで全ページを蓄積する。
   // 1 ページあたり AUDIT_MAX_LIMIT (500) 件ずつ取得することで往復回数を最小化する。
-  const logs: AuditFeedRow[] = [];
-  let cursor: AuditPaginationCursor | undefined = undefined;
-  let truncated = false;
-  for (;;) {
-    const page = await fetchAuditFeedPage(tenantId, AUDIT_MAX_LIMIT, cursor);
-    logs.push(...page.logs);
-    // 上限に達したら、まだ続きがあっても打ち切る (サイレント打ち切りは監査目的で
-    // 「全件取得済み」と誤認させるリスクがあるため X-Truncated ヘッダーで呼び出し元に伝える)。
-    // MAX_AUDIT_EXPORT_ROWS は AUDIT_MAX_LIMIT の倍数であること (上のモジュール読み込み時検査)
-    // が保証されているため logs.length はここで必ずちょうど MAX_AUDIT_EXPORT_ROWS に一致し、
-    // 超過はしない
-    if (logs.length >= MAX_AUDIT_EXPORT_ROWS) {
-      // /code-review ultra 指摘対応: fetchAuditFeedPage の hasMore は「ちょうど limit 件で
-      // 埋まった」ことしか示さない簡易ヒューリスティックのため、テナントの総件数がたまたま
-      // MAX_AUDIT_EXPORT_ROWS ちょうどだった場合に「まだ続きがある」という誤検知になりうる
-      // (/audit 画面では「もう1回読み込む」が無駄になるだけで実害が無いが、CSV エクスポートでは
-      // 「実際は全件取得済みなのに一部のみとユーザーに誤って警告する」ことになるため看過できない)。
-      // 上限にちょうど到達したときだけ、次カーソル以降に本当に行が残っているかを 1 件だけ
-      // 確認してから truncated を確定する (該当しない限りこの追加往復は発生しない)
-      truncated =
-        page.hasMore && page.nextCursor
-          ? (await fetchAuditFeedPage(tenantId, 1, page.nextCursor)).logs.length > 0
-          : false;
-      break;
-    }
-    if (!page.hasMore || !page.nextCursor) break;
-    cursor = page.nextCursor;
-  }
+  // フォローアップ (2026-07-14 #3 /code-review ultra 指摘対応): GET /api/quarantine/export が
+  // 同じループ・打ち切り誤検知防止ロジックを必要としたため、共通ヘルパーへ抽出した (§6 DRY)
+  const { rows: logs, truncated } = await collectCursorPaginatedRows<
+    AuditFeedRow,
+    AuditPaginationCursor
+  >({
+    maxRows: MAX_AUDIT_EXPORT_ROWS,
+    fetchPage: async (cursor) => {
+      const page = await fetchAuditFeedPage(tenantId, AUDIT_MAX_LIMIT, cursor);
+      return { rows: page.logs, hasMore: page.hasMore, nextCursor: page.nextCursor };
+    },
+    // ちょうど上限に到達したときだけ、次カーソル以降に本当に行が残っているかを 1 件だけ
+    // 確認する (「ちょうど limit 件で埋まった」だけのヒューリスティックだと、テナントの総件数が
+    // たまたま MAX_AUDIT_EXPORT_ROWS ちょうどだった場合に「まだ続きがある」という誤検知になりうる)
+    probeForMore: async (nextCursor) =>
+      (await fetchAuditFeedPage(tenantId, 1, nextCursor)).logs.length > 0,
+  });
 
   // 監査ログ行の一覧を CSV 文字列に変換する (クライアント側ボタンと共有する純粋関数)
   const csv = auditFeedRowsToCsv(logs);
 
-  // ファイル名に今日の JST 日付を含める (ダウンロードフォルダで日付識別できる)
-  const today = new Date()
-    .toLocaleDateString('ja-JP', {
-      timeZone: 'Asia/Tokyo',
-      year: 'numeric',
-      month: '2-digit',
-      day: '2-digit',
-    })
-    .replace(/\//g, '-'); // YYYY/MM/DD → YYYY-MM-DD
-  const filename = `audit-log-full-${today}.csv`;
-
-  const responseHeaders: HeadersInit = {
-    'Content-Type': 'text/csv; charset=utf-8',
-    'Content-Disposition': `attachment; filename="${filename}"`,
-    'Cache-Control': 'no-cache, no-store, must-revalidate',
-  };
-  if (truncated) {
-    responseHeaders['X-Truncated'] = 'true';
-    responseHeaders['X-Total-Limit'] = String(MAX_AUDIT_EXPORT_ROWS);
-  }
-  return new Response(csv, { status: 200, headers: responseHeaders });
+  // CSV レスポンスを組み立てて返す (ファイル名の JST 日付付与・打ち切り時のヘッダーを含む)
+  return buildCsvExportResponse({
+    csv,
+    filenamePrefix: 'audit-log-full',
+    truncated,
+    maxRows: MAX_AUDIT_EXPORT_ROWS,
+  });
 }

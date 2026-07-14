@@ -10,6 +10,8 @@ import { formatDateTimeJP } from '@/lib/format-date';
 import { QUARANTINE_REASON_LABELS, QUARANTINE_CHANNEL_LABELS } from '@/lib/constants';
 // 監査ログ系リポジトリ共通のページネーション上限 (findAllByTenant が limit をクランプする上限値)
 import { AUDIT_MAX_LIMIT } from '@/data/adapters/audit-pagination';
+// 全履歴 CSV エクスポートボタン (Client Component。フォローアップ 2026-07-14 #3)
+import { QuarantineExportButton } from '@/features/quarantine/components/QuarantineExportButton';
 
 // 一覧の取得件数上限 (パフォーマンス保護: 1 ページあたり 200 件まで。/audit と同じ値)
 const PAGE_LIMIT = 200;
@@ -73,13 +75,21 @@ export default async function QuarantinePage({ searchParams }: Props) {
   return (
     <div className="space-y-6">
       {/* ページヘッダー */}
-      <div>
-        <h1 className="text-2xl font-bold text-slate-900">隔離メール</h1>
-        <p className="mt-1 text-sm text-slate-500">
-          プラン未対応・未登録の送信者・認証失敗などで問い合わせ化されなかったメール/LINE
-          メッセージを表示しています。
-          {before ? `${PAGE_LIMIT} 件ずつ表示中。` : `最新 ${PAGE_LIMIT} 件。`}
-        </p>
+      <div className="flex items-start justify-between gap-4">
+        <div>
+          <h1 className="text-2xl font-bold text-slate-900">隔離メール</h1>
+          <p className="mt-1 text-sm text-slate-500">
+            プラン未対応・未登録の送信者・認証失敗などで問い合わせ化されなかったメール/LINE
+            メッセージを表示しています。
+            {before ? `${PAGE_LIMIT} 件ずつ表示中。` : `最新 ${PAGE_LIMIT} 件。`}
+          </p>
+        </div>
+        {/* フォローアップ (2026-07-14 #3): 監査で発見したギャップの解消。「さらに読み込む」を
+            手動で辿らないと 200 件を超える隔離記録に到達できず、まとめて保管・共有する手段も
+            無かった (/audit 画面が §4.2.1/§4.2.2 で解消したのと同種のギャップ) */}
+        <div className="shrink-0">
+          <QuarantineExportButton />
+        </div>
       </div>
 
       {logs.length === 0 ? (
