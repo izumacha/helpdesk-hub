@@ -697,6 +697,18 @@ describe('updateTicketCategory (provider-agnostic)', () => {
     const t = await repos.tickets.findById(ticketId, TENANT);
     expect(t?.categoryId).toBeNull();
   });
+
+  // requester (エージェント以外) は実行できない
+  it('refuses when caller is not an agent', async () => {
+    const { ticketId } = await seed();
+    sessionUserId = 'u-req-1';
+    sessionRole = 'requester';
+    const { updateTicketCategory } = await import('@/features/tickets/actions/update-ticket');
+
+    await expect(updateTicketCategory(ticketId, 'cat-1')).rejects.toThrow(
+      /エージェントまたは管理者/,
+    );
+  });
 });
 
 // フォローアップ (2026-07-14 #4): 同上。拠点は Lite/Pro 両モードで使える概念なので mode 強制は無い
@@ -758,6 +770,19 @@ describe('updateTicketLocation (provider-agnostic)', () => {
     );
     const t = await repos.tickets.findById(ticketId, TENANT);
     expect(t?.locationId).toBeNull();
+  });
+
+  // requester (エージェント以外) は実行できない
+  it('refuses when caller is not an agent', async () => {
+    const { ticketId } = await seed();
+    const location = await repos.locations.create({ tenantId: TENANT, name: '渋谷本店' });
+    sessionUserId = 'u-req-1';
+    sessionRole = 'requester';
+    const { updateTicketLocation } = await import('@/features/tickets/actions/update-ticket');
+
+    await expect(updateTicketLocation(ticketId, location.id)).rejects.toThrow(
+      /エージェントまたは管理者/,
+    );
   });
 });
 
