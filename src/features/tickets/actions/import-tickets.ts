@@ -117,6 +117,28 @@ function resolveNameToId(
   return { ok: true, id };
 }
 
+// 「チケットの所有権に関わる」名前解決 (担当者・起票者) の共通ヘルパー。
+// resolveNameToId と異なり、同姓同名がキー衝突でどちらか一方へ無言で misassign されるのを防ぐため、
+// 解決を試みる前に重複チェックを行う「重複チェック → resolveNameToId」という 2 手順をまとめて持つ。
+// フォローアップ (2026-07-14): 元々は担当者名解決の行処理にインライン実装されていたが、起票者名解決も
+// 全く同型の 2 手順を必要とするため、2 箇所目の重複が生じた時点で共通化する (§6 DRY)。
+function resolveOwnedName(
+  name: string,
+  byName: Map<string, string>,
+  duplicateNames: Set<string>,
+  entityLabel: string, // エラーメッセージに使う日本語ラベル (例: '担当者' '起票者')
+  duplicatePopulationLabel: string, // 重複しうる母集団の呼称 (例: 担当者は「エージェント」、起票者は「メンバー」)
+  duplicateGuidance: string, // 重複時のエラーメッセージ末尾に付ける案内文 (例: '担当者を設定してください')
+): { ok: true; id: string } | { ok: false; message: string } {
+  if (duplicateNames.has(name)) {
+    return {
+      ok: false,
+      message: `${entityLabel}名が重複しています: "${name}"（同じ名前の${duplicatePopulationLabel}が複数存在するため一意に特定できません。取り込み後に画面から${duplicateGuidance}）`,
+    };
+  }
+  return resolveNameToId(name, byName, entityLabel);
+}
+
 // 名前 → ID の対応表を作りつつ、同姓同名 (重複名) を集合として検出する共通ヘルパー。
 // 拠点・カテゴリと異なり、担当者・起票者は「チケットの所有権に関わる」列であり、同姓同名を
 // Map のキー衝突でどちらか一方へ無言で misassign すると事故になるため、専用の重複検出が必要になる
@@ -708,16 +730,15 @@ export async function importTickets(csvText: string): Promise<ImportTicketsResul
     if (assigneeName !== null) {
       // /code-review ultra 指摘対応 (2026-07-13): 同姓同名のエージェントが複数存在する場合、
       // Map のキー衝突でどちらか一方へ無言で misassign されてしまう (拠点/カテゴリの誤りより
-      // 「チケットの所有権を誤らせる」ため深刻)。resolveNameToId を呼ぶ前に重複を検出し、
-      // 曖昧な名前は起票者が手動で判断できるようエラー行として記録する。
-      if (duplicateAgentNames.has(assigneeName)) {
-        errors.push({
-          row: rowNum,
-          message: `担当者名が重複しています: "${assigneeName}"（同じ名前のエージェントが複数存在するため一意に特定できません。取り込み後に画面から担当者を設定してください）`,
-        });
-        continue;
-      }
-      const resolved = resolveNameToId(assigneeName, agentsByName, '担当者');
+      // 「チケットの所有権を誤らせる」ため深刻)。resolveOwnedName が重複検出を先に行う。
+      const resolved = resolveOwnedName(
+        assigneeName,
+        agentsByName,
+        duplicateAgentNames,
+        '担当者',
+        'エージェント',
+        '担当者を設定してください',
+      );
       if (!resolved.ok) {
         errors.push({ row: rowNum, message: resolved.message });
         continue;
@@ -734,15 +755,15 @@ export async function importTickets(csvText: string): Promise<ImportTicketsResul
     // 担当者と同じく無言で「インポート実行者に付け替え」ず、解決できない名前はエラー行として記録する。
     let effectiveCreatorId = creatorId;
     if (creatorName !== null) {
-      // 担当者と同じ理由 (同姓同名の misassign 防止) で重複検出を先に行う
-      if (duplicateCreatorNames.has(creatorName)) {
-        errors.push({
-          row: rowNum,
-          message: `起票者名が重複しています: "${creatorName}"（同じ名前のメンバーが複数存在するため一意に特定できません。取り込み後に画面から起票者を確認してください）`,
-        });
-        continue;
-      }
-      const resolved = resolveNameToId(creatorName, usersByName, '起票者');
+      // 担当者と同じ理由 (同姓同名の misassign 防止) で resolveOwnedName が重複検出を先に行う
+      const resolved = resolveOwnedName(
+        creatorName,
+        usersByName,
+        duplicateCreatorNames,
+        '起票者',
+        'メンバー',
+        '起票者を確認してください',
+      );
       if (!resolved.ok) {
         errors.push({ row: rowNum, message: resolved.message });
         continue;
