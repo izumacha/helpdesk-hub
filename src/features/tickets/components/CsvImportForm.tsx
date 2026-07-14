@@ -41,6 +41,9 @@ type ColumnMapping = {
   // フォローアップ (2026-07-13): CSV エクスポートの「担当者」列と対称にし、エクスポート→
   // 再インポートの往復で担当者情報が失われないようにする
   担当者: string; // 「担当者」フィールドに対応する CSV 列名 (任意。空文字は使わない)
+  // フォローアップ (2026-07-14): CSV エクスポートの「起票者」列と対称にし、エクスポート→
+  // 再インポートの往復で起票者 (依頼者本人) 情報が失われないようにする (監査で発見したギャップ)
+  起票者: string; // 「起票者」フィールドに対応する CSV 列名 (任意。空文字は使わない)
 };
 
 // プレビューテーブルの 1 行を表す型 (マッピング後の固定システムフィールド)
@@ -53,6 +56,7 @@ interface PreviewRow {
   拠点: string; // 拠点セル (省略可)
   状況: string; // 状況セル (省略可。§3.1 フォローアップ)
   担当者: string; // 担当者セル (省略可。フォローアップ 2026-07-13)
+  起票者: string; // 起票者セル (省略可。フォローアップ 2026-07-14)
 }
 
 // マッピング設定フォームに表示するシステムフィールドの定義一覧
@@ -66,6 +70,7 @@ const SYSTEM_FIELDS = [
   { key: '拠点' as const, label: '拠点（任意）', required: false }, // 任意フィールド
   { key: '状況' as const, label: '状況（任意）', required: false }, // 任意フィールド (§3.1 フォローアップ)
   { key: '担当者' as const, label: '担当者（任意）', required: false }, // 任意フィールド (フォローアップ 2026-07-13)
+  { key: '起票者' as const, label: '起票者（任意）', required: false }, // 任意フィールド (フォローアップ 2026-07-14)
 ] as const;
 
 // ウィザードのステップ情報一覧 (ステップインジケーターの表示に使う)
@@ -110,8 +115,9 @@ function applyMapping(csvText: string, mapping: ColumnMapping): string {
   const locIdx = mapping.拠点 ? headers.indexOf(mapping.拠点) : -1; // 拠点列のインデックス
   const statusIdx = mapping.状況 ? headers.indexOf(mapping.状況) : -1; // 状況列のインデックス (§3.1 フォローアップ)
   const assigneeIdx = mapping.担当者 ? headers.indexOf(mapping.担当者) : -1; // 担当者列のインデックス (フォローアップ 2026-07-13)
+  const creatorIdx = mapping.起票者 ? headers.indexOf(mapping.起票者) : -1; // 起票者列のインデックス (フォローアップ 2026-07-14)
   // 出力 CSV のヘッダ行: サーバーアクションが期待する固定列名で上書きする
-  const outLines: string[] = ['件名,内容,期限日,優先度,カテゴリ,拠点,状況,担当者'];
+  const outLines: string[] = ['件名,内容,期限日,優先度,カテゴリ,拠点,状況,担当者,起票者'];
   // データ行を 1 行ずつ変換する
   for (const line of lines.slice(1)) {
     // RFC 4180 パーサで元のセル値を取り出す
@@ -133,6 +139,7 @@ function applyMapping(csvText: string, mapping: ColumnMapping): string {
       escapeCsvCell(locIdx !== -1 ? (cells[locIdx] ?? '') : ''), // 拠点セル
       escapeCsvCell(statusIdx !== -1 ? (cells[statusIdx] ?? '') : ''), // 状況セル (§3.1 フォローアップ)
       escapeCsvCell(assigneeIdx !== -1 ? (cells[assigneeIdx] ?? '') : ''), // 担当者セル (フォローアップ 2026-07-13)
+      escapeCsvCell(creatorIdx !== -1 ? (cells[creatorIdx] ?? '') : ''), // 起票者セル (フォローアップ 2026-07-14)
     ];
     // カンマ区切りで 1 行にして出力リストに追加する
     outLines.push(row.join(','));
@@ -154,7 +161,7 @@ function buildPreview(mappedCsvText: string): PreviewRow[] {
   return dataLines.map((line) => {
     // RFC 4180 パーサで各セルを取り出す
     const cells = parseCsvLine(line);
-    // applyMapping が出力した列順: 件名[0], 内容[1], 期限日[2], 優先度[3], カテゴリ[4], 拠点[5], 状況[6], 担当者[7]
+    // applyMapping が出力した列順: 件名[0], 内容[1], 期限日[2], 優先度[3], カテゴリ[4], 拠点[5], 状況[6], 担当者[7], 起票者[8]
     return {
       件名: cells[0] ?? '', // 件名セル
       内容: cells[1] ?? '', // 内容セル
@@ -164,6 +171,7 @@ function buildPreview(mappedCsvText: string): PreviewRow[] {
       拠点: cells[5] ?? '', // 拠点セル
       状況: cells[6] ?? '', // 状況セル (§3.1 フォローアップ)
       担当者: cells[7] ?? '', // 担当者セル (フォローアップ 2026-07-13)
+      起票者: cells[8] ?? '', // 起票者セル (フォローアップ 2026-07-14)
     };
   });
 }
@@ -183,6 +191,7 @@ function buildAutoMapping(headers: string[]): ColumnMapping {
     拠点: find('拠点'), // 「拠点」列が CSV にあれば自動対応 (自社の CSV エクスポート結果をそのまま再取込しやすくする)
     状況: find('状況'), // 「状況」列が CSV にあれば自動対応 (§3.1 フォローアップ)
     担当者: find('担当者'), // 「担当者」列が CSV にあれば自動対応 (フォローアップ 2026-07-13)
+    起票者: find('起票者'), // 「起票者」列が CSV にあれば自動対応 (自社の CSV エクスポート結果をそのまま再取込しやすくする。フォローアップ 2026-07-14)
   };
 }
 
@@ -205,6 +214,7 @@ export function CsvImportForm(_props: CsvImportFormProps) {
     拠点: '',
     状況: '',
     担当者: '',
+    起票者: '',
   });
   // マッピングを適用した変換後の CSV テキスト (サーバーアクションへ渡す)
   const [mappedCsvText, setMappedCsvText] = useState<string | null>(null);
@@ -225,7 +235,17 @@ export function CsvImportForm(_props: CsvImportFormProps) {
     if (!file) {
       setCsvText(null); // 生 CSV テキストをクリア
       setCsvHeaders([]); // ヘッダ一覧をクリア
-      setMapping({ 件名: '', 内容: '', 期限日: '', 優先度: '', カテゴリ: '', 拠点: '', 状況: '', 担当者: '' }); // マッピングをクリア
+      setMapping({
+        件名: '',
+        内容: '',
+        期限日: '',
+        優先度: '',
+        カテゴリ: '',
+        拠点: '',
+        状況: '',
+        担当者: '',
+        起票者: '',
+      }); // マッピングをクリア
       setMappedCsvText(null); // 変換後 CSV をクリア
       setPreview([]); // プレビューをクリア
       setResult(null); // 結果をクリア
@@ -238,7 +258,17 @@ export function CsvImportForm(_props: CsvImportFormProps) {
       // エラーを表示しつつ、以前のファイルに由来する状態をすべてリセットして不整合を防ぐ
       setCsvText(null); // 前回の生 CSV テキストをクリア
       setCsvHeaders([]); // 前回のヘッダ一覧をクリア
-      setMapping({ 件名: '', 内容: '', 期限日: '', 優先度: '', カテゴリ: '', 拠点: '', 状況: '', 担当者: '' }); // 前回のマッピングをクリア
+      setMapping({
+        件名: '',
+        内容: '',
+        期限日: '',
+        優先度: '',
+        カテゴリ: '',
+        拠点: '',
+        状況: '',
+        担当者: '',
+        起票者: '',
+      }); // 前回のマッピングをクリア
       setMappedCsvText(null); // 前回の変換後 CSV をクリア
       setPreview([]); // 前回のプレビューをクリア
       setResult(null); // 前回の結果をクリア
@@ -482,6 +512,12 @@ export function CsvImportForm(_props: CsvImportFormProps) {
               <span className="font-medium">担当者:</span>{' '}
               登録済みの担当者（エージェント）の氏名と完全に一致する文字列を入力してください。空欄の場合は未アサインで取り込まれます。一致しない場合はエラーになります。
             </p>
+            {/* 起票者のフォーマット説明: 拠点/担当者と同じく、既存のメンバー名と完全一致させる必要がある
+                (フォローアップ 2026-07-14)。指定が無い場合の既定動作も明記し、意図しない付け替えを防ぐ */}
+            <p>
+              <span className="font-medium">起票者:</span>{' '}
+              登録済みのメンバー（担当者または依頼者）の氏名と完全に一致する文字列を入力してください。空欄の場合はこのインポートを実行した担当者が起票者になります。一致しない場合はエラーになります。
+            </p>
           </div>
 
           {/* 件名未選択時などのマッピングエラー */}
@@ -559,6 +595,10 @@ export function CsvImportForm(_props: CsvImportFormProps) {
                     <th className="px-4 py-2 text-left text-xs font-semibold text-slate-500">
                       担当者
                     </th>
+                    {/* ヘッダセル: 起票者 (フォローアップ 2026-07-14) */}
+                    <th className="px-4 py-2 text-left text-xs font-semibold text-slate-500">
+                      起票者
+                    </th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
@@ -583,6 +623,8 @@ export function CsvImportForm(_props: CsvImportFormProps) {
                       <td className="px-4 py-2 text-slate-500">{row.状況 || '―'}</td>
                       {/* 担当者セル: 未設定は「―」で表示する (フォローアップ 2026-07-13) */}
                       <td className="px-4 py-2 text-slate-500">{row.担当者 || '―'}</td>
+                      {/* 起票者セル: 未設定は「―」で表示する (インポート実行者が起票者になる。フォローアップ 2026-07-14) */}
+                      <td className="px-4 py-2 text-slate-500">{row.起票者 || '―'}</td>
                     </tr>
                   ))}
                 </tbody>

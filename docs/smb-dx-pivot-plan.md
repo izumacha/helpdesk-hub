@@ -370,6 +370,40 @@ LINE・CSV インポート・メールの 4 系統あるが、「新規起票を
 - `tests/features/inbound-email-route.test.ts`: 新規起票時にエージェント宛の `imported` 通知が作成される
   ことを検証する回帰テストを追加した。
 
+#### 3.6 フォローアップ（2026-07-14）: CSV エクスポートの「起票者」列が往復せず、常にインポート実行者に付け替えられていた
+
+監査で発見したギャップ: §3.3/§3.4 フォローアップで「件名」「内容」「カテゴリ」「期限日」の CSV
+往復性を解消したが、CSV エクスポート（`GET /api/tickets/export`）が出力する「起票者」列
+（`t.creator?.name`）に対応する読み取りが CSV インポート（`import-tickets.ts`）側に一切存在せず、
+インポートされる全チケットの `creatorId` は常にインポートを実行した admin のセッション ID に
+ハードコードされていた。これは §3.1/§3.3/§3.4 と同種の CSV 往復性の欠落だが、「起票者」列は
+表示専用の他の列と異なり、依頼者本人がそのチケットを見られるかどうか
+（`src/app/(app)/tickets/[id]/page.tsx` の `!isAgent && ticket.creatorId !== session.user.id`
+による 404）と、ステータス/優先度変更時の通知の宛先（`update-ticket.ts`）の両方を左右するため、
+影響がより深刻だった。admin がバックアップ・見直し・他テナントへの移行目的でチケットを
+エクスポートし、編集して再インポートする（§0 北極星指標「最短で Excel から卒業できる」が
+前提とする往復ワークフロー）と、元の依頼者（例: §1.2 の現場リーダー鈴木さん）が自分の
+問い合わせを一覧・詳細のどちらからも見られなくなり、以後の進捗通知も届かなくなる回帰だった。
+
+- `src/data/ports/user-repository.ts` に `listByTenant(tenantId)` を追加（Prisma + メモリ両
+  Adapter で実装）。起票者はエージェントに限らず依頼者もなり得るため、既存の `listAgents`
+  （agent/admin のみ）では名前解決できず、ロールを問わない一覧取得が別途必要だった。
+- `import-tickets.ts` に「起票者」列（`headers.indexOf('起票者')`）を追加し、拠点/カテゴリ/
+  担当者と同じ名前解決パターンを踏襲した。同姓同名のメンバーが複数存在する場合に Map の
+  キー衝突でどちらか一方へ無言で misassign されるのを防ぐ重複検出ロジックは、担当者列の実装と
+  完全に同型だったため `buildNameToIdMapWithDuplicates` として抽出し両者で共有した（§6 DRY:
+  2 箇所目の重複が生じた時点で共通化する方針）。列が無い/セルが空の行は従来どおりインポート
+  実行者を起票者にする（後方互換）。
+- `CsvImportForm.tsx` のウィザードに「起票者」列マッピングを追加し、`ColumnMapping` /
+  `PreviewRow` / `SYSTEM_FIELDS` / `applyMapping` / `buildPreview` / `buildAutoMapping` を
+  拠点/担当者と同じ形で一貫して拡張した。入力値フォーマットのヒントに「登録済みのメンバー
+  （担当者または依頼者）の氏名と完全一致」「空欄ならインポート実行者が起票者になる」旨を明記した。
+- `tests/features/import-tickets.test.ts` に依頼者名/エージェント名での解決・列/セル省略時の
+  後方互換・存在しない名前のエラー・同姓同名の重複エラー・他テナントの同名ユーザーが解決対象に
+  含まれないことの回帰テストを追加。`listByTenant` 自体のテストも
+  `tests/data/user-repository.memory.test.ts` と `user-repository.contract.prisma.test.ts` に
+  追加した。
+
 ### Phase 4 — マネタイズと運用（継続）
 
 - [x] サブスク課金（Stripe Billing）: Free / Standard / Pro の 3 段階

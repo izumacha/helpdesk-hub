@@ -68,6 +68,22 @@ export function makeUserRepo(store: Store): UserRepository {
       return agents;
     },
 
+    // 当該テナント内の全ユーザー (ロール問わず) を名前順で一覧取得 (フォローアップ 2026-07-14:
+    // CSV インポートの「起票者」列名解決用。起票者は依頼者もなり得るため listAgents では絞り込めない)
+    async listByTenant(tenantId) {
+      // 結果を入れる配列を準備
+      const out: UserSummary[] = [];
+      // 全ユーザーを走査し、テナント一致だけ抽出 (ロールは問わない)
+      for (const u of store.users.values()) {
+        if (u.tenantId !== tenantId) continue; // 他テナントは除外
+        out.push({ id: u.id, name: u.name });
+      }
+      // 名前でロケール順に並び替え
+      out.sort((a, b) => a.name.localeCompare(b.name));
+      // 結果を返す
+      return out;
+    },
+
     // 当該テナント内の agent または admin の ID だけを一覧取得
     async listAgentIds(tenantId) {
       // 結果 ID 配列

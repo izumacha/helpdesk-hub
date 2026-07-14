@@ -558,6 +558,144 @@ describe('importTickets', () => {
     });
   });
 
+  // フォローアップ (2026-07-14): 「起票者」列の名前解決
+  // 監査で発見したギャップの回帰テスト。CSV エクスポート (GET /api/tickets/export) が「起票者」列を
+  // 出力するのに、インポート側には対応する読み取りが存在せず、常にインポート実行者が起票者として
+  // ハードコードされていた。起票者はチケットの閲覧権限 (依頼者は自分の起票したチケットしか見えない)
+  // と通知の宛先を左右するため、担当者列と同じ構成の回帰テストに加えて「依頼者 (requester) 名でも
+  // 解決できること」も検証する (担当者はエージェントのみが対象だが、起票者は依頼者もなり得るため)。
+  describe('起票者列 (フォローアップ 2026-07-14)', () => {
+    // 「起票者」列の値が既存の依頼者名と一致すれば creatorId が解決されて保存される
+    // (担当者と異なり、起票者は依頼者 (requester) にもなり得ることを確認する)
+    it('起票者名が依頼者名と一致すれば creatorId が依頼者に解決されて保存される', async () => {
+      const importTickets = await loadAction();
+      const csv = `件名,起票者\n複合機の紙詰まり,依頼者1`;
+      const result = await importTickets(csv);
+
+      expect(result.imported).toBe(1);
+      expect(result.errors).toHaveLength(0);
+      const ticket = [...store.tickets.values()][0];
+      // インポート実行者 (u-agt-1) ではなく、CSV で指定した依頼者 (u-req-1) が起票者になること
+      expect(ticket?.creatorId).toBe('u-req-1');
+    });
+
+    // 起票者名がエージェント名と一致する場合も同様に解決できること
+    it('起票者名がエージェント名と一致すれば creatorId がそのエージェントに解決されて保存される', async () => {
+      const importTickets = await loadAction();
+      const csv = `件名,起票者\n複合機の紙詰まり,エージェント2`;
+      const result = await importTickets(csv);
+
+      expect(result.imported).toBe(1);
+      expect(result.errors).toHaveLength(0);
+      const ticket = [...store.tickets.values()][0];
+      expect(ticket?.creatorId).toBe('u-agt-2');
+    });
+
+    // 「起票者」列自体が無ければ従来どおりインポート実行者が起票者になる (後方互換)
+    it('起票者列が無ければインポート実行者が起票者のまま取り込まれる', async () => {
+      const importTickets = await loadAction();
+      const csv = `件名\n複合機の紙詰まり`;
+      const result = await importTickets(csv);
+
+      expect(result.imported).toBe(1);
+      const ticket = [...store.tickets.values()][0];
+      expect(ticket?.creatorId).toBe('u-agt-1');
+    });
+
+    // 起票者列があっても空セルなら未指定として扱い、インポート実行者のまま取り込まれる
+    it('起票者セルが空ならインポート実行者が起票者のまま取り込まれる', async () => {
+      const importTickets = await loadAction();
+      const csv = `件名,起票者\n複合機の紙詰まり,`;
+      const result = await importTickets(csv);
+
+      expect(result.imported).toBe(1);
+      expect(result.errors).toHaveLength(0);
+      const ticket = [...store.tickets.values()][0];
+      expect(ticket?.creatorId).toBe('u-agt-1');
+    });
+
+    // テナントに存在しない起票者名 (タイポ等) はエラーとして記録され、
+    // 無言でインポート実行者に付け替えられない
+    it('存在しない起票者名はエラーとして記録され起票されない', async () => {
+      const importTickets = await loadAction();
+      const csv = `件名,起票者\n複合機の紙詰まり,存在しない人物`;
+      const result = await importTickets(csv);
+
+      expect(result.imported).toBe(0);
+      expect(result.errors).toHaveLength(1);
+      expect(result.errors[0].message).toContain('起票者が見つかりません');
+      expect(store.tickets.size).toBe(0);
+    });
+
+    // 同姓同名のメンバーが複数存在する場合、Map のキー衝突でどちらか一方へ無言で
+    // misassign されると閲覧権限を誤らせる事故になるため、エラー行として記録され
+    // どちらのメンバーにも起票されないことを確認する (担当者列と同じ設計)
+    it('同姓同名のメンバーが複数いる場合はエラーとして記録され起票されない', async () => {
+      // u-req-1 (依頼者1) と同じ表示名を持つ別ユーザーを追加する
+      const now = new Date();
+      store.users.set('u-req-2', {
+        id: 'u-req-2',
+        email: 'req2@example.com',
+        name: '依頼者1', // u-req-1 と同じ表示名 (同姓同名)
+        passwordHash: 'x',
+        role: 'requester',
+        tenantId: TENANT,
+        createdAt: now,
+        updatedAt: now,
+      });
+      const importTickets = await loadAction();
+      const csv = `件名,起票者\n複合機の紙詰まり,依頼者1`;
+      const result = await importTickets(csv);
+
+      expect(result.imported).toBe(0);
+      expect(result.errors).toHaveLength(1);
+      expect(result.errors[0].message).toContain('起票者名が重複しています');
+      expect(store.tickets.size).toBe(0);
+    });
+
+    // 他テナントに同名のメンバーが存在しても、tenantId スコープにより解決対象に含まれない
+    // (クロステナント漏洩防止。listByTenant の tenantId フィルタが効いていることの確認)
+    it('他テナントの同名ユーザーは起票者として解決されない', async () => {
+      const now = new Date();
+      store.tenants.set('other-tenant', {
+        id: 'other-tenant',
+        name: '別テナント',
+        mode: 'lite',
+        industry: null,
+        inboundToken: null,
+        slackWebhookUrl: null,
+        subscriptionPlan: 'free' as const,
+        stripeCustomerId: null,
+        stripeSubscriptionId: null,
+        stripeSubscriptionStatus: null,
+        trialEndsAt: null,
+        teamsWebhookUrl: null,
+        chatworkApiToken: null,
+        chatworkRoomId: null,
+        createdAt: now,
+      });
+      store.users.set('u-other-1', {
+        id: 'u-other-1',
+        email: 'other1@example.com',
+        name: '田中太郎',
+        passwordHash: 'x',
+        role: 'requester',
+        tenantId: 'other-tenant', // 別テナント所属
+        createdAt: now,
+        updatedAt: now,
+      });
+      const importTickets = await loadAction();
+      const csv = `件名,起票者\n複合機の紙詰まり,田中太郎`;
+      const result = await importTickets(csv);
+
+      // 自テナントに一致するユーザーがいないため、起票者として解決できずエラーになる
+      expect(result.imported).toBe(0);
+      expect(result.errors).toHaveLength(1);
+      expect(result.errors[0].message).toContain('起票者が見つかりません');
+      expect(store.tickets.size).toBe(0);
+    });
+  });
+
   // §3.1 フォローアップ (2026-07-10): 既存 Excel の完了済み行をそのまま取り込めるかを検証する
   describe('状況列 (§3.1 フォローアップ)', () => {
     // Lite テナント (seed() の既定) で「完了」を指定すると Closed で起票され、resolvedAt が
