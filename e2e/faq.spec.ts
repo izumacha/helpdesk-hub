@@ -75,9 +75,14 @@ const EDIT_TICKET_ID = 'e2e-faq-edit-ticket';
 const EDIT_FAQ_ID = 'e2e-faq-edit-faq';
 const UNPUBLISH_TICKET_ID = 'e2e-faq-unpublish-ticket';
 const UNPUBLISH_FAQ_ID = 'e2e-faq-unpublish-faq';
-const ORIGINAL_QUESTION = 'E2E編集前の質問（元）';
-const EDITED_QUESTION = 'E2E編集後の質問（新）';
-const UNPUBLISH_QUESTION = 'E2E非公開化対象の質問';
+// 質問文には他の操作ボタン名 (公開する/却下/非公開にする 等) と紛らわしい単語を含めない。
+// aria-label は「{質問文} を編集」のように質問文をそのまま前置するため、質問文自体に
+// ボタン名の部分文字列が入っていると getByRole の部分一致でボタンを取り違える
+// (実際に「編集前」の「編集」が「編集」ボタン検索にヒットし、同じ行の他ボタンとも
+// 曖昧一致して strict mode violation を起こした失敗を踏まえた対策)
+const ORIGINAL_QUESTION = 'E2Eテスト用の質問（変更前）';
+const EDITED_QUESTION = 'E2Eテスト用の質問（変更後）';
+const UNPUBLISH_QUESTION = 'E2E取り下げ対象の質問';
 
 // 編集/非公開化テスト用の Candidate/Published FAQ を default-tenant に投入する
 async function seedEditFixtures() {
@@ -157,9 +162,10 @@ test.describe('/faq エージェント向け編集・非公開化', () => {
     await login(page, 'agent1@example.com');
     await page.goto('/faq');
 
-    // 対象カード内の「編集」ボタンを開く
+    // 対象カード内の「編集」ボタンを開く。同じ行に「公開する」「却下」ボタンも並ぶため、
+    // 部分一致だと質問文自体に含まれる語と誤マッチしうる。aria-label の完全一致で対象を絞る
     const card = page.locator('div', { hasText: ORIGINAL_QUESTION }).last();
-    await card.getByRole('button', { name: '編集' }).click();
+    await card.getByRole('button', { name: `${ORIGINAL_QUESTION} を編集`, exact: true }).click();
 
     // 質問欄を新しい文言に書き換えて保存
     await page.getByLabel('質問').fill(EDITED_QUESTION);
@@ -175,9 +181,11 @@ test.describe('/faq エージェント向け編集・非公開化', () => {
     await login(page, 'agent1@example.com');
     await page.goto('/faq');
 
-    // 対象カード内の「非公開にする」ボタンをクリック
+    // 対象カード内の「非公開にする」ボタンをクリック (aria-label の完全一致で対象を絞る)
     const card = page.locator('div', { hasText: UNPUBLISH_QUESTION }).last();
-    await card.getByRole('button', { name: '非公開にする' }).click();
+    await card
+      .getByRole('button', { name: `${UNPUBLISH_QUESTION} を非公開にする`, exact: true })
+      .click();
 
     // 非公開化後は「非公開にする」ボタンも「公開する」ボタンも出ないこと (Rejected 状態)。
     // Server Action によるソフトナビゲーションで DOM が更新されるのを自動リトライで待つ
