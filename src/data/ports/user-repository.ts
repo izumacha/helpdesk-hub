@@ -29,6 +29,10 @@ export interface UserRepository {
   }): Promise<User>;
   /** Agents and admins in the given tenant. */
   listAgents(tenantId: string): Promise<UserSummary[]>; // 当該テナント内の agent/admin 一覧
+  // 当該テナント内の全ユーザー (agent/admin/requester 問わず) の概要一覧。
+  // フォローアップ (2026-07-14): CSV インポートの「起票者」列名解決用に追加。起票者はエージェントに
+  // 限らず依頼者 (requester) もなり得るため、agent/admin だけを返す listAgents では解決できない。
+  listByTenant(tenantId: string): Promise<UserSummary[]>;
   listAgentIds(tenantId: string): Promise<string[]>; // 当該テナント内の agent/admin の ID だけ
   findSummariesByIds(ids: string[], tenantId: string): Promise<UserSummary[]>; // テナント内 ID 配列から概要
   // エスカレーション一斉メール等、メール送信先として全エージェントの email が必要な場面向け。

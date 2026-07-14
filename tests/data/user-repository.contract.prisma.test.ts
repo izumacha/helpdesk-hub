@@ -126,6 +126,33 @@ describe.runIf(SHOULD_RUN)('UserRepository (prisma adapter)', () => {
     expect(agentEmails).toEqual([{ id: agentA.id, email: 'agent-a@example.com' }]);
   });
 
+  // listByTenant はロール問わず全ユーザーをテナントスコープで返す (フォローアップ 2026-07-14:
+  // CSV インポートの「起票者」列名解決用。requester も含む点が listAgents との違い)
+  it('listByTenantはrequesterも含む全ユーザーをテナントスコープで返す', async () => {
+    const repos = buildPrismaRepos(prisma);
+    const agentA = await createUser(repos, {
+      email: 'agent-a3@example.com',
+      name: 'エージェントA3',
+      role: 'agent',
+      tenantId: TENANT_A,
+    });
+    const requesterA = await createUser(repos, {
+      email: 'req-a3@example.com',
+      name: '依頼者A3',
+      role: 'requester',
+      tenantId: TENANT_A,
+    });
+    await createUser(repos, {
+      email: 'agent-b3@example.com',
+      name: 'エージェントB3',
+      role: 'agent',
+      tenantId: TENANT_B,
+    });
+    const users = await repos.users.listByTenant(TENANT_A);
+    // requester も含めてテナント A の 2 件だけが返り、テナント B のユーザーは含まれない
+    expect(users.map((u) => u.id).sort()).toEqual([agentA.id, requesterA.id].sort());
+  });
+
   // listAdminEmails は admin のみを返す (agent は含まない)
   it('listAdminEmailsはadminのみを返す', async () => {
     const repos = buildPrismaRepos(prisma);

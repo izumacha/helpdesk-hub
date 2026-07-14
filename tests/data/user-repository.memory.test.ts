@@ -84,6 +84,19 @@ describe('UserRepository (memory)', () => {
     expect(agents.map((a) => a.id)).toEqual(['u-agent-a', 'u-agent-b']);
   });
 
+  // listByTenant: ロール問わず全ユーザーを名前順で返す (フォローアップ 2026-07-14:
+  // CSV インポートの「起票者」列名解決用。requester も含む点が listAgents との違い)
+  it('listByTenantはrequesterも含む全ユーザーを名前順で返しテナント分離する', async () => {
+    putUser(store, 'u-req', TENANT, { role: 'requester', name: 'requester太郎' });
+    putUser(store, 'u-agent-b', TENANT, { role: 'agent', name: 'ぶらぼー' });
+    putUser(store, 'u-agent-a', TENANT, { role: 'admin', name: 'あいうえお' });
+    putUser(store, 'u-other-tenant-agent', OTHER_TENANT, { role: 'agent', name: 'あ他テナント' });
+
+    const users = await repos.users.listByTenant(TENANT);
+    // requester (u-req) も含めて 3 件返り、他テナントのユーザーは含まれない
+    expect(users.map((u) => u.id)).toEqual(['u-req', 'u-agent-a', 'u-agent-b']);
+  });
+
   // listAgentIds: ID のみを返す (テナント分離込み)
   it('listAgentIdsはagent/adminのIDのみを返す', async () => {
     putUser(store, 'u-req', TENANT, { role: 'requester' });
@@ -119,7 +132,10 @@ describe('UserRepository (memory)', () => {
   it('listAdminEmailsはadminのみを返しagentは含まない', async () => {
     putUser(store, 'u-agent', TENANT, { role: 'agent', email: 'agent@example.com' });
     putUser(store, 'u-admin', TENANT, { role: 'admin', email: 'admin@example.com' });
-    putUser(store, 'u-other-tenant-admin', OTHER_TENANT, { role: 'admin', email: 'other@example.com' });
+    putUser(store, 'u-other-tenant-admin', OTHER_TENANT, {
+      role: 'admin',
+      email: 'other@example.com',
+    });
 
     const admins = await repos.users.listAdminEmails(TENANT);
     expect(admins).toEqual([{ id: 'u-admin', email: 'admin@example.com' }]);

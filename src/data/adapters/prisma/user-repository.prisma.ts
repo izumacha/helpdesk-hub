@@ -45,6 +45,18 @@ export function makeUserRepo(db: PrismaLike): UserRepository {
       return rows.map(toUserSummary);
     },
 
+    // 当該テナント内の全ユーザー (ロール問わず) を名前順で取得 (フォローアップ 2026-07-14:
+    // CSV インポートの「起票者」列名解決用。起票者は依頼者もなり得るため listAgents では絞り込めない)
+    async listByTenant(tenantId) {
+      const rows = await db.user.findMany({
+        where: { tenantId }, // テナントのみで絞る (ロール不問)
+        select: { id: true, name: true }, // 必要列のみ
+        orderBy: { name: 'asc' }, // 名前昇順
+      });
+      // 各行を UserSummary に変換
+      return rows.map(toUserSummary);
+    },
+
     // 当該テナント内の agent または admin の ID だけを取得 (通知一斉送信用)
     async listAgentIds(tenantId) {
       const rows = await db.user.findMany({

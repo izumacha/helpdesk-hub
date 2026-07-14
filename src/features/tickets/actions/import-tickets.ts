@@ -18,7 +18,13 @@ import { getCurrentTenantMode } from '@/lib/tenant';
 // RFC 4180 準拠の CSV パーサ と共有定数 (サーバー / クライアント共通実装)
 import { parseCsvLine, MAX_CSV_BYTES } from '@/lib/csv';
 // 優先度・ステータス・テナントモードのドメイン型
-import type { Priority, TicketStatus, TenantMode, NotificationType } from '@/domain/types';
+import type {
+  Priority,
+  TicketStatus,
+  TenantMode,
+  NotificationType,
+  UserSummary,
+} from '@/domain/types';
 // モードに応じた初期ステータスを返す共通関数（メール取り込み・LINE 取り込みと同一ロジックを共有し DRY を維持する）。
 // getCompletionStatuses は §3.1 フォローアップ (2026-07-10) で追加: インポート時に「状況」列が
 // 完了系ステータスを指定していた場合、resolvedAt をインポート時刻で設定するために使う
@@ -109,6 +115,51 @@ function resolveNameToId(
     };
   }
   return { ok: true, id };
+}
+
+// 「チケットの所有権に関わる」名前解決 (担当者・起票者) の共通ヘルパー。
+// resolveNameToId と異なり、同姓同名がキー衝突でどちらか一方へ無言で misassign されるのを防ぐため、
+// 解決を試みる前に重複チェックを行う「重複チェック → resolveNameToId」という 2 手順をまとめて持つ。
+// フォローアップ (2026-07-14): 元々は担当者名解決の行処理にインライン実装されていたが、起票者名解決も
+// 全く同型の 2 手順を必要とするため、2 箇所目の重複が生じた時点で共通化する (§6 DRY)。
+function resolveOwnedName(
+  name: string,
+  byName: Map<string, string>,
+  duplicateNames: Set<string>,
+  entityLabel: string, // エラーメッセージに使う日本語ラベル (例: '担当者' '起票者')
+  duplicatePopulationLabel: string, // 重複しうる母集団の呼称 (例: 担当者は「エージェント」、起票者は「メンバー」)
+  duplicateGuidance: string, // 重複時のエラーメッセージ末尾に付ける案内文 (例: '担当者を設定してください')
+): { ok: true; id: string } | { ok: false; message: string } {
+  if (duplicateNames.has(name)) {
+    return {
+      ok: false,
+      message: `${entityLabel}名が重複しています: "${name}"（同じ名前の${duplicatePopulationLabel}が複数存在するため一意に特定できません。取り込み後に画面から${duplicateGuidance}）`,
+    };
+  }
+  return resolveNameToId(name, byName, entityLabel);
+}
+
+// 名前 → ID の対応表を作りつつ、同姓同名 (重複名) を集合として検出する共通ヘルパー。
+// 拠点・カテゴリと異なり、担当者・起票者は「チケットの所有権に関わる」列であり、同姓同名を
+// Map のキー衝突でどちらか一方へ無言で misassign すると事故になるため、専用の重複検出が必要になる
+// (buildNameToIdMap は「列が使われるかどうか」の分岐のみを共有する用途なのでここでは使わない)。
+// フォローアップ (2026-07-14): 元々は担当者名解決にインライン実装されていたが、起票者名解決も
+// 同じ形の重複検出を必要とするため、2 箇所目の重複が生じた時点で共通化する (§6 DRY)。
+function buildNameToIdMapWithDuplicates(items: UserSummary[]): {
+  byName: Map<string, string>;
+  duplicateNames: Set<string>;
+} {
+  const byName = new Map<string, string>();
+  const nameCounts = new Map<string, number>();
+  for (const item of items) {
+    nameCounts.set(item.name, (nameCounts.get(item.name) ?? 0) + 1);
+    byName.set(item.name, item.id);
+  }
+  const duplicateNames = new Set<string>();
+  for (const [name, count] of nameCounts) {
+    if (count > 1) duplicateNames.add(name);
+  }
+  return { byName, duplicateNames };
 }
 
 // CSV インポート完了後、対象ユーザー群へバッチ通知 (1 通ずつ) を送るベストエフォート・ヘルパー。
@@ -258,6 +309,13 @@ interface ValidatedRow {
   // 同じく DB を持つ呼び出し側で行う)。CSV エクスポートは「担当者」列を出力するのにインポート側に
   // 対応する読み取りが無く、エクスポート→編集→再インポートの往復で担当者情報が失われていた
   assigneeName: string | null;
+  // フォローアップ (2026-07-14): 起票者名 (trim 済み。null = 未指定。実在確認は担当者と同じく
+  // DB を持つ呼び出し側で行う)。CSV エクスポートは「起票者」列を出力するのにインポート側に
+  // 対応する読み取りが無く、常にインポート実行者が起票者としてハードコードされていたため、
+  // エクスポート→編集→再インポートの往復で元の起票者 (依頼者本人) の情報が失われていた。
+  // これはチケットの閲覧権限 (依頼者は自分の起票したチケットしか見えない) と通知の宛先を
+  // 誤らせる回帰であり、拠点/カテゴリ/担当者よりも影響が大きい
+  creatorName: string | null;
 }
 
 // CSV ヘッダの列インデックス一覧
@@ -270,6 +328,7 @@ interface ColumnIndices {
   categoryIndex: number; // 「カテゴリ」列 (-1 = 未指定。フォローアップ 2026-07-11)
   statusIndex: number; // 「状況」列 (-1 = 未指定。§3.1 フォローアップ)
   assigneeIndex: number; // 「担当者」列 (-1 = 未指定。フォローアップ 2026-07-13)
+  creatorIndex: number; // 「起票者」列 (-1 = 未指定。フォローアップ 2026-07-14)
 }
 
 // CSV 1 行分のセルを受け取り、バリデーション・型変換を行う純粋関数。
@@ -290,6 +349,7 @@ function validateImportRow(
     categoryIndex,
     statusIndex,
     assigneeIndex,
+    creatorIndex,
   } = indices;
 
   // 件名セルを取り出す。前後の空白は除去する (空白だけのセルを「入力あり」と誤判定しないため)
@@ -348,10 +408,11 @@ function validateImportRow(
     }
   }
 
-  // 拠点セル・カテゴリセル・担当者セルを取り出す (未指定なら null。extractOptionalCell を共有)
+  // 拠点セル・カテゴリセル・担当者セル・起票者セルを取り出す (未指定なら null。extractOptionalCell を共有)
   const locationName = extractOptionalCell(cells, locationIndex);
   const categoryName = extractOptionalCell(cells, categoryIndex);
   const assigneeName = extractOptionalCell(cells, assigneeIndex);
+  const creatorName = extractOptionalCell(cells, creatorIndex);
 
   // §3.1 フォローアップ (2026-07-10): 「状況」セルをテナントの現在モードのラベルから TicketStatus へ
   // 変換する。既存の問い合わせ管理 Excel には既に完了済みの行が大量に混ざっているのが実情で、
@@ -402,6 +463,7 @@ function validateImportRow(
       categoryName,
       status,
       assigneeName,
+      creatorName,
     },
   };
 }
@@ -484,6 +546,9 @@ export async function importTickets(csvText: string): Promise<ImportTicketsResul
   // フォローアップ (2026-07-13): 担当者名 (CSV エクスポートの「担当者」列と対称の項目。
   // 拠点/カテゴリと同じく名前解決が必要なため列インデックスだけここで取得する)
   const assigneeIndex = headers.indexOf('担当者');
+  // フォローアップ (2026-07-14): 起票者名 (CSV エクスポートの「起票者」列と対称の項目。
+  // 担当者と同じく名前解決が必要なため列インデックスだけここで取得する)
+  const creatorIndex = headers.indexOf('起票者');
 
   // データ行 (2 行目以降) を取り出す
   const dataLines = nonEmptyLines.slice(1);
@@ -515,30 +580,31 @@ export async function importTickets(csvText: string): Promise<ImportTicketsResul
   // ここで取得したものを再利用して二重取得を避ける (§8 パフォーマンス)。(2) 拠点/カテゴリと異なり
   // 担当者名はチケットの所有権 (誰が対応するか) を左右するため、同姓同名のエージェントが存在する
   // 場合に Map のキー衝突でどちらか一方へ無言で misassign されるのを防ぐ重複検出が必要。
-  // 拠点・カテゴリ・エージェント一覧は互いに独立した取得のため Promise.all で並列化する (§8)。
-  const [locationsByName, categoriesByName, agentsForAssignee] = await Promise.all([
-    buildNameToIdMap(locationIndex !== -1, () => repos.locations.listByTenant(tenantId)),
-    buildNameToIdMap(categoryIndex !== -1 && mode !== 'lite', () =>
-      repos.categories.list(tenantId),
-    ),
-    assigneeIndex !== -1 ? repos.users.listAgents(tenantId) : Promise.resolve(null),
-  ]);
+  // フォローアップ (2026-07-14): 起票者も同じ理由で重複検出が必要。ただし起票者はエージェントに
+  // 限らず依頼者もなり得るため、agentsForAssignee (listAgents) ではなく listByTenant (全ロール) を
+  // 別途取得する。同一テナント内で対象が重なっても listAgents とは目的の異なる独立した取得のため、
+  // 拠点・カテゴリ・エージェント一覧と合わせて Promise.all で並列化する (§8 パフォーマンス)。
+  const [locationsByName, categoriesByName, agentsForAssignee, usersForCreator] = await Promise.all(
+    [
+      buildNameToIdMap(locationIndex !== -1, () => repos.locations.listByTenant(tenantId)),
+      buildNameToIdMap(categoryIndex !== -1 && mode !== 'lite', () =>
+        repos.categories.list(tenantId),
+      ),
+      assigneeIndex !== -1 ? repos.users.listAgents(tenantId) : Promise.resolve(null),
+      creatorIndex !== -1 ? repos.users.listByTenant(tenantId) : Promise.resolve(null),
+    ],
+  );
 
-  // 「担当者」列の名前 → ID マップと、同姓同名 (重複名) の集合を作る。
+  // 「担当者」「起票者」列それぞれの名前 → ID マップと、同姓同名 (重複名) の集合を作る。
   // 拠点/カテゴリの resolveNameToId と異なり、同名が複数存在する場合はどちらか一方を無言で
-  // 選ばず、後続のループでエラー行として記録できるよう duplicateAgentNames に集める。
-  const agentsByName = new Map<string, string>();
-  const duplicateAgentNames = new Set<string>();
-  if (agentsForAssignee) {
-    const nameCounts = new Map<string, number>();
-    for (const a of agentsForAssignee) {
-      nameCounts.set(a.name, (nameCounts.get(a.name) ?? 0) + 1);
-      agentsByName.set(a.name, a.id);
-    }
-    for (const [name, count] of nameCounts) {
-      if (count > 1) duplicateAgentNames.add(name);
-    }
-  }
+  // 選ばず、後続のループでエラー行として記録できるよう duplicateNames に集める
+  // (buildNameToIdMapWithDuplicates を共有。§6 DRY: 担当者・起票者の 2 箇所目で共通化した)。
+  const { byName: agentsByName, duplicateNames: duplicateAgentNames } = agentsForAssignee
+    ? buildNameToIdMapWithDuplicates(agentsForAssignee)
+    : { byName: new Map<string, string>(), duplicateNames: new Set<string>() };
+  const { byName: usersByName, duplicateNames: duplicateCreatorNames } = usersForCreator
+    ? buildNameToIdMapWithDuplicates(usersForCreator)
+    : { byName: new Map<string, string>(), duplicateNames: new Set<string>() };
 
   // 集計用カウンタとエラーリストを初期化する
   let imported = 0;
@@ -559,6 +625,7 @@ export async function importTickets(csvText: string): Promise<ImportTicketsResul
     categoryIndex,
     statusIndex,
     assigneeIndex,
+    creatorIndex,
   };
 
   // データ行を 1 件ずつ処理する (部分成功を許可するため、1 件エラーでも他を続ける)
@@ -609,6 +676,7 @@ export async function importTickets(csvText: string): Promise<ImportTicketsResul
       categoryName,
       status: parsedStatus,
       assigneeName,
+      creatorName,
     } = validation.data;
     // 「状況」列が未指定 (null) ならモードの既定初期ステータスにフォールバックする
     const status = parsedStatus ?? initialStatus;
@@ -662,21 +730,45 @@ export async function importTickets(csvText: string): Promise<ImportTicketsResul
     if (assigneeName !== null) {
       // /code-review ultra 指摘対応 (2026-07-13): 同姓同名のエージェントが複数存在する場合、
       // Map のキー衝突でどちらか一方へ無言で misassign されてしまう (拠点/カテゴリの誤りより
-      // 「チケットの所有権を誤らせる」ため深刻)。resolveNameToId を呼ぶ前に重複を検出し、
-      // 曖昧な名前は起票者が手動で判断できるようエラー行として記録する。
-      if (duplicateAgentNames.has(assigneeName)) {
-        errors.push({
-          row: rowNum,
-          message: `担当者名が重複しています: "${assigneeName}"（同じ名前のエージェントが複数存在するため一意に特定できません。取り込み後に画面から担当者を設定してください）`,
-        });
-        continue;
-      }
-      const resolved = resolveNameToId(assigneeName, agentsByName, '担当者');
+      // 「チケットの所有権を誤らせる」ため深刻)。resolveOwnedName が重複検出を先に行う。
+      const resolved = resolveOwnedName(
+        assigneeName,
+        agentsByName,
+        duplicateAgentNames,
+        '担当者',
+        'エージェント',
+        '担当者を設定してください',
+      );
       if (!resolved.ok) {
         errors.push({ row: rowNum, message: resolved.message });
         continue;
       }
       assigneeId = resolved.id;
+    }
+
+    // フォローアップ (2026-07-14): 監査で発見したギャップの解消。起票者名が指定されていれば ID に
+    // 解決する (resolveNameToId を共有)。担当者と同じく Lite/Pro 両モードで使える概念のため mode
+    // によるガードは行わない。列が無い/セルが空の場合は既定どおりインポート実行者を起票者にする
+    // (後方互換: 従来の CSV フォーマットのままインポートしても壊れない)。
+    // 起票者はチケットの閲覧権限 (依頼者は自分の起票したチケットしか見えない。
+    // src/app/(app)/tickets/[id]/page.tsx) と通知の宛先 (update-ticket.ts) の両方を左右するため、
+    // 担当者と同じく無言で「インポート実行者に付け替え」ず、解決できない名前はエラー行として記録する。
+    let effectiveCreatorId = creatorId;
+    if (creatorName !== null) {
+      // 担当者と同じ理由 (同姓同名の misassign 防止) で resolveOwnedName が重複検出を先に行う
+      const resolved = resolveOwnedName(
+        creatorName,
+        usersByName,
+        duplicateCreatorNames,
+        '起票者',
+        'メンバー',
+        '起票者を確認してください',
+      );
+      if (!resolved.ok) {
+        errors.push({ row: rowNum, message: resolved.message });
+        continue;
+      }
+      effectiveCreatorId = resolved.id;
     }
 
     // Phase 4 課金: 残枠を使い切っていたらこの行以降は起票せずエラーとして記録する
@@ -698,7 +790,9 @@ export async function importTickets(csvText: string): Promise<ImportTicketsResul
         priority, // 優先度
         // 「カテゴリ」列があれば名前解決済みの ID、無ければ未分類 (null。後から設定できる)
         categoryId,
-        creatorId, // セッションのユーザーが起票者になる
+        // フォローアップ (2026-07-14): 「起票者」列があれば名前解決済みの ID、無ければ従来どおり
+        // インポート実行者 (セッションのユーザー) が起票者になる
+        creatorId: effectiveCreatorId,
         tenantId, // テナントスコープを必ず付与する (クロステナント防止)
         // 「状況」列があればその値、無ければモードの既定初期ステータス (Lite: Open / Pro: New)
         status,
