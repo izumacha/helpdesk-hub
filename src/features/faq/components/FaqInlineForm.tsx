@@ -14,6 +14,10 @@ interface Props {
   // トグルボタンのアクセシブルネーム (省略時は toggleLabel をそのまま使う。
   // §7 a11y: 一覧内に同名ボタンが並ぶ場合、対象を区別できる文言を渡す)
   toggleAriaLabel?: string;
+  // トグルボタンを一時的に無効化するか (省略時 false。呼び出し元がサーバーの最新値への
+  // 同期中であることを示したい場合に使う。例: FaqEditForm が保存成功後の router.refresh()
+  // 完了を待つ間、古い defaultQuestion/defaultAnswer で再展開されるのを防ぐ)
+  toggleDisabled?: boolean;
   // ラベルと入力欄を紐付ける id の接頭辞 (呼び出し元ごとに一意にすること)
   fieldIdPrefix: string;
   // 質問欄の初期値
@@ -35,6 +39,7 @@ export function FaqInlineForm({
   toggleLabel,
   toggleClassName,
   toggleAriaLabel,
+  toggleDisabled,
   fieldIdPrefix,
   defaultQuestion,
   defaultAnswer,
@@ -90,7 +95,11 @@ export function FaqInlineForm({
       <button
         onClick={() => setOpen(true)}
         aria-label={toggleAriaLabel}
-        className={toggleClassName}
+        // 呼び出し元がサーバーの最新値への同期中は再展開を止める (古い初期値での
+        // remount を防ぐ。§9 fail-safe: 見た目のクリックできなさより、気付かない
+        // 内容巻き戻りの方が実害が大きいため無効化を優先する)
+        disabled={toggleDisabled}
+        className={`${toggleClassName} disabled:pointer-events-none disabled:opacity-50`}
       >
         {toggleLabel}
       </button>
