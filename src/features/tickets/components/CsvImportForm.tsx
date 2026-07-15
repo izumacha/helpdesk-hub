@@ -44,6 +44,9 @@ type ColumnMapping = {
   // フォローアップ (2026-07-14): CSV エクスポートの「起票者」列と対称にし、エクスポート→
   // 再インポートの往復で起票者 (依頼者本人) 情報が失われないようにする (監査で発見したギャップ)
   起票者: string; // 「起票者」フィールドに対応する CSV 列名 (任意。空文字は使わない)
+  // フォローアップ (2026-07-15 #3): CSV エクスポートの「起票日時」列と対称にし、エクスポート→
+  // 再インポートの往復で元の起票日時が失われないようにする (監査で発見したギャップ)
+  起票日時: string; // 「起票日時」フィールドに対応する CSV 列名 (任意。空文字は使わない)
 };
 
 // プレビューテーブルの 1 行を表す型 (マッピング後の固定システムフィールド)
@@ -57,6 +60,7 @@ interface PreviewRow {
   状況: string; // 状況セル (省略可。§3.1 フォローアップ)
   担当者: string; // 担当者セル (省略可。フォローアップ 2026-07-13)
   起票者: string; // 起票者セル (省略可。フォローアップ 2026-07-14)
+  起票日時: string; // 起票日時セル (省略可。フォローアップ 2026-07-15 #3)
 }
 
 // マッピング設定フォームに表示するシステムフィールドの定義一覧
@@ -71,6 +75,7 @@ const SYSTEM_FIELDS = [
   { key: '状況' as const, label: '状況（任意）', required: false }, // 任意フィールド (§3.1 フォローアップ)
   { key: '担当者' as const, label: '担当者（任意）', required: false }, // 任意フィールド (フォローアップ 2026-07-13)
   { key: '起票者' as const, label: '起票者（任意）', required: false }, // 任意フィールド (フォローアップ 2026-07-14)
+  { key: '起票日時' as const, label: '起票日時（任意）', required: false }, // 任意フィールド (フォローアップ 2026-07-15 #3)
 ] as const;
 
 // ウィザードのステップ情報一覧 (ステップインジケーターの表示に使う)
@@ -116,8 +121,9 @@ function applyMapping(csvText: string, mapping: ColumnMapping): string {
   const statusIdx = mapping.状況 ? headers.indexOf(mapping.状況) : -1; // 状況列のインデックス (§3.1 フォローアップ)
   const assigneeIdx = mapping.担当者 ? headers.indexOf(mapping.担当者) : -1; // 担当者列のインデックス (フォローアップ 2026-07-13)
   const creatorIdx = mapping.起票者 ? headers.indexOf(mapping.起票者) : -1; // 起票者列のインデックス (フォローアップ 2026-07-14)
+  const createdAtIdx = mapping.起票日時 ? headers.indexOf(mapping.起票日時) : -1; // 起票日時列のインデックス (フォローアップ 2026-07-15 #3)
   // 出力 CSV のヘッダ行: サーバーアクションが期待する固定列名で上書きする
-  const outLines: string[] = ['件名,内容,期限日,優先度,カテゴリ,拠点,状況,担当者,起票者'];
+  const outLines: string[] = ['件名,内容,期限日,優先度,カテゴリ,拠点,状況,担当者,起票者,起票日時'];
   // データ行を 1 行ずつ変換する
   for (const line of lines.slice(1)) {
     // RFC 4180 パーサで元のセル値を取り出す
@@ -140,6 +146,7 @@ function applyMapping(csvText: string, mapping: ColumnMapping): string {
       escapeCsvCell(statusIdx !== -1 ? (cells[statusIdx] ?? '') : ''), // 状況セル (§3.1 フォローアップ)
       escapeCsvCell(assigneeIdx !== -1 ? (cells[assigneeIdx] ?? '') : ''), // 担当者セル (フォローアップ 2026-07-13)
       escapeCsvCell(creatorIdx !== -1 ? (cells[creatorIdx] ?? '') : ''), // 起票者セル (フォローアップ 2026-07-14)
+      escapeCsvCell(createdAtIdx !== -1 ? (cells[createdAtIdx] ?? '') : ''), // 起票日時セル (フォローアップ 2026-07-15 #3)
     ];
     // カンマ区切りで 1 行にして出力リストに追加する
     outLines.push(row.join(','));
@@ -161,7 +168,8 @@ function buildPreview(mappedCsvText: string): PreviewRow[] {
   return dataLines.map((line) => {
     // RFC 4180 パーサで各セルを取り出す
     const cells = parseCsvLine(line);
-    // applyMapping が出力した列順: 件名[0], 内容[1], 期限日[2], 優先度[3], カテゴリ[4], 拠点[5], 状況[6], 担当者[7], 起票者[8]
+    // applyMapping が出力した列順: 件名[0], 内容[1], 期限日[2], 優先度[3], カテゴリ[4], 拠点[5],
+    // 状況[6], 担当者[7], 起票者[8], 起票日時[9]
     return {
       件名: cells[0] ?? '', // 件名セル
       内容: cells[1] ?? '', // 内容セル
@@ -172,6 +180,7 @@ function buildPreview(mappedCsvText: string): PreviewRow[] {
       状況: cells[6] ?? '', // 状況セル (§3.1 フォローアップ)
       担当者: cells[7] ?? '', // 担当者セル (フォローアップ 2026-07-13)
       起票者: cells[8] ?? '', // 起票者セル (フォローアップ 2026-07-14)
+      起票日時: cells[9] ?? '', // 起票日時セル (フォローアップ 2026-07-15 #3)
     };
   });
 }
@@ -192,6 +201,7 @@ function buildAutoMapping(headers: string[]): ColumnMapping {
     状況: find('状況'), // 「状況」列が CSV にあれば自動対応 (§3.1 フォローアップ)
     担当者: find('担当者'), // 「担当者」列が CSV にあれば自動対応 (フォローアップ 2026-07-13)
     起票者: find('起票者'), // 「起票者」列が CSV にあれば自動対応 (自社の CSV エクスポート結果をそのまま再取込しやすくする。フォローアップ 2026-07-14)
+    起票日時: find('起票日時'), // 「起票日時」列が CSV にあれば自動対応 (フォローアップ 2026-07-15 #3)
   };
 }
 
@@ -215,6 +225,7 @@ export function CsvImportForm(_props: CsvImportFormProps) {
     状況: '',
     担当者: '',
     起票者: '',
+    起票日時: '',
   });
   // マッピングを適用した変換後の CSV テキスト (サーバーアクションへ渡す)
   const [mappedCsvText, setMappedCsvText] = useState<string | null>(null);
@@ -245,6 +256,7 @@ export function CsvImportForm(_props: CsvImportFormProps) {
         状況: '',
         担当者: '',
         起票者: '',
+        起票日時: '',
       }); // マッピングをクリア
       setMappedCsvText(null); // 変換後 CSV をクリア
       setPreview([]); // プレビューをクリア
@@ -268,6 +280,7 @@ export function CsvImportForm(_props: CsvImportFormProps) {
         状況: '',
         担当者: '',
         起票者: '',
+        起票日時: '',
       }); // 前回のマッピングをクリア
       setMappedCsvText(null); // 前回の変換後 CSV をクリア
       setPreview([]); // 前回のプレビューをクリア
@@ -518,6 +531,13 @@ export function CsvImportForm(_props: CsvImportFormProps) {
               <span className="font-medium">起票者:</span>{' '}
               登録済みのメンバー（担当者または依頼者）の氏名と完全に一致する文字列を入力してください。空欄の場合はこのインポートを実行した担当者が起票者になります。一致しない場合はエラーになります。
             </p>
+            {/* 起票日時のフォーマット説明: 期限日と同じく厳密な日時形式が必要
+                (フォローアップ 2026-07-15 #3)。指定が無い場合の既定動作も明記する */}
+            <p>
+              <span className="font-medium">起票日時:</span> YYYY-MM-DD HH:mm:ss 形式（例:
+              2026-03-31
+              09:15:00、現在時刻より過去の日時）で入力してください。空欄の場合はこのインポートを実行した時刻になります。
+            </p>
           </div>
 
           {/* 件名未選択時などのマッピングエラー */}
@@ -599,6 +619,10 @@ export function CsvImportForm(_props: CsvImportFormProps) {
                     <th className="px-4 py-2 text-left text-xs font-semibold text-slate-500">
                       起票者
                     </th>
+                    {/* ヘッダセル: 起票日時 (フォローアップ 2026-07-15 #3) */}
+                    <th className="px-4 py-2 text-left text-xs font-semibold text-slate-500">
+                      起票日時
+                    </th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
@@ -625,6 +649,8 @@ export function CsvImportForm(_props: CsvImportFormProps) {
                       <td className="px-4 py-2 text-slate-500">{row.担当者 || '―'}</td>
                       {/* 起票者セル: 未設定は「―」で表示する (インポート実行者が起票者になる。フォローアップ 2026-07-14) */}
                       <td className="px-4 py-2 text-slate-500">{row.起票者 || '―'}</td>
+                      {/* 起票日時セル: 未設定は「―」で表示する (インポート実行時刻になる。フォローアップ 2026-07-15 #3) */}
+                      <td className="px-4 py-2 text-slate-500">{row.起票日時 || '―'}</td>
                     </tr>
                   ))}
                 </tbody>

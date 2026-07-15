@@ -14,8 +14,9 @@ import { buildTicketListFilter } from '@/features/tickets/build-filter';
 import { buildCsvString } from '@/lib/csv';
 // ステータス日本語ラベル (mode-aware) と優先度ラベル
 import { getStatusLabel, PRIORITY_LABELS } from '@/lib/constants';
-// JST 日時フォーマット
-import { formatDateTimeJP, formatDateISO } from '@/lib/format-date';
+// JST 日時フォーマット。formatDateTimeISO は「起票日時」列専用 (機械可読・再インポート対応。
+// フォローアップ 2026-07-15 #3)、formatDateTimeJP は「更新日時」列専用 (表示のみ・再インポート非対応)
+import { formatDateTimeJP, formatDateTimeISO, formatDateISO } from '@/lib/format-date';
 // TicketWithRefs 型 (一覧取得の戻り値) と TenantMode 型 (mode-aware ラベル用)
 // @/generated/prisma ではなく正準 @/domain/types から import する (lint ルール: no-restricted-imports)
 import type { TicketWithRefs, TenantMode } from '@/domain/types';
@@ -78,9 +79,13 @@ function ticketsToCsv(tickets: TicketWithRefs[], mode: TenantMode): string {
     // 'YYYY-MM-DD' 厳密形式と一致せず再インポートできなかった。formatDateISO に変更し、
     // エクスポートした CSV をそのまま (列名・書式とも) 再インポートできるようにする。
     t.resolutionDueAt ? formatDateISO(t.resolutionDueAt) : '',
-    // 起票日時: JST の年月日 時分秒形式
-    formatDateTimeJP(t.createdAt),
-    // 更新日時: JST の年月日 時分秒形式
+    // 起票日時: JST の 'YYYY-MM-DD HH:mm:ss' 形式 (ゼロ埋め済み・再パース可能)。
+    // フォローアップ (2026-07-15 #3): 以前は formatDateTimeJP (ja-JP ロケール、例 '2026/7/15 9:30:00'。
+    // 非ゼロ埋め) で出力しており、期限日と同じ理由でそのまま再インポートできなかった。
+    // CSV インポートが対応する formatDateTimeISO に変更し、既存 Excel 台帳の移行時に元の起票日時を
+    // 保持したまま再インポートできるようにする (往復性。§0 北極星指標)
+    formatDateTimeISO(t.createdAt),
+    // 更新日時: 再インポート対象ではない表示専用列のため、従来どおり人間可読な JST 表記を維持する
     formatDateTimeJP(t.updatedAt),
   ]);
 

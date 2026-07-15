@@ -6,6 +6,10 @@ import { createMemoryContext, type Store } from '@/data/adapters/memory';
 import type { Repos, UnitOfWork } from '@/data/ports/unit-of-work';
 // レート制限の履歴をテスト間でクリアする内部用関数
 import { __resetRateLimits } from '@/lib/rate-limit';
+// フォローアップ (2026-07-15): updateTicketPriority による SLA 期限再計算の期待値を
+// 検証対象と同じ計算式で組み立てるための純粋関数 (テストの期待値をハードコードせず、実装と
+// 同じ計算式を共有することで期限計算の定数が変わっても回帰テストが追随する)
+import { calculateFirstResponseDueAt, calculateResolutionDueAt } from '@/lib/sla';
 
 // 各テスト前に書き換える "可変" な依存。Action import 前に値を入れる必要がある。
 let store: Store;
@@ -175,7 +179,7 @@ describe('updateTicketStatus (provider-agnostic)', () => {
   it('rejects an invalid transition and rolls back history', async () => {
     const { ticketId } = await seed();
     // 事前に Closed にしておく
-    await repos.tickets.updateStatus(ticketId, 'Closed', null, TENANT);
+    await repos.tickets.updateStatus(ticketId, { from: 'New', to: 'Closed' }, null, TENANT);
     const { updateTicketStatus } = await import('@/features/tickets/actions/update-ticket');
 
     // Closed → InProgress は遷移表で禁止されている
@@ -205,7 +209,7 @@ describe('updateTicketStatus (provider-agnostic)', () => {
   it('sets resolvedAt when transitioning to Resolved', async () => {
     const { ticketId } = await seed();
     // 事前に Open に
-    await repos.tickets.updateStatus(ticketId, 'Open', null, TENANT);
+    await repos.tickets.updateStatus(ticketId, { from: 'New', to: 'Open' }, null, TENANT);
     const { updateTicketStatus } = await import('@/features/tickets/actions/update-ticket');
 
     // 期待時刻範囲を取るため呼び出し前後の時刻を測る
@@ -224,7 +228,7 @@ describe('updateTicketStatus (provider-agnostic)', () => {
   // Resolved → Open に戻すと resolvedAt がクリアされる
   it('clears resolvedAt when reopening from Resolved', async () => {
     const { ticketId } = await seed();
-    await repos.tickets.updateStatus(ticketId, 'Resolved', new Date(), TENANT);
+    await repos.tickets.updateStatus(ticketId, { from: 'New', to: 'Resolved' }, new Date(), TENANT);
     const { updateTicketStatus } = await import('@/features/tickets/actions/update-ticket');
 
     await updateTicketStatus(ticketId, 'Open');
@@ -240,7 +244,7 @@ describe('updateTicketStatus (provider-agnostic)', () => {
   it('preserves resolvedAt when closing a resolved ticket', async () => {
     const { ticketId } = await seed();
     const resolvedAt = new Date();
-    await repos.tickets.updateStatus(ticketId, 'Resolved', resolvedAt, TENANT);
+    await repos.tickets.updateStatus(ticketId, { from: 'New', to: 'Resolved' }, resolvedAt, TENANT);
     const { updateTicketStatus } = await import('@/features/tickets/actions/update-ticket');
 
     await updateTicketStatus(ticketId, 'Closed');
@@ -258,7 +262,7 @@ describe('updateTicketStatus (provider-agnostic)', () => {
   it('clears resolvedAt when reopening a closed ticket', async () => {
     const { ticketId } = await seed();
     // クローズ済みかつ解決日時ありの状態を用意する
-    await repos.tickets.updateStatus(ticketId, 'Closed', new Date(), TENANT);
+    await repos.tickets.updateStatus(ticketId, { from: 'New', to: 'Closed' }, new Date(), TENANT);
     const { updateTicketStatus } = await import('@/features/tickets/actions/update-ticket');
 
     await updateTicketStatus(ticketId, 'Open');
@@ -271,7 +275,7 @@ describe('updateTicketStatus (provider-agnostic)', () => {
   // Resolved に関係しない遷移では resolvedAt は変化しない
   it('leaves resolvedAt untouched for transitions not involving Resolved', async () => {
     const { ticketId } = await seed();
-    await repos.tickets.updateStatus(ticketId, 'Open', null, TENANT);
+    await repos.tickets.updateStatus(ticketId, { from: 'New', to: 'Open' }, null, TENANT);
     const { updateTicketStatus } = await import('@/features/tickets/actions/update-ticket');
 
     await updateTicketStatus(ticketId, 'InProgress');
@@ -279,6 +283,42 @@ describe('updateTicketStatus (provider-agnostic)', () => {
     const t = await repos.tickets.findById(ticketId, TENANT);
     expect(t?.status).toBe('InProgress');
     expect(t?.resolvedAt).toBeNull();
+  });
+
+  // フォローアップ (2026-07-15 #2): check-then-act 競合 (TOCTOU) の防止。読み取り時
+  // (uow.run 内の findById) と書き込み時の間に別の操作が状態を変えていた場合、無条件更新だと
+  // 遷移表が禁止する遷移が後勝ちで成立してしまう (faq-actions.test.ts の同名テストと同じ観点)。
+  // store.tickets.get を最初の 1 回だけ古い状態にモックすることで
+  // 「findById は古いスナップショットを返すが、実際の行は既に別状態に変わっている」を再現する
+  // (updateTicketStatus は uow.run 内で毎回新しい repos インスタンスを作るため、
+  // repos.tickets.findById を直接スパイしても uow.run 内の呼び出しには効かない)
+  it('読み取り後に状態が変わっていた場合は競合エラーになり禁止遷移が成立しない', async () => {
+    const { ticketId } = await seed();
+    // 実際の行は既に Closed (先行操作が完了させた)
+    await repos.tickets.updateStatus(ticketId, { from: 'New', to: 'Closed' }, new Date(), TENANT);
+    // Map#get の最初の呼び出しだけ古いスナップショット (Open) を返すようにする (TOCTOU の再現)。
+    // 2 回目以降 (updateStatus 内の where 判定用の再読み込み) は実際の値 (Closed) を返す
+    let callCount = 0;
+    const originalGet = store.tickets.get.bind(store.tickets);
+    vi.spyOn(store.tickets, 'get').mockImplementation((id: string) => {
+      callCount += 1;
+      const real = originalGet(id);
+      if (callCount === 1 && id === ticketId && real) {
+        return { ...real, status: 'Open' };
+      }
+      return real;
+    });
+    const { updateTicketStatus } = await import('@/features/tickets/actions/update-ticket');
+
+    // 遷移ガード (Open→InProgress) は通過するが、条件付き更新が競合を検出して失敗する
+    await expect(updateTicketStatus(ticketId, 'InProgress')).rejects.toThrow(
+      /他の操作と競合したため/,
+    );
+
+    // 状態は Closed のまま (禁止遷移 Closed→InProgress が成立していない)
+    vi.restoreAllMocks();
+    const t = await repos.tickets.findById(ticketId, TENANT);
+    expect(t?.status).toBe('Closed');
   });
 });
 
@@ -360,6 +400,104 @@ describe('updateTicketPriority (provider-agnostic)', () => {
       /エージェントまたは管理者/,
     );
   });
+
+  // フォローアップ (2026-07-15): 優先度変更後も SLA 期限が旧優先度のまま固定され続けていた
+  // ギャップの回帰テスト。Pro モードでは resolutionDueAt/firstResponseDueAt が優先度から
+  // 自動算出される (TicketForm.tsx で Pro は期限日入力欄自体が非表示) ため、優先度変更のたびに
+  // 新しい優先度で再計算されること
+  it('Pro モードでは優先度変更に伴い resolutionDueAt/firstResponseDueAt を新しい優先度で再計算する', async () => {
+    const { ticketId } = await seed();
+    const before = await repos.tickets.findById(ticketId, TENANT);
+    // seed のチケットは Web フォームの自動 SLA 経路を通らないため期限が未設定 (null) から始まる
+    expect(before?.resolutionDueAt).toBeNull();
+    expect(before?.firstResponseDueAt).toBeNull();
+    const { updateTicketPriority } = await import('@/features/tickets/actions/update-ticket');
+
+    await updateTicketPriority(ticketId, 'High');
+
+    const t = await repos.tickets.findById(ticketId, TENANT);
+    // 新しい優先度 (High) と起票日時 (createdAt) から算出した期限に更新されている
+    expect(t?.resolutionDueAt?.getTime()).toBe(
+      calculateResolutionDueAt('High', t!.createdAt).getTime(),
+    );
+    expect(t?.firstResponseDueAt?.getTime()).toBe(
+      calculateFirstResponseDueAt('High', t!.createdAt).getTime(),
+    );
+  });
+
+  // Lite モードでは resolutionDueAt (「期限日」) は依頼者がフォームで手動指定した日付であり
+  // 優先度と無関係 (TicketForm.tsx は Lite でのみ期限日の入力欄を表示し、Pro の自動 SLA 経路を
+  // 使わない) なので、優先度変更で依頼者が指定した期日を上書きしてはならない。
+  // 一方 firstResponseDueAt は Lite/Pro どちらでも常に優先度から自動算出される (手動上書きの
+  // 経路が無い) ため、Lite でも新しい優先度で再計算されることを確認する
+  it('Lite モードでは resolutionDueAt (依頼者指定の期限日) を優先度変更で上書きしない', async () => {
+    const { ticketId } = await seed();
+    // テナントを Lite に切り替える
+    const tenant = store.tenants.get('default-tenant');
+    if (!tenant) throw new Error('seed missing default-tenant');
+    store.tenants.set('default-tenant', { ...tenant, mode: 'lite' });
+    // 依頼者が手動指定した期限日を設定しておく (Web フォームの Lite 経路を模す)
+    const manualDueDate = new Date('2026-09-01T00:00:00.000Z');
+    await repos.tickets.updatePriority(
+      ticketId,
+      { from: 'Medium', to: 'Medium' },
+      { firstResponseDueAt: null, resolutionDueAt: manualDueDate },
+      TENANT,
+    );
+    const { updateTicketPriority } = await import('@/features/tickets/actions/update-ticket');
+
+    await updateTicketPriority(ticketId, 'High');
+
+    const t = await repos.tickets.findById(ticketId, TENANT);
+    // resolutionDueAt (依頼者指定の期限日) は変化しない
+    expect(t?.resolutionDueAt?.getTime()).toBe(manualDueDate.getTime());
+    // firstResponseDueAt は新しい優先度 (High) で再計算される
+    expect(t?.firstResponseDueAt?.getTime()).toBe(
+      calculateFirstResponseDueAt('High', t!.createdAt).getTime(),
+    );
+  });
+
+  // フォローアップ (2026-07-15 #3): check-then-act 競合 (TOCTOU) の防止。updateTicketStatus と
+  // 同じく、読み取り時 (uow.run 内の findById) と書き込み時の間に別の操作が優先度を変えていた
+  // 場合、無条件更新だと新しい優先度から再計算した dueDates が後勝ちで静かに失われてしまう。
+  // store.tickets.get を最初の 1 回だけ古い状態にモックすることで
+  // 「findById は古いスナップショットを返すが、実際の行は既に別の優先度に変わっている」を再現する
+  it('読み取り後に優先度が変わっていた場合は競合エラーになり dueDates を上書きしない', async () => {
+    const { ticketId } = await seed();
+    // 実際の行は既に High (先行操作が変更済み)
+    await repos.tickets.updatePriority(
+      ticketId,
+      { from: 'Medium', to: 'High' },
+      {
+        firstResponseDueAt: calculateFirstResponseDueAt('High', new Date()),
+        resolutionDueAt: calculateResolutionDueAt('High', new Date()),
+      },
+      TENANT,
+    );
+    const beforeConflict = await repos.tickets.findById(ticketId, TENANT);
+    // Map#get の最初の呼び出しだけ古いスナップショット (Medium) を返すようにする (TOCTOU の再現)。
+    // 2 回目以降 (updatePriority 内の where 判定用の再読み込み) は実際の値 (High) を返す
+    let callCount = 0;
+    const originalGet = store.tickets.get.bind(store.tickets);
+    vi.spyOn(store.tickets, 'get').mockImplementation((id: string) => {
+      callCount += 1;
+      const real = originalGet(id);
+      if (callCount === 1 && id === ticketId && real) {
+        return { ...real, priority: 'Medium' };
+      }
+      return real;
+    });
+    const { updateTicketPriority } = await import('@/features/tickets/actions/update-ticket');
+
+    await expect(updateTicketPriority(ticketId, 'Low')).rejects.toThrow(/他の操作と競合したため/);
+
+    // 優先度・期限は先行操作 (High とその dueDates) のまま変化していない
+    vi.restoreAllMocks();
+    const t = await repos.tickets.findById(ticketId, TENANT);
+    expect(t?.priority).toBe('High');
+    expect(t?.firstResponseDueAt?.getTime()).toBe(beforeConflict?.firstResponseDueAt?.getTime());
+    expect(t?.resolutionDueAt?.getTime()).toBe(beforeConflict?.resolutionDueAt?.getTime());
+  });
 });
 
 // Lite モード (mode: 'lite') のテナントから呼び出した場合の遷移検証
@@ -381,7 +519,7 @@ describe('updateTicketStatus (Lite mode)', () => {
     // テナントを Lite に切り替えてから事前ステータスを InProgress に
     setTenantToLite();
     // 事前準備として InProgress 状態にしておく (Pro 表でも New→InProgress は許可される)
-    await repos.tickets.updateStatus(ticketId, 'InProgress', null, TENANT);
+    await repos.tickets.updateStatus(ticketId, { from: 'New', to: 'InProgress' }, null, TENANT);
     const { updateTicketStatus } = await import('@/features/tickets/actions/update-ticket');
 
     // Lite では InProgress → Open は許可されるので成功する
@@ -397,7 +535,7 @@ describe('updateTicketStatus (Lite mode)', () => {
     const { ticketId } = await seed();
     setTenantToLite();
     // 事前準備として Open 状態にしておく
-    await repos.tickets.updateStatus(ticketId, 'Open', null, TENANT);
+    await repos.tickets.updateStatus(ticketId, { from: 'New', to: 'Open' }, null, TENANT);
     const { updateTicketStatus } = await import('@/features/tickets/actions/update-ticket');
 
     // Lite では Escalated は非 Lite ステータスなので、ターゲット制限ガードに弾かれる
@@ -415,7 +553,7 @@ describe('updateTicketStatus (Lite mode)', () => {
     const { ticketId } = await seed();
     setTenantToLite();
     // 事前準備として InProgress 状態にする (resolvedAt は null のまま)
-    await repos.tickets.updateStatus(ticketId, 'InProgress', null, TENANT);
+    await repos.tickets.updateStatus(ticketId, { from: 'New', to: 'InProgress' }, null, TENANT);
     const { updateTicketStatus } = await import('@/features/tickets/actions/update-ticket');
 
     // 呼び出し前後の時刻を測って resolvedAt の妥当性を検証
@@ -439,7 +577,7 @@ describe('updateTicketStatus (Lite mode)', () => {
     const { ticketId } = await seed();
     setTenantToLite();
     // 事前準備として Closed + resolvedAt セット済みの状態にする
-    await repos.tickets.updateStatus(ticketId, 'Closed', new Date(), TENANT);
+    await repos.tickets.updateStatus(ticketId, { from: 'New', to: 'Closed' }, new Date(), TENANT);
     const { updateTicketStatus } = await import('@/features/tickets/actions/update-ticket');
 
     // Closed → Open は Lite 遷移表で許可されているので成功する
@@ -457,7 +595,7 @@ describe('updateTicketStatus (Lite mode)', () => {
     const { ticketId } = await seed();
     setTenantToLite();
     // 事前準備として Resolved + resolvedAt セット済みの状態にする (旧 Pro データを想定)
-    await repos.tickets.updateStatus(ticketId, 'Resolved', new Date(), TENANT);
+    await repos.tickets.updateStatus(ticketId, { from: 'New', to: 'Resolved' }, new Date(), TENANT);
     const { updateTicketStatus } = await import('@/features/tickets/actions/update-ticket');
 
     // Lite モードでも Resolved は LiteStatus に含まれないため Pro 遷移表へフォールバック、
@@ -477,7 +615,12 @@ describe('updateTicketStatus (Lite mode)', () => {
     setTenantToLite();
     // 古い resolvedAt (10 分前) を持つ Resolved の状態を作る
     const oldResolvedAt = new Date(Date.now() - 10 * 60 * 1000);
-    await repos.tickets.updateStatus(ticketId, 'Resolved', oldResolvedAt, TENANT);
+    await repos.tickets.updateStatus(
+      ticketId,
+      { from: 'New', to: 'Resolved' },
+      oldResolvedAt,
+      TENANT,
+    );
     const { updateTicketStatus } = await import('@/features/tickets/actions/update-ticket');
 
     // 呼び出し前後の時刻を測って resolvedAt の妥当性を検証
@@ -504,7 +647,7 @@ describe('updateTicketStatus (Lite mode)', () => {
     const { ticketId } = await seed();
     setTenantToLite();
     // 事前準備として Resolved + resolvedAt セット済みの状態にする (旧 Pro データを想定)
-    await repos.tickets.updateStatus(ticketId, 'Resolved', new Date(), TENANT);
+    await repos.tickets.updateStatus(ticketId, { from: 'New', to: 'Resolved' }, new Date(), TENANT);
     const { updateTicketStatus } = await import('@/features/tickets/actions/update-ticket');
 
     // WaitingForUser は Lite 3 値に含まれないので、ターゲット制限ガードで弾かれる
@@ -795,7 +938,7 @@ describe('escalateTicket (provider-agnostic)', () => {
   it('marks escalated, records history, and notifies every agent', async () => {
     const { ticketId } = await seed();
     // Open 状態からエスカレーション (遷移表で許可されている)
-    await repos.tickets.updateStatus(ticketId, 'Open', null, TENANT);
+    await repos.tickets.updateStatus(ticketId, { from: 'New', to: 'Open' }, null, TENANT);
     const { escalateTicket } = await import('@/features/tickets/actions/update-ticket');
 
     // 前後空白を含めて渡し、保存時にトリムされていることも確認
@@ -825,7 +968,7 @@ describe('escalateTicket (provider-agnostic)', () => {
     if (!tenant) throw new Error('seed missing default-tenant');
     store.tenants.set('default-tenant', { ...tenant, mode: 'lite' });
     // 既存ステータスを Open にしておく (Pro なら Open → Escalated が通る遷移)
-    await repos.tickets.updateStatus(ticketId, 'Open', null, TENANT);
+    await repos.tickets.updateStatus(ticketId, { from: 'New', to: 'Open' }, null, TENANT);
     const { escalateTicket } = await import('@/features/tickets/actions/update-ticket');
 
     // Lite ガードによる拒否 (エラー文言で確認)
@@ -835,6 +978,30 @@ describe('escalateTicket (provider-agnostic)', () => {
     const t = await repos.tickets.findById(ticketId, TENANT);
     expect(t?.status).toBe('Open');
     expect(t?.escalationReason).toBeNull();
+    expect(t?.escalatedAt).toBeNull();
+    // 通知も作られていない
+    expect([...store.notifications.values()]).toHaveLength(0);
+  });
+
+  // フォローアップ (2026-07-15 #2): check-then-act 競合 (TOCTOU) の防止。escalateTicket は
+  // findById を uow.run の外 (repos.tickets 経由) で読むため、updateTicketStatus と異なり
+  // repos.tickets.findById を直接スパイするだけで再現できる (faq-actions.test.ts と同じ手法)
+  it('読み取り後に状態が変わっていた場合は競合エラーになりエスカレーションが成立しない', async () => {
+    const { ticketId } = await seed();
+    // 実際の行は既に Closed (先行操作が完了させた。Closed→Escalated は遷移表で禁止)
+    await repos.tickets.updateStatus(ticketId, { from: 'New', to: 'Closed' }, new Date(), TENANT);
+    const current = await repos.tickets.findById(ticketId, TENANT);
+    if (!current) throw new Error('seed missing ticket');
+    // findById だけが古いスナップショット (Open) を返す状況を作る (TOCTOU の再現)
+    vi.spyOn(repos.tickets, 'findById').mockResolvedValueOnce({ ...current, status: 'Open' });
+    const { escalateTicket } = await import('@/features/tickets/actions/update-ticket');
+
+    // 遷移ガード (Open→Escalated) は通過するが、条件付き更新が競合を検出して失敗する
+    await expect(escalateTicket(ticketId, '対応困難')).rejects.toThrow(/他の操作と競合したため/);
+
+    // 状態は Closed のまま (Closed→Escalated が成立していない)
+    const t = await repos.tickets.findById(ticketId, TENANT);
+    expect(t?.status).toBe('Closed');
     expect(t?.escalatedAt).toBeNull();
     // 通知も作られていない
     expect([...store.notifications.values()]).toHaveLength(0);
@@ -865,7 +1032,7 @@ describe('updateTicketStatus メール通知 (メンバー改善 #3 回帰)', ()
   it('解決ステータスへの変更も依頼者へメール送信する', async () => {
     const { ticketId } = await seed();
     // 事前に Open にしてから Resolved にする (New → Resolved は遷移表で許可されないため)
-    await repos.tickets.updateStatus(ticketId, 'Open', null, TENANT);
+    await repos.tickets.updateStatus(ticketId, { from: 'New', to: 'Open' }, null, TENANT);
     const { updateTicketStatus } = await import('@/features/tickets/actions/update-ticket');
 
     await updateTicketStatus(ticketId, 'Resolved');
@@ -898,7 +1065,7 @@ describe('updateTicketStatus メール通知 (メンバー改善 #3 回帰)', ()
   // 「解決通知は届く / エスカレーションは内部通知のみ」という現行の意図を回帰として固定する。
   it('エスカレーションは依頼者へメールしない (担当者へのメール通知のみ)', async () => {
     const { ticketId } = await seed();
-    await repos.tickets.updateStatus(ticketId, 'Open', null, TENANT);
+    await repos.tickets.updateStatus(ticketId, { from: 'New', to: 'Open' }, null, TENANT);
     const { escalateTicket } = await import('@/features/tickets/actions/update-ticket');
 
     // 操作者は u-agt-1 (デフォルトの sessionUserId)

@@ -233,6 +233,27 @@ describe('importTickets', () => {
       expect(ticket?.resolutionDueAt).not.toBeNull(); // 期限日が保存されていることを確認する
     });
 
+    // フォローアップ (2026-07-15 #3): 「期限日」は Lite モード専用の依頼者手動入力欄
+    // (TicketForm.tsx が Pro で欄自体を非表示にしている) のため、Pro テナントでは CSV に
+    // 期限日セルがあっても無視して優先度ベースの自動算出に一本化されることを確認する。
+    // 無視しないと、この手動値が後から updateTicketPriority の優先度変更で無警告に
+    // 上書きされてしまう (Pro は手動上書きの経路が無いという同フォローアップの前提が崩れる)
+    it('Pro テナントでは期限日セルがあっても無視して優先度ベースの自動算出のみ使う', async () => {
+      const tenant = store.tenants.get(TENANT);
+      if (!tenant) throw new Error('seed missing tenant');
+      store.tenants.set(TENANT, { ...tenant, mode: 'pro' });
+      const importTickets = await loadAction();
+      const csv = `件名,期限日,優先度\ntest,2025-03-31,低`;
+      const result = await importTickets(csv);
+      expect(result.imported).toBe(1);
+      const ticket = [...store.tickets.values()][0];
+      // 期限日セル (2025-03-31、過去日) は無視され、優先度 (Low) ベースの自動算出値
+      // (インポート実行時刻を基準にした将来の日時) になる
+      expect(ticket?.resolutionDueAt).not.toBeNull();
+      expect(ticket!.resolutionDueAt!.getFullYear()).not.toBe(2025);
+      expect(ticket!.resolutionDueAt!.getTime()).toBeGreaterThan(Date.now());
+    });
+
     // 回帰防止: firstResponseDueAt が配線されておらず常に null のまま起票される不備があった。
     // CSV には対応列が無いため、期限日 (resolutionDueAt) の指定有無に関わらず優先度ベースで
     // 常に自動算出されることを確認する
@@ -692,6 +713,99 @@ describe('importTickets', () => {
       expect(result.imported).toBe(0);
       expect(result.errors).toHaveLength(1);
       expect(result.errors[0].message).toContain('起票者が見つかりません');
+      expect(store.tickets.size).toBe(0);
+    });
+  });
+
+  // フォローアップ (2026-07-15 #3): 「起票日時」列の読み取り
+  // 監査で発見したギャップの回帰テスト。CSV エクスポート (GET /api/tickets/export) は
+  // formatDateTimeISO で「起票日時」列を出力するのに、インポート側には対応する読み取りが
+  // 存在せず、既存 Excel 台帳の移行のたびに元の起票日時がインポート実行時刻へ付け替えられ、
+  // 経過日数の把握や月次集計が壊れていた。
+  describe('起票日時列 (フォローアップ 2026-07-15 #3)', () => {
+    // 「起票日時」列の値 (YYYY-MM-DD HH:mm:ss、CSV エクスポートの formatDateTimeISO と同じ形式)
+    // が指定されればそれが createdAt として保存される (往復性)
+    it('起票日時セルの値が createdAt として保存される', async () => {
+      const importTickets = await loadAction();
+      const csv = `件名,起票日時\n複合機の紙詰まり,2026-01-09 09:30:00`;
+      const result = await importTickets(csv);
+
+      expect(result.imported).toBe(1);
+      expect(result.errors).toHaveLength(0);
+      const ticket = [...store.tickets.values()][0];
+      // parseDateTimeJST は JST の時刻として解釈する ('2026-01-09 09:30:00' JST = '2026-01-09T00:30:00.000Z')
+      expect(ticket?.createdAt.toISOString()).toBe('2026-01-09T00:30:00.000Z');
+    });
+
+    // 「起票日時」列があれば、初回応答期限もインポート時刻 (now) ではなく起票日時を基準に算出される
+    // (過去日で起票日時を指定した行の期限が実際の起票日から大きくズレるのを防ぐ)
+    it('起票日時セルの値を基準に firstResponseDueAt が算出される', async () => {
+      const importTickets = await loadAction();
+      // 優先度「高」は 4 時間窓 (FIRST_RESPONSE_HOURS_BY_PRIORITY.High)
+      const csv = `件名,優先度,起票日時\n複合機の紙詰まり,高,2026-01-09 09:30:00`;
+      const result = await importTickets(csv);
+
+      expect(result.imported).toBe(1);
+      const ticket = [...store.tickets.values()][0];
+      expect(ticket?.firstResponseDueAt?.toISOString()).toBe('2026-01-09T04:30:00.000Z');
+    });
+
+    // 「起票日時」列自体が無ければ従来どおりインポート時刻 (now) が createdAt になる (後方互換)
+    it('起票日時列が無ければインポート時刻が createdAt のまま取り込まれる', async () => {
+      const importTickets = await loadAction();
+      const csv = `件名\n複合機の紙詰まり`;
+      const before = Date.now();
+      const result = await importTickets(csv);
+      const after = Date.now();
+
+      expect(result.imported).toBe(1);
+      const ticket = [...store.tickets.values()][0];
+      const createdAtMs = ticket!.createdAt.getTime();
+      expect(createdAtMs).toBeGreaterThanOrEqual(before);
+      expect(createdAtMs).toBeLessThanOrEqual(after);
+    });
+
+    // 起票日時列があっても空セルなら未指定として扱い、インポート時刻のまま取り込まれる
+    it('起票日時セルが空ならインポート時刻が createdAt のまま取り込まれる', async () => {
+      const importTickets = await loadAction();
+      const csv = `件名,起票日時\n複合機の紙詰まり,`;
+      const before = Date.now();
+      const result = await importTickets(csv);
+      const after = Date.now();
+
+      expect(result.imported).toBe(1);
+      expect(result.errors).toHaveLength(0);
+      const ticket = [...store.tickets.values()][0];
+      const createdAtMs = ticket!.createdAt.getTime();
+      expect(createdAtMs).toBeGreaterThanOrEqual(before);
+      expect(createdAtMs).toBeLessThanOrEqual(after);
+    });
+
+    // 形式が不正 (YYYY-MM-DD HH:mm:ss ではない) な起票日時はエラーとして記録され、
+    // 無言でインポート時刻にフォールバックしない
+    it('形式が不正な起票日時はエラーとして記録され起票されない', async () => {
+      const importTickets = await loadAction();
+      const csv = `件名,起票日時\n複合機の紙詰まり,2026/01/09 09:30`;
+      const result = await importTickets(csv);
+
+      expect(result.imported).toBe(0);
+      expect(result.errors).toHaveLength(1);
+      expect(result.errors[0].message).toContain('起票日時の形式が正しくありません');
+      expect(store.tickets.size).toBe(0);
+    });
+
+    // 未来の起票日時は resolvedAt/firstRespondedAt (インポート時刻で近似) より起票日時が
+    // 後になり得る矛盾したデータになるため、エラーとして記録され起票されない
+    it('未来の起票日時はエラーとして記録され起票されない', async () => {
+      const importTickets = await loadAction();
+      const csv = `件名,起票日時\n複合機の紙詰まり,2099-01-01 00:00:00`;
+      const result = await importTickets(csv);
+
+      expect(result.imported).toBe(0);
+      expect(result.errors).toHaveLength(1);
+      expect(result.errors[0].message).toContain(
+        '起票日時には現在時刻より過去の日時を指定してください',
+      );
       expect(store.tickets.size).toBe(0);
     });
   });

@@ -248,10 +248,16 @@ export async function POST(req: Request) {
 
   // 作成時刻 (SLA 期限の計算基準)
   const now = new Date();
-  // 解決期限の決定: dueDate 指定があれば JST 終端、なければ priority ベースで自動計算
-  const resolutionDueAt = dueDate
-    ? (endOfDayJST(dueDate) ?? calculateResolutionDueAt(effectivePriority, now))
-    : calculateResolutionDueAt(effectivePriority, now);
+  // 解決期限の決定: dueDate 指定があれば JST 終端、なければ priority ベースで自動計算。
+  // フォローアップ (2026-07-15 #3): 「期限日」は Lite モード専用の依頼者手動入力欄で、Pro モードは
+  // 常にカテゴリ/優先度から自動算出される SLA のみを使う (effectiveCategoryId と同じく mode で
+  // 落とす区分。UI 上は TicketForm.tsx が Pro で欄自体を非表示にしているが、この API を直接叩けば
+  // bypass できてしまうためサーバー側でも Pro の dueDate 指定を無視する)。無視しないと、ここで
+  // 永続化した手動値が後から updateTicketPriority の優先度変更で無警告に上書きされる
+  const resolutionDueAt =
+    dueDate && mode !== 'pro'
+      ? (endOfDayJST(dueDate) ?? calculateResolutionDueAt(effectivePriority, now))
+      : calculateResolutionDueAt(effectivePriority, now);
   // 初回応答期限: 解決期限と同じく priority ベースで自動計算する (手動指定は無い)
   const firstResponseDueAt = calculateFirstResponseDueAt(effectivePriority, now);
 

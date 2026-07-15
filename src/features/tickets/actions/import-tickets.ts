@@ -17,6 +17,9 @@ import { enforceRateLimit } from '@/lib/rate-limit';
 import { getCurrentTenantMode } from '@/lib/tenant';
 // RFC 4180 準拠の CSV パーサ と共有定数 (サーバー / クライアント共通実装)
 import { parseCsvLine, MAX_CSV_BYTES } from '@/lib/csv';
+// フォローアップ (2026-07-15 #3): CSV エクスポートの「起票日時」列 (formatDateTimeISO) と対になる
+// パーサ。既存 Excel 台帳を再現するインポートで、元の起票日時を保持できるようにする
+import { parseDateTimeJST } from '@/lib/format-date';
 // 優先度・ステータス・テナントモードのドメイン型
 import type {
   Priority,
@@ -43,7 +46,7 @@ import { getMonthlyTicketQuota } from '@/lib/tenant-plan';
 // Phase 4: Slack/Teams/Chatwork 外部通知ヘルパー (Web フォーム・メール・LINE 取り込みと共有)
 import { notifyOutboundBestEffort } from '@/lib/outbound-notify';
 // 優先度から初回応答期限を計算する SLA ヘルパー (Web フォーム・メール・LINE 取り込みと共有)
-import { calculateFirstResponseDueAt } from '@/lib/sla';
+import { calculateFirstResponseDueAt, calculateResolutionDueAt } from '@/lib/sla';
 // フォローアップ (2026-07-13): 監査で発見したギャップの解消。担当割当メールを
 // updateTicketAssignee (画面からの手動アサイン) と同じ経路で送るためのヘルパー群。
 // sendBatchEmail はエスカレーション一斉メール (escalateTicket) と共有する送信共通処理 (§6 DRY)
@@ -316,6 +319,11 @@ interface ValidatedRow {
   // これはチケットの閲覧権限 (依頼者は自分の起票したチケットしか見えない) と通知の宛先を
   // 誤らせる回帰であり、拠点/カテゴリ/担当者よりも影響が大きい
   creatorName: string | null;
+  // フォローアップ (2026-07-15 #3): 変換済みの起票日時 (null = 列なし/セル空 → 呼び出し側が
+  // インポート時刻にフォールバックする)。CSV エクスポートは「起票日時」列を出力するのに
+  // インポート側に対応する読み取りが無く、既存 Excel 台帳の移行のたびに元の起票日時が
+  // インポート実行時刻に付け替えられ、月次件数の集計や経過日数の把握が壊れていた
+  createdAt: Date | null;
 }
 
 // CSV ヘッダの列インデックス一覧
@@ -329,6 +337,7 @@ interface ColumnIndices {
   statusIndex: number; // 「状況」列 (-1 = 未指定。§3.1 フォローアップ)
   assigneeIndex: number; // 「担当者」列 (-1 = 未指定。フォローアップ 2026-07-13)
   creatorIndex: number; // 「起票者」列 (-1 = 未指定。フォローアップ 2026-07-14)
+  createdAtIndex: number; // 「起票日時」列 (-1 = 未指定。フォローアップ 2026-07-15 #3)
 }
 
 // CSV 1 行分のセルを受け取り、バリデーション・型変換を行う純粋関数。
@@ -338,6 +347,7 @@ function validateImportRow(
   cells: string[], // パース済みのセル配列
   indices: ColumnIndices, // 各列のインデックス
   mode: TenantMode, // §3.1 フォローアップ: 「状況」列のラベル解釈を Lite/Pro で切り替えるために必要
+  now: Date, // フォローアップ (2026-07-15 #3): 起票日時が未来の値でないかの検証基準時刻
 ): { ok: true; data: ValidatedRow } | { ok: false; message: string } {
   // 引数オブジェクトから各列インデックスを取り出す
   const {
@@ -350,6 +360,7 @@ function validateImportRow(
     statusIndex,
     assigneeIndex,
     creatorIndex,
+    createdAtIndex,
   } = indices;
 
   // 件名セルを取り出す。前後の空白は除去する (空白だけのセルを「入力あり」と誤判定しないため)
@@ -386,9 +397,14 @@ function validateImportRow(
   // 空文字または未指定の場合は Medium にフォールバックする
   const priority: Priority = PRIORITY_MAP[priorityRaw] ?? 'Medium';
 
-  // 期限日セルを Date に変換する
+  // 期限日セルを Date に変換する。フォローアップ (2026-07-15 #3): 「期限日」は Lite モード専用の
+  // 依頼者手動入力欄で、Pro モードはカテゴリ/優先度から自動算出される SLA のみを使う
+  // (TicketForm.tsx で `mode === 'pro'` のとき欄自体を非表示にしているのと同じ区分。カテゴリ名列を
+  // Lite で無視する上の分岐と対称)。Pro モードでは列に値があっても無視して自動算出に一本化しないと、
+  // ここで永続化した手動値が後から updateTicketPriority の優先度変更で無警告に上書きされ、
+  // 「Pro は手動上書きの経路が無い」という同フォローアップの前提が崩れる
   let resolutionDueAt: Date | null = null;
-  if (dueDateIndex !== -1) {
+  if (dueDateIndex !== -1 && mode !== 'pro') {
     // 期限日セルの値を取り出す
     const dueDateRaw = cells[dueDateIndex] ?? '';
     if (dueDateRaw) {
@@ -449,6 +465,37 @@ function validateImportRow(
     status = resolved;
   }
 
+  // フォローアップ (2026-07-15 #3): 「起票日時」セルを Date に変換する。CSV エクスポートの
+  // formatDateTimeISO ('YYYY-MM-DD HH:mm:ss') と対になるパーサ (parseDateTimeJST) を使う。
+  // 未指定 (列なし/セル空) の場合は null のまま返し、呼び出し側でインポート時刻にフォールバックする
+  let createdAt: Date | null = null;
+  if (createdAtIndex !== -1) {
+    // 起票日時セルの値を取り出す
+    const createdAtRaw = cells[createdAtIndex] ?? '';
+    if (createdAtRaw) {
+      // 'YYYY-MM-DD HH:mm:ss' 形式を JST の Date に変換する
+      const parsed = parseDateTimeJST(createdAtRaw);
+      if (parsed === null) {
+        // 変換に失敗した (不正な形式) 場合はエラーとして記録する
+        const createdAtDisplay = truncateForDisplay(createdAtRaw);
+        return {
+          ok: false,
+          message: `起票日時の形式が正しくありません: "${createdAtDisplay}"（YYYY-MM-DD HH:mm:ss 形式で入力してください）`,
+        };
+      }
+      // 未来の日時は resolvedAt/firstRespondedAt (インポート時刻 = now で近似) より起票日時が
+      // 後になり「解決に負の時間がかかった」ような矛盾したデータになるため、エラーとして拒否する
+      if (parsed.getTime() > now.getTime()) {
+        return {
+          ok: false,
+          message: '起票日時には現在時刻より過去の日時を指定してください',
+        };
+      }
+      // 変換できた値を起票日時として使う
+      createdAt = parsed;
+    }
+  }
+
   // 全バリデーション通過: バリデーション済みのデータをそのまま返す。
   // CSV インジェクション対策は書き出し (エクスポート) 時に行う (AuditExportButton 等)。
   // インポート時に ' を付加すると DB に汚染データが保存され、チケット件名が '=formula のように表示される。
@@ -459,6 +506,7 @@ function validateImportRow(
       body: bodyRaw,
       priority,
       resolutionDueAt,
+      createdAt,
       locationName,
       categoryName,
       status,
@@ -549,6 +597,9 @@ export async function importTickets(csvText: string): Promise<ImportTicketsResul
   // フォローアップ (2026-07-14): 起票者名 (CSV エクスポートの「起票者」列と対称の項目。
   // 担当者と同じく名前解決が必要なため列インデックスだけここで取得する)
   const creatorIndex = headers.indexOf('起票者');
+  // フォローアップ (2026-07-15 #3): 起票日時 (CSV エクスポートの「起票日時」列と対称の項目。
+  // 名前解決は不要なので他の任意列と同じく列インデックスだけ取得する)
+  const createdAtIndex = headers.indexOf('起票日時');
 
   // データ行 (2 行目以降) を取り出す
   const dataLines = nonEmptyLines.slice(1);
@@ -626,6 +677,7 @@ export async function importTickets(csvText: string): Promise<ImportTicketsResul
     statusIndex,
     assigneeIndex,
     creatorIndex,
+    createdAtIndex,
   };
 
   // データ行を 1 件ずつ処理する (部分成功を許可するため、1 件エラーでも他を続ける)
@@ -660,7 +712,7 @@ export async function importTickets(csvText: string): Promise<ImportTicketsResul
     }
 
     // セルのバリデーション・型変換を純粋関数に委譲する (責務の分離)
-    const validation = validateImportRow(cells, columnIndices, mode);
+    const validation = validateImportRow(cells, columnIndices, mode, now);
     if (!validation.ok) {
       // バリデーションエラーを行番号付きで記録してこの行をスキップする
       errors.push({ row: rowNum, message: validation.message });
@@ -672,6 +724,7 @@ export async function importTickets(csvText: string): Promise<ImportTicketsResul
       body,
       priority,
       resolutionDueAt,
+      createdAt: parsedCreatedAt,
       locationName,
       categoryName,
       status: parsedStatus,
@@ -693,6 +746,12 @@ export async function importTickets(csvText: string): Promise<ImportTicketsResul
     // /code-review ultra 指摘対応 (2026-07-13): 判定ロジックを ticket-status.ts の
     // hasRespondedByImportStatus に抽出し、getCompletionStatuses と同じくドメイン層を唯一の源にした
     const firstRespondedAt = hasRespondedByImportStatus(status, mode) ? now : null;
+    // フォローアップ (2026-07-15 #3): 「起票日時」列が指定されていればその値、無ければ従来どおり
+    // インポート時刻 (now) を起票日時として使う。resolvedAt/firstRespondedAt は引き続き
+    // インポート時刻で近似する (正確な履歴が無いため) が、起票日時が過去日の場合でも
+    // 「解決済み/応答済み日時が起票日時より前」にはならない (validateImportRow が起票日時を
+    // now 以前に制限しているため、resolvedAt/firstRespondedAt=now は常に rowCreatedAt 以降になる)
+    const rowCreatedAt = parsedCreatedAt ?? now;
 
     // 拠点名が指定されていれば ID に解決する (resolveNameToId を共有)。テナントに存在しない
     // 拠点名はタイポや削除済み拠点の可能性が高く、無言で「拠点未設定」にすると取り込んだデータの
@@ -796,10 +855,19 @@ export async function importTickets(csvText: string): Promise<ImportTicketsResul
         tenantId, // テナントスコープを必ず付与する (クロステナント防止)
         // 「状況」列があればその値、無ければモードの既定初期ステータス (Lite: Open / Pro: New)
         status,
-        resolutionDueAt, // 期限日 (未指定なら null)
+        // 解決期限: Lite は「期限日」列の手動値 (無指定なら null。依頼者が期日を指定しない
+        // 履歴データの取り込みを許容する既存挙動)。Pro は「期限日」列を上の分岐で無視している
+        // ため (手動上書きの経路が無い設計)、route.ts の Web フォーム起票と同じく優先度・起票日時
+        // から常に自動算出する (フォローアップ 2026-07-15 #3: 無しでは Pro の CSV インポート行だけ
+        // 解決期限が永久に null のままになり、SLA バッジ・ダッシュボードの SLA 超過集計に乗らない)
+        resolutionDueAt:
+          mode === 'pro' ? calculateResolutionDueAt(priority, rowCreatedAt) : resolutionDueAt,
         // 初回応答期限: CSV に対応列が無いため、常に優先度ベースで自動算出する
-        // (Web フォーム・メール・LINE 取り込みと同じ SLA ヘルパーを使う)
-        firstResponseDueAt: calculateFirstResponseDueAt(priority, now),
+        // (Web フォーム・メール・LINE 取り込みと同じ SLA ヘルパーを使う)。フォローアップ
+        // (2026-07-15 #3): 基準時刻は rowCreatedAt (「起票日時」列があればその値、無ければ now) を使う。
+        // now 固定のままだと、過去日で起票日時を指定した行の初回応答期限が実際の起票日から
+        // 大きくズレる (例: 半年前の起票を再現しても「今から 4 時間後」が期限になってしまう)
+        firstResponseDueAt: calculateFirstResponseDueAt(priority, rowCreatedAt),
         locationId, // 拠点 ID (「拠点」列があれば名前解決済み、無ければ null)
         // フォローアップ (2026-07-13): 担当者 ID (「担当者」列があれば名前解決済み、無ければ未アサイン)
         assigneeId,
@@ -807,11 +875,12 @@ export async function importTickets(csvText: string): Promise<ImportTicketsResul
         resolvedAt,
         // フォローアップ (2026-07-13): 初期状態以外で起票する場合はインポート時刻を初回応答日時にする
         firstRespondedAt,
-        // /code-review ultra 指摘対応 (2026-07-13): 作成日時を明示的に取り込み時刻 (now) に揃える。
-        // DB 既定 (実際の INSERT 時刻) に任せると、複数行をループで作成する間に経過した時間の分だけ
-        // createdAt が now より後になり、上の resolvedAt/firstRespondedAt (どちらも now) が
-        // createdAt より「前」になって品質メトリクスの平均時間が負値になり得るため
-        createdAt: now,
+        // /code-review ultra 指摘対応 (2026-07-13): 作成日時を明示的に揃える (DB 既定の実 INSERT
+        // 時刻に任せない)。フォローアップ (2026-07-15 #3): 「起票日時」列があればその値
+        // (rowCreatedAt)、無ければ従来どおり取り込み時刻 (now) を使う。resolvedAt/firstRespondedAt
+        // (どちらも now) は validateImportRow が起票日時を now 以前に制限しているため、
+        // rowCreatedAt より前になることはなく品質メトリクスの平均時間が負値になる回帰は起きない
+        createdAt: rowCreatedAt,
       });
       // 成功カウンタをインクリメント
       imported += 1;

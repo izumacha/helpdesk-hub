@@ -282,7 +282,7 @@ export function runTicketRepositoryContract(
       // ステータス更新 + 履歴記録 + 例外、を 1 つの uow で実行
       await expect(
         ctx.uow.run(async (r) => {
-          await r.tickets.updateStatus(ticket.id, 'Open', null, TENANT_ID);
+          await r.tickets.updateStatus(ticket.id, { from: 'New', to: 'Open' }, null, TENANT_ID);
           await r.history.record({
             ticketId: ticket.id,
             changedById: requester.id,
@@ -354,7 +354,7 @@ export function runTicketRepositoryContract(
         tenantId: TENANT_ID,
         resolutionDueAt: tomorrow,
       });
-      await ctx.repos.tickets.updateStatus(t2.id, 'Open', null, TENANT_ID);
+      await ctx.repos.tickets.updateStatus(t2.id, { from: 'New', to: 'Open' }, null, TENANT_ID);
       await ctx.repos.tickets.updateAssignee(t2.id, agentA.id, TENANT_ID);
       // agentA 起票の Resolved 1 件 (ワークロード集計から除外される)
       const t3 = await ctx.repos.tickets.create({
@@ -366,7 +366,12 @@ export function runTicketRepositoryContract(
         tenantId: TENANT_ID,
       });
       await ctx.repos.tickets.updateAssignee(t3.id, agentB.id, TENANT_ID);
-      await ctx.repos.tickets.updateStatus(t3.id, 'Resolved', new Date(), TENANT_ID);
+      await ctx.repos.tickets.updateStatus(
+        t3.id,
+        { from: 'New', to: 'Resolved' },
+        new Date(),
+        TENANT_ID,
+      );
 
       // creatorId 未指定 = テナント内全件対象 (担当者ビュー)
       const all = await ctx.repos.tickets.dashboardStats({
@@ -421,7 +426,12 @@ export function runTicketRepositoryContract(
         locationId: locationA.id,
         tenantId: TENANT_ID,
       });
-      await ctx.repos.tickets.updateStatus(a1.id, 'Resolved', new Date(), TENANT_ID);
+      await ctx.repos.tickets.updateStatus(
+        a1.id,
+        { from: 'New', to: 'Resolved' },
+        new Date(),
+        TENANT_ID,
+      );
       await ctx.repos.tickets.create({
         title: 'a2',
         body: 'b',
@@ -587,12 +597,18 @@ export function runTicketRepositoryContract(
       const { tenantId: tenantB } = await ctx.seedSecondTenant();
 
       // テナント B のスコープから A のチケットを更新しようとしても適用されないことを確認
-      await ctx.repos.tickets.updateStatus(ticketA.id, 'Open', null, tenantB);
-      await ctx.repos.tickets.updatePriority(ticketA.id, 'High', tenantB);
+      await ctx.repos.tickets.updateStatus(ticketA.id, { from: 'New', to: 'Open' }, null, tenantB);
+      await ctx.repos.tickets.updatePriority(
+        ticketA.id,
+        { from: 'Low', to: 'High' },
+        { firstResponseDueAt: null, resolutionDueAt: null },
+        tenantB,
+      );
       await ctx.repos.tickets.updateAssignee(ticketA.id, agentA.id, tenantB);
       await ctx.repos.tickets.markEscalated(
         ticketA.id,
         { reason: 'cross-tenant attempt', at: new Date() },
+        'New',
         tenantB,
       );
       await ctx.repos.tickets.markFirstResponded(ticketA.id, new Date(), tenantB);
@@ -725,7 +741,7 @@ export function runTicketRepositoryContract(
         categoryId,
         tenantId: TENANT_ID,
       });
-      await ctx.repos.tickets.updateStatus(tOpen.id, 'Open', null, TENANT_ID);
+      await ctx.repos.tickets.updateStatus(tOpen.id, { from: 'New', to: 'Open' }, null, TENANT_ID);
       // InProgress に遷移させたチケットを 1 件
       const tInProgress = await ctx.repos.tickets.create({
         title: 'in-progress',
@@ -735,8 +751,18 @@ export function runTicketRepositoryContract(
         categoryId,
         tenantId: TENANT_ID,
       });
-      await ctx.repos.tickets.updateStatus(tInProgress.id, 'Open', null, TENANT_ID);
-      await ctx.repos.tickets.updateStatus(tInProgress.id, 'InProgress', null, TENANT_ID);
+      await ctx.repos.tickets.updateStatus(
+        tInProgress.id,
+        { from: 'New', to: 'Open' },
+        null,
+        TENANT_ID,
+      );
+      await ctx.repos.tickets.updateStatus(
+        tInProgress.id,
+        { from: 'Open', to: 'InProgress' },
+        null,
+        TENANT_ID,
+      );
 
       // statusIn=[Open, InProgress] で 2 件 (Open と InProgress) が返り New は除外される
       const result = await ctx.repos.tickets.list({
@@ -767,7 +793,12 @@ export function runTicketRepositoryContract(
         tenantId: TENANT_ID,
         resolutionDueAt: yesterday,
       });
-      await ctx.repos.tickets.updateStatus(overdueUnresolved.id, 'Open', null, TENANT_ID);
+      await ctx.repos.tickets.updateStatus(
+        overdueUnresolved.id,
+        { from: 'New', to: 'Open' },
+        null,
+        TENANT_ID,
+      );
       // 期限超過だが解決済み (Resolved) → 除外
       const overdueResolved = await ctx.repos.tickets.create({
         title: 'overdue-resolved',
@@ -778,8 +809,18 @@ export function runTicketRepositoryContract(
         tenantId: TENANT_ID,
         resolutionDueAt: yesterday,
       });
-      await ctx.repos.tickets.updateStatus(overdueResolved.id, 'Open', null, TENANT_ID);
-      await ctx.repos.tickets.updateStatus(overdueResolved.id, 'Resolved', new Date(), TENANT_ID);
+      await ctx.repos.tickets.updateStatus(
+        overdueResolved.id,
+        { from: 'New', to: 'Open' },
+        null,
+        TENANT_ID,
+      );
+      await ctx.repos.tickets.updateStatus(
+        overdueResolved.id,
+        { from: 'Open', to: 'Resolved' },
+        new Date(),
+        TENANT_ID,
+      );
       // 期限が未来 → 除外
       await ctx.repos.tickets.create({
         title: 'future-due',
@@ -809,6 +850,163 @@ export function runTicketRepositoryContract(
       expect(overdue.map((t) => t.id)).toEqual([overdueUnresolved.id]);
       // count も同じ件数
       expect(await ctx.repos.tickets.count({ overdue: { now } }, TENANT_ID)).toBe(1);
+    });
+
+    // フォローアップ (2026-07-15 #2): check-then-act 競合 (TOCTOU) の防止。§1.4 で
+    // FaqRepository.updateStatus に導入した「期待する現在状態 (from) が一致するときだけ
+    // 更新し、一致しなければ false を返す」契約を TicketRepository.updateStatus/markEscalated
+    // にも適用したことの回帰テスト (faq-repository.contract.prisma.test.ts / memory.test.ts と同じ観点)。
+    describe('updateStatus / markEscalated の原子的更新 (check-then-act 競合防止)', () => {
+      // 期待状態 (from) が現在の状態と一致していれば更新でき、true を返す
+      it('updateStatus は期待状態が一致する場合に更新でき true を返す', async () => {
+        const { requester, categoryId } = await ctx.seedBasicFixture();
+        const ticket = await ctx.repos.tickets.create({
+          title: 't',
+          body: 'b',
+          priority: 'Medium',
+          creatorId: requester.id,
+          categoryId,
+          tenantId: TENANT_ID,
+        });
+
+        const updated = await ctx.repos.tickets.updateStatus(
+          ticket.id,
+          { from: 'New', to: 'Open' },
+          null,
+          TENANT_ID,
+        );
+
+        expect(updated).toBe(true);
+        const after = await ctx.repos.tickets.findById(ticket.id, TENANT_ID);
+        expect(after?.status).toBe('Open');
+      });
+
+      // 期待状態 (from) が現在の状態と異なる場合 (= 別の操作が先に状態を変えていた) は
+      // 更新せず false を返し、行の状態も変化しないこと
+      it('updateStatus は期待状態が一致しない場合に更新せず false を返す', async () => {
+        const { requester, categoryId } = await ctx.seedBasicFixture();
+        const ticket = await ctx.repos.tickets.create({
+          title: 't',
+          body: 'b',
+          priority: 'Medium',
+          creatorId: requester.id,
+          categoryId,
+          tenantId: TENANT_ID,
+        });
+        // 実際の状態は New のまま、期待状態を誤って 'Open' として更新を試みる
+        // (先行する別の操作が状態を変えたケースの再現)
+        const updated = await ctx.repos.tickets.updateStatus(
+          ticket.id,
+          { from: 'Open', to: 'InProgress' },
+          null,
+          TENANT_ID,
+        );
+
+        expect(updated).toBe(false);
+        // 状態は New のまま変化していない
+        const after = await ctx.repos.tickets.findById(ticket.id, TENANT_ID);
+        expect(after?.status).toBe('New');
+      });
+
+      // markEscalated も同じ契約: 期待状態が一致すれば true、一致しなければ false で no-op
+      it('markEscalated は期待状態が一致する場合のみエスカレーションでき、一致しなければ false で no-op', async () => {
+        const { requester, categoryId } = await ctx.seedBasicFixture();
+        const ticket = await ctx.repos.tickets.create({
+          title: 't',
+          body: 'b',
+          priority: 'High',
+          creatorId: requester.id,
+          categoryId,
+          tenantId: TENANT_ID,
+        });
+        await ctx.repos.tickets.updateStatus(
+          ticket.id,
+          { from: 'New', to: 'Open' },
+          null,
+          TENANT_ID,
+        );
+
+        // 期待状態を誤って 'InProgress' として試みる (実際は Open) → 競合として false
+        const conflicted = await ctx.repos.tickets.markEscalated(
+          ticket.id,
+          { reason: 'r1', at: new Date() },
+          'InProgress',
+          TENANT_ID,
+        );
+        expect(conflicted).toBe(false);
+        const stillOpen = await ctx.repos.tickets.findById(ticket.id, TENANT_ID);
+        expect(stillOpen?.status).toBe('Open');
+        expect(stillOpen?.escalatedAt).toBeNull();
+
+        // 正しい期待状態 (Open) で試みると成功する
+        const succeeded = await ctx.repos.tickets.markEscalated(
+          ticket.id,
+          { reason: 'r2', at: new Date() },
+          'Open',
+          TENANT_ID,
+        );
+        expect(succeeded).toBe(true);
+        const escalated = await ctx.repos.tickets.findById(ticket.id, TENANT_ID);
+        expect(escalated?.status).toBe('Escalated');
+        expect(escalated?.escalationReason).toBe('r2');
+      });
+    });
+
+    // フォローアップ (2026-07-15): updatePriority が渡された dueDates (期限) も同時に永続化すること
+    // (優先度変更に追随した SLA 期限の再計算。update-ticket.ts::updateTicketPriority が計算して渡す)
+    it('updatePriority は優先度と一緒に渡された dueDates も永続化する', async () => {
+      const { requester, categoryId } = await ctx.seedBasicFixture();
+      const ticket = await ctx.repos.tickets.create({
+        title: 't',
+        body: 'b',
+        priority: 'Low',
+        creatorId: requester.id,
+        categoryId,
+        tenantId: TENANT_ID,
+      });
+      const newFirstResponseDueAt = new Date('2026-08-01T00:00:00.000Z');
+      const newResolutionDueAt = new Date('2026-08-02T00:00:00.000Z');
+
+      const updated = await ctx.repos.tickets.updatePriority(
+        ticket.id,
+        { from: 'Low', to: 'High' },
+        { firstResponseDueAt: newFirstResponseDueAt, resolutionDueAt: newResolutionDueAt },
+        TENANT_ID,
+      );
+
+      expect(updated).toBe(true);
+      const after = await ctx.repos.tickets.findById(ticket.id, TENANT_ID);
+      expect(after?.priority).toBe('High');
+      expect(after?.firstResponseDueAt?.getTime()).toBe(newFirstResponseDueAt.getTime());
+      expect(after?.resolutionDueAt?.getTime()).toBe(newResolutionDueAt.getTime());
+    });
+
+    // フォローアップ (2026-07-15 #3): updatePriority も updateStatus/markEscalated と同じ
+    // check-then-act 競合防止契約を持つこと (期待優先度が一致しなければ false で no-op)
+    it('updatePriority は期待優先度が一致しない場合に更新せず false を返す', async () => {
+      const { requester, categoryId } = await ctx.seedBasicFixture();
+      const ticket = await ctx.repos.tickets.create({
+        title: 't',
+        body: 'b',
+        priority: 'Low',
+        creatorId: requester.id,
+        categoryId,
+        tenantId: TENANT_ID,
+      });
+
+      // 実際の優先度は Low のまま、期待優先度を誤って 'Medium' として更新を試みる
+      // (先行する別の操作が優先度を変えたケースの再現)
+      const updated = await ctx.repos.tickets.updatePriority(
+        ticket.id,
+        { from: 'Medium', to: 'High' },
+        { firstResponseDueAt: null, resolutionDueAt: null },
+        TENANT_ID,
+      );
+
+      expect(updated).toBe(false);
+      // 優先度・期限は変化していない (更新前の Low のまま)
+      const after = await ctx.repos.tickets.findById(ticket.id, TENANT_ID);
+      expect(after?.priority).toBe('Low');
     });
   });
 }

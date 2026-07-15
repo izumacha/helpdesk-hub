@@ -246,18 +246,36 @@ export function makeTicketRepo(db: PrismaLike): TicketRepository {
       return toTicketWithRefs(row);
     },
 
-    // 状態と解決日時を更新 (tenantId スコープ。updateMany で id+tenantId AND 一致のみ更新)
+    // 状態と解決日時を更新 (tenantId スコープ。期待する現在状態 transition.from を where 条件に
+    // 含めた原子的更新にし、読み取り後に別の操作が状態を変えていた場合 (check-then-act 競合) は
+    // 0 件更新 → false を返す (FaqRepository.updateStatus と同じ契約。フォローアップ 2026-07-15 #2)。
     // 注意: このメソッド自体は遷移の妥当性を検証しない (Ports & Adapters の層分離により、
-    // ここは純粋な永続化のみを担う)。呼び出し元は必ず src/domain/ticket-status.ts の
-    // isValidTransition() / getAllowedLiteTransitions() でゲートしてから呼ぶこと
+    // ここは「読んだときの状態のまま変わっていないこと」の保証のみを担う)。呼び出し元は必ず
+    // src/domain/ticket-status.ts の isValidTransition() / getAllowedLiteTransitions() で
+    // from→to の妥当性をゲートしてから呼ぶこと
     // (src/features/tickets/actions/update-ticket.ts::updateTicketStatus が唯一の正しい呼び出し元)。
-    async updateStatus(id, status, resolvedAt, tenantId) {
-      await db.ticket.updateMany({ where: { id, tenantId }, data: { status, resolvedAt } });
+    async updateStatus(id, transition, resolvedAt, tenantId) {
+      const result = await db.ticket.updateMany({
+        where: { id, tenantId, status: transition.from }, // 期待状態が一致するときのみ更新
+        data: { status: transition.to, resolvedAt },
+      });
+      return result.count > 0;
     },
 
-    // 優先度を更新 (tenantId スコープ)
-    async updatePriority(id, priority, tenantId) {
-      await db.ticket.updateMany({ where: { id, tenantId }, data: { priority } });
+    // 優先度と期限 (dueDates) を更新 (tenantId スコープ。フォローアップ 2026-07-15: 優先度変更に
+    // 追随して期限も再計算した値を呼び出し側から受け取り、同時に永続化する)。
+    // updateStatus と同じく期待する現在優先度 transition.from を where 条件に含めた原子的更新にし、
+    // check-then-act 競合時 (0 件更新) は false を返す (フォローアップ 2026-07-15 #3)
+    async updatePriority(id, transition, dueDates, tenantId) {
+      const result = await db.ticket.updateMany({
+        where: { id, tenantId, priority: transition.from }, // 期待優先度が一致するときのみ更新
+        data: {
+          priority: transition.to,
+          firstResponseDueAt: dueDates.firstResponseDueAt,
+          resolutionDueAt: dueDates.resolutionDueAt,
+        },
+      });
+      return result.count > 0;
     },
 
     // 担当者を更新 (tenantId スコープ、null で未アサインに戻す)
@@ -275,19 +293,22 @@ export function makeTicketRepo(db: PrismaLike): TicketRepository {
       await db.ticket.updateMany({ where: { id, tenantId }, data: { locationId } });
     },
 
-    // エスカレーション扱いに更新 (tenantId スコープ)
+    // エスカレーション扱いに更新 (tenantId スコープ)。期待する現在状態 expectedStatus を where 条件に
+    // 含めた原子的更新にし、check-then-act 競合時 (0 件更新) は false を返す (updateStatus と同じ契約。
+    // フォローアップ 2026-07-15 #2)。
     // 注意: updateStatus と同じく、ここでは status: 'Escalated' への遷移可否を検証しない。
     // 呼び出し元 (src/features/tickets/actions/update-ticket.ts::escalateTicket) が
     // isValidTransition(ticket.status, 'Escalated', mode) を事前にチェック済みであることが前提。
-    async markEscalated(id, args, tenantId) {
-      await db.ticket.updateMany({
-        where: { id, tenantId },
+    async markEscalated(id, args, expectedStatus, tenantId) {
+      const result = await db.ticket.updateMany({
+        where: { id, tenantId, status: expectedStatus }, // 期待状態が一致するときのみ更新
         data: {
           status: 'Escalated',
           escalatedAt: args.at,
           escalationReason: args.reason,
         },
       });
+      return result.count > 0;
     },
 
     // 初回応答日時を記録する (tenantId スコープ)

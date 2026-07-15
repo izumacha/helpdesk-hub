@@ -1,7 +1,9 @@
 'use client';
 
-// 非ブロッキングでアクションを呼ぶフック
-import { useTransition } from 'react';
+// React フック (エラー状態/送信中トランジション)
+import { useState, useTransition } from 'react';
+// 失敗時にサーバーの最新状態を取り直すためのルーター
+import { useRouter } from 'next/navigation';
 // ステータス更新サーバーアクション
 import { updateTicketStatus } from '@/features/tickets/actions/update-ticket';
 // ステータスの日本語ラベルを mode (lite | pro) に応じて返す mode-aware ヘルパー
@@ -20,39 +22,67 @@ interface Props {
   mode: TenantMode;
 }
 
+// フォローアップ (2026-07-15 #3): updateTicketStatus は check-then-act 競合時に
+// Error を throw するようになったが (他の操作と競合したため変更できませんでした)、
+// このセレクトは throw を誰も捕捉しておらず未処理の Promise 拒否になっていた
+// (FaqStatusButton と同じく、送信中はセレクトを無効化しエラーはその場に表示する)
 // ステータスを切り替えるプルダウン (許可された遷移のみ表示)
 export function StatusSelect({ ticketId, current, mode }: Props) {
+  // 失敗時にサーバーの最新状態を取り直すためのルーター
+  const router = useRouter();
   // 送信中フラグ + トランジション
   const [isPending, startTransition] = useTransition();
+  // サーバーアクションから返ったエラーを表示する
+  const [error, setError] = useState<string | null>(null);
   // 現状から遷移可能な次状態の一覧 (mode に応じて Lite なら 3 値遷移表、Pro なら 7 値遷移表)
   const allowed = getAllowedTransitions(current, mode);
 
-  // 選択変更でアクションを呼ぶ
+  // 選択変更でアクションを呼ぶ (競合・レート制限等の失敗はその場にエラー表示する)
   function handleChange(e: React.ChangeEvent<HTMLSelectElement>) {
     const next = e.target.value as TicketStatus;
-    startTransition(() => updateTicketStatus(ticketId, next));
+    // 直前のエラー表示をクリア
+    setError(null);
+    startTransition(async () => {
+      try {
+        await updateTicketStatus(ticketId, next);
+      } catch (err) {
+        // 失敗時はエラーメッセージを画面表示 (§6 エラーを握り潰さない)
+        setError(err instanceof Error ? err.message : 'エラーが発生しました');
+        // 競合エラーは「画面の表示が古い」ことを意味するため、サーバーの最新状態を取り直して
+        // 古いプルダウンの値が残り続けるのを防ぐ
+        router.refresh();
+      }
+    });
   }
 
   // 遷移先が無いならプルダウン自体を出さない
   if (allowed.length === 0) return null;
 
   return (
-    <select
-      value={current}
-      onChange={handleChange}
-      disabled={isPending}
-      className="rounded-md border border-gray-300 px-2 py-1 text-sm focus:border-blue-500 focus:outline-none disabled:opacity-50"
-    >
-      {/* 現在値はプレースホルダ的に disabled で表示 (mode に応じて Lite/Pro ラベル) */}
-      <option value={current} disabled>
-        {getStatusLabel(current, mode)}
-      </option>
-      {/* 許可された遷移先のみを option として並べる (mode に応じて Lite/Pro ラベル) */}
-      {allowed.map((s) => (
-        <option key={s} value={s}>
-          {getStatusLabel(s, mode)}
+    <div>
+      <select
+        value={current}
+        onChange={handleChange}
+        disabled={isPending}
+        className="rounded-md border border-gray-300 px-2 py-1 text-sm focus:border-blue-500 focus:outline-none disabled:opacity-50"
+      >
+        {/* 現在値はプレースホルダ的に disabled で表示 (mode に応じて Lite/Pro ラベル) */}
+        <option value={current} disabled>
+          {getStatusLabel(current, mode)}
         </option>
-      ))}
-    </select>
+        {/* 許可された遷移先のみを option として並べる (mode に応じて Lite/Pro ラベル) */}
+        {allowed.map((s) => (
+          <option key={s} value={s}>
+            {getStatusLabel(s, mode)}
+          </option>
+        ))}
+      </select>
+      {/* エラー表示 (ある場合のみ。role="alert" でスクリーンリーダーにも即時に伝える。§7 a11y) */}
+      {error && (
+        <p role="alert" className="mt-1 text-xs text-red-600">
+          {error}
+        </p>
+      )}
+    </div>
   );
 }
