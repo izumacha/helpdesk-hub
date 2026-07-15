@@ -23,6 +23,9 @@ import {
 import { getCurrentTenantMode } from '@/lib/tenant';
 // ステータス・優先度などの一元管理ラベル取得関数/定数
 import { getStatusLabel, PRIORITY_LABELS } from '@/lib/constants';
+// フォローアップ (2026-07-15): 優先度変更に追随して SLA 期限 (初回応答/解決) を再計算するための
+// 純粋関数。Web フォーム/CSV インポートの起票時と同じ計算式を共有する (§6 DRY)
+import { calculateFirstResponseDueAt, calculateResolutionDueAt } from '@/lib/sla';
 // 型のみインポート (優先度/ステータス/チケット詳細)
 import type { Priority, TicketStatus, TicketWithRefs } from '@/domain/types';
 // レート制限 (連打防止) の共通ヘルパー
@@ -158,8 +161,19 @@ export async function updateTicketStatus(ticketId: string, newStatus: TicketStat
         ? ticket.resolvedAt
         : null;
 
-    // ステータスと解決日時を更新 (tenantId スコープで where に注入)
-    await r.tickets.updateStatus(ticketId, newStatus, resolvedAt, tenantId);
+    // ステータスと解決日時を更新 (tenantId スコープで where に注入)。読み取り時の状態
+    // (ticket.status) を期待値として渡し、直前に別の操作が状態を変えていた場合は 0 件更新 (false)
+    // になる (check-then-act 競合で禁止遷移が後勝ちするのを防ぐ。フォローアップ 2026-07-15 #2:
+    // §1.4 で FAQ 側に導入した契約をチケット側にも適用した)
+    const updated = await r.tickets.updateStatus(
+      ticketId,
+      { from: ticket.status, to: newStatus },
+      resolvedAt,
+      tenantId,
+    );
+    if (!updated) {
+      throw new Error('他の操作と競合したため変更できませんでした。最新のチケットをご確認ください');
+    }
     // 変更履歴を残す (誰が/どの項目を/旧値→新値)
     await r.history.record({
       ticketId,
@@ -254,6 +268,8 @@ export async function updateTicketPriority(ticketId: string, newPriority: Priori
     limit: 10,
     windowMs: 10_000,
   });
+  // フォローアップ (2026-07-15): resolutionDueAt の再計算要否が mode で変わる (下記参照) ため取得する
+  const mode = await getCurrentTenantMode(tenantId);
 
   // 1 トランザクションで更新と履歴記録・通知作成を実行し、トランザクション外の後続処理
   // (SSE配信・メール・Slack) に必要な情報を戻り値としてそのまま受け取る。
@@ -267,8 +283,28 @@ export async function updateTicketPriority(ticketId: string, newPriority: Priori
     // 変更無しなら何もせず null を返す (冪等)
     if (ticket.priority === newPriority) return null;
 
-    // 優先度を更新 (tenantId スコープで where に注入)
-    await r.tickets.updatePriority(ticketId, newPriority, tenantId);
+    // フォローアップ (2026-07-15): 優先度に応じた SLA 期限を新しい優先度で再計算する。
+    // 従来は起票時の優先度から一度だけ計算した期限がその後の優先度変更に一切追随せず、
+    // 例えば Low(7日窓) → High(24時間窓) へ引き上げても表示上は 7 日後の期限のままだった。
+    // - firstResponseDueAt: Web フォーム/CSV インポートと同じく Lite/Pro どちらのモードでも
+    //   常に優先度から自動算出される (手動上書きの経路が無い) ため、無条件で再計算する。
+    // - resolutionDueAt: Pro モードのみ優先度から自動算出される。Lite モードでは
+    //   「期限日」がフォーム必須項目として依頼者が手動指定する日付 (TicketForm.tsx の
+    //   `mode === 'pro'` で入力欄自体が非表示) であり優先度と無関係なので、Lite では
+    //   既存値をそのまま保持し、依頼者が指定した期日を優先度変更で上書きしないようにする。
+    const newFirstResponseDueAt = calculateFirstResponseDueAt(newPriority, ticket.createdAt);
+    const newResolutionDueAt =
+      mode === 'pro'
+        ? calculateResolutionDueAt(newPriority, ticket.createdAt)
+        : ticket.resolutionDueAt;
+
+    // 優先度と再計算した期限を更新 (tenantId スコープで where に注入)
+    await r.tickets.updatePriority(
+      ticketId,
+      newPriority,
+      { firstResponseDueAt: newFirstResponseDueAt, resolutionDueAt: newResolutionDueAt },
+      tenantId,
+    );
     // 履歴を記録
     await r.history.record({
       ticketId,
@@ -776,8 +812,18 @@ export async function escalateTicket(ticketId: string, reason: string) {
 
   // マーク・履歴・エージェント一斉通知を 1 トランザクションで実行
   await uow.run(async (r) => {
-    // チケットに Escalated フラグと理由/日時を書き込む (tenantId スコープ)
-    await r.tickets.markEscalated(ticketId, { reason: trimmedReason, at: now }, tenantId);
+    // チケットに Escalated フラグと理由/日時を書き込む (tenantId スコープ)。読み取り時の状態
+    // (ticket.status) を期待値として渡し、直前に別の操作が状態を変えていた場合は 0 件更新 (false)
+    // になる (updateTicketStatus と同じ check-then-act 競合防止。フォローアップ 2026-07-15 #2)
+    const escalated = await r.tickets.markEscalated(
+      ticketId,
+      { reason: trimmedReason, at: now },
+      ticket.status,
+      tenantId,
+    );
+    if (!escalated) {
+      throw new Error('他の操作と競合したため変更できませんでした。最新のチケットをご確認ください');
+    }
     // 変更履歴を残す
     await r.history.record({
       ticketId,

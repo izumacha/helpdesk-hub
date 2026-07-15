@@ -284,20 +284,31 @@ export function makeTicketRepo(store: Store): TicketRepository {
       return attachRefs(ticket, store);
     },
 
-    // 状態を更新 (tenantId スコープ。テナント不一致なら no-op = 0 件更新)
-    async updateStatus(id, status, resolvedAt, tenantId) {
+    // 状態を更新 (tenantId スコープ。期待する現在状態 transition.from が一致するときだけ更新し、
+    // 一致しなければ false を返す。Prisma アダプタと同じ契約 (check-then-act 競合の防止。
+    // フォローアップ 2026-07-15 #2)
+    async updateStatus(id, transition, resolvedAt, tenantId) {
       const t = store.tickets.get(id); // 対象取得
       // 不在 or テナント不一致は何もしない (Prisma の updateMany と同じ挙動)
-      if (!t || t.tenantId !== tenantId) return;
+      if (!t || t.tenantId !== tenantId) return false;
+      // 期待状態と不一致 (競合) なら更新しない
+      if (t.status !== transition.from) return false;
       // 新しい状態/解決日時/更新時刻で置き換え
-      store.tickets.set(id, { ...t, status, resolvedAt, updatedAt: new Date() });
+      store.tickets.set(id, { ...t, status: transition.to, resolvedAt, updatedAt: new Date() });
+      return true;
     },
 
-    // 優先度を更新 (tenantId スコープ)
-    async updatePriority(id, priority, tenantId) {
+    // 優先度と期限 (dueDates) を更新 (tenantId スコープ。フォローアップ 2026-07-15)
+    async updatePriority(id, priority, dueDates, tenantId) {
       const t = store.tickets.get(id);
       if (!t || t.tenantId !== tenantId) return;
-      store.tickets.set(id, { ...t, priority, updatedAt: new Date() });
+      store.tickets.set(id, {
+        ...t,
+        priority,
+        firstResponseDueAt: dueDates.firstResponseDueAt,
+        resolutionDueAt: dueDates.resolutionDueAt,
+        updatedAt: new Date(),
+      });
     },
 
     // 担当者を更新 (tenantId スコープ。null で未アサインに戻す)
@@ -321,10 +332,12 @@ export function makeTicketRepo(store: Store): TicketRepository {
       store.tickets.set(id, { ...t, locationId, updatedAt: new Date() });
     },
 
-    // エスカレーション扱いに更新 (tenantId スコープ)
-    async markEscalated(id, args, tenantId) {
+    // エスカレーション扱いに更新 (tenantId スコープ)。期待する現在状態 expectedStatus が一致する
+    // ときだけ更新し、一致しなければ false を返す (Prisma アダプタと同じ契約。フォローアップ 2026-07-15 #2)
+    async markEscalated(id, args, expectedStatus, tenantId) {
       const t = store.tickets.get(id);
-      if (!t || t.tenantId !== tenantId) return;
+      if (!t || t.tenantId !== tenantId) return false;
+      if (t.status !== expectedStatus) return false;
       store.tickets.set(id, {
         ...t,
         status: 'Escalated',
@@ -332,6 +345,7 @@ export function makeTicketRepo(store: Store): TicketRepository {
         escalationReason: args.reason,
         updatedAt: new Date(),
       });
+      return true;
     },
 
     // 初回応答日時を記録する (tenantId スコープ)

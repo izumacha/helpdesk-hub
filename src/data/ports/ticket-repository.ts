@@ -180,15 +180,28 @@ export interface TicketRepository {
   }): Promise<QualityMetrics>;
 
   create(input: CreateTicketInput): Promise<TicketWithRefs>; // 新規作成 (input.tenantId 必須)
-  // 状態更新 (tenantId スコープ。他テナントの ID なら 0 件更新で no-op)
+  // 状態更新 (tenantId スコープ。期待する現在状態 transition.from を where 条件に含めた原子的更新。
+  // 読み取り後に別の操作が状態を変えていた場合 (check-then-act 競合) は 0 件更新 → false を返す。
+  // ドメイン遷移表 (isValidTransition 等) による from→to の妥当性検証は呼び出し側の責務で、
+  // ここは「読んだときの状態のまま変わっていないこと」だけを保証する (楽観的同時実行制御。
+  // FaqRepository.updateStatus と同じ契約。フォローアップ 2026-07-15 #2: §1.4 で導入したこの契約を
+  // 残課題として明記されていたチケット側にも適用した)
   updateStatus(
     id: string,
-    status: TicketStatus,
+    transition: { from: TicketStatus; to: TicketStatus },
     resolvedAt: Date | null,
     tenantId: string,
+  ): Promise<boolean>;
+  // 優先度更新 (tenantId スコープ)。dueDates は呼び出し側 (update-ticket.ts) が mode-aware に
+  // 再計算した新しい期限を渡す (フォローアップ 2026-07-15: 優先度変更後も期限が旧優先度のまま
+  // 固定され続け、SLA バッジが誤表示になっていたギャップの解消。Lite モードの resolutionDueAt は
+  // 依頼者が手動指定した期日であり優先度と無関係なので、呼び出し側は Pro モードのみ再計算して渡す)
+  updatePriority(
+    id: string,
+    priority: Priority,
+    dueDates: { firstResponseDueAt: Date | null; resolutionDueAt: Date | null },
+    tenantId: string,
   ): Promise<void>;
-  // 優先度更新 (tenantId スコープ)
-  updatePriority(id: string, priority: Priority, tenantId: string): Promise<void>;
   // 担当者更新 (tenantId スコープ。null で未アサイン)
   updateAssignee(id: string, assigneeId: string | null, tenantId: string): Promise<void>;
   // カテゴリ更新 (tenantId スコープ。null で未分類。フォローアップ 2026-07-14 #4:
@@ -196,8 +209,15 @@ export interface TicketRepository {
   updateCategory(id: string, categoryId: string | null, tenantId: string): Promise<void>;
   // 拠点更新 (tenantId スコープ。null で未指定。フォローアップ 2026-07-14 #4: 同上)
   updateLocation(id: string, locationId: string | null, tenantId: string): Promise<void>;
-  // エスカレーション状態にする (tenantId スコープ)
-  markEscalated(id: string, args: MarkEscalatedInput, tenantId: string): Promise<void>;
+  // エスカレーション状態にする (tenantId スコープ)。期待する現在状態 expectedStatus を where 条件に
+  // 含めた原子的更新で、check-then-act 競合時は false を返す (updateStatus と同じ契約。
+  // フォローアップ 2026-07-15 #2)
+  markEscalated(
+    id: string,
+    args: MarkEscalatedInput,
+    expectedStatus: TicketStatus,
+    tenantId: string,
+  ): Promise<boolean>;
   // 初回応答日時を記録する (tenantId スコープ)。呼び出し側が「まだ未応答」を確認してから
   // 呼ぶ前提 (2 回目以降の呼び出しで上書きしないための判定は呼び出し側の責務)
   markFirstResponded(id: string, at: Date, tenantId: string): Promise<void>;

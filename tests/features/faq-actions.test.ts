@@ -91,7 +91,7 @@ async function seedTicketWithStatus(status: string): Promise<string> {
   });
   // 生成直後は New のため、検証したいステータスへ直接書き換える (状態遷移ガードを経由せず、
   // FAQ 化の可否判定だけを単体で検証したいため updateStatus を直接呼ぶ)
-  await repos.tickets.updateStatus(ticket.id, status as never, null, TENANT);
+  await repos.tickets.updateStatus(ticket.id, { from: 'New', to: status as never }, null, TENANT);
   return ticket.id;
 }
 

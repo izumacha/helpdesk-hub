@@ -127,7 +127,7 @@ async function seed(slackWebhookUrl: string | null): Promise<{ ticketId: string 
     categoryId: null,
     tenantId: TENANT,
   });
-  await repos.tickets.updateStatus(ticket.id, 'Open', null, TENANT);
+  await repos.tickets.updateStatus(ticket.id, { from: 'New', to: 'Open' }, null, TENANT);
   return { ticketId: ticket.id };
 }
 
