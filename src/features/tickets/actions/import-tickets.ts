@@ -46,7 +46,7 @@ import { getMonthlyTicketQuota } from '@/lib/tenant-plan';
 // Phase 4: Slack/Teams/Chatwork 外部通知ヘルパー (Web フォーム・メール・LINE 取り込みと共有)
 import { notifyOutboundBestEffort } from '@/lib/outbound-notify';
 // 優先度から初回応答期限を計算する SLA ヘルパー (Web フォーム・メール・LINE 取り込みと共有)
-import { calculateFirstResponseDueAt } from '@/lib/sla';
+import { calculateFirstResponseDueAt, calculateResolutionDueAt } from '@/lib/sla';
 // フォローアップ (2026-07-13): 監査で発見したギャップの解消。担当割当メールを
 // updateTicketAssignee (画面からの手動アサイン) と同じ経路で送るためのヘルパー群。
 // sendBatchEmail はエスカレーション一斉メール (escalateTicket) と共有する送信共通処理 (§6 DRY)
@@ -397,9 +397,14 @@ function validateImportRow(
   // 空文字または未指定の場合は Medium にフォールバックする
   const priority: Priority = PRIORITY_MAP[priorityRaw] ?? 'Medium';
 
-  // 期限日セルを Date に変換する
+  // 期限日セルを Date に変換する。フォローアップ (2026-07-15 #3): 「期限日」は Lite モード専用の
+  // 依頼者手動入力欄で、Pro モードはカテゴリ/優先度から自動算出される SLA のみを使う
+  // (TicketForm.tsx で `mode === 'pro'` のとき欄自体を非表示にしているのと同じ区分。カテゴリ名列を
+  // Lite で無視する上の分岐と対称)。Pro モードでは列に値があっても無視して自動算出に一本化しないと、
+  // ここで永続化した手動値が後から updateTicketPriority の優先度変更で無警告に上書きされ、
+  // 「Pro は手動上書きの経路が無い」という同フォローアップの前提が崩れる
   let resolutionDueAt: Date | null = null;
-  if (dueDateIndex !== -1) {
+  if (dueDateIndex !== -1 && mode !== 'pro') {
     // 期限日セルの値を取り出す
     const dueDateRaw = cells[dueDateIndex] ?? '';
     if (dueDateRaw) {
@@ -850,7 +855,13 @@ export async function importTickets(csvText: string): Promise<ImportTicketsResul
         tenantId, // テナントスコープを必ず付与する (クロステナント防止)
         // 「状況」列があればその値、無ければモードの既定初期ステータス (Lite: Open / Pro: New)
         status,
-        resolutionDueAt, // 期限日 (未指定なら null)
+        // 解決期限: Lite は「期限日」列の手動値 (無指定なら null。依頼者が期日を指定しない
+        // 履歴データの取り込みを許容する既存挙動)。Pro は「期限日」列を上の分岐で無視している
+        // ため (手動上書きの経路が無い設計)、route.ts の Web フォーム起票と同じく優先度・起票日時
+        // から常に自動算出する (フォローアップ 2026-07-15 #3: 無しでは Pro の CSV インポート行だけ
+        // 解決期限が永久に null のままになり、SLA バッジ・ダッシュボードの SLA 超過集計に乗らない)
+        resolutionDueAt:
+          mode === 'pro' ? calculateResolutionDueAt(priority, rowCreatedAt) : resolutionDueAt,
         // 初回応答期限: CSV に対応列が無いため、常に優先度ベースで自動算出する
         // (Web フォーム・メール・LINE 取り込みと同じ SLA ヘルパーを使う)。フォローアップ
         // (2026-07-15 #3): 基準時刻は rowCreatedAt (「起票日時」列があればその値、無ければ now) を使う。
