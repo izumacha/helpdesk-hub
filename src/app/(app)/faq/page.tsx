@@ -15,6 +15,10 @@ import { FaqStatusButton } from '@/features/faq/components/FaqStatusButton';
 // テナントの動作モード (lite | pro) を取得するヘルパー
 import { getCurrentTenantMode } from '@/lib/tenant';
 
+// 状態変更ボタン (却下/非公開にする) 共通の outlined スタイル (§6: 同一文字列の重複を避ける)
+const SECONDARY_STATUS_BUTTON_CLASS =
+  'rounded-lg border border-slate-200 bg-white px-3.5 py-1.5 text-xs font-medium text-slate-600 transition hover:bg-slate-50';
+
 // FAQ の質問文/回答文を表示する共通ブロック (依頼者向け・エージェント向け両ビューで再利用)
 function FaqQaBlock({ question, answer }: { question: string; answer: string }) {
   return (
@@ -164,7 +168,7 @@ export default async function FaqPage() {
                     nextStatus="Rejected"
                     label="却下"
                     ariaLabel={`${faq.question} を却下する`}
-                    className="rounded-lg border border-slate-200 bg-white px-3.5 py-1.5 text-xs font-medium text-slate-600 transition hover:bg-slate-50"
+                    className={SECONDARY_STATUS_BUTTON_CLASS}
                   />
                 </div>
               )}
@@ -178,7 +182,7 @@ export default async function FaqPage() {
                     nextStatus="Rejected"
                     label="非公開にする"
                     ariaLabel={`${faq.question} を非公開にする`}
-                    className="rounded-lg border border-slate-200 bg-white px-3.5 py-1.5 text-xs font-medium text-slate-600 transition hover:bg-slate-50"
+                    className={SECONDARY_STATUS_BUTTON_CLASS}
                   />
                 </div>
               )}

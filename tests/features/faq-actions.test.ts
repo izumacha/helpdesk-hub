@@ -209,9 +209,10 @@ describe('updateFaqStatus', () => {
     const faqId = await seedFaqWithStatus('Rejected');
     const { updateFaqStatus } = await import('@/features/faq/actions/faq-actions');
 
-    // 呼称は mode-aware (シードは pro のため「FAQ候補」。§6 ラベル一元管理)
+    // 「画面の表示が古い」ケースがほとんどのため、最新表示の確認を促す文言を返す
+    // (呼称は mode-aware。シードは pro のため「FAQ候補」。§6 ラベル一元管理)
     await expect(updateFaqStatus(faqId, 'Published')).rejects.toThrow(
-      /候補または公開済みのFAQ候補のみ/,
+      /現在の状態では実行できない操作です。最新のFAQ候補をご確認ください/,
     );
   });
 

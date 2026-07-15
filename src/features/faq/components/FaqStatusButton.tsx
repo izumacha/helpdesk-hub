@@ -2,6 +2,8 @@
 
 // React フック (トランジション/ローカル状態)
 import { useState, useTransition } from 'react';
+// 失敗時にサーバーの最新状態を取り直すためのルーター
+import { useRouter } from 'next/navigation';
 // FAQ の状態を公開/却下 (非公開) に切り替えるサーバーアクション
 import { updateFaqStatus } from '@/features/faq/actions/faq-actions';
 
@@ -24,6 +26,8 @@ interface Props {
 // 二重クリックや競合 (別のエージェントが先に状態を変更) でページ全体が未処理エラー画面に
 // 落ちていた。FaqInlineForm と同じく送信中はボタンを無効化し、エラーはその場に表示する
 export function FaqStatusButton({ faqId, nextStatus, label, ariaLabel, className }: Props) {
+  // 失敗時にサーバーの最新状態を取り直すためのルーター
+  const router = useRouter();
   // 送信中フラグ + トランジション関数 (送信中はボタンを無効化して二重送信を防ぐ)
   const [isPending, startTransition] = useTransition();
   // サーバーアクションから返ったエラーを表示する
@@ -41,6 +45,10 @@ export function FaqStatusButton({ faqId, nextStatus, label, ariaLabel, className
       } catch (err) {
         // 失敗時 (競合・レート制限等) はエラーメッセージを画面表示 (§6 エラーを握り潰さない)
         setError(err instanceof Error ? err.message : 'エラーが発生しました');
+        // 競合エラーは「画面の表示が古い」ことを意味するため、サーバーの最新状態を取り直して
+        // 古いボタンが残り続けるのを防ぐ (エラー時のアクションは revalidatePath に到達しないため
+        // クライアント側で再取得する)
+        router.refresh();
       }
     });
   }
