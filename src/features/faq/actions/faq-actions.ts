@@ -97,13 +97,28 @@ export async function updateFaqStatus(faqId: string, status: 'Published' | 'Reje
   // 見つからない or 他テナントの ID ならエラー
   if (!faq) throw new Error(`${termLabel}が見つかりません`);
   // 遷移可否をドメイン層の遷移表 (唯一の源) で判定する。ticket-status.ts の
-  // ALLOWED_TRANSITIONS と同じパターン (フォローアップ 2026-07-14 #6)
+  // ALLOWED_TRANSITIONS と同じパターン (フォローアップ 2026-07-14 #6)。
+  // この分岐に来るのは「画面の表示が古い」場合 (却下済みへの操作や公開直後の二度押し等) が
+  // ほとんどのため、遷移ルールの列挙ではなく最新表示の確認を促す文言にする
   if (!isValidFaqTransition(faq.status, status)) {
-    throw new Error('候補または公開済みのFAQのみ状態を変更できます');
+    throw new Error(`現在の状態では実行できない操作です。最新の${termLabel}をご確認ください`);
   }
 
-  // 状態を更新 (tenantId スコープで where に注入、port 経由)
-  await repos.faq.updateStatus(faqId, status, tenantId);
+  // 状態を更新 (tenantId スコープで where に注入、port 経由)。読み取り時の状態 (faq.status) を
+  // 期待値として渡し、直前に別の操作が状態を変えていた場合は 0 件更新 (false) になる
+  // (check-then-act 競合で禁止遷移が後勝ちするのを防ぐ。フォローアップ 2026-07-15)
+  const updated = await repos.faq.updateStatus(faqId, { from: faq.status, to: status }, tenantId);
+  // 更新できなかった場合は原因を切り分けてユーザーに正しい案内を返す
+  if (!updated) {
+    // 再読込して行の有無を確認する (0 件更新は「行が消えた」か「状態が変わった」のどちらか)
+    const latest = await repos.faq.findById(faqId, tenantId);
+    // 行自体が消えていた場合は既存の not-found と同じ文言を返す
+    if (!latest) throw new Error(`${termLabel}が見つかりません`);
+    // 行は残っている = 別の操作が先に状態を変えた競合。最新表示の確認を促す
+    throw new Error(
+      `他の操作と競合したため変更できませんでした。最新の${termLabel}をご確認ください`,
+    );
+  }
   // FAQ 一覧のキャッシュを無効化
   revalidatePath('/faq');
 }

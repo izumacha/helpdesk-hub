@@ -58,9 +58,18 @@ export function makeFaqRepo(db: PrismaLike): FaqRepository {
       return toFaq(row);
     },
 
-    // 状態 (Candidate/Published/Rejected) を更新 (tenantId スコープ)
-    async updateStatus(id, status, tenantId) {
-      await db.faqCandidate.updateMany({ where: { id, tenantId }, data: { status } });
+    // 状態 (Candidate/Published/Rejected) を更新 (tenantId スコープ)。
+    // where に期待する現在状態 (transition.from) を含めることで、読み取り後に別の操作が
+    // 状態を変えていた場合は 0 件更新となり、禁止遷移 (例: Rejected→Published) が
+    // 後勝ちで成立するのを DB 書き込み時点で防ぐ (フォローアップ 2026-07-15)
+    async updateStatus(id, transition, tenantId) {
+      // 条件付き一括更新 (ID + テナント + 期待状態がすべて一致した行だけ書き換える)
+      const result = await db.faqCandidate.updateMany({
+        where: { id, tenantId, status: transition.from }, // 期待状態が一致するときのみ更新
+        data: { status: transition.to }, // 新しい状態へ書き換え
+      });
+      // 1 件以上更新できたか (0 件なら競合 or 不在 or 他テナント) を返す
+      return result.count > 0;
     },
 
     // 質問/回答の本文を更新 (tenantId スコープ。他テナントの ID なら 0 件更新で no-op)

@@ -133,7 +133,18 @@ export async function provisionTenantWithAdmin(
           answer: faq.answer,
           tenantId: tenant.id,
         });
-        await tx.faq.updateStatus(faqCandidate.id, 'Published', tenant.id);
+        // 直前に作成した候補 (Candidate) を公開状態へ更新する。同一トランザクション内で
+        // 作成直後の行を更新するため期待状態 (Candidate) は必ず一致するが、万一更新できなければ
+        // 例外でトランザクション全体を失敗させる (§9 fail-closed: 中途半端な投入を残さない)
+        const published = await tx.faq.updateStatus(
+          faqCandidate.id,
+          { from: 'Candidate', to: 'Published' },
+          tenant.id,
+        );
+        // 更新できなかった場合は異常事態として即座に失敗させる
+        if (!published) {
+          throw new Error(`業種テンプレートFAQの公開に失敗しました (id: ${faqCandidate.id})`);
+        }
       }
     }
   }

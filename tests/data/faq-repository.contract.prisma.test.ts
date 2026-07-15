@@ -110,7 +110,7 @@ describe.runIf(SHOULD_RUN)('FaqRepository (prisma adapter)', () => {
       answer: '公開済みの回答',
       tenantId: TENANT_A,
     });
-    await repos.faq.updateStatus(published.id, 'Published', TENANT_A);
+    await repos.faq.updateStatus(published.id, { from: 'Candidate', to: 'Published' }, TENANT_A);
     // 候補のまま (Candidate) の FAQ は含めない
     // (FaqCandidate.ticketId は 1 チケット 1 候補のユニーク制約があるため、別のチケットに紐付ける)
     const anotherTicket = await repos.tickets.create({
@@ -136,7 +136,7 @@ describe.runIf(SHOULD_RUN)('FaqRepository (prisma adapter)', () => {
     ]);
   });
 
-  // updateStatus: tenantId スコープの updateMany が正しく更新する
+  // updateStatus: 期待状態 (from) が一致していれば tenantId スコープの updateMany が更新し true を返す
   it('updateStatusで状態を更新できる', async () => {
     const repos = buildPrismaRepos(prisma);
     const faq = await repos.faq.create({
@@ -146,12 +146,17 @@ describe.runIf(SHOULD_RUN)('FaqRepository (prisma adapter)', () => {
       answer: 'A',
       tenantId: TENANT_A,
     });
-    await repos.faq.updateStatus(faq.id, 'Published', TENANT_A);
+    const updated = await repos.faq.updateStatus(
+      faq.id,
+      { from: 'Candidate', to: 'Published' },
+      TENANT_A,
+    );
+    expect(updated).toBe(true);
     const reloaded = await repos.faq.findById(faq.id, TENANT_A);
     expect(reloaded?.status).toBe('Published');
   });
 
-  // updateStatus: 他テナントの ID は no-op (updateMany が 0 件更新)
+  // updateStatus: 他テナントの ID は no-op (updateMany が 0 件更新で false)
   it('updateStatusは他テナントのIDに対してno-opになる', async () => {
     const repos = buildPrismaRepos(prisma);
     const faq = await repos.faq.create({
@@ -161,9 +166,38 @@ describe.runIf(SHOULD_RUN)('FaqRepository (prisma adapter)', () => {
       answer: 'A',
       tenantId: TENANT_A,
     });
-    await repos.faq.updateStatus(faq.id, 'Published', TENANT_B);
+    const updated = await repos.faq.updateStatus(
+      faq.id,
+      { from: 'Candidate', to: 'Published' },
+      TENANT_B,
+    );
+    expect(updated).toBe(false);
     const reloaded = await repos.faq.findById(faq.id, TENANT_A);
     expect(reloaded?.status).toBe('Candidate');
+  });
+
+  // updateStatus: 期待状態 (from) が現在の状態と異なる場合は 0 件更新で false を返す
+  // (フォローアップ 2026-07-15: check-then-act 競合で禁止遷移が後勝ちするのを防ぐ)
+  it('updateStatusは期待状態が一致しない場合に更新せずfalseを返す', async () => {
+    const repos = buildPrismaRepos(prisma);
+    const faq = await repos.faq.create({
+      ticketId: ticketA,
+      createdById: AGENT_A,
+      question: 'Q',
+      answer: 'A',
+      tenantId: TENANT_A,
+    });
+    // 先行する操作が却下済みにした想定 (Candidate → Rejected)
+    await repos.faq.updateStatus(faq.id, { from: 'Candidate', to: 'Rejected' }, TENANT_A);
+    // 古い読み取り (Candidate) を前提にした公開は失敗し、Rejected のまま変わらない
+    const updated = await repos.faq.updateStatus(
+      faq.id,
+      { from: 'Candidate', to: 'Published' },
+      TENANT_A,
+    );
+    expect(updated).toBe(false);
+    const reloaded = await repos.faq.findById(faq.id, TENANT_A);
+    expect(reloaded?.status).toBe('Rejected');
   });
 
   // updateContent: tenantId スコープの updateMany が質問/回答を正しく更新する
