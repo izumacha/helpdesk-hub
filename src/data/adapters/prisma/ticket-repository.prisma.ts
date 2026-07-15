@@ -263,16 +263,19 @@ export function makeTicketRepo(db: PrismaLike): TicketRepository {
     },
 
     // 優先度と期限 (dueDates) を更新 (tenantId スコープ。フォローアップ 2026-07-15: 優先度変更に
-    // 追随して期限も再計算した値を呼び出し側から受け取り、同時に永続化する)
-    async updatePriority(id, priority, dueDates, tenantId) {
-      await db.ticket.updateMany({
-        where: { id, tenantId },
+    // 追随して期限も再計算した値を呼び出し側から受け取り、同時に永続化する)。
+    // updateStatus と同じく期待する現在優先度 transition.from を where 条件に含めた原子的更新にし、
+    // check-then-act 競合時 (0 件更新) は false を返す (フォローアップ 2026-07-15 #3)
+    async updatePriority(id, transition, dueDates, tenantId) {
+      const result = await db.ticket.updateMany({
+        where: { id, tenantId, priority: transition.from }, // 期待優先度が一致するときのみ更新
         data: {
-          priority,
+          priority: transition.to,
           firstResponseDueAt: dueDates.firstResponseDueAt,
           resolutionDueAt: dueDates.resolutionDueAt,
         },
       });
+      return result.count > 0;
     },
 
     // 担当者を更新 (tenantId スコープ、null で未アサインに戻す)

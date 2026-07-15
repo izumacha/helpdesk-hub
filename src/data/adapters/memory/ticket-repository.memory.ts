@@ -298,17 +298,21 @@ export function makeTicketRepo(store: Store): TicketRepository {
       return true;
     },
 
-    // 優先度と期限 (dueDates) を更新 (tenantId スコープ。フォローアップ 2026-07-15)
-    async updatePriority(id, priority, dueDates, tenantId) {
+    // 優先度と期限 (dueDates) を更新 (tenantId スコープ。フォローアップ 2026-07-15)。
+    // Prisma アダプタと同じく期待優先度 transition.from と不一致 (競合) なら更新しない
+    // (フォローアップ 2026-07-15 #3)
+    async updatePriority(id, transition, dueDates, tenantId) {
       const t = store.tickets.get(id);
-      if (!t || t.tenantId !== tenantId) return;
+      if (!t || t.tenantId !== tenantId) return false;
+      if (t.priority !== transition.from) return false;
       store.tickets.set(id, {
         ...t,
-        priority,
+        priority: transition.to,
         firstResponseDueAt: dueDates.firstResponseDueAt,
         resolutionDueAt: dueDates.resolutionDueAt,
         updatedAt: new Date(),
       });
+      return true;
     },
 
     // 担当者を更新 (tenantId スコープ。null で未アサインに戻す)

@@ -600,7 +600,7 @@ export function runTicketRepositoryContract(
       await ctx.repos.tickets.updateStatus(ticketA.id, { from: 'New', to: 'Open' }, null, tenantB);
       await ctx.repos.tickets.updatePriority(
         ticketA.id,
-        'High',
+        { from: 'Low', to: 'High' },
         { firstResponseDueAt: null, resolutionDueAt: null },
         tenantB,
       );
@@ -967,17 +967,46 @@ export function runTicketRepositoryContract(
       const newFirstResponseDueAt = new Date('2026-08-01T00:00:00.000Z');
       const newResolutionDueAt = new Date('2026-08-02T00:00:00.000Z');
 
-      await ctx.repos.tickets.updatePriority(
+      const updated = await ctx.repos.tickets.updatePriority(
         ticket.id,
-        'High',
+        { from: 'Low', to: 'High' },
         { firstResponseDueAt: newFirstResponseDueAt, resolutionDueAt: newResolutionDueAt },
         TENANT_ID,
       );
 
+      expect(updated).toBe(true);
       const after = await ctx.repos.tickets.findById(ticket.id, TENANT_ID);
       expect(after?.priority).toBe('High');
       expect(after?.firstResponseDueAt?.getTime()).toBe(newFirstResponseDueAt.getTime());
       expect(after?.resolutionDueAt?.getTime()).toBe(newResolutionDueAt.getTime());
+    });
+
+    // フォローアップ (2026-07-15 #3): updatePriority も updateStatus/markEscalated と同じ
+    // check-then-act 競合防止契約を持つこと (期待優先度が一致しなければ false で no-op)
+    it('updatePriority は期待優先度が一致しない場合に更新せず false を返す', async () => {
+      const { requester, categoryId } = await ctx.seedBasicFixture();
+      const ticket = await ctx.repos.tickets.create({
+        title: 't',
+        body: 'b',
+        priority: 'Low',
+        creatorId: requester.id,
+        categoryId,
+        tenantId: TENANT_ID,
+      });
+
+      // 実際の優先度は Low のまま、期待優先度を誤って 'Medium' として更新を試みる
+      // (先行する別の操作が優先度を変えたケースの再現)
+      const updated = await ctx.repos.tickets.updatePriority(
+        ticket.id,
+        { from: 'Medium', to: 'High' },
+        { firstResponseDueAt: null, resolutionDueAt: null },
+        TENANT_ID,
+      );
+
+      expect(updated).toBe(false);
+      // 優先度・期限は変化していない (更新前の Low のまま)
+      const after = await ctx.repos.tickets.findById(ticket.id, TENANT_ID);
+      expect(after?.priority).toBe('Low');
     });
   });
 }

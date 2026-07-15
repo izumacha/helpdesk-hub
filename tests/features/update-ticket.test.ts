@@ -440,7 +440,7 @@ describe('updateTicketPriority (provider-agnostic)', () => {
     const manualDueDate = new Date('2026-09-01T00:00:00.000Z');
     await repos.tickets.updatePriority(
       ticketId,
-      'Medium',
+      { from: 'Medium', to: 'Medium' },
       { firstResponseDueAt: null, resolutionDueAt: manualDueDate },
       TENANT,
     );
@@ -455,6 +455,48 @@ describe('updateTicketPriority (provider-agnostic)', () => {
     expect(t?.firstResponseDueAt?.getTime()).toBe(
       calculateFirstResponseDueAt('High', t!.createdAt).getTime(),
     );
+  });
+
+  // フォローアップ (2026-07-15 #3): check-then-act 競合 (TOCTOU) の防止。updateTicketStatus と
+  // 同じく、読み取り時 (uow.run 内の findById) と書き込み時の間に別の操作が優先度を変えていた
+  // 場合、無条件更新だと新しい優先度から再計算した dueDates が後勝ちで静かに失われてしまう。
+  // store.tickets.get を最初の 1 回だけ古い状態にモックすることで
+  // 「findById は古いスナップショットを返すが、実際の行は既に別の優先度に変わっている」を再現する
+  it('読み取り後に優先度が変わっていた場合は競合エラーになり dueDates を上書きしない', async () => {
+    const { ticketId } = await seed();
+    // 実際の行は既に High (先行操作が変更済み)
+    await repos.tickets.updatePriority(
+      ticketId,
+      { from: 'Medium', to: 'High' },
+      {
+        firstResponseDueAt: calculateFirstResponseDueAt('High', new Date()),
+        resolutionDueAt: calculateResolutionDueAt('High', new Date()),
+      },
+      TENANT,
+    );
+    const beforeConflict = await repos.tickets.findById(ticketId, TENANT);
+    // Map#get の最初の呼び出しだけ古いスナップショット (Medium) を返すようにする (TOCTOU の再現)。
+    // 2 回目以降 (updatePriority 内の where 判定用の再読み込み) は実際の値 (High) を返す
+    let callCount = 0;
+    const originalGet = store.tickets.get.bind(store.tickets);
+    vi.spyOn(store.tickets, 'get').mockImplementation((id: string) => {
+      callCount += 1;
+      const real = originalGet(id);
+      if (callCount === 1 && id === ticketId && real) {
+        return { ...real, priority: 'Medium' };
+      }
+      return real;
+    });
+    const { updateTicketPriority } = await import('@/features/tickets/actions/update-ticket');
+
+    await expect(updateTicketPriority(ticketId, 'Low')).rejects.toThrow(/他の操作と競合したため/);
+
+    // 優先度・期限は先行操作 (High とその dueDates) のまま変化していない
+    vi.restoreAllMocks();
+    const t = await repos.tickets.findById(ticketId, TENANT);
+    expect(t?.priority).toBe('High');
+    expect(t?.firstResponseDueAt?.getTime()).toBe(beforeConflict?.firstResponseDueAt?.getTime());
+    expect(t?.resolutionDueAt?.getTime()).toBe(beforeConflict?.resolutionDueAt?.getTime());
   });
 });
 

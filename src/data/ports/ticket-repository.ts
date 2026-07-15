@@ -94,8 +94,9 @@ export interface CreateTicketInput {
   // 各行の作成タイミングで個別に決まるため、複数行をループで作成する間に経過した時間の分だけ
   // createdAt が now より後になり、resolvedAt/firstRespondedAt が createdAt より「前」になって
   // 品質メトリクス (平均初回応答時間・平均解決時間) の AVG(resolvedAt - createdAt) が負値になり得る。
-  // CSV インポートはこの createdAt を明示的に同じ now で上書きし、常に
-  // resolvedAt/firstRespondedAt >= createdAt を保証する。未指定なら DB 既定 (作成時刻) のまま
+  // フォローアップ 2026-07-15 #3: 上記の負値防止のため、CSV の「起票日時」列が指定されていれば
+  // (未来日時は validateImportRow が拒否済み) その値を createdAt として使い、列が無指定なら
+  // 従来どおりこの now で上書きする。いずれの場合も resolvedAt/firstRespondedAt >= createdAt を保証する
   createdAt?: Date;
 }
 
@@ -192,16 +193,21 @@ export interface TicketRepository {
     resolvedAt: Date | null,
     tenantId: string,
   ): Promise<boolean>;
-  // 優先度更新 (tenantId スコープ)。dueDates は呼び出し側 (update-ticket.ts) が mode-aware に
-  // 再計算した新しい期限を渡す (フォローアップ 2026-07-15: 優先度変更後も期限が旧優先度のまま
-  // 固定され続け、SLA バッジが誤表示になっていたギャップの解消。Lite モードの resolutionDueAt は
-  // 依頼者が手動指定した期日であり優先度と無関係なので、呼び出し側は Pro モードのみ再計算して渡す)
+  // 優先度更新 (tenantId スコープ。期待する現在優先度 transition.from を where 条件に含めた
+  // 原子的更新。読み取り後に別の操作が優先度を変えていた場合 (check-then-act 競合) は
+  // 0 件更新 → false を返す (updateStatus/markEscalated と同じ契約。フォローアップ 2026-07-15 #3:
+  // 優先度変更だけこの保護が無く、2 つの優先度変更が競合すると新しい優先度から再計算した
+  // dueDates が後勝ちで静かに失われ得たギャップの解消)。
+  // dueDates は呼び出し側 (update-ticket.ts) が mode-aware に再計算した新しい期限を渡す
+  // (フォローアップ 2026-07-15: 優先度変更後も期限が旧優先度のまま固定され続け、SLA バッジが
+  // 誤表示になっていたギャップの解消。Lite モードの resolutionDueAt は依頼者が手動指定した期日
+  // であり優先度と無関係なので、呼び出し側は Pro モードのみ再計算して渡す)
   updatePriority(
     id: string,
-    priority: Priority,
+    transition: { from: Priority; to: Priority },
     dueDates: { firstResponseDueAt: Date | null; resolutionDueAt: Date | null },
     tenantId: string,
-  ): Promise<void>;
+  ): Promise<boolean>;
   // 担当者更新 (tenantId スコープ。null で未アサイン)
   updateAssignee(id: string, assigneeId: string | null, tenantId: string): Promise<void>;
   // カテゴリ更新 (tenantId スコープ。null で未分類。フォローアップ 2026-07-14 #4:

@@ -62,6 +62,12 @@ import {
   resolveLineAccessToken,
 } from '@/lib/line-push';
 
+// check-then-act 競合 (楽観的同時実行制御の CAS 失敗) 時にユーザーへ表示する共通メッセージ。
+// updateTicketStatus/updateTicketPriority/escalateTicket の 3 箇所で同一文言を投げるため
+// ここに一元化する (§6 マジック文字列を避ける・DRY。フォローアップ 2026-07-15 #3)
+const TICKET_CONFLICT_MESSAGE =
+  '他の操作と競合したため変更できませんでした。最新のチケットをご確認ください';
+
 // セッションがログイン済みであることを保証するアサーション関数
 function assertAuthenticatedUser(session: Session | null): asserts session is Session {
   // ユーザー ID が無ければ未ログインとみなしてエラー
@@ -172,7 +178,7 @@ export async function updateTicketStatus(ticketId: string, newStatus: TicketStat
       tenantId,
     );
     if (!updated) {
-      throw new Error('他の操作と競合したため変更できませんでした。最新のチケットをご確認ください');
+      throw new Error(TICKET_CONFLICT_MESSAGE);
     }
     // 変更履歴を残す (誰が/どの項目を/旧値→新値)
     await r.history.record({
@@ -299,13 +305,20 @@ export async function updateTicketPriority(ticketId: string, newPriority: Priori
         ? calculateResolutionDueAt(newPriority, ticket.createdAt)
         : ticket.resolutionDueAt;
 
-    // 優先度と再計算した期限を更新 (tenantId スコープで where に注入)
-    await r.tickets.updatePriority(
+    // 優先度と再計算した期限を更新 (tenantId スコープで where に注入)。読み取り時の優先度
+    // (ticket.priority) を期待値として渡し、直前に別の操作が優先度を変えていた場合は
+    // 0 件更新 (false) になる (updateTicketStatus と同じ check-then-act 競合防止。
+    // フォローアップ 2026-07-15 #3: 優先度変更だけこの保護が無く、2 つの優先度変更が競合すると
+    // 新しい優先度から再計算した dueDates が後勝ちで静かに失われ得たギャップの解消)
+    const updated = await r.tickets.updatePriority(
       ticketId,
-      newPriority,
+      { from: ticket.priority, to: newPriority },
       { firstResponseDueAt: newFirstResponseDueAt, resolutionDueAt: newResolutionDueAt },
       tenantId,
     );
+    if (!updated) {
+      throw new Error(TICKET_CONFLICT_MESSAGE);
+    }
     // 履歴を記録
     await r.history.record({
       ticketId,
@@ -823,7 +836,7 @@ export async function escalateTicket(ticketId: string, reason: string) {
       tenantId,
     );
     if (!escalated) {
-      throw new Error('他の操作と競合したため変更できませんでした。最新のチケットをご確認ください');
+      throw new Error(TICKET_CONFLICT_MESSAGE);
     }
     // 変更履歴を残す
     await r.history.record({
