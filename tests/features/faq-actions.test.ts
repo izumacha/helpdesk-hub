@@ -118,7 +118,7 @@ async function seedFaqWithStatus(status: 'Candidate' | 'Published' | 'Rejected')
   });
   // 作成直後は Candidate 固定のため、検証したいステータスへ直接書き換える
   if (status !== 'Candidate') {
-    await repos.faq.updateStatus(faq.id, status, TENANT);
+    await repos.faq.updateStatus(faq.id, { from: 'Candidate', to: status }, TENANT);
   }
   return faq.id;
 }
@@ -209,9 +209,30 @@ describe('updateFaqStatus', () => {
     const faqId = await seedFaqWithStatus('Rejected');
     const { updateFaqStatus } = await import('@/features/faq/actions/faq-actions');
 
+    // 呼称は mode-aware (シードは pro のため「FAQ候補」。§6 ラベル一元管理)
     await expect(updateFaqStatus(faqId, 'Published')).rejects.toThrow(
-      /候補または公開済みのFAQのみ/,
+      /候補または公開済みのFAQ候補のみ/,
     );
+  });
+
+  // フォローアップ (2026-07-15): check-then-act 競合の防止。読み取り時 (findById) と
+  // 書き込み時の間に別の操作が状態を変えていた場合、無条件更新だと遷移表が禁止する
+  // Rejected→Published が後勝ちで成立してしまう。条件付き更新で拒否されることを検証する
+  it('読み取り後に状態が変わっていた場合は競合エラーになり禁止遷移が成立しない', async () => {
+    // 実際の行は既に Rejected (先行操作が却下済み)
+    const faqId = await seedFaqWithStatus('Rejected');
+    const current = await repos.faq.findById(faqId, TENANT);
+    if (!current) throw new Error('seed missing faq');
+    // findById だけが古いスナップショット (Candidate) を返す状況を作る (TOCTOU の再現)
+    vi.spyOn(repos.faq, 'findById').mockResolvedValueOnce({ ...current, status: 'Candidate' });
+    const { updateFaqStatus } = await import('@/features/faq/actions/faq-actions');
+
+    // 遷移ガード (Candidate→Published) は通過するが、条件付き更新が競合を検出して失敗する
+    await expect(updateFaqStatus(faqId, 'Published')).rejects.toThrow(/他の操作と競合したため/);
+
+    // 状態は Rejected のまま (禁止遷移 Rejected→Published が成立していない)
+    const reloaded = await repos.faq.findById(faqId, TENANT);
+    expect(reloaded?.status).toBe('Rejected');
   });
 
   it('依頼者は実行できない', async () => {

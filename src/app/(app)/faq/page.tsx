@@ -6,10 +6,12 @@ import { repos } from '@/data';
 import { isAgent } from '@/lib/role';
 // FAQ ステータスの日本語ラベル + Tailwind カラークラス + FAQ 機能自体の mode-aware 呼称
 import { FAQ_STATUS_LABELS, FAQ_STATUS_COLORS, FAQ_TERM_LABELS } from '@/lib/constants';
-// FAQ の状態を更新するサーバーアクション
-import { updateFaqStatus } from '@/features/faq/actions/faq-actions';
 // FAQ の質問/回答本文をその場編集するクライアントコンポーネント
 import { FaqEditForm } from '@/features/faq/components/FaqEditForm';
+// FAQ の状態変更ボタン (送信中の無効化とエラー表示を備えたクライアントコンポーネント。
+// フォローアップ 2026-07-15: 素の form action では二重クリックや競合時の throw が
+// 未処理エラー画面に直行していた)
+import { FaqStatusButton } from '@/features/faq/components/FaqStatusButton';
 // テナントの動作モード (lite | pro) を取得するヘルパー
 import { getCurrentTenantMode } from '@/lib/tenant';
 
@@ -147,27 +149,23 @@ export default async function FaqPage() {
               {/* Candidate 状態のときのみ「公開/却下」ボタンを表示 */}
               {faq.status === 'Candidate' && (
                 <div className="mt-4 flex gap-2">
-                  {/* 公開ボタン (アクションに引数をバインド) ─ ミントグリーンの主要 CTA */}
-                  <form action={updateFaqStatus.bind(null, faq.id, 'Published')}>
-                    {/* 一覧内に同名ボタンが並ぶため、対象の質問文でスクリーンリーダー向けに区別する (§7 a11y) */}
-                    <button
-                      type="submit"
-                      aria-label={`${faq.question} を公開する`}
-                      className="rounded-lg bg-emerald-600 px-3.5 py-1.5 text-xs font-semibold text-white transition hover:bg-emerald-700"
-                    >
-                      公開する
-                    </button>
-                  </form>
+                  {/* 公開ボタン ─ ミントグリーンの主要 CTA
+                      (aria-label は一覧内の同名ボタンを質問文で区別するため。§7 a11y) */}
+                  <FaqStatusButton
+                    faqId={faq.id}
+                    nextStatus="Published"
+                    label="公開する"
+                    ariaLabel={`${faq.question} を公開する`}
+                    className="rounded-lg bg-emerald-600 px-3.5 py-1.5 text-xs font-semibold text-white transition hover:bg-emerald-700"
+                  />
                   {/* 却下ボタン ─ outlined で控えめに */}
-                  <form action={updateFaqStatus.bind(null, faq.id, 'Rejected')}>
-                    <button
-                      type="submit"
-                      aria-label={`${faq.question} を却下する`}
-                      className="rounded-lg border border-slate-200 bg-white px-3.5 py-1.5 text-xs font-medium text-slate-600 transition hover:bg-slate-50"
-                    >
-                      却下
-                    </button>
-                  </form>
+                  <FaqStatusButton
+                    faqId={faq.id}
+                    nextStatus="Rejected"
+                    label="却下"
+                    ariaLabel={`${faq.question} を却下する`}
+                    className="rounded-lg border border-slate-200 bg-white px-3.5 py-1.5 text-xs font-medium text-slate-600 transition hover:bg-slate-50"
+                  />
                 </div>
               )}
 
@@ -175,16 +173,13 @@ export default async function FaqPage() {
                   依頼者向け閲覧から取り下げる導線。フォローアップ 2026-07-14 #6) */}
               {faq.status === 'Published' && (
                 <div className="mt-4">
-                  <form action={updateFaqStatus.bind(null, faq.id, 'Rejected')}>
-                    {/* 一覧内に同名ボタンが並ぶため、対象の質問文でスクリーンリーダー向けに区別する (§7 a11y) */}
-                    <button
-                      type="submit"
-                      aria-label={`${faq.question} を非公開にする`}
-                      className="rounded-lg border border-slate-200 bg-white px-3.5 py-1.5 text-xs font-medium text-slate-600 transition hover:bg-slate-50"
-                    >
-                      非公開にする
-                    </button>
-                  </form>
+                  <FaqStatusButton
+                    faqId={faq.id}
+                    nextStatus="Rejected"
+                    label="非公開にする"
+                    ariaLabel={`${faq.question} を非公開にする`}
+                    className="rounded-lg border border-slate-200 bg-white px-3.5 py-1.5 text-xs font-medium text-slate-600 transition hover:bg-slate-50"
+                  />
                 </div>
               )}
             </div>

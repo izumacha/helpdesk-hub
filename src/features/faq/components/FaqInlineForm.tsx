@@ -140,8 +140,12 @@ export function FaqInlineForm({
           className="block w-full rounded-md border border-gray-300 px-2 py-1.5 text-xs focus:border-blue-500 focus:outline-none"
         />
       </div>
-      {/* エラー表示 (ある場合のみ) */}
-      {error && <p className="text-xs text-red-600">{error}</p>}
+      {/* エラー表示 (ある場合のみ。role="alert" でスクリーンリーダーにも即時に伝える。§7 a11y) */}
+      {error && (
+        <p role="alert" className="text-xs text-red-600">
+          {error}
+        </p>
+      )}
       <div className="flex gap-2">
         {/* 送信ボタン (送信中は無効化) */}
         <button

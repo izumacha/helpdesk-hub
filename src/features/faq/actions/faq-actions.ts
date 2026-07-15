@@ -99,11 +99,19 @@ export async function updateFaqStatus(faqId: string, status: 'Published' | 'Reje
   // 遷移可否をドメイン層の遷移表 (唯一の源) で判定する。ticket-status.ts の
   // ALLOWED_TRANSITIONS と同じパターン (フォローアップ 2026-07-14 #6)
   if (!isValidFaqTransition(faq.status, status)) {
-    throw new Error('候補または公開済みのFAQのみ状態を変更できます');
+    throw new Error(`候補または公開済みの${termLabel}のみ状態を変更できます`);
   }
 
-  // 状態を更新 (tenantId スコープで where に注入、port 経由)
-  await repos.faq.updateStatus(faqId, status, tenantId);
+  // 状態を更新 (tenantId スコープで where に注入、port 経由)。読み取り時の状態 (faq.status) を
+  // 期待値として渡し、直前に別の操作が状態を変えていた場合は 0 件更新 (false) になる
+  // (check-then-act 競合で禁止遷移が後勝ちするのを防ぐ。フォローアップ 2026-07-15)
+  const updated = await repos.faq.updateStatus(faqId, { from: faq.status, to: status }, tenantId);
+  // 競合 (または削除) で更新できなかった場合は、画面の再読み込みを促すエラーを返す
+  if (!updated) {
+    throw new Error(
+      `他の操作と競合したため変更できませんでした。最新の${termLabel}をご確認ください`,
+    );
+  }
   // FAQ 一覧のキャッシュを無効化
   revalidatePath('/faq');
 }

@@ -66,12 +66,17 @@ export function makeFaqRepo(store: Store): FaqRepository {
       return row;
     },
 
-    // FAQ 候補の状態を更新 (tenantId スコープ。テナント不一致なら no-op)
-    async updateStatus(id, status, tenantId) {
+    // FAQ 候補の状態を更新 (tenantId スコープ。テナント不一致なら no-op)。
+    // Prisma アダプタと同じく期待する現在状態 (transition.from) が一致するときだけ更新し、
+    // 一致しなければ false を返す (check-then-act 競合の防止。フォローアップ 2026-07-15)
+    async updateStatus(id, transition, tenantId) {
       const row = store.faq.get(id); // 更新対象を取得
-      if (!row || row.tenantId !== tenantId) return; // 不在 or 他テナントなら何もしない
+      if (!row || row.tenantId !== tenantId) return false; // 不在 or 他テナントなら何もしない
+      if (row.status !== transition.from) return false; // 期待状態と不一致 (競合) なら更新しない
       // 状態と更新日時を書き換えて保存
-      store.faq.set(id, { ...row, status, updatedAt: new Date() });
+      store.faq.set(id, { ...row, status: transition.to, updatedAt: new Date() });
+      // 更新できたことを返す
+      return true;
     },
 
     // 質問/回答の本文を更新 (tenantId スコープ。テナント不一致なら no-op)

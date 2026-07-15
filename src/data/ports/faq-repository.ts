@@ -37,8 +37,16 @@ export interface FaqRepository {
   listPublished(tenantId: string): Promise<PublishedFaqItem[]>;
   // 候補を作成 (input.tenantId 必須)
   create(input: CreateFaqInput): Promise<FaqCandidate>;
-  // 公開/却下などの状態更新 (tenantId スコープ。他テナントの ID なら 0 件更新で no-op)
-  updateStatus(id: string, status: FaqStatus, tenantId: string): Promise<void>;
+  // 公開/却下などの状態更新 (tenantId スコープ。他テナントの ID なら 0 件更新で no-op)。
+  // フォローアップ (2026-07-15): transition.from (期待する現在状態) を where 条件に含めた
+  // 原子的更新にし、読み取り後〜書き込み前に別の操作が状態を変えていた場合 (check-then-act 競合)
+  // は更新せず false を返す。呼び出し元はドメイン遷移表 (isValidFaqTransition) で from→to の
+  // 妥当性を検証したうえで呼び、false なら競合として扱う
+  updateStatus(
+    id: string,
+    transition: { from: FaqStatus; to: FaqStatus },
+    tenantId: string,
+  ): Promise<boolean>;
   // 質問/回答の本文を更新 (tenantId スコープ。他テナントの ID なら 0 件更新で no-op)
   // フォローアップ (2026-07-14 #6): 公開後に誤りへ気付いても訂正手段が無かったギャップ対応
   updateContent(

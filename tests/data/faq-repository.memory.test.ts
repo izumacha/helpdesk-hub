@@ -134,7 +134,7 @@ describe('FaqRepository (memory)', () => {
       answer: '公開済みの回答',
       tenantId: TENANT_A,
     });
-    await repos.faq.updateStatus(published.id, 'Published', TENANT_A);
+    await repos.faq.updateStatus(published.id, { from: 'Candidate', to: 'Published' }, TENANT_A);
     // 候補のまま (Candidate) の FAQ も同テナントに存在させる
     await repos.faq.create({
       ticketId: ticket.id,
@@ -153,7 +153,7 @@ describe('FaqRepository (memory)', () => {
       answer: 'テナントBの公開回答',
       tenantId: TENANT_B,
     });
-    await repos.faq.updateStatus(publishedB.id, 'Published', TENANT_B);
+    await repos.faq.updateStatus(publishedB.id, { from: 'Candidate', to: 'Published' }, TENANT_B);
 
     const result = await repos.faq.listPublished(TENANT_A);
     expect(result).toHaveLength(1);
@@ -164,7 +164,7 @@ describe('FaqRepository (memory)', () => {
     });
   });
 
-  // updateStatus: 状態を更新できる (Published/Rejected 等)
+  // updateStatus: 期待状態 (from) が一致していれば状態を更新でき、true を返す
   it('updateStatusで状態を更新できる', async () => {
     const ticket = await seedTicketAndAgent(TENANT_A, 'チケット', AGENT_A);
     const faq = await repos.faq.create({
@@ -174,12 +174,17 @@ describe('FaqRepository (memory)', () => {
       answer: 'A',
       tenantId: TENANT_A,
     });
-    await repos.faq.updateStatus(faq.id, 'Published', TENANT_A);
+    const updated = await repos.faq.updateStatus(
+      faq.id,
+      { from: 'Candidate', to: 'Published' },
+      TENANT_A,
+    );
+    expect(updated).toBe(true);
     const reloaded = await repos.faq.findById(faq.id, TENANT_A);
     expect(reloaded?.status).toBe('Published');
   });
 
-  // updateStatus: 他テナントの ID は no-op (更新されない)
+  // updateStatus: 他テナントの ID は no-op (更新されず false を返す)
   it('updateStatusは他テナントのIDに対してno-opになる', async () => {
     const ticket = await seedTicketAndAgent(TENANT_A, 'チケット', AGENT_A);
     const faq = await repos.faq.create({
@@ -189,9 +194,38 @@ describe('FaqRepository (memory)', () => {
       answer: 'A',
       tenantId: TENANT_A,
     });
-    await repos.faq.updateStatus(faq.id, 'Published', TENANT_B);
+    const updated = await repos.faq.updateStatus(
+      faq.id,
+      { from: 'Candidate', to: 'Published' },
+      TENANT_B,
+    );
+    expect(updated).toBe(false);
     const reloaded = await repos.faq.findById(faq.id, TENANT_A);
     expect(reloaded?.status).toBe('Candidate');
+  });
+
+  // updateStatus: 期待状態 (from) が現在の状態と異なる場合は更新せず false を返す
+  // (フォローアップ 2026-07-15: check-then-act 競合で禁止遷移が後勝ちするのを防ぐ)
+  it('updateStatusは期待状態が一致しない場合に更新せずfalseを返す', async () => {
+    const ticket = await seedTicketAndAgent(TENANT_A, 'チケット', AGENT_A);
+    const faq = await repos.faq.create({
+      ticketId: ticket.id,
+      createdById: AGENT_A,
+      question: 'Q',
+      answer: 'A',
+      tenantId: TENANT_A,
+    });
+    // 先行する操作が却下済みにした想定 (Candidate → Rejected)
+    await repos.faq.updateStatus(faq.id, { from: 'Candidate', to: 'Rejected' }, TENANT_A);
+    // 古い読み取り (Candidate) を前提にした公開は失敗し、Rejected のまま変わらない
+    const updated = await repos.faq.updateStatus(
+      faq.id,
+      { from: 'Candidate', to: 'Published' },
+      TENANT_A,
+    );
+    expect(updated).toBe(false);
+    const reloaded = await repos.faq.findById(faq.id, TENANT_A);
+    expect(reloaded?.status).toBe('Rejected');
   });
 
   // updateContent: 質問/回答の本文を更新できる (フォローアップ 2026-07-14 #6)
