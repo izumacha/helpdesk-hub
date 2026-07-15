@@ -60,7 +60,9 @@ async function notifyAgentsOfWebTicket(
     // テナント内のエージェント/管理者一覧を取得する (メール/LINE 取り込みと同じヘルパー)
     const agents = await repos.users.listAgents(tenantId);
     // 通知対象: 起票者自身がエージェントなら本人以外、依頼者からの起票なら全エージェントへ通知する
-    const notifyTargets = isAgent(creatorRole) ? agents.filter((a) => a.id !== creatorId) : agents;
+    const notifyTargets = isAgent(creatorRole)
+      ? agents.filter((a) => a.id !== creatorId)
+      : agents;
     // 通知作成・SSE 配信はメール/LINE 取り込みと共有のヘルパーに委譲する
     await notifyAgentsOfNewTicket({
       tenantId,
