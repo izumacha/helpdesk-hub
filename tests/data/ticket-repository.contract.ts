@@ -366,7 +366,12 @@ export function runTicketRepositoryContract(
         tenantId: TENANT_ID,
       });
       await ctx.repos.tickets.updateAssignee(t3.id, agentB.id, TENANT_ID);
-      await ctx.repos.tickets.updateStatus(t3.id, { from: 'New', to: 'Resolved' }, new Date(), TENANT_ID);
+      await ctx.repos.tickets.updateStatus(
+        t3.id,
+        { from: 'New', to: 'Resolved' },
+        new Date(),
+        TENANT_ID,
+      );
 
       // creatorId 未指定 = テナント内全件対象 (担当者ビュー)
       const all = await ctx.repos.tickets.dashboardStats({
@@ -421,7 +426,12 @@ export function runTicketRepositoryContract(
         locationId: locationA.id,
         tenantId: TENANT_ID,
       });
-      await ctx.repos.tickets.updateStatus(a1.id, { from: 'New', to: 'Resolved' }, new Date(), TENANT_ID);
+      await ctx.repos.tickets.updateStatus(
+        a1.id,
+        { from: 'New', to: 'Resolved' },
+        new Date(),
+        TENANT_ID,
+      );
       await ctx.repos.tickets.create({
         title: 'a2',
         body: 'b',
@@ -741,7 +751,12 @@ export function runTicketRepositoryContract(
         categoryId,
         tenantId: TENANT_ID,
       });
-      await ctx.repos.tickets.updateStatus(tInProgress.id, { from: 'New', to: 'Open' }, null, TENANT_ID);
+      await ctx.repos.tickets.updateStatus(
+        tInProgress.id,
+        { from: 'New', to: 'Open' },
+        null,
+        TENANT_ID,
+      );
       await ctx.repos.tickets.updateStatus(
         tInProgress.id,
         { from: 'Open', to: 'InProgress' },
@@ -904,7 +919,12 @@ export function runTicketRepositoryContract(
           categoryId,
           tenantId: TENANT_ID,
         });
-        await ctx.repos.tickets.updateStatus(ticket.id, { from: 'New', to: 'Open' }, null, TENANT_ID);
+        await ctx.repos.tickets.updateStatus(
+          ticket.id,
+          { from: 'New', to: 'Open' },
+          null,
+          TENANT_ID,
+        );
 
         // 期待状態を誤って 'InProgress' として試みる (実際は Open) → 競合として false
         const conflicted = await ctx.repos.tickets.markEscalated(

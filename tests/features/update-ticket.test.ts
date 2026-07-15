@@ -311,7 +311,9 @@ describe('updateTicketStatus (provider-agnostic)', () => {
     const { updateTicketStatus } = await import('@/features/tickets/actions/update-ticket');
 
     // 遷移ガード (Open→InProgress) は通過するが、条件付き更新が競合を検出して失敗する
-    await expect(updateTicketStatus(ticketId, 'InProgress')).rejects.toThrow(/他の操作と競合したため/);
+    await expect(updateTicketStatus(ticketId, 'InProgress')).rejects.toThrow(
+      /他の操作と競合したため/,
+    );
 
     // 状態は Closed のまま (禁止遷移 Closed→InProgress が成立していない)
     vi.restoreAllMocks();
@@ -571,7 +573,12 @@ describe('updateTicketStatus (Lite mode)', () => {
     setTenantToLite();
     // 古い resolvedAt (10 分前) を持つ Resolved の状態を作る
     const oldResolvedAt = new Date(Date.now() - 10 * 60 * 1000);
-    await repos.tickets.updateStatus(ticketId, { from: 'New', to: 'Resolved' }, oldResolvedAt, TENANT);
+    await repos.tickets.updateStatus(
+      ticketId,
+      { from: 'New', to: 'Resolved' },
+      oldResolvedAt,
+      TENANT,
+    );
     const { updateTicketStatus } = await import('@/features/tickets/actions/update-ticket');
 
     // 呼び出し前後の時刻を測って resolvedAt の妥当性を検証

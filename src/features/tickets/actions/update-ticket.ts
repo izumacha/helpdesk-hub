@@ -289,9 +289,10 @@ export async function updateTicketPriority(ticketId: string, newPriority: Priori
     // - firstResponseDueAt: Web フォーム/CSV インポートと同じく Lite/Pro どちらのモードでも
     //   常に優先度から自動算出される (手動上書きの経路が無い) ため、無条件で再計算する。
     // - resolutionDueAt: Pro モードのみ優先度から自動算出される。Lite モードでは
-    //   「期限日」がフォーム必須項目として依頼者が手動指定する日付 (TicketForm.tsx の
-    //   `mode === 'pro'` で入力欄自体が非表示) であり優先度と無関係なので、Lite では
-    //   既存値をそのまま保持し、依頼者が指定した期日を優先度変更で上書きしないようにする。
+    //   「期限日」が依頼者の任意入力欄で、未入力なら自動算出にフォールバックする
+    //   (TicketForm.tsx の `mode === 'pro'` で入力欄自体が非表示。ヘルプ文言「未入力の場合は
+    //   自動で期限を設定します」)。入力された期限日は優先度と無関係な依頼者の希望日なので、
+    //   Lite では既存値をそのまま保持し、優先度変更で上書きしないようにする。
     const newFirstResponseDueAt = calculateFirstResponseDueAt(newPriority, ticket.createdAt);
     const newResolutionDueAt =
       mode === 'pro'

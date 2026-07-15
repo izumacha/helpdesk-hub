@@ -22,13 +22,19 @@ export function formatDateISO(date: Date): string {
   return date.toLocaleDateString('en-CA', { timeZone: 'Asia/Tokyo' });
 }
 
-// 日本時間の日時を 'YYYY-MM-DD HH:mm:ss' 形式 (機械可読・ゼロ埋め済み) で文字列化する関数。
-// CSV エクスポートの「起票日時」列など、そのまま再パース可能な形式が必要な用途向け
-// (formatDateISO の日時版。formatDateTimeJP は ja-JP ロケールの非ゼロ埋め表示専用で再パース不可)。
-// フォローアップ (2026-07-15 #3): 「起票日時」がエクスポートのみで再インポートに未対応だったため、
-// この関数と対になる parseDateTimeJST を追加し、往復可能にした
-export function formatDateTimeISO(date: Date): string {
-  // Intl.DateTimeFormat で JST の年月日時分秒をゼロ埋め済みで取り出す (endOfDayJST と同じ手法)
+// JST の年月日時分秒をゼロ埋め済みの数値で取り出す内部ヘルパー。
+// formatDateTimeISO (組み立て) と parseDateTimeJST (ロールオーバー検知の往復確認) の
+// 両方が同じ Intl.DateTimeFormat 設定を必要とするため、2 箇所目の重複が生じた時点で
+// 共通化した (§6 DRY)。hourCycle: 'h23' で 24 時間表記を明示し、12 時間表記 + AM/PM の
+// 混入を防ぐ。
+function getJSTDateTimeParts(date: Date): {
+  year: number;
+  month: number;
+  day: number;
+  hour: number;
+  minute: number;
+  second: number;
+} {
   const parts = new Intl.DateTimeFormat('en-CA', {
     timeZone: 'Asia/Tokyo',
     year: 'numeric',
@@ -37,12 +43,32 @@ export function formatDateTimeISO(date: Date): string {
     hour: '2-digit',
     minute: '2-digit',
     second: '2-digit',
-    hourCycle: 'h23', // 24 時間表記 (h23) を明示し、12 時間表記 + AM/PM の混入を防ぐ
+    hourCycle: 'h23',
   }).formatToParts(date);
-  // 種別ごとに値を取り出すヘルパー (欠損時は空文字。通常は発生しない)
-  const valueOf = (type: string) => parts.find((p) => p.type === type)?.value ?? '';
+  // 種別ごとに値を取り出すヘルパー (欠損時は 0。通常は発生しない)
+  const valueOf = (type: string) => Number(parts.find((p) => p.type === type)?.value ?? 0);
+  return {
+    year: valueOf('year'),
+    month: valueOf('month'),
+    day: valueOf('day'),
+    hour: valueOf('hour'),
+    minute: valueOf('minute'),
+    second: valueOf('second'),
+  };
+}
+
+// 日本時間の日時を 'YYYY-MM-DD HH:mm:ss' 形式 (機械可読・ゼロ埋め済み) で文字列化する関数。
+// CSV エクスポートの「起票日時」列など、そのまま再パース可能な形式が必要な用途向け
+// (formatDateISO の日時版。formatDateTimeJP は ja-JP ロケールの非ゼロ埋め表示専用で再パース不可)。
+// フォローアップ (2026-07-15 #3): 「起票日時」がエクスポートのみで再インポートに未対応だったため、
+// この関数と対になる parseDateTimeJST を追加し、往復可能にした
+export function formatDateTimeISO(date: Date): string {
+  // JST の年月日時分秒をゼロ埋め済みで取り出す (endOfDayJST と同じ手法)
+  const { year, month, day, hour, minute, second } = getJSTDateTimeParts(date);
+  // ゼロ埋め用のヘルパー (2 桁固定)
+  const pad = (n: number) => String(n).padStart(2, '0');
   // 'YYYY-MM-DD HH:mm:ss' 形式に組み立てる
-  return `${valueOf('year')}-${valueOf('month')}-${valueOf('day')} ${valueOf('hour')}:${valueOf('minute')}:${valueOf('second')}`;
+  return `${year}-${pad(month)}-${pad(day)} ${pad(hour)}:${pad(minute)}:${pad(second)}`;
 }
 
 // 'YYYY-MM-DD HH:mm:ss' 形式の文字列を JST の時刻として解釈した Date に変換する関数
@@ -68,24 +94,14 @@ export function parseDateTimeJST(str: string): Date | null {
   // JS の Date は不正な日時をロールオーバーで受け入れてしまう (例: 25 時 → 翌日 1 時)。
   // 入力した年月日時分秒と Date 側 (JST) の値が一致するかを確認して実在しない日時を弾く
   // (endOfDayJST と同じ Intl.DateTimeFormat による往復確認パターン)
-  const parts = new Intl.DateTimeFormat('en-CA', {
-    timeZone: 'Asia/Tokyo',
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-    hourCycle: 'h23',
-  }).formatToParts(d);
-  const valueOf = (type: string) => Number(parts.find((p) => p.type === type)?.value);
+  const roundTrip = getJSTDateTimeParts(d);
   if (
-    valueOf('year') !== year ||
-    valueOf('month') !== month ||
-    valueOf('day') !== day ||
-    valueOf('hour') !== hour ||
-    valueOf('minute') !== minute ||
-    valueOf('second') !== second
+    roundTrip.year !== year ||
+    roundTrip.month !== month ||
+    roundTrip.day !== day ||
+    roundTrip.hour !== hour ||
+    roundTrip.minute !== minute ||
+    roundTrip.second !== second
   ) {
     return null;
   }

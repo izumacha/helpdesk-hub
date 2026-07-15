@@ -782,7 +782,9 @@ describe('importTickets', () => {
 
       expect(result.imported).toBe(0);
       expect(result.errors).toHaveLength(1);
-      expect(result.errors[0].message).toContain('起票日時には現在時刻より過去の日時を指定してください');
+      expect(result.errors[0].message).toContain(
+        '起票日時には現在時刻より過去の日時を指定してください',
+      );
       expect(store.tickets.size).toBe(0);
     });
   });
