@@ -1,7 +1,14 @@
 // Vitest のテスト DSL
 import { describe, expect, it } from 'vitest';
-// 検証対象 (YYYY-MM-DD → JST 終端 Date 変換ヘルパー / JST 月初計算ヘルパー / JST ISO日付整形ヘルパー)
-import { endOfDayJST, startOfMonthJST, formatDateISO } from '@/lib/format-date';
+// 検証対象 (YYYY-MM-DD → JST 終端 Date 変換ヘルパー / JST 月初計算ヘルパー / JST ISO日付整形ヘルパー /
+// フォローアップ 2026-07-15 #3: CSV「起票日時」列の往復用フォーマッタ・パーサ)
+import {
+  endOfDayJST,
+  startOfMonthJST,
+  formatDateISO,
+  formatDateTimeISO,
+  parseDateTimeJST,
+} from '@/lib/format-date';
 
 // フォローアップ (2026-07-11 #2): CSV エクスポートの期限日を再インポート可能な 'YYYY-MM-DD' に
 // 整形するヘルパーの回帰テスト (endOfDayJST の逆変換に相当)
@@ -22,6 +29,60 @@ describe('formatDateISO', () => {
   it('round-trips with endOfDayJST for a JST date boundary', () => {
     const jstDate = endOfDayJST('2026-05-17')!;
     expect(formatDateISO(jstDate)).toBe('2026-05-17');
+  });
+});
+
+// フォローアップ (2026-07-15 #3): CSV エクスポートの「起票日時」を再インポート可能な
+// 'YYYY-MM-DD HH:mm:ss' に整形するヘルパーの回帰テスト (parseDateTimeJST の逆変換に相当)
+describe('formatDateTimeISO', () => {
+  // 通常の日時は 'YYYY-MM-DD HH:mm:ss' (ゼロ埋め済み・24 時間表記) になる
+  it('returns zero-padded YYYY-MM-DD HH:mm:ss in JST', () => {
+    // 2026-03-05 01:02:03 UTC = 2026-03-05 10:02:03 JST
+    expect(formatDateTimeISO(new Date('2026-03-05T01:02:03.000Z'))).toBe('2026-03-05 10:02:03');
+  });
+
+  // 時分秒が1桁の場合もゼロ埋めされる (formatDateTimeJP のような '2026/1/9 0:30:05' にはならない)
+  it('zero-pads single-digit month/day/hour/minute/second', () => {
+    // 2026-01-08 15:30:05 UTC = 2026-01-09 00:30:05 JST
+    expect(formatDateTimeISO(new Date('2026-01-08T15:30:05.000Z'))).toBe('2026-01-09 00:30:05');
+  });
+
+  // 正午をまたいでも 24 時間表記 (h23) で AM/PM が混入しないこと
+  it('uses 24-hour notation without AM/PM', () => {
+    // 2026-06-15 03:00:00 UTC = 2026-06-15 12:00:00 JST (正午)
+    expect(formatDateTimeISO(new Date('2026-06-15T03:00:00.000Z'))).toBe('2026-06-15 12:00:00');
+    // 2026-06-15 15:00:00 UTC = 2026-06-16 00:00:00 JST (深夜0時)
+    expect(formatDateTimeISO(new Date('2026-06-15T15:00:00.000Z'))).toBe('2026-06-16 00:00:00');
+  });
+});
+
+// 'YYYY-MM-DD HH:mm:ss' → JST Date 変換の境界値テスト (formatDateTimeISO と往復すること)
+describe('parseDateTimeJST', () => {
+  // formatDateTimeISO の出力をそのまま再パースすると同じ時刻に戻ること (往復性)
+  it('round-trips with formatDateTimeISO', () => {
+    const original = new Date('2026-03-05T01:02:03.000Z');
+    const formatted = formatDateTimeISO(original);
+    const parsed = parseDateTimeJST(formatted);
+    expect(parsed).not.toBeNull();
+    expect(parsed!.getTime()).toBe(original.getTime());
+  });
+
+  // 形式不正 (区切り違い・秒欠落等) は null を返す
+  it('returns null for malformed datetime strings', () => {
+    expect(parseDateTimeJST('2026/03/05 10:02:03')).toBeNull();
+    expect(parseDateTimeJST('2026-03-05T10:02:03')).toBeNull(); // 'T' 区切りは不可 (半角スペース必須)
+    expect(parseDateTimeJST('2026-03-05 10:02')).toBeNull(); // 秒が無い
+    expect(parseDateTimeJST('not-a-datetime')).toBeNull();
+  });
+
+  // 実在しない日時 (2 月 31 日) は null を返す (endOfDayJST と同じロールオーバー検知)
+  it('returns null for an impossible calendar date', () => {
+    expect(parseDateTimeJST('2026-02-31 10:00:00')).toBeNull();
+  });
+
+  // 存在しない時刻 (25 時) も null を返す (ロールオーバーで翌日 1 時になるのを弾く)
+  it('returns null for an impossible time of day', () => {
+    expect(parseDateTimeJST('2026-03-05 25:00:00')).toBeNull();
   });
 });
 

@@ -22,6 +22,76 @@ export function formatDateISO(date: Date): string {
   return date.toLocaleDateString('en-CA', { timeZone: 'Asia/Tokyo' });
 }
 
+// 日本時間の日時を 'YYYY-MM-DD HH:mm:ss' 形式 (機械可読・ゼロ埋め済み) で文字列化する関数。
+// CSV エクスポートの「起票日時」列など、そのまま再パース可能な形式が必要な用途向け
+// (formatDateISO の日時版。formatDateTimeJP は ja-JP ロケールの非ゼロ埋め表示専用で再パース不可)。
+// フォローアップ (2026-07-15 #3): 「起票日時」がエクスポートのみで再インポートに未対応だったため、
+// この関数と対になる parseDateTimeJST を追加し、往復可能にした
+export function formatDateTimeISO(date: Date): string {
+  // Intl.DateTimeFormat で JST の年月日時分秒をゼロ埋め済みで取り出す (endOfDayJST と同じ手法)
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Tokyo',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hourCycle: 'h23', // 24 時間表記 (h23) を明示し、12 時間表記 + AM/PM の混入を防ぐ
+  }).formatToParts(date);
+  // 種別ごとに値を取り出すヘルパー (欠損時は空文字。通常は発生しない)
+  const valueOf = (type: string) => parts.find((p) => p.type === type)?.value ?? '';
+  // 'YYYY-MM-DD HH:mm:ss' 形式に組み立てる
+  return `${valueOf('year')}-${valueOf('month')}-${valueOf('day')} ${valueOf('hour')}:${valueOf('minute')}:${valueOf('second')}`;
+}
+
+// 'YYYY-MM-DD HH:mm:ss' 形式の文字列を JST の時刻として解釈した Date に変換する関数
+// (formatDateTimeISO の逆変換)。endOfDayJST と同じく明示的に +09:00 オフセットを付与し、
+// サーバの実行タイムゾーンが UTC/JST どちらでも結果が変わらないようにする。
+// - 失敗 (形式不正・実在しない日時) 時は null を返す
+export function parseDateTimeJST(str: string): Date | null {
+  // 入力形式チェック (ゼロ埋め済みの厳密な YYYY-MM-DD HH:mm:ss のみ許可)
+  const m = /^(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2}):(\d{2})$/.exec(str);
+  if (!m) return null;
+  // 年月日時分秒を数値化する (m[0] は全体マッチなので m[1] から)
+  const [, yStr, moStr, dStr, hStr, miStr, sStr] = m;
+  const year = Number(yStr);
+  const month = Number(moStr);
+  const day = Number(dStr);
+  const hour = Number(hStr);
+  const minute = Number(miStr);
+  const second = Number(sStr);
+  // ISO 8601 形式の文字列を +09:00 オフセット付きで組み立てる
+  const d = new Date(`${yStr}-${moStr}-${dStr}T${hStr}:${miStr}:${sStr}.000+09:00`);
+  // 不正な値 (パース失敗) は NaN になる
+  if (Number.isNaN(d.getTime())) return null;
+  // JS の Date は不正な日時をロールオーバーで受け入れてしまう (例: 25 時 → 翌日 1 時)。
+  // 入力した年月日時分秒と Date 側 (JST) の値が一致するかを確認して実在しない日時を弾く
+  // (endOfDayJST と同じ Intl.DateTimeFormat による往復確認パターン)
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Tokyo',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hourCycle: 'h23',
+  }).formatToParts(d);
+  const valueOf = (type: string) => Number(parts.find((p) => p.type === type)?.value);
+  if (
+    valueOf('year') !== year ||
+    valueOf('month') !== month ||
+    valueOf('day') !== day ||
+    valueOf('hour') !== hour ||
+    valueOf('minute') !== minute ||
+    valueOf('second') !== second
+  ) {
+    return null;
+  }
+  return d;
+}
+
 // 'YYYY-MM-DD' 形式の文字列を「その日の JST 終端 (23:59:59.999)」を表す Date に変換する関数
 // - サーバが UTC/JST どちらで動いていても結果が変わらないよう、明示的に +09:00 オフセットを付与する
 // - 失敗 (形式不正・実在しない日付) 時は null を返す。呼び出し側は事前に Zod 検証済みの値を渡す前提

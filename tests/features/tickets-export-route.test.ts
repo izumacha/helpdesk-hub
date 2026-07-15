@@ -122,6 +122,37 @@ describe('GET /api/tickets/export', () => {
     expect(csv).toContain('2026-01-09');
   });
 
+  // 回帰テスト (フォローアップ 2026-07-15 #3): 「起票日時」列は従来 formatDateTimeJP
+  // (ja-JP ロケール書式、例 '2026/1/9 9:30:00') で出力しており、CSV インポートが要求する
+  // 'YYYY-MM-DD HH:mm:ss' 厳密形式と一致せず往復できなかった。インポート側 (parseDateTimeJST) が
+  // 要求する形式で出力されていることを検証する
+  it('起票日時列がインポートと同じ YYYY-MM-DD HH:mm:ss 形式で出力される', async () => {
+    await repos.tickets.create({
+      title: '複合機の紙詰まり',
+      body: '',
+      priority: 'Medium',
+      categoryId: null,
+      creatorId: AGENT_ID,
+      tenantId: TENANT,
+      status: 'Open',
+      resolutionDueAt: null,
+      // 月・日・時・分・秒が1桁の日時でゼロ埋めが効いているか確認する
+      createdAt: new Date('2026-01-08T15:30:05.000Z'), // JST 2026-01-09 00:30:05
+    });
+
+    const { GET } = await import('@/app/api/tickets/export/route');
+    const res = await GET(new Request('http://localhost/api/tickets/export'));
+    const csv = await res.text();
+
+    // ヘッダーに CSV インポートと同じ列名「起票日時」があること
+    const headerLine = csv.replace(/^﻿/, '').split('\n')[0];
+    expect(headerLine).toContain('起票日時');
+
+    // インポートの parseDateTimeJST が要求する厳密な 'YYYY-MM-DD HH:mm:ss' (ゼロ埋め済み・
+    // 24時間表記) で出力されること (ja-JP ロケールの '2026/1/9 0:30:05' ではない)
+    expect(csv).toContain('2026-01-09 00:30:05');
+  });
+
   // 未認証は 401
   it('未認証は401を返す', async () => {
     vi.doMock('@/lib/auth', () => ({ auth: async () => null }));

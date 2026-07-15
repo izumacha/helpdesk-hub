@@ -597,6 +597,35 @@ LINE・CSV インポート・メールの 4 系統あるが、「新規起票を
   そのまま流用していたが、`/quarantine` 画面は表を直接描画しておりこの関数を消費していない
   ため、実態と食い違う記述を修正した。
 
+#### 3.8 フォローアップ（2026-07-15 #3）: CSV エクスポートの「起票日時」列が再インポートに対応していなかった
+
+コードベース監査で発見したギャップの修正。§3.1/§3.3/§3.4/§3.6 で解消してきた CSV 往復性の
+ギャップと同種で、これらのフォローアップでは見落とされていた列。
+
+- **問題**: `GET /api/tickets/export` は「起票日時」列を出力する
+  （`src/app/api/tickets/export/route.ts`）が、CSV インポート（`CsvImportForm.tsx` の
+  `SYSTEM_FIELDS` / `src/features/tickets/actions/import-tickets.ts`）には対応する列が無く、
+  インポートされた行の `createdAt` は常にインポート実行時刻 `now` で上書きされていた
+  （§0 の北極星指標「エクスポートしたデータを Excel で編集してそのまま再インポートできる
+  往復性」に反する）。§1.1 の「町工場の事務員 田中さん」ペルソナが数ヶ月分の既存 Excel 台帳を
+  移行する典型シナリオで、全行の起票日時がインポート実行時の瞬間に付け替えられ、実際にいつ
+  問い合わせがあったかの情報が失われていた。
+- **修正**: エクスポート側は再パース可能な `'YYYY-MM-DD HH:mm:ss'`（JST・ゼロ埋め済み）形式の
+  `formatDateTimeISO` に変更（従来の `formatDateTimeJP` は ja-JP ロケールの非ゼロ埋め表示で
+  再パース不可。期限日列を `formatDateJP` → `formatDateISO` に変更した §3.4 と同型の対応。
+  「更新日時」列は再インポート対象ではないため `formatDateTimeJP` のまま維持）。インポート側は
+  対になる `parseDateTimeJST` を `src/lib/format-date.ts` に追加し、「起票日時」列があれば
+  `createdAt` として使う（無ければ従来どおりインポート時刻）。未来日時はエラーとして拒否する
+  （`resolvedAt`/`firstRespondedAt` はインポート時刻で近似するため、起票日時が未来だと
+  「解決に負の時間がかかった」矛盾したデータになるため）。あわせて `firstResponseDueAt` の
+  算出基準もインポート時刻ではなく起票日時（未指定ならインポート時刻）に変更し、過去日で
+  起票日時を指定した行の初回応答期限が実際の起票日から大きくズレる副作用も解消した。
+- 回帰テスト: `tests/format-date.test.ts` に `formatDateTimeISO`/`parseDateTimeJST` の往復・
+  境界値テストを追加。`tests/features/import-tickets.test.ts` に起票日時列の読み取り・
+  未指定時のフォールバック・不正形式/未来日時のエラー化を追加。
+  `tests/features/tickets-export-route.test.ts` にインポート側と同じ形式で出力されることの
+  回帰テストを追加した。
+
 ### Phase 4 — マネタイズと運用（継続）
 
 - [x] サブスク課金（Stripe Billing）: Free / Standard / Pro の 3 段階
