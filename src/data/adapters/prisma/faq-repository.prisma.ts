@@ -12,11 +12,13 @@ export function makeFaqRepo(db: PrismaLike): FaqRepository {
       return row ? toFaq(row) : null;
     },
 
-    // 当該テナントの FAQ 候補一覧を取得 (新しい順、関連チケットと作成者を同梱)
-    async list(tenantId) {
+    // 当該テナントの FAQ 候補一覧を取得 (新しい順、関連チケットと作成者を同梱)。
+    // opts.limit で取得件数を上限化する (フォローアップ 2026-07-16 #3: §8 一覧取得の上限必須化)
+    async list(tenantId, opts) {
       const rows = await db.faqCandidate.findMany({
         where: { tenantId }, // テナントスコープ (必須)
         orderBy: { createdAt: 'desc' }, // 新しい順
+        take: opts.limit, // 件数上限
         include: {
           // 関連チケットの最小情報を JOIN
           ticket: { select: { id: true, title: true } },
@@ -33,12 +35,14 @@ export function makeFaqRepo(db: PrismaLike): FaqRepository {
     },
 
     // 当該テナントの公開済み (Published) FAQ 一覧を取得 (依頼者含む全メンバー向け。
-    // 元チケット/作成者は含めない範囲最小化のため select で question/answer のみに絞る)
-    async listPublished(tenantId) {
+    // 元チケット/作成者は含めない範囲最小化のため select で question/answer のみに絞る)。
+    // opts.limit で取得件数を上限化する (フォローアップ 2026-07-16 #3: §8 一覧取得の上限必須化)
+    async listPublished(tenantId, opts) {
       // select の形が PublishedFaqItem と一致するため中間変数を使わずそのまま返す
       return db.faqCandidate.findMany({
         where: { tenantId, status: 'Published' }, // テナントスコープ + 公開済みのみ
         orderBy: { createdAt: 'desc' }, // 新しい順
+        take: opts.limit, // 件数上限
         select: { id: true, question: true, answer: true }, // 質問/回答/IDのみ取得 (範囲最小化)
       });
     },

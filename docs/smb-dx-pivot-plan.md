@@ -1033,6 +1033,35 @@ Phase 2 の差別化の本丸であるメール/LINE 取り込みチャネルを
     （`<dt id="...">` と対応する select の `labelledBy="..."`）も、ページ内の
     `FIELD_LABEL_IDS` 定数にまとめ、リテラル文字列の重複を解消した。
 
+#### 4.11 フォローアップ（2026-07-16 #3）: FAQ 一覧取得に上限が無かった
+
+監査で発見したギャップ: `FaqRepository.list`（エージェント向け管理ビュー）と `listPublished`
+（依頼者向け閲覧ビュー、§1.2 フォローアップ）はどちらも `db.faqCandidate.findMany()` を
+上限・ページネーション無しで呼んでおり、テナントの FAQ 候補が何件あっても全件を 1 度に取得して
+いた。CLAUDE.md §8「一覧取得は必ず上限・ページネーションを持たせる（既定件数・最大件数は定数で
+一元管理する）」に反する。他の一覧系メソッド（`TicketRepository`・`NotificationRepository`・
+`SettingsAuditLogRepository`・`TicketHistoryRepository` 等）はいずれも `take`/`limit` を
+持つのに対し、FAQ だけが唯一の例外だった。FAQ 候補は解決済みチケットから継続的に生成される
+性質上（Phase 3 業種テンプレの自動投入も含む）、カテゴリ/拠点のような小規模な管理者設定データとは
+異なり、テナントの運用期間に応じて際限なく増え得るため、実害のある省略だった。
+
+- `FaqRepository`（`src/data/ports/faq-repository.ts`）に `FAQ_LIST_LIMIT`（200 件。
+  `/audit` の `PAGE_LIMIT` と同じ規模感）を追加し、`list`/`listPublished` の契約に
+  `opts: { limit: number }` を追加した（`NotificationRepository.list` と同じ形）。
+- Prisma アダプタ（`take: opts.limit`）・メモリアダプタ（`.slice(0, opts.limit)`、ソート後に
+  適用して「新しい順の先頭 N 件」を保証）の両方に実装した。
+- `/faq` ページ（`src/app/(app)/faq/page.tsx`）の 2 箇所の呼び出しに
+  `{ limit: FAQ_LIST_LIMIT }` を渡すよう変更した。
+- 本フォローアップは「必ず上限を持たせる」という §8 の核を満たす最小限の対応とし、`/audit`・
+  `/quarantine` のようなキーセットページネーション（「さらに読み込む」）は追加していない
+  （`/notifications` ページの既存の「上限付き一覧・追加ページ無し」という設計と同じ扱い。
+  200 件を超えた FAQ 候補・公開済み FAQ にどちらの立場からも到達できなくなるが、
+  それ自体はチケット一覧・監査ログほど高頻度に発生しない性質のデータであるため、まず
+  上限を設けることを優先した。必要性が高まれば `/audit` と同様のページネーションを
+  別途フォローアップとして追加する）。
+- 回帰テスト: `tests/data/faq-repository.memory.test.ts` / `faq-repository.contract.prisma.test.ts`
+  に、`limit` が新しい順に件数を上限化することを検証するテストを追加した。
+
 ### スケジュール感
 
 ```

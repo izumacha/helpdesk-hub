@@ -134,7 +134,7 @@ describe('createFaqCandidate', () => {
 
     await createFaqCandidate(ticketId, '質問', '回答');
 
-    const faqs = await repos.faq.list(TENANT);
+    const faqs = await repos.faq.list(TENANT, { limit: 200 });
     expect(faqs).toHaveLength(1);
   });
 
@@ -155,7 +155,7 @@ describe('createFaqCandidate', () => {
 
     await createFaqCandidate(ticketId, '質問', '回答');
 
-    const faqs = await repos.faq.list(TENANT);
+    const faqs = await repos.faq.list(TENANT, { limit: 200 });
     expect(faqs).toHaveLength(1);
   });
 
@@ -166,7 +166,7 @@ describe('createFaqCandidate', () => {
 
     await createFaqCandidate(ticketId, '質問', '回答');
 
-    const faqs = await repos.faq.list(TENANT);
+    const faqs = await repos.faq.list(TENANT, { limit: 200 });
     expect(faqs).toHaveLength(1);
   });
 

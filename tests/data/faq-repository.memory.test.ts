@@ -94,7 +94,7 @@ describe('FaqRepository (memory)', () => {
       tenantId: TENANT_B,
     });
 
-    const result = await repos.faq.list(TENANT_A);
+    const result = await repos.faq.list(TENANT_A, { limit: 200 });
     expect(result).toHaveLength(1);
     expect(result[0].ticket.title).toBe('テナントAの問い合わせ');
     expect(result[0].createdBy.name).toBe(AGENT_A);
@@ -119,8 +119,47 @@ describe('FaqRepository (memory)', () => {
       answer: 'A2',
       tenantId: TENANT_A,
     });
-    const result = await repos.faq.list(TENANT_A);
+    const result = await repos.faq.list(TENANT_A, { limit: 200 });
     expect(result.map((f) => f.id)).toEqual([second.id, first.id]);
+  });
+
+  // list/listPublished: limit で件数が上限化される
+  // フォローアップ (2026-07-16 #3): 監査で発見したギャップ。§8「一覧取得は必ず上限を持たせる」に
+  // 反し、以前は limit 引数自体が存在せず常に全件返していた
+  it('listとlistPublishedはlimitで新しい順に件数を上限化する', async () => {
+    const ticket = await seedTicketAndAgent(TENANT_A, 'チケット', AGENT_A);
+    // Candidate 2 件 + Published 2 件を作成日時をずらして作る
+    for (let i = 0; i < 2; i++) {
+      await repos.faq.create({
+        ticketId: ticket.id,
+        createdById: AGENT_A,
+        question: `候補${i}`,
+        answer: `回答${i}`,
+        tenantId: TENANT_A,
+      });
+      await new Promise((r) => setTimeout(r, 2));
+    }
+    for (let i = 0; i < 2; i++) {
+      const faq = await repos.faq.create({
+        ticketId: ticket.id,
+        createdById: AGENT_A,
+        question: `公開${i}`,
+        answer: `回答${i}`,
+        tenantId: TENANT_A,
+      });
+      await repos.faq.updateStatus(faq.id, { from: 'Candidate', to: 'Published' }, TENANT_A);
+      await new Promise((r) => setTimeout(r, 2));
+    }
+
+    // 全 4 件のうち limit: 1 なら 1 件だけ (最新のもの) が返る
+    const listResult = await repos.faq.list(TENANT_A, { limit: 1 });
+    expect(listResult).toHaveLength(1);
+    expect(listResult[0].question).toBe('公開1');
+
+    // 公開済み 2 件のうち limit: 1 なら 1 件だけ (最新のもの) が返る
+    const publishedResult = await repos.faq.listPublished(TENANT_A, { limit: 1 });
+    expect(publishedResult).toHaveLength(1);
+    expect(publishedResult[0].question).toBe('公開1');
   });
 
   // listPublished: 公開済み (Published) のみを返し、Candidate/Rejected は含めない
@@ -155,7 +194,7 @@ describe('FaqRepository (memory)', () => {
     });
     await repos.faq.updateStatus(publishedB.id, { from: 'Candidate', to: 'Published' }, TENANT_B);
 
-    const result = await repos.faq.listPublished(TENANT_A);
+    const result = await repos.faq.listPublished(TENANT_A, { limit: 200 });
     expect(result).toHaveLength(1);
     expect(result[0]).toEqual({
       id: published.id,
