@@ -37,16 +37,30 @@ export interface TicketListFilter {
   overdue?: { now: Date };
 }
 
+// findByIdWithDetail が返すコメント/履歴の既定件数上限。
+// フォローアップ (2026-07-16 #4): 監査で発見したギャップ。findByIdWithDetail のネストした
+// include (comments/histories) には上限が無く、CLAUDE.md §8「一覧取得は必ず上限・
+// ページネーションを持たせる」に反していた (FAQ の list/listPublished と同種のギャップ。§4.11)。
+// 単純な findMany の grep では見つからず、ネストした include の中に隠れていた。
+// エスカレーション等で長期化したチケットはコメント/履歴が無制限に積み上がり得るため実害がある。
+// FAQ_LIST_LIMIT / PAGE_LIMIT と同じ規模感に揃える
+export const TICKET_DETAIL_COMMENTS_LIMIT = 200;
+export const TICKET_DETAIL_HISTORY_LIMIT = 200;
+
 // チケット詳細画面用の型 (コメント/履歴/FAQ 候補/添付を同梱)
 export interface TicketDetail extends TicketWithRefs {
-  // コメント + 書き込み者 + そのコメントに紐づく添付一覧 (古い順)
+  // コメント + 書き込み者 + そのコメントに紐づく添付一覧 (古い順)。
+  // TICKET_DETAIL_COMMENTS_LIMIT 件を超える場合は直近 (最新) の同件数のみを、
+  // 古い順に並べ替えて返す (最も新しい会話が見えることを優先する。フォローアップ 2026-07-16 #4)
   comments: Array<
     TicketComment & {
       author: UserSummary;
       attachments: AttachmentSummary[];
     }
   >;
-  histories: Array<TicketHistory & { changedBy: UserSummary }>; // 履歴 + 変更者
+  // 履歴 + 変更者 (新しい順)。TICKET_DETAIL_HISTORY_LIMIT 件を超える場合は
+  // 直近 (最新) の同件数のみを返す (フォローアップ 2026-07-16 #4)
+  histories: Array<TicketHistory & { changedBy: UserSummary }>;
   faqCandidate: { id: string } | null; // 紐づく FAQ 候補 (なければ null)
   // チケット本体に直接添付された画像 (コメント添付ではないもの。古い順)
   attachments: AttachmentSummary[];

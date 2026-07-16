@@ -8,13 +8,15 @@ import type {
   UserSummary,
 } from '@/domain/types';
 // チケットリポジトリ契約と関連型をインポート
-import type {
-  AssigneeWorkloadRow,
-  DashboardStats,
-  QualityMetrics,
-  TicketDetail,
-  TicketListFilter,
-  TicketRepository,
+import {
+  type AssigneeWorkloadRow,
+  type DashboardStats,
+  type QualityMetrics,
+  type TicketDetail,
+  type TicketListFilter,
+  type TicketRepository,
+  TICKET_DETAIL_COMMENTS_LIMIT,
+  TICKET_DETAIL_HISTORY_LIMIT,
 } from '@/data/ports/ticket-repository';
 // メモリストアと ID 生成ヘルパーをインポート
 import { nextId, type Store } from './store';
@@ -132,10 +134,15 @@ export function makeTicketRepo(store: Store): TicketRepository {
         createdAt: a.createdAt,
       });
 
-      // 対象チケットのコメントを古い順に整形 (各コメントの添付も同時に集約)
+      // 対象チケットのコメントを古い順に整形 (各コメントの添付も同時に集約)。
+      // フォローアップ (2026-07-16 #4): 件数が上限を超える場合は直近 (最新)
+      // TICKET_DETAIL_COMMENTS_LIMIT 件だけを残し、表示契約である古い順に戻す
+      // (§8 一覧取得の上限必須化。長期化したチケットでコメントが無制限に積み上がるのを防ぐ)
       const comments = [...store.comments.values()]
         .filter((c) => c.ticketId === id) // 対象チケットのみ
-        .sort((a, b) => +a.createdAt - +b.createdAt) // 時系列 (古い→新しい)
+        .sort((a, b) => +b.createdAt - +a.createdAt) // 新しい順に並べてから上限で切り詰める
+        .slice(0, TICKET_DETAIL_COMMENTS_LIMIT)
+        .reverse() // 古い順 (時系列) に戻す
         .map((c: TicketComment) => {
           const author = userSummary(store, c.authorId); // 書き込み者
           if (!author) throw new Error(`memory adapter: author ${c.authorId} missing`);
@@ -144,10 +151,12 @@ export function makeTicketRepo(store: Store): TicketRepository {
           return { ...c, author, attachments };
         });
 
-      // 対象チケットの履歴を新しい順に整形
+      // 対象チケットの履歴を新しい順に整形。フォローアップ (2026-07-16 #4): 直近
+      // TICKET_DETAIL_HISTORY_LIMIT 件だけに上限化する (既に新しい順のため反転は不要)
       const histories = [...store.histories.values()]
         .filter((h) => h.ticketId === id)
         .sort((a, b) => +b.createdAt - +a.createdAt)
+        .slice(0, TICKET_DETAIL_HISTORY_LIMIT)
         .map((h: TicketHistory) => {
           const changedBy = userSummary(store, h.changedById); // 変更者
           if (!changedBy) throw new Error(`memory adapter: changedBy ${h.changedById} missing`);

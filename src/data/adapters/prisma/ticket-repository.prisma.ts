@@ -3,12 +3,14 @@ import type { Prisma } from '@/generated/prisma';
 // 全ステータスを反復するためドメイン型をインポート
 import type { TicketStatus } from '@/domain/types';
 // チケットリポジトリ契約と関連型をインポート
-import type {
-  AssigneeWorkloadRow,
-  DashboardStats,
-  QualityMetrics,
-  TicketListFilter,
-  TicketRepository,
+import {
+  type AssigneeWorkloadRow,
+  type DashboardStats,
+  type QualityMetrics,
+  type TicketListFilter,
+  type TicketRepository,
+  TICKET_DETAIL_COMMENTS_LIMIT,
+  TICKET_DETAIL_HISTORY_LIMIT,
 } from '@/data/ports/ticket-repository';
 // Prisma 行 → ドメイン型のマッパー関数群
 import {
@@ -95,18 +97,24 @@ export function makeTicketRepo(db: PrismaLike): TicketRepository {
         where: { id, tenantId },
         include: {
           ...REFS_INCLUDE, // 起票者/担当者/カテゴリ
-          // コメントは古い順に、投稿者名と添付一覧を JOIN
+          // コメントは直近 (最新) TICKET_DETAIL_COMMENTS_LIMIT 件を新しい順に取得する
+          // (フォローアップ 2026-07-16 #4: §8 一覧取得の上限必須化。長期化したチケットで
+          // コメントが無制限に積み上がるのを防ぐ)。取得後に古い順へ並べ替えて返す
+          // (下の整形処理を参照。表示上の「古い順」は維持したまま、直近の会話を優先する)
           comments: {
-            orderBy: { createdAt: 'asc' },
+            orderBy: { createdAt: 'desc' },
+            take: TICKET_DETAIL_COMMENTS_LIMIT,
             include: {
               author: { select: { id: true, name: true } },
               // 各コメントに紐づく添付 (古い順)
               attachments: { orderBy: { createdAt: 'asc' } },
             },
           },
-          // 履歴は新しい順に、変更者名を JOIN
+          // 履歴は直近 (最新) TICKET_DETAIL_HISTORY_LIMIT 件を新しい順に取得する
+          // (フォローアップ 2026-07-16 #4: 同上)
           histories: {
             orderBy: { createdAt: 'desc' },
+            take: TICKET_DETAIL_HISTORY_LIMIT,
             include: { changedBy: { select: { id: true, name: true } } },
           },
           // 紐づく FAQ 候補 (存在すれば ID のみ)
@@ -123,7 +131,9 @@ export function makeTicketRepo(db: PrismaLike): TicketRepository {
       // 取得結果を TicketDetail 形式に整形
       return {
         ...toTicketWithRefs(row),
-        comments: row.comments.map((c) => ({
+        // DB へは直近上限件数を新しい順で問い合わせたため (フォローアップ 2026-07-16 #4)、
+        // 表示契約である「古い順」に戻すためここで反転する
+        comments: [...row.comments].reverse().map((c) => ({
           ...toComment(c),
           author: toUserSummary(c.author),
           attachments: c.attachments.map(toAttachmentSummary), // 各コメントの添付一覧

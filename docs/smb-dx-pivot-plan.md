@@ -1084,6 +1084,29 @@ Phase 2 の差別化の本丸であるメール/LINE 取り込みチャネルを
     この契約テストだけ同種のガードが無い非対称があった。作成のたびに 5ms の間隔を空けるよう
     修正した。
 
+#### 4.12 フォローアップ（2026-07-16 #4）: チケット詳細画面のコメント/履歴取得に上限が無かった
+
+監査で発見したギャップ: §4.11 で FAQ の `list`/`listPublished` に上限を追加したのと同種の
+ギャップが、`TicketRepository.findByIdWithDetail`（チケット詳細画面が使う唯一の取得経路）の
+ネストした `include`（`comments`/`histories`）にも存在していた。単純な `findMany(` の grep では
+見つからず、ネストした `include` の中に隠れていたため見落とされていた。CLAUDE.md §8「一覧取得は
+必ず上限・ページネーションを持たせる」に反し、エスカレーション等で長期化したチケットはコメント・
+状態変更履歴が無制限に積み上がり得る（実際、`findByIdWithDetail` にはユニットテストが 1 件も
+無く、この経路自体がこれまで一度もテストされていなかった）。
+
+- `TICKET_DETAIL_COMMENTS_LIMIT`/`TICKET_DETAIL_HISTORY_LIMIT`（いずれも 200 件。
+  `FAQ_LIST_LIMIT`/`PAGE_LIMIT` と同じ規模感）を `src/data/ports/ticket-repository.ts` に追加。
+- Prisma アダプタ: `comments`/`histories` の `include` に `take` を追加。コメントは表示契約
+  「古い順」を保つため、DB へは新しい順 + `take` で問い合わせて直近 N 件を取得し、アプリ側で
+  古い順に反転してから返す（新しい順のまま `take` すると最も古いチケット本文寄りの会話が残り、
+  直近の会話が切り捨てられてしまうため）。履歴は元々新しい順の契約のため反転不要で `take` を
+  足すだけで済む。
+- メモリアダプタ: 同じ考え方で `sort` → `slice(0, limit)` → (コメントのみ) `reverse()` に変更。
+- 回帰テスト: `tests/data/ticket-repository.contract.ts`（メモリ/Prisma 両アダプタが共有する
+  契約テスト）に `findByIdWithDetail` 専用の describe ブロックを新設し、上限を超える件数を
+  作成した場合に直近 N 件のみが正しい並び順（コメント: 古い順、履歴: 新しい順）で返ることを
+  検証した。`findByIdWithDetail` にはこれが初めてのテストになる。
+
 ### スケジュール感
 
 ```
