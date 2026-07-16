@@ -18,13 +18,16 @@ const ALL_PRIORITIES: Priority[] = ['Low', 'Medium', 'High'];
 interface Props {
   ticketId: string;
   current: Priority;
+  // このセレクトの意味を伝える可視ラベル (dt 要素) の id。
+  // フォローアップ (2026-07-16 #2): §4.8 で残していた a11y ギャップ (label 関連付け欠如) の解消
+  labelledBy: string;
 }
 
 // フォローアップ (2026-07-15 #3): updateTicketPriority も updateTicketStatus と同じく
 // check-then-act 競合時に Error を throw するようになったため、StatusSelect と同じく
 // 送信中はセレクトを無効化しエラーはその場に表示する
 // 優先度を切り替えるプルダウン (エージェント向け)
-export function PrioritySelect({ ticketId, current }: Props) {
+export function PrioritySelect({ ticketId, current, labelledBy }: Props) {
   // 失敗時にサーバーの最新状態を取り直すためのルーター
   const router = useRouter();
   // 送信中フラグ + トランジション
@@ -58,6 +61,7 @@ export function PrioritySelect({ ticketId, current }: Props) {
         value={current}
         onChange={handleChange}
         disabled={isPending}
+        aria-labelledby={labelledBy}
         className="rounded-md border border-gray-300 px-2 py-1 text-sm focus:border-blue-500 focus:outline-none disabled:opacity-50"
       >
         {/* 全優先度を順に option として描画 */}

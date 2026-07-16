@@ -6,6 +6,10 @@ import { Header } from '@/components/layout/Header';
 import { Sidebar } from '@/components/layout/Sidebar';
 // モバイル時のサイドバードロワー開閉状態を Header / Sidebar 間で共有する Provider
 import { MobileNavProvider } from '@/components/layout/MobileNavProvider';
+// 本文へ飛ぶスキップリンク (§7 a11y)
+import { SkipLink } from '@/components/layout/SkipLink';
+// クライアントサイド遷移のたびに本文へフォーカスを移す (§7 a11y)
+import { RouteFocusManager } from '@/components/layout/RouteFocusManager';
 // 現在テナントの動作モード(lite | pro)を取得するヘルパー
 import { getCurrentTenantMode } from '@/lib/tenant';
 // §6.1 料金プラン「Free: ロゴ表示」の判定用。トライアル中の実効プランを返す
@@ -30,6 +34,10 @@ export default async function AppLayout({ children }: { children: React.ReactNod
     // Provider は client コンポーネントだが、async な Header/Sidebar の親に置けるため
     // children のレンダリング順序や Server Action 利用を妨げない
     <MobileNavProvider>
+      {/* 本文へ飛ぶスキップリンク (§7 a11y)。通常は視覚的に隠れており、Tab で最初にフォーカスされたときのみ表示 */}
+      <SkipLink />
+      {/* クライアントサイド遷移のたびに #main-content へフォーカスを移す (画面には何も描画しない) */}
+      <RouteFocusManager />
       {/* 画面全体: 左右レイアウト + 縦スクロール抑止 (背景は新トークン surface) */}
       <div className="bg-surface flex h-screen overflow-hidden">
         {/* サイドバー (権限とモードに応じてメニューを出し分け。md 未満は Provider 状態でドロワー化) */}
@@ -37,8 +45,17 @@ export default async function AppLayout({ children }: { children: React.ReactNod
         {/* 右側: ヘッダー + メインコンテンツ */}
         <div className="flex flex-1 flex-col overflow-hidden">
           <Header />
-          {/* 各ページの内容 (縦スクロール可) ─ モバイルは余白を控えめにする */}
-          <main className="flex-1 overflow-y-auto p-4 sm:p-6 md:p-8">{children}</main>
+          {/* 各ページの内容 (縦スクロール可) ─ モバイルは余白を控えめにする。
+              id="main-content"/tabIndex={-1} はスキップリンクの遷移先 + ページ遷移後の
+              フォーカス移動先 (RouteFocusManager) として使う。tabIndex={-1} なので
+              通常の Tab 移動では選択されず、programmatic focus() でのみフォーカス可能 */}
+          <main
+            id="main-content"
+            tabIndex={-1}
+            className="flex-1 overflow-y-auto p-4 focus:outline-none sm:p-6 md:p-8"
+          >
+            {children}
+          </main>
           {/* §6.1 料金プラン「Free: ロゴ表示」。Free プラン (トライアル中を除く) のテナントにのみ表示する。
               text-slate-500 (背景 white 比でコントラスト比 約4.6:1) で WCAG AA (通常文 4.5:1) を満たす
               (slate-400 は約2.56:1 で未達だったため修正) */}

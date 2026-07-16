@@ -219,9 +219,14 @@ export default async function TicketDetailPage({ params }: Props) {
             <h2 className="mb-4 text-sm font-semibold text-gray-500">詳細</h2>
 
             <dl className="space-y-3 text-sm">
-              {/* ステータス (エージェントは変更プルダウン付き、ラベルはテナント mode で切替) */}
+              {/* ステータス (エージェントは変更プルダウン付き、ラベルはテナント mode で切替)
+                  フォローアップ (2026-07-16 #2): §4.8 で残していた a11y ギャップ (プルダウンが
+                  どの dt の値を変更するかプログラム的に伝わっていなかった) の解消。dt に id を
+                  振り、対応する select から aria-labelledby で参照する */}
               <div>
-                <dt className="font-medium text-gray-500">ステータス</dt>
+                <dt id="ticket-detail-status-label" className="font-medium text-gray-500">
+                  ステータス
+                </dt>
                 <dd className="mt-1">
                   <span
                     className={`inline-flex rounded-full px-2 py-0.5 text-xs font-medium ${STATUS_COLORS[ticket.status] ?? ''}`}
@@ -230,7 +235,12 @@ export default async function TicketDetailPage({ params }: Props) {
                   </span>
                   {isAgent && (
                     <div className="mt-1">
-                      <StatusSelect ticketId={ticket.id} current={ticket.status} mode={mode} />
+                      <StatusSelect
+                        ticketId={ticket.id}
+                        current={ticket.status}
+                        mode={mode}
+                        labelledBy="ticket-detail-status-label"
+                      />
                     </div>
                   )}
                 </dd>
@@ -238,14 +248,20 @@ export default async function TicketDetailPage({ params }: Props) {
 
               {/* 優先度 (エージェントは変更プルダウン付き) */}
               <div>
-                <dt className="font-medium text-gray-500">優先度</dt>
+                <dt id="ticket-detail-priority-label" className="font-medium text-gray-500">
+                  優先度
+                </dt>
                 <dd className="mt-1">
                   <span className={`text-sm ${PRIORITY_COLORS[ticket.priority] ?? ''}`}>
                     {PRIORITY_LABELS[ticket.priority] ?? ticket.priority}
                   </span>
                   {isAgent && (
                     <div className="mt-1">
-                      <PrioritySelect ticketId={ticket.id} current={ticket.priority} />
+                      <PrioritySelect
+                        ticketId={ticket.id}
+                        current={ticket.priority}
+                        labelledBy="ticket-detail-priority-label"
+                      />
                     </div>
                   )}
                 </dd>
@@ -253,13 +269,16 @@ export default async function TicketDetailPage({ params }: Props) {
 
               {/* 担当者 (エージェントは変更可、それ以外は表示のみ) */}
               <div>
-                <dt className="font-medium text-gray-500">担当者</dt>
+                <dt id="ticket-detail-assignee-label" className="font-medium text-gray-500">
+                  担当者
+                </dt>
                 <dd className="mt-1">
                   {isAgent ? (
                     <AssigneeSelect
                       ticketId={ticket.id}
                       currentAssigneeId={ticket.assigneeId}
                       agents={agents}
+                      labelledBy="ticket-detail-assignee-label"
                     />
                   ) : (
                     <span className="text-gray-700">{ticket.assignee?.name ?? '未割当'}</span>
@@ -271,13 +290,16 @@ export default async function TicketDetailPage({ params }: Props) {
                   フォローアップ 2026-07-14 #4: メール/LINE 取り込みチケットは常にカテゴリ未設定で
                   作成されるため、事後変更できないと永久に未分類のままだった) */}
               <div>
-                <dt className="font-medium text-gray-500">カテゴリ</dt>
+                <dt id="ticket-detail-category-label" className="font-medium text-gray-500">
+                  カテゴリ
+                </dt>
                 <dd className="mt-1">
                   {isAgent && mode === 'pro' ? (
                     <CategorySelect
                       ticketId={ticket.id}
                       currentCategoryId={ticket.categoryId}
                       categories={categories}
+                      labelledBy="ticket-detail-category-label"
                     />
                   ) : (
                     <span className="text-gray-700">{ticket.category?.name ?? '―'}</span>
@@ -289,13 +311,16 @@ export default async function TicketDetailPage({ params }: Props) {
                   それ以外は表示のみ。未指定なら "―"。フォローアップ 2026-07-14 #4: カテゴリと
                   同じくメール/LINE 取り込みチケットの事後変更手段が無かったギャップの解消) */}
               <div>
-                <dt className="font-medium text-gray-500">拠点</dt>
+                <dt id="ticket-detail-location-label" className="font-medium text-gray-500">
+                  拠点
+                </dt>
                 <dd className="mt-1">
                   {isAgent && locations.length > 0 ? (
                     <LocationSelect
                       ticketId={ticket.id}
                       currentLocationId={ticket.locationId}
                       locations={locations}
+                      labelledBy="ticket-detail-location-label"
                     />
                   ) : (
                     <span className="text-gray-700">{ticket.location?.name ?? '―'}</span>

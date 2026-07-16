@@ -20,6 +20,10 @@ interface Props {
   ticketId: string;
   current: TicketStatus;
   mode: TenantMode;
+  // このセレクトの意味を伝える可視ラベル (dt 要素) の id。
+  // フォローアップ (2026-07-16 #2): §4.8 で「別途 5 種まとめて対応する」と明記していた
+  // a11y ギャップ (フォーム入力に対応する <label>/aria-labelledby が無い) の解消
+  labelledBy: string;
 }
 
 // フォローアップ (2026-07-15 #3): updateTicketStatus は check-then-act 競合時に
@@ -27,7 +31,7 @@ interface Props {
 // このセレクトは throw を誰も捕捉しておらず未処理の Promise 拒否になっていた
 // (FaqStatusButton と同じく、送信中はセレクトを無効化しエラーはその場に表示する)
 // ステータスを切り替えるプルダウン (許可された遷移のみ表示)
-export function StatusSelect({ ticketId, current, mode }: Props) {
+export function StatusSelect({ ticketId, current, mode, labelledBy }: Props) {
   // 失敗時にサーバーの最新状態を取り直すためのルーター
   const router = useRouter();
   // 送信中フラグ + トランジション
@@ -64,6 +68,7 @@ export function StatusSelect({ ticketId, current, mode }: Props) {
         value={current}
         onChange={handleChange}
         disabled={isPending}
+        aria-labelledby={labelledBy}
         className="rounded-md border border-gray-300 px-2 py-1 text-sm focus:border-blue-500 focus:outline-none disabled:opacity-50"
       >
         {/* 現在値はプレースホルダ的に disabled で表示 (mode に応じて Lite/Pro ラベル) */}

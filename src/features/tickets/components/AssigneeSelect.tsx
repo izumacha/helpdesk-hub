@@ -8,21 +8,23 @@ import { updateTicketAssignee } from '@/features/tickets/actions/update-ticket';
 // 共通化した (§6 DRY)。挙動 (value/onChange/disabled/クラス名) は変更していない。
 import { EntitySelect, type EntityOption } from '@/features/tickets/components/EntitySelect';
 
-// 受け取る props (チケット ID/現担当者 ID/候補一覧)
+// 受け取る props (チケット ID/現担当者 ID/候補一覧/紐付け先ラベルの id)
 interface Props {
   ticketId: string;
   currentAssigneeId: string | null;
   agents: EntityOption[];
+  labelledBy: string;
 }
 
 // 担当者を切り替えるプルダウン (空文字 = 未割当)
-export function AssigneeSelect({ ticketId, currentAssigneeId, agents }: Props) {
+export function AssigneeSelect({ ticketId, currentAssigneeId, agents, labelledBy }: Props) {
   return (
     <EntitySelect
       currentId={currentAssigneeId}
       options={agents}
       emptyLabel="未割当"
       onChange={(newId) => updateTicketAssignee(ticketId, newId)}
+      labelledBy={labelledBy}
     />
   );
 }

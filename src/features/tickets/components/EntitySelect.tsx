@@ -19,6 +19,9 @@ interface Props {
   // 選択変更時に呼ばれる (空文字は null に正規化済み)。呼び出し先のサーバーアクション
   // (updateTicketAssignee 等) は Promise を返す非同期関数なので、戻り値の型に Promise<void> も許容する
   onChange: (newId: string | null) => void | Promise<void>;
+  // このセレクトの意味を伝える可視ラベル (呼び出し元ページの dt 要素) の id。
+  // フォローアップ (2026-07-16 #2): §4.8 で残していた a11y ギャップ (label 関連付け欠如) の解消
+  labelledBy: string;
 }
 
 // チケット詳細ページの各種プルダウン (担当者/カテゴリ/拠点) が共有する汎用セレクト。
@@ -35,7 +38,12 @@ interface Props {
 // (フォローアップ 2026-07-15 #3) と FaqStatusButton (フォローアップ 2026-07-15) で先に直した
 // 「送信中は無効化し、エラーはその場に表示、競合時は router.refresh() で最新化する」パターンを
 // ここにも適用する。
-export function EntitySelect({ currentId, options, emptyLabel, onChange }: Props) {
+//
+// フォローアップ (2026-07-16 #2): §4.8 のこの直前のコメントブロックが「別途 5 種まとめて対応する」と
+// 明記して残していた a11y ギャップ (この select がどの dt の値を表すか、プログラム的な関連付けが
+// 無かった) の解消。呼び出し元ページの dt に振った id を labelledBy として受け取り、
+// aria-labelledby として select に渡す。
+export function EntitySelect({ currentId, options, emptyLabel, onChange, labelledBy }: Props) {
   // 失敗時にサーバーの最新状態を取り直すためのルーター
   const router = useRouter();
   // 送信中フラグ + トランジション関数
@@ -70,6 +78,7 @@ export function EntitySelect({ currentId, options, emptyLabel, onChange }: Props
         value={currentId ?? ''}
         onChange={handleChange}
         disabled={isPending}
+        aria-labelledby={labelledBy}
         className="rounded-md border border-gray-300 px-2 py-1 text-sm focus:border-blue-500 focus:outline-none disabled:opacity-50"
       >
         {/* 空文字 = 未選択 */}
