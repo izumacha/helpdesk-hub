@@ -53,6 +53,20 @@ interface Props {
   params: Promise<{ id: string }>;
 }
 
+// サイドバー「詳細」欄の各 <dt> に振る id の単一の参照元。
+// フォローアップ (2026-07-16 #2 レビュー対応): 各 id は元々 <dt id="..."> と
+// 対応する select の labelledBy="..." の 2 箇所に同じ文字列を直書きしていたが、
+// これは §6「マジック文字列を避ける・単一の参照元に置く」に反し、どちらか片方だけ
+// typo した場合にコンパイルエラーも lint エラーも出ないまま aria-labelledby が
+// 静かに壊れる (対応する dt が見つからず読み上げられない) リスクがあった
+const FIELD_LABEL_IDS = {
+  status: 'ticket-detail-status-label',
+  priority: 'ticket-detail-priority-label',
+  assignee: 'ticket-detail-assignee-label',
+  category: 'ticket-detail-category-label',
+  location: 'ticket-detail-location-label',
+} as const;
+
 // /tickets/[id] : チケット詳細ページ
 export default async function TicketDetailPage({ params }: Props) {
   // 動的セグメントを取り出す
@@ -219,9 +233,14 @@ export default async function TicketDetailPage({ params }: Props) {
             <h2 className="mb-4 text-sm font-semibold text-gray-500">詳細</h2>
 
             <dl className="space-y-3 text-sm">
-              {/* ステータス (エージェントは変更プルダウン付き、ラベルはテナント mode で切替) */}
+              {/* ステータス (エージェントは変更プルダウン付き、ラベルはテナント mode で切替)
+                  フォローアップ (2026-07-16 #2): §4.8 で残していた a11y ギャップ (プルダウンが
+                  どの dt の値を変更するかプログラム的に伝わっていなかった) の解消。dt に id を
+                  振り、対応する select から aria-labelledby で参照する */}
               <div>
-                <dt className="font-medium text-gray-500">ステータス</dt>
+                <dt id={FIELD_LABEL_IDS.status} className="font-medium text-gray-500">
+                  ステータス
+                </dt>
                 <dd className="mt-1">
                   <span
                     className={`inline-flex rounded-full px-2 py-0.5 text-xs font-medium ${STATUS_COLORS[ticket.status] ?? ''}`}
@@ -230,7 +249,12 @@ export default async function TicketDetailPage({ params }: Props) {
                   </span>
                   {isAgent && (
                     <div className="mt-1">
-                      <StatusSelect ticketId={ticket.id} current={ticket.status} mode={mode} />
+                      <StatusSelect
+                        ticketId={ticket.id}
+                        current={ticket.status}
+                        mode={mode}
+                        labelledBy={FIELD_LABEL_IDS.status}
+                      />
                     </div>
                   )}
                 </dd>
@@ -238,14 +262,20 @@ export default async function TicketDetailPage({ params }: Props) {
 
               {/* 優先度 (エージェントは変更プルダウン付き) */}
               <div>
-                <dt className="font-medium text-gray-500">優先度</dt>
+                <dt id={FIELD_LABEL_IDS.priority} className="font-medium text-gray-500">
+                  優先度
+                </dt>
                 <dd className="mt-1">
                   <span className={`text-sm ${PRIORITY_COLORS[ticket.priority] ?? ''}`}>
                     {PRIORITY_LABELS[ticket.priority] ?? ticket.priority}
                   </span>
                   {isAgent && (
                     <div className="mt-1">
-                      <PrioritySelect ticketId={ticket.id} current={ticket.priority} />
+                      <PrioritySelect
+                        ticketId={ticket.id}
+                        current={ticket.priority}
+                        labelledBy={FIELD_LABEL_IDS.priority}
+                      />
                     </div>
                   )}
                 </dd>
@@ -253,13 +283,16 @@ export default async function TicketDetailPage({ params }: Props) {
 
               {/* 担当者 (エージェントは変更可、それ以外は表示のみ) */}
               <div>
-                <dt className="font-medium text-gray-500">担当者</dt>
+                <dt id={FIELD_LABEL_IDS.assignee} className="font-medium text-gray-500">
+                  担当者
+                </dt>
                 <dd className="mt-1">
                   {isAgent ? (
                     <AssigneeSelect
                       ticketId={ticket.id}
                       currentAssigneeId={ticket.assigneeId}
                       agents={agents}
+                      labelledBy={FIELD_LABEL_IDS.assignee}
                     />
                   ) : (
                     <span className="text-gray-700">{ticket.assignee?.name ?? '未割当'}</span>
@@ -271,13 +304,16 @@ export default async function TicketDetailPage({ params }: Props) {
                   フォローアップ 2026-07-14 #4: メール/LINE 取り込みチケットは常にカテゴリ未設定で
                   作成されるため、事後変更できないと永久に未分類のままだった) */}
               <div>
-                <dt className="font-medium text-gray-500">カテゴリ</dt>
+                <dt id={FIELD_LABEL_IDS.category} className="font-medium text-gray-500">
+                  カテゴリ
+                </dt>
                 <dd className="mt-1">
                   {isAgent && mode === 'pro' ? (
                     <CategorySelect
                       ticketId={ticket.id}
                       currentCategoryId={ticket.categoryId}
                       categories={categories}
+                      labelledBy={FIELD_LABEL_IDS.category}
                     />
                   ) : (
                     <span className="text-gray-700">{ticket.category?.name ?? '―'}</span>
@@ -289,13 +325,16 @@ export default async function TicketDetailPage({ params }: Props) {
                   それ以外は表示のみ。未指定なら "―"。フォローアップ 2026-07-14 #4: カテゴリと
                   同じくメール/LINE 取り込みチケットの事後変更手段が無かったギャップの解消) */}
               <div>
-                <dt className="font-medium text-gray-500">拠点</dt>
+                <dt id={FIELD_LABEL_IDS.location} className="font-medium text-gray-500">
+                  拠点
+                </dt>
                 <dd className="mt-1">
                   {isAgent && locations.length > 0 ? (
                     <LocationSelect
                       ticketId={ticket.id}
                       currentLocationId={ticket.locationId}
                       locations={locations}
+                      labelledBy={FIELD_LABEL_IDS.location}
                     />
                   ) : (
                     <span className="text-gray-700">{ticket.location?.name ?? '―'}</span>

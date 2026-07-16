@@ -91,11 +91,15 @@ export function TicketFilters({ categories, agents, isAgent, mode, locations }: 
     >
       {/* 絞り込みコントロール群 (折り返し可能) */}
       <div className="flex flex-wrap items-center gap-2">
-        {/* キーワード入力 (Enter または検索ボタンで反映) */}
+        {/* キーワード入力 (Enter または検索ボタンで反映)
+            a11y: placeholder はスクリーンリーダーの読み上げ対象として label の代わりにならないため
+            aria-label で明示する (この入力欄には対応する可視ラベル要素が無いため aria-labelledby ではなく
+            aria-label を使う。§7 a11y) */}
         <input
           ref={keywordRef}
           type="search"
           placeholder="キーワード検索"
+          aria-label="キーワード検索"
           // クエリ変化時に再マウントして表示値を同期
           key={searchParams.get('q') ?? ''}
           defaultValue={searchParams.get('q') ?? ''}
@@ -115,10 +119,11 @@ export function TicketFilters({ categories, agents, isAgent, mode, locations }: 
         {/* Lite モードではキーワード検索のみに縮約し、以下のプルダウン群は非表示にする */}
         {!isLite && (
           <>
-            {/* ステータス絞り込み */}
+            {/* ステータス絞り込み (a11y: 対応する可視ラベル要素が無いため aria-label を付与。§7) */}
             <select
               value={searchParams.get('status') ?? ''}
               onChange={(e) => update('status', e.target.value)}
+              aria-label="ステータスで絞り込む"
               className={fieldBaseClass}
             >
               <option value="">すべてのステータス</option>
@@ -128,10 +133,11 @@ export function TicketFilters({ categories, agents, isAgent, mode, locations }: 
                 </option>
               ))}
             </select>
-            {/* 優先度絞り込み */}
+            {/* 優先度絞り込み (a11y: aria-label を付与。§7) */}
             <select
               value={searchParams.get('priority') ?? ''}
               onChange={(e) => update('priority', e.target.value)}
+              aria-label="優先度で絞り込む"
               className={fieldBaseClass}
             >
               <option value="">すべての優先度</option>
@@ -141,10 +147,11 @@ export function TicketFilters({ categories, agents, isAgent, mode, locations }: 
                 </option>
               ))}
             </select>
-            {/* カテゴリ絞り込み */}
+            {/* カテゴリ絞り込み (a11y: aria-label を付与。§7) */}
             <select
               value={searchParams.get('categoryId') ?? ''}
               onChange={(e) => update('categoryId', e.target.value)}
+              aria-label="カテゴリで絞り込む"
               className={fieldBaseClass}
             >
               <option value="">すべてのカテゴリ</option>
@@ -154,11 +161,12 @@ export function TicketFilters({ categories, agents, isAgent, mode, locations }: 
                 </option>
               ))}
             </select>
-            {/* 担当者絞り込み (エージェントのみ表示) */}
+            {/* 担当者絞り込み (エージェントのみ表示。a11y: aria-label を付与。§7) */}
             {isAgent && (
               <select
                 value={searchParams.get('assigneeId') ?? ''}
                 onChange={(e) => update('assigneeId', e.target.value)}
+                aria-label="担当者で絞り込む"
                 className={fieldBaseClass}
               >
                 <option value="">すべての担当者</option>
@@ -171,11 +179,12 @@ export function TicketFilters({ categories, agents, isAgent, mode, locations }: 
                 ))}
               </select>
             )}
-            {/* 拠点絞り込み (登録された拠点が 1 件以上ある場合のみ表示) */}
+            {/* 拠点絞り込み (登録された拠点が 1 件以上ある場合のみ表示。a11y: aria-label を付与。§7) */}
             {locations.length > 0 && (
               <select
                 value={searchParams.get('locationId') ?? ''}
                 onChange={(e) => update('locationId', e.target.value)}
+                aria-label="拠点で絞り込む"
                 className={fieldBaseClass}
               >
                 <option value="">すべての拠点</option>
