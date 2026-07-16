@@ -134,13 +134,18 @@ export function makeTicketRepo(store: Store): TicketRepository {
         createdAt: a.createdAt,
       });
 
+      // 対象チケットの全コメント (テナント絞り込み不要。commentId は 1 チケットにのみ属する)。
+      // /code-review ultra 指摘対応: createdAt だけの比較だと同時刻タイの際に「上限のどちら側に
+      // 切り詰められるか」が不定になり得るため、id を第 2 キーにして決定的な並び順を保証する
+      // (Prisma アダプタの orderBy: [{createdAt:'desc'},{id:'desc'}] と同じ規則)
+      const allComments = [...store.comments.values()]
+        .filter((c) => c.ticketId === id) // 対象チケットのみ
+        .sort((a, b) => +b.createdAt - +a.createdAt || (a.id < b.id ? 1 : -1)); // 新しい順
       // 対象チケットのコメントを古い順に整形 (各コメントの添付も同時に集約)。
       // フォローアップ (2026-07-16 #4): 件数が上限を超える場合は直近 (最新)
       // TICKET_DETAIL_COMMENTS_LIMIT 件だけを残し、表示契約である古い順に戻す
       // (§8 一覧取得の上限必須化。長期化したチケットでコメントが無制限に積み上がるのを防ぐ)
-      const comments = [...store.comments.values()]
-        .filter((c) => c.ticketId === id) // 対象チケットのみ
-        .sort((a, b) => +b.createdAt - +a.createdAt) // 新しい順に並べてから上限で切り詰める
+      const comments = allComments
         .slice(0, TICKET_DETAIL_COMMENTS_LIMIT)
         .reverse() // 古い順 (時系列) に戻す
         .map((c: TicketComment) => {
@@ -151,11 +156,13 @@ export function makeTicketRepo(store: Store): TicketRepository {
           return { ...c, author, attachments };
         });
 
+      // 対象チケットの全履歴 (id を第 2 キーにする理由は上のコメントと同じ)
+      const allHistories = [...store.histories.values()]
+        .filter((h) => h.ticketId === id)
+        .sort((a, b) => +b.createdAt - +a.createdAt || (a.id < b.id ? 1 : -1));
       // 対象チケットの履歴を新しい順に整形。フォローアップ (2026-07-16 #4): 直近
       // TICKET_DETAIL_HISTORY_LIMIT 件だけに上限化する (既に新しい順のため反転は不要)
-      const histories = [...store.histories.values()]
-        .filter((h) => h.ticketId === id)
-        .sort((a, b) => +b.createdAt - +a.createdAt)
+      const histories = allHistories
         .slice(0, TICKET_DETAIL_HISTORY_LIMIT)
         .map((h: TicketHistory) => {
           const changedBy = userSummary(store, h.changedById); // 変更者
@@ -173,7 +180,9 @@ export function makeTicketRepo(store: Store): TicketRepository {
       const detail: TicketDetail = {
         ...withRefs,
         comments,
+        commentCount: allComments.length, // 切り詰め前の総コメント数
         histories,
+        historyCount: allHistories.length, // 切り詰め前の総履歴数
         faqCandidate: faqRow ? { id: faqRow.id } : null,
         attachments: ticketAttachments,
       };

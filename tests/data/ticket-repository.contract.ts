@@ -1018,6 +1018,8 @@ export function runTicketRepositoryContract(
     // に上限が無く、CLAUDE.md §8「一覧取得は必ず上限を持たせる」に反していたギャップの回帰テスト。
     // この 2 件は実行時間の都合上、上限をわずかに超える件数だけを作成して検証する
     describe('findByIdWithDetail のコメント/履歴上限 (フォローアップ 2026-07-16 #4)', () => {
+      // 上限をどれだけ超えて作成するか (両テストで共有する。§6 マジック数値の重複を避ける)
+      const OVERFLOW = 3;
       // コメントは直近 (最新) TICKET_DETAIL_COMMENTS_LIMIT 件のみを、表示契約どおり古い順で返す
       it('コメントは直近 TICKET_DETAIL_COMMENTS_LIMIT 件のみを古い順で返す', async () => {
         const { requester, categoryId } = await ctx.seedBasicFixture();
@@ -1030,7 +1032,7 @@ export function runTicketRepositoryContract(
           tenantId: TENANT_ID,
         });
         // 上限を 3 件超える数のコメントを、本文に連番を埋め込んで順に作成する
-        const total = TICKET_DETAIL_COMMENTS_LIMIT + 3;
+        const total = TICKET_DETAIL_COMMENTS_LIMIT + OVERFLOW;
         for (let i = 0; i < total; i++) {
           await ctx.repos.comments.create({
             ticketId: ticket.id,
@@ -1041,7 +1043,7 @@ export function runTicketRepositoryContract(
           // 実 DB の createdAt はミリ秒精度のため、同時刻タイで順序が不定にならないよう
           // 作成タイミングを確実にずらす (メモリアダプタでは Map の挿入順で安定ソートされるため
           // 本来不要だが、Prisma アダプタと同じ契約テストを共有するため両方に適用する)
-          await new Promise((r) => setTimeout(r, 1));
+          await new Promise((r) => setTimeout(r, 5));
         }
 
         const detail = await ctx.repos.tickets.findByIdWithDetail(ticket.id, TENANT_ID);
@@ -1063,7 +1065,7 @@ export function runTicketRepositoryContract(
           tenantId: TENANT_ID,
         });
         // 上限を 3 件超える数の履歴を、newValue に連番を埋め込んで順に記録する
-        const total = TICKET_DETAIL_HISTORY_LIMIT + 3;
+        const total = TICKET_DETAIL_HISTORY_LIMIT + OVERFLOW;
         for (let i = 0; i < total; i++) {
           await ctx.repos.history.record({
             ticketId: ticket.id,
@@ -1073,7 +1075,7 @@ export function runTicketRepositoryContract(
             newValue: `v${i}`,
           });
           // コメントのテストと同じ理由でタイミングをずらす
-          await new Promise((r) => setTimeout(r, 1));
+          await new Promise((r) => setTimeout(r, 5));
         }
 
         const detail = await ctx.repos.tickets.findByIdWithDetail(ticket.id, TENANT_ID);

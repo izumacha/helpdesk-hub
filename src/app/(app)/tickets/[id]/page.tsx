@@ -157,9 +157,19 @@ export default async function TicketDetailPage({ params }: Props) {
 
           {/* コメントセクション */}
           <section className="rounded-lg bg-white p-5 shadow-sm">
+            {/* 件数表示は切り詰め前の総数 (commentCount) を使う。comments.length を使うと
+                TICKET_DETAIL_COMMENTS_LIMIT 超過時に実際より少ない件数を表示してしまう
+                (フォローアップ 2026-07-16 #4 /code-review ultra 指摘対応) */}
             <h2 className="mb-4 text-sm font-semibold text-gray-500">
-              コメント（{ticket.comments.length}件）
+              コメント（{ticket.commentCount}件）
             </h2>
+            {/* 上限超過で一部が表示から切り詰められている場合はその旨を案内する
+                (静かなデータ欠落を避ける。§9 fail-safe の考え方と同種) */}
+            {ticket.commentCount > ticket.comments.length && (
+              <p className="mb-3 text-xs text-amber-600">
+                最新 {ticket.comments.length} 件のみ表示しています（全 {ticket.commentCount} 件）。
+              </p>
+            )}
 
             {ticket.comments.length === 0 ? (
               // コメント 0 件のメッセージ
@@ -195,6 +205,13 @@ export default async function TicketDetailPage({ params }: Props) {
           {/* 変更履歴セクション */}
           <section className="rounded-lg bg-white p-5 shadow-sm">
             <h2 className="mb-4 text-sm font-semibold text-gray-500">変更履歴</h2>
+            {/* 上限超過で一部が表示から切り詰められている場合はその旨を案内する
+                (コメントセクションと同じ考え方。フォローアップ 2026-07-16 #4) */}
+            {ticket.historyCount > ticket.histories.length && (
+              <p className="mb-3 text-xs text-amber-600">
+                最新 {ticket.histories.length} 件のみ表示しています（全 {ticket.historyCount} 件）。
+              </p>
+            )}
             {ticket.histories.length === 0 ? (
               <p className="text-sm text-gray-400">変更履歴はありません</p>
             ) : (

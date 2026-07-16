@@ -61,6 +61,14 @@ export interface TicketDetail extends TicketWithRefs {
   // 履歴 + 変更者 (新しい順)。TICKET_DETAIL_HISTORY_LIMIT 件を超える場合は
   // 直近 (最新) の同件数のみを返す (フォローアップ 2026-07-16 #4)
   histories: Array<TicketHistory & { changedBy: UserSummary }>;
+  // コメント/履歴それぞれの実件数 (上限による切り詰め前の総数)。
+  // /code-review ultra 指摘対応 (2026-07-16 #4): comments.length/histories.length を
+  // 件数表示に使うと、上限超過時に画面が実際より少ない件数を表示してしまい、かつ
+  // 「一部が切り詰められている」ことを利用者に一切伝えられない (静かなデータ欠落)。
+  // 呼び出し側 (チケット詳細画面) が「全 N 件中、直近 M 件を表示」と案内できるよう、
+  // 切り詰め前の総数を別フィールドとして持たせる
+  commentCount: number;
+  historyCount: number;
   faqCandidate: { id: string } | null; // 紐づく FAQ 候補 (なければ null)
   // チケット本体に直接添付された画像 (コメント添付ではないもの。古い順)
   attachments: AttachmentSummary[];
