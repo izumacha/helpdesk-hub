@@ -931,6 +931,40 @@ Phase 2 の差別化の本丸であるメール/LINE 取り込みチャネルを
   対応状況が不揃いになるため、別途 5 種まとめて対応するフォローアップ課題として残す
   （§7 accessibility の `<label>`/`aria-labelledby` 要件）。
 
+#### 4.9 フォローアップ（2026-07-16）: 担当者・カテゴリ・拠点プルダウンの未処理エラー
+
+コードベース監査（既存フォローアップ群と同じ「済マーク済みの機能を実装から再点検する」観点）で
+発見したギャップの修正。§1.4/§1.5 で `FaqStatusButton`/`StatusSelect`/`PrioritySelect` に
+導入した「送信中は無効化し、失敗はその場にエラー表示、競合時は `router.refresh()` で最新化する」
+契約が、§4.8 で追加した `EntitySelect`（`AssigneeSelect`/`CategorySelect`/`LocationSelect` が
+共有する汎用プルダウン。`src/features/tickets/components/EntitySelect.tsx`）には一度も
+適用されていなかった。
+
+- **問題**: `EntitySelect` は `startTransition(() => onChange(val || null))` という形で、
+  非同期の `onChange`（実体は `updateTicketAssignee`/`updateTicketCategory`/
+  `updateTicketLocation`）が返す `Promise` を誰も `await` も `catch` もしていなかった。
+  これらのサーバーアクションはレート制限超過・チケット消失（削除との競合）・指定先の不在
+  （他エージェントによる担当者/カテゴリ/拠点の削除・退職処理との競合）で `Error` を throw する
+  正常な失敗系路を持つが、`EntitySelect` 側で拒否 (`reject`) が誰にも処理されないため未処理の
+  Promise 拒否になり、ユーザーには何も表示されないまま操作が黙って失敗していた
+  （§6 エラーを握り潰さない、に反する）。`StatusSelect`/`PrioritySelect`（§1.5）・
+  `FaqStatusButton`（§1.4）は同種の問題を既に解消済みだったが、`EntitySelect` は §4.8 で
+  それらより後に追加されたにもかかわらず、この契約を踏襲していなかった。
+- **修正**: `EntitySelect` に `useState` によるエラー表示と `useRouter().refresh()` を追加し、
+  `handleChange` を `StatusSelect`/`FaqStatusButton` と同じ
+  `startTransition(async () => { try { await onChange(...) } catch (err) { ... } })` の形に
+  変更した。失敗時は `role="alert"` のメッセージをその場に表示し、`router.refresh()` で
+  サーバーの最新状態を取り直す（エラー時は `revalidatePath` に到達しないため、担当者/カテゴリ/
+  拠点の表示が古いまま残り続けるのを防ぐ）。`onChange` の型を `void` から `void | Promise<void>`
+  に修正し、非同期であることを型シグネチャにも明示した。`AssigneeSelect`/`CategorySelect`/
+  `LocationSelect` 側の変更は不要（`EntitySelect` への配線はそのまま）。
+- 本修正は UI イベントハンドラのみの変更であり、`updateTicketAssignee`/`updateTicketCategory`/
+  `updateTicketLocation`（サーバー側の検証・RBAC・tenantId スコープ）自体には変更がない。
+  リポジトリに React コンポーネント向けのユニットテスト基盤（jsdom / Testing Library 等）が
+  無く、Vitest は `environment: 'node'` で `tests/**/*.test.ts` のみを対象とする構成のため
+  （`vitest.config.ts`）、`FaqStatusButton`/`StatusSelect`/`PrioritySelect` の同種の修正
+  （§1.4/§1.5）と同じく、この UI 層の変更にも専用のコンポーネント単体テストは追加していない。
+
 ### スケジュール感
 
 ```
