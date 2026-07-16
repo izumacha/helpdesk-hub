@@ -10,6 +10,8 @@ import { MobileNavProvider } from '@/components/layout/MobileNavProvider';
 import { SkipLink } from '@/components/layout/SkipLink';
 // クライアントサイド遷移のたびに本文へフォーカスを移す (§7 a11y)
 import { RouteFocusManager } from '@/components/layout/RouteFocusManager';
+// <main> に振る id の単一の参照元 (§6 マジック文字列を避ける)
+import { MAIN_CONTENT_ID } from '@/components/layout/main-content-id';
 // 現在テナントの動作モード(lite | pro)を取得するヘルパー
 import { getCurrentTenantMode } from '@/lib/tenant';
 // §6.1 料金プラン「Free: ロゴ表示」の判定用。トライアル中の実効プランを返す
@@ -46,13 +48,20 @@ export default async function AppLayout({ children }: { children: React.ReactNod
         <div className="flex flex-1 flex-col overflow-hidden">
           <Header />
           {/* 各ページの内容 (縦スクロール可) ─ モバイルは余白を控えめにする。
-              id="main-content"/tabIndex={-1} はスキップリンクの遷移先 + ページ遷移後の
+              id=MAIN_CONTENT_ID/tabIndex={-1} はスキップリンクの遷移先 + ページ遷移後の
               フォーカス移動先 (RouteFocusManager) として使う。tabIndex={-1} なので
-              通常の Tab 移動では選択されず、programmatic focus() でのみフォーカス可能 */}
+              通常の Tab 移動では選択されず、programmatic focus() でのみフォーカス可能。
+              フォローアップ (2026-07-16 #2 レビュー対応): 当初 focus:outline-none のみで
+              代替の見た目を用意しておらず、スキップリンク/遷移後にフォーカスが移っても
+              画面上に何も変化が見えなかった (CLAUDE.md §7 の「outline を消す場合は
+              代替の見た目を用意する」に反する)。既定のブラウザアウトラインの代わりに
+              focus-visible:ring-2 (TicketFilters 等と同じ teal 系のフォーカスリング) を
+              明示的に用意した。focus-visible を使うのは、programmatic focus() やキーボード
+              操作時にのみ視覚的に表示し、マウス操作の副作用で毎回リングが出ないようにするため */}
           <main
-            id="main-content"
+            id={MAIN_CONTENT_ID}
             tabIndex={-1}
-            className="flex-1 overflow-y-auto p-4 focus:outline-none sm:p-6 md:p-8"
+            className="flex-1 overflow-y-auto p-4 focus:outline-none focus-visible:ring-2 focus-visible:ring-teal-500 sm:p-6 md:p-8"
           >
             {children}
           </main>

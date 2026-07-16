@@ -999,6 +999,39 @@ Phase 2 の差別化の本丸であるメール/LINE 取り込みチャネルを
 - 3 件とも UI 層（マークアップ/属性/新規の副作用専用コンポーネント）のみの変更であり、
   サーバー側の Server Action・RBAC・tenantId スコープには影響しない。§4.9 と同じ理由
   （コンポーネント単体テスト基盤が無い）により、専用テストは追加していない。
+- `/code-review ultra` 指摘対応: 上記の初回実装に対する複数の独立レビューエージェントが
+  収斂して指摘した 4 件を追加修正した。
+  - **`focus:outline-none` に代替の見た目が無かった**: `<main>` はスキップリンク/
+    `RouteFocusManager` からの `focus()` を実際に受け取る要素になったにもかかわらず、
+    デフォルトのフォーカスアウトラインを消すクラスのみを追加し代替の見た目を用意していな
+    かった（CLAUDE.md §7 自身が明記する「`outline` を消す場合は代替の見た目を用意する」に
+    反する）。`focus-visible:ring-2 focus-visible:ring-teal-500`（キーボード操作/
+    programmatic focus 時のみ表示され、マウス操作では出ない）を追加した。
+  - **`RouteFocusManager` が開発時の React Strict Mode 二重実行で初回ロード時にもフォーカス
+    を奪っていた**: 「初回マウントか」を `useEffect` 内で書き換えるフラグ (`isFirstRender`)
+    で判定していたが、Strict Mode（Next.js App Router は既定で有効）は副作用を
+    マウント→クリーンアップ→再マウントの順で 2 回連続実行するため、1 回目でフラグが
+    false に書き換わった直後の 2 回目の実行で「初回マウントではない」と誤判定し、
+    ページの初回ロード時にも `main.focus()` が呼ばれていた。副作用側で状態を書き換える
+    方式をやめ、マウント時点のパスを `useRef` に 1 度だけ記憶し、以降は「現在のパスが
+    記憶した初期パスと異なるか」のみで判定する方式に変更した（Strict Mode の 2 回実行でも
+    判定結果が変わらない）。
+  - **Safari/VoiceOver でスキップリンクがフォーカスを移さない**: Safari には、同一ページ内
+    フラグメントリンクのクリックでスクロールはしてもフォーカスは移動しない既知の挙動が
+    あり（対象要素が `tabIndex={-1}` でも）、`href` によるネイティブなフラグメント遷移だけ
+    に頼ると Safari/VoiceOver 利用者だけスキップリンクが機能しなかった。`SkipLink` を
+    Client Component 化し、`onClick` で明示的に `document.getElementById(...)?.focus()`
+    を呼ぶことで、Chromium/Firefox/Safari のいずれでも確実にフォーカスが移るようにした。
+  - **DOM id `"main-content"` が 3 箇所に直書きされていた**: `SkipLink` の `href`・
+    `(app)/layout.tsx` の `<main id="...">`・`RouteFocusManager` の
+    `getElementById(...)` の 3 箇所に同じ文字列が独立して直書きされており、CLAUDE.md §6
+    「マジック文字列を避ける・単一の参照元に置く」に反していた（将来どれか 1 箇所だけ
+    リネームし忘れると、コンパイルエラーも lint エラーも出ないまま静かに壊れる）。
+    `MAIN_CONTENT_ID`（`src/components/layout/main-content-id.ts`）に集約し、3 箇所とも
+    そこから import するよう変更した。同種の懸念があったチケット詳細画面の
+    `ticket-detail-{status,priority,assignee,category,location}-label` の 5 ペア
+    （`<dt id="...">` と対応する select の `labelledBy="..."`）も、ページ内の
+    `FIELD_LABEL_IDS` 定数にまとめ、リテラル文字列の重複を解消した。
 
 ### スケジュール感
 
