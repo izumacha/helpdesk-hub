@@ -22,6 +22,25 @@ import { enforceRateLimit } from '@/lib/rate-limit';
 // FAQ 候補入力の Zod スキーマ (質問/回答の検証)
 import { faqCandidateSchema } from '@/lib/validations/faq';
 
+// check-then-act 競合 (CAS 更新が false = 0 件更新) を検知した際の共通処理。
+// 「行が消えた」のか「別の操作が先に内容/状態を変えた」のかを再読込で切り分け、
+// 適切な日本語エラーを throw する (updateFaqStatus/updateFaqContent で共有)。
+// /code-review ultra 指摘対応 (2026-07-16 #5): 当初は同一ロジックを両アクションに
+// 個別に書き写しており、§6 DRY「2〜3 箇所目で重複したら共通化する」の閾値そのもの
+// (この 2 箇所目) を超えていたため抽出した
+async function throwFaqConflictOrNotFound(
+  faqId: string,
+  tenantId: string,
+  termLabel: string,
+): Promise<never> {
+  // 再読込して行の有無を確認する (0 件更新は「行が消えた」か「内容/状態が変わった」のどちらか)
+  const latest = await repos.faq.findById(faqId, tenantId);
+  // 行自体が消えていた場合は既存の not-found と同じ文言を返す
+  if (!latest) throw new Error(`${termLabel}が見つかりません`);
+  // 行は残っている = 別の操作が先に内容/状態を変えた競合。最新表示の確認を促す
+  throw new Error(`他の操作と競合したため変更できませんでした。最新の${termLabel}をご確認ください`);
+}
+
 // チケットを元に FAQ 候補を新規作成するサーバーアクション
 export async function createFaqCandidate(ticketId: string, question: string, answer: string) {
   // ログインセッションを取得
@@ -110,14 +129,7 @@ export async function updateFaqStatus(faqId: string, status: 'Published' | 'Reje
   const updated = await repos.faq.updateStatus(faqId, { from: faq.status, to: status }, tenantId);
   // 更新できなかった場合は原因を切り分けてユーザーに正しい案内を返す
   if (!updated) {
-    // 再読込して行の有無を確認する (0 件更新は「行が消えた」か「状態が変わった」のどちらか)
-    const latest = await repos.faq.findById(faqId, tenantId);
-    // 行自体が消えていた場合は既存の not-found と同じ文言を返す
-    if (!latest) throw new Error(`${termLabel}が見つかりません`);
-    // 行は残っている = 別の操作が先に状態を変えた競合。最新表示の確認を促す
-    throw new Error(
-      `他の操作と競合したため変更できませんでした。最新の${termLabel}をご確認ください`,
-    );
+    await throwFaqConflictOrNotFound(faqId, tenantId, termLabel);
   }
   // FAQ 一覧のキャッシュを無効化
   revalidatePath('/faq');
@@ -154,12 +166,20 @@ export async function updateFaqContent(faqId: string, question: string, answer: 
   // 見つからない or 他テナントの ID ならエラー
   if (!faq) throw new Error(`${termLabel}が見つかりません`);
 
-  // 質問/回答を更新 (tenantId スコープで where に注入、port 経由)
-  await repos.faq.updateContent(
+  // 質問/回答を更新 (tenantId スコープで where に注入、port 経由)。読み取り時の内容
+  // (faq.question/faq.answer) を期待値として渡し、直前に別の操作が内容を変えていた場合は
+  // 0 件更新 (false) になる (check-then-act 競合による後勝ち上書きを防ぐ。
+  // フォローアップ 2026-07-16 #5: updateFaqStatus と同じ CAS パターンをこのメソッドにも揃える)
+  const updated = await repos.faq.updateContent(
     faqId,
     { question: parsed.data.question, answer: parsed.data.answer },
+    { question: faq.question, answer: faq.answer },
     tenantId,
   );
+  // 更新できなかった場合は原因を切り分けてユーザーに正しい案内を返す
+  if (!updated) {
+    await throwFaqConflictOrNotFound(faqId, tenantId, termLabel);
+  }
   // FAQ 一覧のキャッシュを無効化
   revalidatePath('/faq');
 }

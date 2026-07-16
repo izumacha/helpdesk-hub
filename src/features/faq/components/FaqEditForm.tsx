@@ -42,6 +42,10 @@ export function FaqEditForm({ faqId, question, answer }: Props) {
       onSubmit={(q, a) => updateFaqContent(faqId, q, a)}
       // 更新後はサーバーから最新の質問/回答を取り直す (完了を isRefreshing で追跡する)
       onSuccess={() => startRefresh(() => router.refresh())}
+      // updateFaqContent は check-then-act 競合時に Error を throw し得るため、失敗時にも
+      // 最新状態を取り直す (フォローアップ 2026-07-16 #5)。FaqCandidateForm は競合の概念が
+      // 無い新規登録のため渡さない (既定 false のまま)
+      refreshOnError
     />
   );
 }

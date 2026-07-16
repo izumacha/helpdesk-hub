@@ -2,6 +2,8 @@
 
 // React フック (refs/トランジション/ローカル状態)
 import { useRef, useState, useTransition } from 'react';
+// 失敗時にサーバーの最新状態を取り直すためのルーター
+import { useRouter } from 'next/navigation';
 
 // FaqCandidateForm (新規登録) と FaqEditForm (その場編集) は「折りたたみ/展開トグル +
 // 質問・回答 2 つのテキストエリア + 保存/キャンセル」という同型の UI を持つため、
@@ -32,6 +34,15 @@ interface Props {
   onSubmit: (question: string, answer: string) => Promise<void>;
   // 送信成功後、フォームを閉じるのに加えて呼び出し元が行いたい後処理 (省略可)
   onSuccess?: () => void;
+  // 失敗時にもサーバーの最新状態を取り直すか (省略時 false)。
+  // /code-review ultra 指摘対応 (2026-07-16 #5): この共通コンポーネントは
+  // FaqCandidateForm (新規登録・conflict の概念が無い) と FaqEditForm (その場編集・
+  // check-then-act 競合が起こり得る) の両方が使う。「失敗時に router.refresh() する」を
+  // 無条件で共通コンポーネント側に入れると、新規登録側の入力中ドラフトが無関係なエラー
+  // (レート制限・バリデーション失敗) と、たまたま同時に起きた無関係な画面更新
+  // (別のエージェントによるチケット状態変更等) の組み合わせで、警告なく消え得る回帰になる。
+  // 競合が実際に起こり得る呼び出し元 (FaqEditForm) だけが true を渡す
+  refreshOnError?: boolean;
 }
 
 // FAQ の質問/回答を入力する共通のインライン展開フォーム
@@ -47,7 +58,10 @@ export function FaqInlineForm({
   submitLabel,
   onSubmit,
   onSuccess,
+  refreshOnError,
 }: Props) {
+  // 失敗時にサーバーの最新状態を取り直すためのルーター
+  const router = useRouter();
   // 展開状態 (true で入力欄を表示、false ではボタンのみ)
   const [open, setOpen] = useState(false);
   // 送信中フラグ + トランジション関数
@@ -85,6 +99,12 @@ export function FaqInlineForm({
       } catch (err) {
         // 失敗時はエラーメッセージを画面表示
         setError(err instanceof Error ? err.message : 'エラーが発生しました');
+        // フォローアップ (2026-07-16 #5): updateFaqContent が check-then-act 競合時に
+        // Error を throw するようになったため、FaqStatusButton/StatusSelect と同じく
+        // サーバーの最新状態を取り直す (エラー時は revalidatePath に到達しないため、
+        // 編集フォームの初期値が古いまま残り続けるのを防ぐ)。競合が起こり得る呼び出し元
+        // (refreshOnError=true な FaqEditForm) のみで行う (上記 Props の説明を参照)
+        if (refreshOnError) router.refresh();
       }
     });
   }

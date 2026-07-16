@@ -66,11 +66,16 @@ export interface FaqRepository {
     transition: { from: FaqStatus; to: FaqStatus },
     tenantId: string,
   ): Promise<boolean>;
-  // 質問/回答の本文を更新 (tenantId スコープ。他テナントの ID なら 0 件更新で no-op)
-  // フォローアップ (2026-07-14 #6): 公開後に誤りへ気付いても訂正手段が無かったギャップ対応
+  // 質問/回答の本文を更新 (tenantId スコープ。他テナントの ID なら 0 件更新で no-op)。
+  // フォローアップ (2026-07-14 #6): 公開後に誤りへ気付いても訂正手段が無かったギャップ対応。
+  // フォローアップ (2026-07-16 #5): expected (読み取り時点の質問/回答) を where 条件に含めた
+  // 原子的更新にし、読み取り後〜書き込み前に別の操作が内容を変えていた場合 (check-then-act 競合)
+  // は更新せず false を返す。updateStatus (フォローアップ 2026-07-15) と同じ CAS (compare-and-swap)
+  // パターンで、`updateFaqStatus`/`updateTicketAssignee` 等が既に持つ保護をこのメソッドにも揃える
   updateContent(
     id: string,
     content: { question: string; answer: string },
+    expected: { question: string; answer: string },
     tenantId: string,
-  ): Promise<void>;
+  ): Promise<boolean>;
 }

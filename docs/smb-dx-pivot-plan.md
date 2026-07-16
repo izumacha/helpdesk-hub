@@ -1127,6 +1127,53 @@ Phase 2 の差別化の本丸であるメール/LINE 取り込みチャネルを
     だった。5ms に修正し、`+ 3`（上限超過分のバッファ件数）が 2 箇所に直書きされていたのも
     `OVERFLOW` 定数へ切り出した。
 
+#### 4.13 フォローアップ（2026-07-16 #5）: FAQ 本文編集に check-then-act 競合防止が無かった
+
+監査で発見したギャップ（別セッションが並行してマージした担当者/カテゴリ/拠点変更への CAS
+（compare-and-swap）適用 PR と同種）。`updateFaqStatus`（§1.4）は読み取り時の状態
+（`faq.status`）を期待値として渡す原子的更新（CAS）を持つのに対し、`updateFaqContent`
+（質問/回答のその場編集、§1.3）は対象 FAQ の存在確認だけを行い、実際の書き込みは
+`repos.faq.updateContent` の無条件 `updateMany` に委ねていた。2 人のエージェントが同じ
+FAQ 候補をほぼ同時に編集すると、後勝ちで一方の訂正が黙って消える（`updateStatus` が §1.4/1.5
+で解消したのと同じ後勝ち上書き問題が、この 1 メソッドにだけ残っていた）。
+
+- `FaqRepository.updateContent`（`src/data/ports/faq-repository.ts`）の契約を
+  `updateContent(id, content, expected: {question, answer}, tenantId): Promise<boolean>`
+  に変更した（`updateStatus` の `transition.from` と同じ CAS パターン）。
+- Prisma アダプタは `where` に `question`/`answer` の期待値を追加した条件付き `updateMany`
+  （0 件更新なら競合）に、メモリアダプタは書き込み前に現在値と `expected` を比較する
+  ガードに変更した。
+- `updateFaqContent`（`src/features/faq/actions/faq-actions.ts`）は読み取った
+  `faq.question`/`faq.answer` を `expected` として渡し、`false` が返れば
+  `updateFaqStatus` と同じ「他の操作と競合したため変更できませんでした」を throw する
+  （行が消えていた場合は既存の not-found 文言と区別する）。
+- `FaqInlineForm`（`FaqCandidateForm`/`FaqEditForm` が共有するその場編集フォーム）の
+  エラーハンドラに `router.refresh()` を追加した。`updateFaqContent` がこれまで一度も
+  競合エラーを throw しなかったため無害だったが、CAS 導入後は到達し得るようになったため、
+  `FaqStatusButton`/`StatusSelect` と同じ「エラー時にサーバーの最新状態を取り直す」契約に揃えた。
+- 回帰テスト: `tests/data/faq-repository.{memory,contract.prisma}.test.ts` に「期待する内容が
+  一致しない場合は更新せず false」のテストを追加し、既存 2 テストの呼び出しも新シグネチャに
+  更新した。`tests/features/faq-actions.test.ts` に `updateFaqStatus` と同型の TOCTOU 再現
+  テスト（`findById` を一時的にモックして古いスナップショットを返す）を追加した。
+- `/code-review ultra` 指摘対応: 複数の独立レビューエージェントが収斂して指摘した以下 2 件を追加修正した。
+  - **競合エラー処理のロジックが `updateFaqStatus`/`updateFaqContent` に一字一句複製された**:
+    「0 件更新 (false) を再読込で『行が消えた』か『競合』かに切り分けて throw する」処理を
+    両アクションに個別に書いていた。これは §6 DRY「2〜3 箇所目で重複したら共通化する」の
+    閾値そのもの（この時点で 2 箇所目）だったため、`throwFaqConflictOrNotFound`
+    （`src/features/faq/actions/faq-actions.ts`）として抽出し、両アクションで共有するよう
+    変更した（並行してマージされた別セッションの CAS 適用 PR が `TICKET_CONFLICT_MESSAGE`
+    を抽出して 5 箇所で共有していたのと同じ考え方）。
+  - **共有コンポーネントへの `router.refresh()` 追加が無関係な新規登録パスにも影響していた**:
+    `FaqInlineForm`（`FaqCandidateForm`/`FaqEditForm` の両方が使う共通コンポーネント）の
+    エラーハンドラに条件なしで `router.refresh()` を追加していたため、`updateFaqContent`
+    の競合とは無関係な `createFaqCandidate` 側の失敗（バリデーション・レート制限等）でも
+    再取得が走るようになっていた。ごく稀に、新規登録フォームに下書き入力中のタイミングで
+    無関係な画面更新（別のエージェントによるチケット状態変更等で `canAddFaq` が false に
+    変わる等）と重なると、警告なく下書きが消え得る回帰だった（この副作用は以前は存在しな
+    かった。`createFaqCandidate` は競合の概念が無く、一度もこの分岐を通っていなかったため）。
+    `FaqInlineForm` に `refreshOnError?: boolean`（既定 false）を追加し、競合が実際に起こり得る
+    `FaqEditForm` だけが `true` を渡すようにした。`FaqCandidateForm` は変更なし（既定のまま）。
+
 ### スケジュール感
 
 ```

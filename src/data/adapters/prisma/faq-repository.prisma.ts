@@ -81,11 +81,21 @@ export function makeFaqRepo(db: PrismaLike): FaqRepository {
     },
 
     // 質問/回答の本文を更新 (tenantId スコープ。他テナントの ID なら 0 件更新で no-op)
-    async updateContent(id, content, tenantId) {
-      await db.faqCandidate.updateMany({
-        where: { id, tenantId }, // テナントスコープ (必須)
+    // 質問/回答を更新 (tenantId スコープ)。where に期待する現在の質問/回答 (expected) を
+    // 含めることで、読み取り後に別の操作が内容を変えていた場合は 0 件更新となり、
+    // 後勝ちで上書きされるのを防ぐ (フォローアップ 2026-07-16 #5。updateStatus と同じ CAS パターン)
+    async updateContent(id, content, expected, tenantId) {
+      const result = await db.faqCandidate.updateMany({
+        where: {
+          id,
+          tenantId, // テナントスコープ (必須)
+          question: expected.question, // 期待する現在の質問文と一致するときのみ更新
+          answer: expected.answer, // 期待する現在の回答文と一致するときのみ更新
+        },
         data: { question: content.question, answer: content.answer }, // 質問/回答のみ書き換え
       });
+      // 1 件以上更新できたか (0 件なら競合 or 不在 or 他テナント) を返す
+      return result.count > 0;
     },
   };
 }
