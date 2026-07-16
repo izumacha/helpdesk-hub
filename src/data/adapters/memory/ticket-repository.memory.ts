@@ -316,24 +316,34 @@ export function makeTicketRepo(store: Store): TicketRepository {
     },
 
     // 担当者を更新 (tenantId スコープ。null で未アサインに戻す)
-    async updateAssignee(id, assigneeId, tenantId) {
+    // 担当者を更新 (tenantId スコープ。フォローアップ 2026-07-16: Prisma アダプタと同じく
+    // 期待担当者 transition.from と不一致 (競合) なら更新しない)
+    async updateAssignee(id, transition, tenantId) {
       const t = store.tickets.get(id);
-      if (!t || t.tenantId !== tenantId) return;
-      store.tickets.set(id, { ...t, assigneeId, updatedAt: new Date() });
+      if (!t || t.tenantId !== tenantId) return false;
+      if (t.assigneeId !== transition.from) return false;
+      store.tickets.set(id, { ...t, assigneeId: transition.to, updatedAt: new Date() });
+      return true;
     },
 
-    // カテゴリを更新 (tenantId スコープ。null で未分類に戻す。フォローアップ 2026-07-14 #4)
-    async updateCategory(id, categoryId, tenantId) {
+    // カテゴリを更新 (tenantId スコープ。null で未分類に戻す。フォローアップ 2026-07-14 #4)。
+    // フォローアップ 2026-07-16: Prisma アダプタと同じく CAS 保護を追加
+    async updateCategory(id, transition, tenantId) {
       const t = store.tickets.get(id);
-      if (!t || t.tenantId !== tenantId) return;
-      store.tickets.set(id, { ...t, categoryId, updatedAt: new Date() });
+      if (!t || t.tenantId !== tenantId) return false;
+      if (t.categoryId !== transition.from) return false;
+      store.tickets.set(id, { ...t, categoryId: transition.to, updatedAt: new Date() });
+      return true;
     },
 
-    // 拠点を更新 (tenantId スコープ。null で未指定に戻す。フォローアップ 2026-07-14 #4)
-    async updateLocation(id, locationId, tenantId) {
+    // 拠点を更新 (tenantId スコープ。null で未指定に戻す。フォローアップ 2026-07-14 #4)。
+    // フォローアップ 2026-07-16: Prisma アダプタと同じく CAS 保護を追加
+    async updateLocation(id, transition, tenantId) {
       const t = store.tickets.get(id);
-      if (!t || t.tenantId !== tenantId) return;
-      store.tickets.set(id, { ...t, locationId, updatedAt: new Date() });
+      if (!t || t.tenantId !== tenantId) return false;
+      if (t.locationId !== transition.from) return false;
+      store.tickets.set(id, { ...t, locationId: transition.to, updatedAt: new Date() });
+      return true;
     },
 
     // エスカレーション扱いに更新 (tenantId スコープ)。期待する現在状態 expectedStatus が一致する

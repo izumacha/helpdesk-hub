@@ -246,7 +246,7 @@ export function runTicketRepositoryContract(
         categoryId,
         tenantId: TENANT_ID,
       });
-      await ctx.repos.tickets.updateAssignee(assigned.id, agentA.id, TENANT_ID);
+      await ctx.repos.tickets.updateAssignee(assigned.id, { from: null, to: agentA.id }, TENANT_ID);
       // 担当者なしのチケット
       const unassigned = await ctx.repos.tickets.create({
         title: 'B',
@@ -355,7 +355,7 @@ export function runTicketRepositoryContract(
         resolutionDueAt: tomorrow,
       });
       await ctx.repos.tickets.updateStatus(t2.id, { from: 'New', to: 'Open' }, null, TENANT_ID);
-      await ctx.repos.tickets.updateAssignee(t2.id, agentA.id, TENANT_ID);
+      await ctx.repos.tickets.updateAssignee(t2.id, { from: null, to: agentA.id }, TENANT_ID);
       // agentA 起票の Resolved 1 件 (ワークロード集計から除外される)
       const t3 = await ctx.repos.tickets.create({
         title: 't3',
@@ -365,7 +365,7 @@ export function runTicketRepositoryContract(
         categoryId,
         tenantId: TENANT_ID,
       });
-      await ctx.repos.tickets.updateAssignee(t3.id, agentB.id, TENANT_ID);
+      await ctx.repos.tickets.updateAssignee(t3.id, { from: null, to: agentB.id }, TENANT_ID);
       await ctx.repos.tickets.updateStatus(
         t3.id,
         { from: 'New', to: 'Resolved' },
@@ -604,7 +604,7 @@ export function runTicketRepositoryContract(
         { firstResponseDueAt: null, resolutionDueAt: null },
         tenantB,
       );
-      await ctx.repos.tickets.updateAssignee(ticketA.id, agentA.id, tenantB);
+      await ctx.repos.tickets.updateAssignee(ticketA.id, { from: null, to: agentA.id }, tenantB);
       await ctx.repos.tickets.markEscalated(
         ticketA.id,
         { reason: 'cross-tenant attempt', at: new Date() },
@@ -949,6 +949,114 @@ export function runTicketRepositoryContract(
         const escalated = await ctx.repos.tickets.findById(ticket.id, TENANT_ID);
         expect(escalated?.status).toBe('Escalated');
         expect(escalated?.escalationReason).toBe('r2');
+      });
+    });
+
+    // フォローアップ (2026-07-16): updateAssignee/updateCategory/updateLocation にも
+    // updateStatus/markEscalated と同じ CAS (check-then-act 競合防止) 契約を追加した回帰テスト
+    describe('updateAssignee / updateCategory / updateLocation の原子的更新 (check-then-act 競合防止)', () => {
+      it('updateAssignee は期待担当者が一致する場合に更新でき true を返す', async () => {
+        const { requester, agentA, categoryId } = await ctx.seedBasicFixture();
+        const ticket = await ctx.repos.tickets.create({
+          title: 't',
+          body: 'b',
+          priority: 'Medium',
+          creatorId: requester.id,
+          categoryId,
+          tenantId: TENANT_ID,
+        });
+
+        const updated = await ctx.repos.tickets.updateAssignee(
+          ticket.id,
+          { from: null, to: agentA.id },
+          TENANT_ID,
+        );
+
+        expect(updated).toBe(true);
+        const after = await ctx.repos.tickets.findById(ticket.id, TENANT_ID);
+        expect(after?.assigneeId).toBe(agentA.id);
+      });
+
+      // 期待担当者 (from) が現在の担当者と異なる場合 (= 別の操作が先に担当者を変えていた) は
+      // 更新せず false を返し、行の担当者も変化しないこと
+      it('updateAssignee は期待担当者が一致しない場合に更新せず false を返す', async () => {
+        const { requester, agentA, agentB, categoryId } = await ctx.seedBasicFixture();
+        const ticket = await ctx.repos.tickets.create({
+          title: 't',
+          body: 'b',
+          priority: 'Medium',
+          creatorId: requester.id,
+          categoryId,
+          tenantId: TENANT_ID,
+        });
+        // 実際は agentA に割当済みだが、期待担当者を誤って未割当 (null) として更新を試みる
+        // (先行する別の操作が担当者を変えたケースの再現)
+        await ctx.repos.tickets.updateAssignee(ticket.id, { from: null, to: agentA.id }, TENANT_ID);
+        const updated = await ctx.repos.tickets.updateAssignee(
+          ticket.id,
+          { from: null, to: agentB.id },
+          TENANT_ID,
+        );
+
+        expect(updated).toBe(false);
+        // 担当者は agentA のまま変化していない
+        const after = await ctx.repos.tickets.findById(ticket.id, TENANT_ID);
+        expect(after?.assigneeId).toBe(agentA.id);
+      });
+
+      it('updateCategory は期待カテゴリが一致しない場合に更新せず false を返す', async () => {
+        const { requester, categoryId } = await ctx.seedBasicFixture();
+        const otherCategory = await ctx.repos.categories.create({
+          tenantId: TENANT_ID,
+          name: '別カテゴリ',
+        });
+        const ticket = await ctx.repos.tickets.create({
+          title: 't',
+          body: 'b',
+          priority: 'Medium',
+          creatorId: requester.id,
+          categoryId,
+          tenantId: TENANT_ID,
+        });
+        // 実際のカテゴリは categoryId のままだが、期待カテゴリを誤って別カテゴリとして更新を試みる
+        const updated = await ctx.repos.tickets.updateCategory(
+          ticket.id,
+          { from: otherCategory.id, to: null },
+          TENANT_ID,
+        );
+
+        expect(updated).toBe(false);
+        const after = await ctx.repos.tickets.findById(ticket.id, TENANT_ID);
+        expect(after?.categoryId).toBe(categoryId);
+      });
+
+      it('updateLocation は期待拠点が一致しない場合に更新せず false を返す', async () => {
+        const { requester, categoryId } = await ctx.seedBasicFixture();
+        const locationA = await ctx.repos.locations.create({ tenantId: TENANT_ID, name: 'A店' });
+        const locationB = await ctx.repos.locations.create({ tenantId: TENANT_ID, name: 'B店' });
+        const ticket = await ctx.repos.tickets.create({
+          title: 't',
+          body: 'b',
+          priority: 'Medium',
+          creatorId: requester.id,
+          categoryId,
+          tenantId: TENANT_ID,
+        });
+        await ctx.repos.tickets.updateLocation(
+          ticket.id,
+          { from: null, to: locationA.id },
+          TENANT_ID,
+        );
+        // 実際は locationA のままだが、期待拠点を誤って未設定 (null) として更新を試みる
+        const updated = await ctx.repos.tickets.updateLocation(
+          ticket.id,
+          { from: null, to: locationB.id },
+          TENANT_ID,
+        );
+
+        expect(updated).toBe(false);
+        const after = await ctx.repos.tickets.findById(ticket.id, TENANT_ID);
+        expect(after?.locationId).toBe(locationA.id);
       });
     });
 
