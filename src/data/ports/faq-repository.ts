@@ -1,6 +1,23 @@
 // ドメイン型 (FAQ 候補/FAQ 状態) をインポート
 import type { FaqCandidate, FaqStatus } from '@/domain/types';
 
+// FAQ 一覧 (list/listPublished 共通) の既定件数上限。
+// フォローアップ (2026-07-16 #3): list/listPublished が上限なしで全件取得しており、
+// CLAUDE.md §8「一覧取得は必ず上限・ページネーションを持たせる」に反していた
+// (FAQ 候補は解決済みチケットから継続的に積み上がる性質上、無制限に増え得る)。
+// audit ログの PAGE_LIMIT (200 件) と同じ規模感に揃える
+export const FAQ_LIST_LIMIT = 200;
+
+// 呼び出し側が指定した limit を FAQ_LIST_LIMIT 以下にクランプする。
+// /code-review ultra 指摘対応: 現状の唯一の呼び出し元 (/faq ページ) は常に FAQ_LIST_LIMIT
+// そのものを渡すため実害はないが、audit/quarantine の `resolveAuditLimit`
+// （`src/data/adapters/audit-pagination.ts`）と同じく、将来 Server Action や API が
+// ユーザー入力由来の limit をそのまま渡すようになっても Prisma/メモリ両アダプタ側で
+// 無制限クエリにならないよう、アダプタ層でも下限として機能させる (fail-closed の多層防御)
+export function resolveFaqListLimit(requested: number): number {
+  return Math.min(requested, FAQ_LIST_LIMIT);
+}
+
 // FAQ 候補を新規作成するときの入力値
 export interface CreateFaqInput {
   ticketId: string; // 元となったチケット ID
@@ -30,11 +47,13 @@ export interface PublishedFaqItem {
 export interface FaqRepository {
   // ID + tenantId で 1 件取得 (他テナントの ID なら null)
   findById(id: string, tenantId: string): Promise<FaqCandidate | null>;
-  // 当該テナントの FAQ 候補一覧を取得 (エージェント向け管理画面用。全ステータスを含む)
-  list(tenantId: string): Promise<FaqListItem[]>;
+  // 当該テナントの FAQ 候補一覧を取得 (エージェント向け管理画面用。全ステータスを含む)。
+  // opts.limit で新しい順に取得件数を上限化する (フォローアップ 2026-07-16 #3)
+  list(tenantId: string, opts: { limit: number }): Promise<FaqListItem[]>;
   // 当該テナントの公開済み (Published) FAQ 一覧を取得する (依頼者含む全メンバーが閲覧可能。
-  // フォローアップ 2026-07-14 #5)
-  listPublished(tenantId: string): Promise<PublishedFaqItem[]>;
+  // フォローアップ 2026-07-14 #5)。opts.limit で新しい順に取得件数を上限化する
+  // (フォローアップ 2026-07-16 #3)
+  listPublished(tenantId: string, opts: { limit: number }): Promise<PublishedFaqItem[]>;
   // 候補を作成 (input.tenantId 必須)
   create(input: CreateFaqInput): Promise<FaqCandidate>;
   // 公開/却下などの状態更新 (tenantId スコープ。他テナントの ID なら 0 件更新で no-op)。

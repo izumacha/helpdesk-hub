@@ -14,6 +14,8 @@ import { FaqEditForm } from '@/features/faq/components/FaqEditForm';
 import { FaqStatusButton } from '@/features/faq/components/FaqStatusButton';
 // テナントの動作モード (lite | pro) を取得するヘルパー
 import { getCurrentTenantMode } from '@/lib/tenant';
+// FAQ 一覧取得の既定件数上限 (フォローアップ 2026-07-16 #3: §8 一覧取得の上限必須化)
+import { FAQ_LIST_LIMIT } from '@/data/ports/faq-repository';
 
 // 状態変更ボタン (却下/非公開にする) 共通の outlined スタイル (§6: 同一文字列の重複を避ける)
 const SECONDARY_STATUS_BUTTON_CLASS =
@@ -64,8 +66,8 @@ export default async function FaqPage() {
   // 依頼者 (非エージェント) 向け: 公開済み FAQ のみを閲覧専用で表示する
   // (元チケット・作成者・ステータスバッジ・公開/却下操作は含めない)
   if (!agent) {
-    // 公開済み FAQ 一覧を取得 (質問/回答のみ。§9 最小権限・最小公開)
-    const publishedFaqs = await repos.faq.listPublished(tenantId);
+    // 公開済み FAQ 一覧を取得 (質問/回答のみ。§9 最小権限・最小公開。新しい順に上限 FAQ_LIST_LIMIT 件)
+    const publishedFaqs = await repos.faq.listPublished(tenantId, { limit: FAQ_LIST_LIMIT });
     return (
       <div className="space-y-6">
         {/* ページヘッダー: タイトル + サブテキスト */}
@@ -99,8 +101,8 @@ export default async function FaqPage() {
   }
 
   // エージェント以上向け: 従来どおりの候補管理ビュー (公開/却下操作を含む)
-  // 当該テナントの FAQ 一覧を取得 (元チケットと作成者名を含む、全ステータス)
-  const faqs = await repos.faq.list(tenantId);
+  // 当該テナントの FAQ 一覧を取得 (元チケットと作成者名を含む、全ステータス。新しい順に上限 FAQ_LIST_LIMIT 件)
+  const faqs = await repos.faq.list(tenantId, { limit: FAQ_LIST_LIMIT });
 
   return (
     <div className="space-y-6">

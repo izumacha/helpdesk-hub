@@ -1033,6 +1033,57 @@ Phase 2 の差別化の本丸であるメール/LINE 取り込みチャネルを
     （`<dt id="...">` と対応する select の `labelledBy="..."`）も、ページ内の
     `FIELD_LABEL_IDS` 定数にまとめ、リテラル文字列の重複を解消した。
 
+#### 4.11 フォローアップ（2026-07-16 #3）: FAQ 一覧取得に上限が無かった
+
+監査で発見したギャップ: `FaqRepository.list`（エージェント向け管理ビュー）と `listPublished`
+（依頼者向け閲覧ビュー、§1.2 フォローアップ）はどちらも `db.faqCandidate.findMany()` を
+上限・ページネーション無しで呼んでおり、テナントの FAQ 候補が何件あっても全件を 1 度に取得して
+いた。CLAUDE.md §8「一覧取得は必ず上限・ページネーションを持たせる（既定件数・最大件数は定数で
+一元管理する）」に反する。他の一覧系メソッド（`TicketRepository`・`NotificationRepository`・
+`SettingsAuditLogRepository`・`TicketHistoryRepository` 等）はいずれも `take`/`limit` を
+持つのに対し、FAQ だけが唯一の例外だった。FAQ 候補は解決済みチケットから継続的に生成される
+性質上（Phase 3 業種テンプレの自動投入も含む）、カテゴリ/拠点のような小規模な管理者設定データとは
+異なり、テナントの運用期間に応じて際限なく増え得るため、実害のある省略だった。
+
+- `FaqRepository`（`src/data/ports/faq-repository.ts`）に `FAQ_LIST_LIMIT`（200 件。
+  `/audit` の `PAGE_LIMIT` と同じ規模感）を追加し、`list`/`listPublished` の契約に
+  `opts: { limit: number }` を追加した（`NotificationRepository.list` と同じ形）。
+- Prisma アダプタ（`take: opts.limit`）・メモリアダプタ（`.slice(0, opts.limit)`、ソート後に
+  適用して「新しい順の先頭 N 件」を保証）の両方に実装した。
+- `/faq` ページ（`src/app/(app)/faq/page.tsx`）の 2 箇所の呼び出しに
+  `{ limit: FAQ_LIST_LIMIT }` を渡すよう変更した。
+- 本フォローアップは「必ず上限を持たせる」という §8 の核を満たす最小限の対応とし、`/audit`・
+  `/quarantine` のようなキーセットページネーション（「さらに読み込む」）は追加していない
+  （`/notifications` ページの既存の「上限付き一覧・追加ページ無し」という設計と同じ扱い。
+  200 件を超えた FAQ 候補・公開済み FAQ にどちらの立場からも到達できなくなるが、
+  それ自体はチケット一覧・監査ログほど高頻度に発生しない性質のデータであるため、まず
+  上限を設けることを優先した。必要性が高まれば `/audit` と同様のページネーションを
+  別途フォローアップとして追加する）。
+- 回帰テスト: `tests/data/faq-repository.memory.test.ts` / `faq-repository.contract.prisma.test.ts`
+  に、`limit` が新しい順に件数を上限化することを検証するテストを追加した。
+- `/code-review ultra` 指摘対応: 複数の独立レビューエージェントが収斂して指摘した以下 3 件を追加修正した。
+  - **アダプタ層に多層防御のクランプが無かった**: 現状の唯一の呼び出し元（`/faq` ページ）は常に
+    `FAQ_LIST_LIMIT` そのものを渡すため実害は無いが、`audit`/`quarantine` の
+    `resolveAuditLimit`（`src/data/adapters/audit-pagination.ts`）が「呼び出し元の指定値を
+    アダプタ側でも上限クランプする」多層防御を持つのに対し、`FaqRepository` の両アダプタは
+    `opts.limit` を無条件に `take`/`slice` へ渡すのみだった。`resolveFaqListLimit(requested)`
+    （`src/data/ports/faq-repository.ts`）を追加し、Prisma/メモリ両アダプタで
+    `take: resolveFaqListLimit(opts.limit)` / `.slice(0, resolveFaqListLimit(opts.limit))`
+    に変更した。将来 Server Action や API がユーザー入力由来の limit をそのまま渡すように
+    なっても、アダプタ層で上限を超えないことを保証する。
+  - **テストが `FAQ_LIST_LIMIT` を使わずリテラル `200` を直書きしていた**: §6「マジック数値を
+    避け単一の参照元に置く」に反し、`audit`/`quarantine` のテストが `AUDIT_MAX_LIMIT` を
+    import する既存の慣習からも外れていた。3 テストファイル（`faq-repository.memory.test.ts`・
+    `faq-repository.contract.prisma.test.ts`・`faq-actions.test.ts`）すべてで
+    `FAQ_LIST_LIMIT` を import して使うよう修正した（新設の limit 上限化テスト自体が使う
+    `{ limit: 1 }` は意図的に小さい値を検証するためのものなので対象外）。
+  - **新設の Prisma 契約テストに createdAt タイの潜在的なフレーキーさがあった**: 新しい順の
+    上限化を検証するテストが、実 DB へ複数のチケット/FAQ 候補を明示的な間隔なしで連続作成して
+    おり、`createdAt`（ミリ秒精度）が同一ミリ秒に揃うと順序アサーションが不安定になり得た。
+    同ファイルの兄弟テスト（メモリアダプタ版）は `setTimeout` で明示的に間隔を空けていたのに対し、
+    この契約テストだけ同種のガードが無い非対称があった。作成のたびに 5ms の間隔を空けるよう
+    修正した。
+
 ### スケジュール感
 
 ```

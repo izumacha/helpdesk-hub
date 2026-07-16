@@ -6,6 +6,8 @@ import { createMemoryContext, type Store } from '@/data/adapters/memory';
 import type { Repos } from '@/data/ports/unit-of-work';
 // レート制限の履歴をテスト間でクリアする内部用関数
 import { __resetRateLimits } from '@/lib/rate-limit';
+// FAQ 一覧取得の既定件数上限 (フォローアップ 2026-07-16 #3)
+import { FAQ_LIST_LIMIT } from '@/data/ports/faq-repository';
 
 // 各テスト前に書き換える "可変" な依存。Action import 前に値を入れる必要がある。
 let store: Store;
@@ -134,7 +136,7 @@ describe('createFaqCandidate', () => {
 
     await createFaqCandidate(ticketId, '質問', '回答');
 
-    const faqs = await repos.faq.list(TENANT);
+    const faqs = await repos.faq.list(TENANT, { limit: FAQ_LIST_LIMIT });
     expect(faqs).toHaveLength(1);
   });
 
@@ -155,7 +157,7 @@ describe('createFaqCandidate', () => {
 
     await createFaqCandidate(ticketId, '質問', '回答');
 
-    const faqs = await repos.faq.list(TENANT);
+    const faqs = await repos.faq.list(TENANT, { limit: FAQ_LIST_LIMIT });
     expect(faqs).toHaveLength(1);
   });
 
@@ -166,7 +168,7 @@ describe('createFaqCandidate', () => {
 
     await createFaqCandidate(ticketId, '質問', '回答');
 
-    const faqs = await repos.faq.list(TENANT);
+    const faqs = await repos.faq.list(TENANT, { limit: FAQ_LIST_LIMIT });
     expect(faqs).toHaveLength(1);
   });
 

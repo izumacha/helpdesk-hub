@@ -9,6 +9,7 @@
 import { describe, beforeAll, afterAll, beforeEach, expect, it } from 'vitest';
 import { PrismaClient } from '@/generated/prisma';
 import { buildPrismaRepos } from '@/data/adapters/prisma';
+import { FAQ_LIST_LIMIT } from '@/data/ports/faq-repository';
 
 const TENANT_A = 'tenant-a';
 const TENANT_B = 'tenant-b';
@@ -94,7 +95,7 @@ describe.runIf(SHOULD_RUN)('FaqRepository (prisma adapter)', () => {
       answer: 'AA',
       tenantId: TENANT_A,
     });
-    const result = await repos.faq.list(TENANT_A);
+    const result = await repos.faq.list(TENANT_A, { limit: FAQ_LIST_LIMIT });
     expect(result).toHaveLength(1);
     expect(result[0].ticket.title).toBe('テナントAのチケット');
     expect(result[0].createdBy.name).toBe('エージェントA');
@@ -130,10 +131,74 @@ describe.runIf(SHOULD_RUN)('FaqRepository (prisma adapter)', () => {
       tenantId: TENANT_A,
     });
 
-    const result = await repos.faq.listPublished(TENANT_A);
+    const result = await repos.faq.listPublished(TENANT_A, { limit: FAQ_LIST_LIMIT });
     expect(result).toEqual([
       { id: published.id, question: '公開済みの質問', answer: '公開済みの回答' },
     ]);
+  });
+
+  // list/listPublished: limit で件数が上限化される (実 DB の take が効くことの確認)
+  // フォローアップ (2026-07-16 #3): 監査で発見したギャップ。§8「一覧取得は必ず上限を持たせる」に
+  // 反し、以前は limit 引数自体が存在せず常に全件返していた
+  it('listとlistPublishedはlimitで新しい順に件数を上限化する', async () => {
+    const repos = buildPrismaRepos(prisma);
+    // FaqCandidate.ticketId はユニーク制約 (1 チケット 1 候補) のため、候補ごとに別チケットを使う
+    let lastPublishedId = '';
+    for (let i = 0; i < 2; i++) {
+      const ticket = await repos.tickets.create({
+        title: `候補用チケット${i}`,
+        body: '本文',
+        priority: 'Medium',
+        creatorId: AGENT_A,
+        categoryId: null,
+        locationId: null,
+        tenantId: TENANT_A,
+      });
+      await repos.faq.create({
+        ticketId: ticket.id,
+        createdById: AGENT_A,
+        question: `候補${i}`,
+        answer: `回答${i}`,
+        tenantId: TENANT_A,
+      });
+      // 実 DB の createdAt はミリ秒精度のため、順序アサーションが同一ミリ秒の
+      // タイに左右されないよう作成タイミングを確実にずらす
+      // (/code-review ultra 指摘対応: memory アダプタ版の同名テストは
+      // setTimeout で明示的にずらしていたが、この契約テストには無かった)
+      await new Promise((r) => setTimeout(r, 5));
+    }
+    for (let i = 0; i < 2; i++) {
+      const ticket = await repos.tickets.create({
+        title: `公開用チケット${i}`,
+        body: '本文',
+        priority: 'Medium',
+        creatorId: AGENT_A,
+        categoryId: null,
+        locationId: null,
+        tenantId: TENANT_A,
+      });
+      const faq = await repos.faq.create({
+        ticketId: ticket.id,
+        createdById: AGENT_A,
+        question: `公開${i}`,
+        answer: `回答${i}`,
+        tenantId: TENANT_A,
+      });
+      await repos.faq.updateStatus(faq.id, { from: 'Candidate', to: 'Published' }, TENANT_A);
+      lastPublishedId = faq.id;
+      // 同一ミリ秒の createdAt タイを避けるため作成タイミングをずらす (上と同じ理由)
+      await new Promise((r) => setTimeout(r, 5));
+    }
+
+    // 全 4 件のうち limit: 1 なら 1 件だけ (最新のもの) が返る
+    const listResult = await repos.faq.list(TENANT_A, { limit: 1 });
+    expect(listResult).toHaveLength(1);
+    expect(listResult[0].question).toBe('公開1');
+
+    // 公開済み 2 件のうち limit: 1 なら 1 件だけ (最新のもの) が返る
+    const publishedResult = await repos.faq.listPublished(TENANT_A, { limit: 1 });
+    expect(publishedResult).toHaveLength(1);
+    expect(publishedResult[0].id).toBe(lastPublishedId);
   });
 
   // updateStatus: 期待状態 (from) が一致していれば tenantId スコープの updateMany が更新し true を返す

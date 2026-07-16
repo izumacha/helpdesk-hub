@@ -1,5 +1,9 @@
 // FAQ リポジトリの契約 (port) と、ドメイン型/ストア関連をインポート
-import type { FaqListItem, FaqRepository } from '@/data/ports/faq-repository';
+import {
+  resolveFaqListLimit,
+  type FaqListItem,
+  type FaqRepository,
+} from '@/data/ports/faq-repository';
 import type { FaqCandidate } from '@/domain/types';
 import { nextId, type Store } from './store';
 
@@ -13,12 +17,14 @@ export function makeFaqRepo(store: Store): FaqRepository {
       return { ...row }; // 破壊防止のため複製して返す
     },
 
-    // 当該テナントの FAQ 候補を新しい順で一覧化 (関連チケット/作成者名を結合)
-    async list(tenantId) {
-      // Map を配列化し、テナントで絞ったうえで作成日時の降順で並べる
+    // 当該テナントの FAQ 候補を新しい順で一覧化 (関連チケット/作成者名を結合)。
+    // opts.limit で取得件数を上限化する (フォローアップ 2026-07-16 #3: §8 一覧取得の上限必須化)
+    async list(tenantId, opts) {
+      // Map を配列化し、テナントで絞ったうえで作成日時の降順で並べ、上限件数で切り詰める
       const rows = [...store.faq.values()]
         .filter((f) => f.tenantId === tenantId)
-        .sort((a, b) => +b.createdAt - +a.createdAt);
+        .sort((a, b) => +b.createdAt - +a.createdAt)
+        .slice(0, resolveFaqListLimit(opts.limit)); // 呼び出し元の指定値をさらにクランプ
       // 関連チケットと作成者を引き当てて結合
       return rows.map<FaqListItem>((f) => {
         const ticket = store.tickets.get(f.ticketId); // 元チケット
@@ -36,11 +42,13 @@ export function makeFaqRepo(store: Store): FaqRepository {
     },
 
     // 当該テナントの公開済み (Published) FAQ を新しい順で一覧化 (依頼者含む全メンバー向け。
-    // 元チケット/作成者は含めない範囲最小化のため質問/回答のみ返す)
-    async listPublished(tenantId) {
+    // 元チケット/作成者は含めない範囲最小化のため質問/回答のみ返す)。
+    // opts.limit で取得件数を上限化する (フォローアップ 2026-07-16 #3: §8 一覧取得の上限必須化)
+    async listPublished(tenantId, opts) {
       return [...store.faq.values()]
         .filter((f) => f.tenantId === tenantId && f.status === 'Published')
         .sort((a, b) => +b.createdAt - +a.createdAt)
+        .slice(0, resolveFaqListLimit(opts.limit)) // 呼び出し元の指定値をさらにクランプ
         .map((f) => ({ id: f.id, question: f.question, answer: f.answer }));
     },
 
