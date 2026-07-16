@@ -88,9 +88,13 @@ export function makeFaqRepo(store: Store): FaqRepository {
     },
 
     // 質問/回答の本文を更新 (tenantId スコープ。テナント不一致なら no-op)
-    async updateContent(id, content, tenantId) {
+    // フォローアップ (2026-07-16 #5): Prisma アダプタと同じ CAS パターン。読み取り時点の
+    // 質問/回答 (expected) と現在の値が一致するときのみ更新し、一致しなければ false を返す
+    async updateContent(id, content, expected, tenantId) {
       const row = store.faq.get(id); // 更新対象を取得
-      if (!row || row.tenantId !== tenantId) return; // 不在 or 他テナントなら何もしない
+      if (!row || row.tenantId !== tenantId) return false; // 不在 or 他テナントなら何もしない
+      // 期待する質問/回答と一致しない (競合) なら更新しない
+      if (row.question !== expected.question || row.answer !== expected.answer) return false;
       // 質問/回答と更新日時を書き換えて保存
       store.faq.set(id, {
         ...row,
@@ -98,6 +102,8 @@ export function makeFaqRepo(store: Store): FaqRepository {
         answer: content.answer,
         updatedAt: new Date(),
       });
+      // 更新できたことを返す
+      return true;
     },
   };
 }

@@ -334,4 +334,33 @@ describe('updateFaqContent', () => {
     expect(reloaded?.question).toBe('他テナントの質問');
     expect(reloaded?.answer).toBe('他テナントの回答');
   });
+
+  // フォローアップ (2026-07-16 #5): updateFaqStatus と同じ check-then-act 競合防止の回帰テスト。
+  // 読み取り時 (findById) と書き込み時の間に別の操作が内容を変えていた場合、無条件更新だと
+  // 後勝ちで上書きされてしまう。条件付き更新で拒否されることを検証する
+  it('読み取り後に内容が変わっていた場合は競合エラーになり後勝ち上書きが成立しない', async () => {
+    const faqId = await seedFaqWithStatus('Candidate');
+    const current = await repos.faq.findById(faqId, TENANT);
+    if (!current) throw new Error('seed missing faq');
+    // 実際の行は既に別の操作で書き換え済み (先行更新)
+    await repos.faq.updateContent(
+      faqId,
+      { question: '先行更新後の質問', answer: '先行更新後の回答' },
+      { question: current.question, answer: current.answer },
+      TENANT,
+    );
+    // findById だけが古いスナップショット (元の質問/回答) を返す状況を作る (TOCTOU の再現)
+    vi.spyOn(repos.faq, 'findById').mockResolvedValueOnce(current);
+    const { updateFaqContent } = await import('@/features/faq/actions/faq-actions');
+
+    // 古い読み取りを前提にした更新は競合として拒否される
+    await expect(updateFaqContent(faqId, '競合した更新', '競合した更新')).rejects.toThrow(
+      /他の操作と競合したため/,
+    );
+
+    // 内容は先行更新後のまま (後勝ち上書きが成立していない)
+    const reloaded = await repos.faq.findById(faqId, TENANT);
+    expect(reloaded?.question).toBe('先行更新後の質問');
+    expect(reloaded?.answer).toBe('先行更新後の回答');
+  });
 });

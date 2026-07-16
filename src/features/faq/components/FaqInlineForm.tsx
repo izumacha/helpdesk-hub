@@ -2,6 +2,8 @@
 
 // React フック (refs/トランジション/ローカル状態)
 import { useRef, useState, useTransition } from 'react';
+// 失敗時にサーバーの最新状態を取り直すためのルーター
+import { useRouter } from 'next/navigation';
 
 // FaqCandidateForm (新規登録) と FaqEditForm (その場編集) は「折りたたみ/展開トグル +
 // 質問・回答 2 つのテキストエリア + 保存/キャンセル」という同型の UI を持つため、
@@ -48,6 +50,8 @@ export function FaqInlineForm({
   onSubmit,
   onSuccess,
 }: Props) {
+  // 失敗時にサーバーの最新状態を取り直すためのルーター
+  const router = useRouter();
   // 展開状態 (true で入力欄を表示、false ではボタンのみ)
   const [open, setOpen] = useState(false);
   // 送信中フラグ + トランジション関数
@@ -85,6 +89,11 @@ export function FaqInlineForm({
       } catch (err) {
         // 失敗時はエラーメッセージを画面表示
         setError(err instanceof Error ? err.message : 'エラーが発生しました');
+        // フォローアップ (2026-07-16 #5): updateFaqContent が check-then-act 競合時に
+        // Error を throw するようになったため、FaqStatusButton/StatusSelect と同じく
+        // サーバーの最新状態を取り直す (エラー時は revalidatePath に到達しないため、
+        // 編集フォームの初期値が古いまま残り続けるのを防ぐ)
+        router.refresh();
       }
     });
   }

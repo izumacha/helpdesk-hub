@@ -278,11 +278,13 @@ describe('FaqRepository (memory)', () => {
       answer: '元の回答',
       tenantId: TENANT_A,
     });
-    await repos.faq.updateContent(
+    const updated = await repos.faq.updateContent(
       faq.id,
       { question: '新しい質問', answer: '新しい回答' },
+      { question: '元の質問', answer: '元の回答' },
       TENANT_A,
     );
+    expect(updated).toBe(true);
     const reloaded = await repos.faq.findById(faq.id, TENANT_A);
     expect(reloaded?.question).toBe('新しい質問');
     expect(reloaded?.answer).toBe('新しい回答');
@@ -298,13 +300,46 @@ describe('FaqRepository (memory)', () => {
       answer: '元の回答',
       tenantId: TENANT_A,
     });
-    await repos.faq.updateContent(
+    const updated = await repos.faq.updateContent(
       faq.id,
       { question: '書き換え試行', answer: '書き換え試行' },
+      { question: '元の質問', answer: '元の回答' },
       TENANT_B,
     );
+    expect(updated).toBe(false);
     const reloaded = await repos.faq.findById(faq.id, TENANT_A);
     expect(reloaded?.question).toBe('元の質問');
     expect(reloaded?.answer).toBe('元の回答');
+  });
+
+  // updateContent: 期待する現在の質問/回答が一致しない場合は更新せず false を返す
+  // (フォローアップ 2026-07-16 #5: updateStatus と同じ check-then-act 競合防止の回帰テスト)
+  it('updateContentは期待する内容が一致しない場合に更新せずfalseを返す', async () => {
+    const ticket = await seedTicketAndAgent(TENANT_A, 'チケット', AGENT_A);
+    const faq = await repos.faq.create({
+      ticketId: ticket.id,
+      createdById: AGENT_A,
+      question: '元の質問',
+      answer: '元の回答',
+      tenantId: TENANT_A,
+    });
+    // 先行する別の操作が既に内容を書き換えた想定
+    await repos.faq.updateContent(
+      faq.id,
+      { question: '先行更新後の質問', answer: '先行更新後の回答' },
+      { question: '元の質問', answer: '元の回答' },
+      TENANT_A,
+    );
+    // 古い読み取り (元の質問/回答) を前提にした更新は失敗し、先行更新の内容のまま変わらない
+    const updated = await repos.faq.updateContent(
+      faq.id,
+      { question: '競合した更新', answer: '競合した更新' },
+      { question: '元の質問', answer: '元の回答' },
+      TENANT_A,
+    );
+    expect(updated).toBe(false);
+    const reloaded = await repos.faq.findById(faq.id, TENANT_A);
+    expect(reloaded?.question).toBe('先行更新後の質問');
+    expect(reloaded?.answer).toBe('先行更新後の回答');
   });
 });

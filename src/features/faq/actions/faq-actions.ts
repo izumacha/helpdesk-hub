@@ -154,12 +154,27 @@ export async function updateFaqContent(faqId: string, question: string, answer: 
   // 見つからない or 他テナントの ID ならエラー
   if (!faq) throw new Error(`${termLabel}が見つかりません`);
 
-  // 質問/回答を更新 (tenantId スコープで where に注入、port 経由)
-  await repos.faq.updateContent(
+  // 質問/回答を更新 (tenantId スコープで where に注入、port 経由)。読み取り時の内容
+  // (faq.question/faq.answer) を期待値として渡し、直前に別の操作が内容を変えていた場合は
+  // 0 件更新 (false) になる (check-then-act 競合による後勝ち上書きを防ぐ。
+  // フォローアップ 2026-07-16 #5: updateFaqStatus と同じ CAS パターンをこのメソッドにも揃える)
+  const updated = await repos.faq.updateContent(
     faqId,
     { question: parsed.data.question, answer: parsed.data.answer },
+    { question: faq.question, answer: faq.answer },
     tenantId,
   );
+  // 更新できなかった場合は原因を切り分けてユーザーに正しい案内を返す
+  if (!updated) {
+    // 再読込して行の有無を確認する (0 件更新は「行が消えた」か「内容が変わった」のどちらか)
+    const latest = await repos.faq.findById(faqId, tenantId);
+    // 行自体が消えていた場合は既存の not-found と同じ文言を返す
+    if (!latest) throw new Error(`${termLabel}が見つかりません`);
+    // 行は残っている = 別の操作が先に内容を変えた競合。最新表示の確認を促す
+    throw new Error(
+      `他の操作と競合したため変更できませんでした。最新の${termLabel}をご確認ください`,
+    );
+  }
   // FAQ 一覧のキャッシュを無効化
   revalidatePath('/faq');
 }
