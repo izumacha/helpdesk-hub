@@ -364,7 +364,7 @@ describe('POST /api/tickets/[id]/comments', () => {
   it('notifies the assignee when a requester comments on an assigned ticket', async () => {
     const { ticketId } = await seed();
     // 担当者を割り当てておく
-    await repos.tickets.updateAssignee(ticketId, AGENT, TENANT);
+    await repos.tickets.updateAssignee(ticketId, { from: null, to: AGENT }, TENANT);
     mockSession = buildSession(REQUESTER, 'requester', TENANT);
     const { POST } = await import('@/app/api/tickets/[id]/comments/route');
     const res = await POST(buildRequest('追加情報です', []), makeParams(ticketId));
@@ -436,7 +436,7 @@ describe('POST /api/tickets/[id]/comments', () => {
       createdAt: now,
       updatedAt: now,
     });
-    await repos.tickets.updateAssignee(ticketId, 'u-agt-2', TENANT);
+    await repos.tickets.updateAssignee(ticketId, { from: null, to: 'u-agt-2' }, TENANT);
     // 投稿者は別エージェント (AGENT) で、依頼者 + 担当者の両方に通知が飛ぶ想定
     mockSession = buildSession(AGENT, 'agent', TENANT);
     const { POST } = await import('@/app/api/tickets/[id]/comments/route');
@@ -454,7 +454,7 @@ describe('POST /api/tickets/[id]/comments', () => {
   it('does not notify the commenter themselves', async () => {
     const { ticketId } = await seed();
     // 担当者と投稿者が同一 (AGENT)
-    await repos.tickets.updateAssignee(ticketId, AGENT, TENANT);
+    await repos.tickets.updateAssignee(ticketId, { from: null, to: AGENT }, TENANT);
     mockSession = buildSession(AGENT, 'agent', TENANT);
     const { POST } = await import('@/app/api/tickets/[id]/comments/route');
     const res = await POST(buildRequest('自分のコメント', []), makeParams(ticketId));

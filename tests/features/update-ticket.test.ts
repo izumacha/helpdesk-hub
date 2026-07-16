@@ -754,6 +754,40 @@ describe('updateTicketAssignee (provider-agnostic)', () => {
     const t = await repos.tickets.findById(ticketId, TENANT);
     expect(t?.assigneeId).toBeNull();
   });
+
+  // フォローアップ (2026-07-16): updateTicketStatus/updatePriority と同じ CAS (check-then-act)
+  // 保護を担当者変更にも追加した回帰テスト。読み取り後に別操作が担当者を変えていた場合、
+  // 古い担当者判定のまま上書きされず競合エラーになることを確認する
+  it('読み取り後に担当者が変わっていた場合は競合エラーになり上書きしない', async () => {
+    const { ticketId } = await seed();
+    // 実際の行は既に u-agt-2 (先行操作が割当済み)
+    await repos.tickets.updateAssignee(ticketId, { from: null, to: 'u-agt-2' }, TENANT);
+    // Map#get の最初の呼び出しだけ古いスナップショット (未割当) を返すようにする (TOCTOU の再現)。
+    // 2 回目以降 (updateAssignee 内の where 判定用の再読み込み) は実際の値 (u-agt-2) を返す
+    let callCount = 0;
+    const originalGet = store.tickets.get.bind(store.tickets);
+    vi.spyOn(store.tickets, 'get').mockImplementation((id: string) => {
+      callCount += 1;
+      const real = originalGet(id);
+      if (callCount === 1 && id === ticketId && real) {
+        return { ...real, assigneeId: null };
+      }
+      return real;
+    });
+    const { updateTicketAssignee } = await import('@/features/tickets/actions/update-ticket');
+
+    await expect(updateTicketAssignee(ticketId, 'u-agt-1')).rejects.toThrow(
+      /他の操作と競合したため/,
+    );
+
+    // 担当者は先行操作 (u-agt-2) のまま変化せず、履歴・通知も作られていない
+    // (先行の repos.tickets.updateAssignee 直呼びは Server Action を経ないため履歴を作らない)
+    vi.restoreAllMocks();
+    const t = await repos.tickets.findById(ticketId, TENANT);
+    expect(t?.assigneeId).toBe('u-agt-2');
+    expect([...store.histories.values()]).toHaveLength(0);
+    expect([...store.notifications.values()]).toHaveLength(0);
+  });
 });
 
 // フォローアップ (2026-07-14 #4): 監査で発見したギャップの解消。メール/LINE 取り込みチケットは
@@ -852,6 +886,41 @@ describe('updateTicketCategory (provider-agnostic)', () => {
       /エージェントまたは管理者/,
     );
   });
+
+  // フォローアップ (2026-07-16): updateTicketAssignee と同じ CAS 保護の回帰テスト。
+  // 読み取り後に別操作がカテゴリを変えていた場合、古いカテゴリ判定のまま上書きされず
+  // 競合エラーになることを確認する
+  it('読み取り後にカテゴリが変わっていた場合は競合エラーになり上書きしない', async () => {
+    const { ticketId } = await seed();
+    store.categories.set('cat-2', {
+      id: 'cat-2',
+      name: '請求',
+      createdAt: new Date(),
+      tenantId: TENANT,
+    });
+    // 実際の行は既に cat-2 (先行操作が変更済み。seed() の初期値は cat-1)
+    await repos.tickets.updateCategory(ticketId, { from: 'cat-1', to: 'cat-2' }, TENANT);
+    // Map#get の最初の呼び出しだけ古いスナップショット (cat-1) を返すようにする (TOCTOU の再現)
+    let callCount = 0;
+    const originalGet = store.tickets.get.bind(store.tickets);
+    vi.spyOn(store.tickets, 'get').mockImplementation((id: string) => {
+      callCount += 1;
+      const real = originalGet(id);
+      if (callCount === 1 && id === ticketId && real) {
+        return { ...real, categoryId: 'cat-1' };
+      }
+      return real;
+    });
+    const { updateTicketCategory } = await import('@/features/tickets/actions/update-ticket');
+
+    await expect(updateTicketCategory(ticketId, null)).rejects.toThrow(/他の操作と競合したため/);
+
+    // カテゴリは先行操作 (cat-2) のまま変化せず、履歴も作られていない
+    vi.restoreAllMocks();
+    const t = await repos.tickets.findById(ticketId, TENANT);
+    expect(t?.categoryId).toBe('cat-2');
+    expect([...store.histories.values()]).toHaveLength(0);
+  });
 });
 
 // フォローアップ (2026-07-14 #4): 同上。拠点は Lite/Pro 両モードで使える概念なので mode 強制は無い
@@ -926,6 +995,39 @@ describe('updateTicketLocation (provider-agnostic)', () => {
     await expect(updateTicketLocation(ticketId, location.id)).rejects.toThrow(
       /エージェントまたは管理者/,
     );
+  });
+
+  // フォローアップ (2026-07-16): updateTicketAssignee と同じ CAS 保護の回帰テスト。
+  // 読み取り後に別操作が拠点を変えていた場合、古い拠点判定のまま上書きされず
+  // 競合エラーになることを確認する
+  it('読み取り後に拠点が変わっていた場合は競合エラーになり上書きしない', async () => {
+    const { ticketId } = await seed();
+    const locationA = await repos.locations.create({ tenantId: TENANT, name: '渋谷本店' });
+    const locationB = await repos.locations.create({ tenantId: TENANT, name: '大阪支店' });
+    // 実際の行は既に locationA (先行操作が設定済み)
+    await repos.tickets.updateLocation(ticketId, { from: null, to: locationA.id }, TENANT);
+    // Map#get の最初の呼び出しだけ古いスナップショット (未設定) を返すようにする (TOCTOU の再現)
+    let callCount = 0;
+    const originalGet = store.tickets.get.bind(store.tickets);
+    vi.spyOn(store.tickets, 'get').mockImplementation((id: string) => {
+      callCount += 1;
+      const real = originalGet(id);
+      if (callCount === 1 && id === ticketId && real) {
+        return { ...real, locationId: null };
+      }
+      return real;
+    });
+    const { updateTicketLocation } = await import('@/features/tickets/actions/update-ticket');
+
+    await expect(updateTicketLocation(ticketId, locationB.id)).rejects.toThrow(
+      /他の操作と競合したため/,
+    );
+
+    // 拠点は先行操作 (locationA) のまま変化せず、履歴も作られていない
+    vi.restoreAllMocks();
+    const t = await repos.tickets.findById(ticketId, TENANT);
+    expect(t?.locationId).toBe(locationA.id);
+    expect([...store.histories.values()]).toHaveLength(0);
   });
 });
 

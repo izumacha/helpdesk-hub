@@ -559,8 +559,19 @@ export async function updateTicketAssignee(ticketId: string, newAssigneeId: stri
 
   // 担当者更新・履歴記録・通知作成を 1 トランザクションで実行
   await uow.run(async (r) => {
-    // 担当者を差し替え (解除は null。tenantId スコープで where に注入)
-    await r.tickets.updateAssignee(ticketId, newAssigneeId, tenantId);
+    // 担当者を差し替え (解除は null。tenantId スコープで where に注入)。読み取り時の担当者
+    // (ticket.assigneeId) を期待値として渡し、直前に別の操作が担当者を変えていた場合は
+    // 0 件更新 (false) になる (check-then-act 競合で古い割当が後勝ちして history の
+    // oldValue も不正確になるのを防ぐ。フォローアップ 2026-07-16: updateTicketStatus 等に
+    // 既に導入済みの契約を担当者変更にも適用した)
+    const updated = await r.tickets.updateAssignee(
+      ticketId,
+      { from: ticket.assigneeId, to: newAssigneeId },
+      tenantId,
+    );
+    if (!updated) {
+      throw new Error(TICKET_CONFLICT_MESSAGE);
+    }
     // 変更履歴を残す
     await r.history.record({
       ticketId,
@@ -707,8 +718,17 @@ export async function updateTicketCategory(ticketId: string, newCategoryId: stri
 
   // カテゴリ更新・履歴記録を 1 トランザクションで実行
   await uow.run(async (r) => {
-    // カテゴリを差し替え (解除は null。tenantId スコープで where に注入)
-    await r.tickets.updateCategory(ticketId, effectiveCategoryId, tenantId);
+    // カテゴリを差し替え (解除は null。tenantId スコープで where に注入)。読み取り時のカテゴリ
+    // (ticket.categoryId) を期待値として渡し、他の操作と競合していれば 0 件更新 (false) になる
+    // (updateTicketAssignee と同じ理由。フォローアップ 2026-07-16)
+    const updated = await r.tickets.updateCategory(
+      ticketId,
+      { from: ticket.categoryId, to: effectiveCategoryId },
+      tenantId,
+    );
+    if (!updated) {
+      throw new Error(TICKET_CONFLICT_MESSAGE);
+    }
     // 変更履歴を残す
     await r.history.record({
       ticketId,
@@ -756,8 +776,17 @@ export async function updateTicketLocation(ticketId: string, newLocationId: stri
 
   // 拠点更新・履歴記録を 1 トランザクションで実行
   await uow.run(async (r) => {
-    // 拠点を差し替え (解除は null。tenantId スコープで where に注入)
-    await r.tickets.updateLocation(ticketId, newLocationId, tenantId);
+    // 拠点を差し替え (解除は null。tenantId スコープで where に注入)。読み取り時の拠点
+    // (ticket.locationId) を期待値として渡し、他の操作と競合していれば 0 件更新 (false) になる
+    // (updateTicketAssignee と同じ理由。フォローアップ 2026-07-16)
+    const updated = await r.tickets.updateLocation(
+      ticketId,
+      { from: ticket.locationId, to: newLocationId },
+      tenantId,
+    );
+    if (!updated) {
+      throw new Error(TICKET_CONFLICT_MESSAGE);
+    }
     // 変更履歴を残す
     await r.history.record({
       ticketId,

@@ -278,19 +278,35 @@ export function makeTicketRepo(db: PrismaLike): TicketRepository {
       return result.count > 0;
     },
 
-    // 担当者を更新 (tenantId スコープ、null で未アサインに戻す)
-    async updateAssignee(id, assigneeId, tenantId) {
-      await db.ticket.updateMany({ where: { id, tenantId }, data: { assigneeId } });
+    // 担当者を更新 (tenantId スコープ、null で未アサインに戻す)。updateStatus と同じく
+    // 期待する現在担当者 transition.from を where 条件に含めた原子的更新にし、
+    // check-then-act 競合時 (0 件更新) は false を返す (フォローアップ 2026-07-16)
+    async updateAssignee(id, transition, tenantId) {
+      const result = await db.ticket.updateMany({
+        where: { id, tenantId, assigneeId: transition.from }, // 期待担当者が一致するときのみ更新
+        data: { assigneeId: transition.to },
+      });
+      return result.count > 0;
     },
 
-    // カテゴリを更新 (tenantId スコープ、null で未分類に戻す。フォローアップ 2026-07-14 #4)
-    async updateCategory(id, categoryId, tenantId) {
-      await db.ticket.updateMany({ where: { id, tenantId }, data: { categoryId } });
+    // カテゴリを更新 (tenantId スコープ、null で未分類に戻す。フォローアップ 2026-07-14 #4)。
+    // updateAssignee と同じく フォローアップ 2026-07-16 で CAS 保護を追加した
+    async updateCategory(id, transition, tenantId) {
+      const result = await db.ticket.updateMany({
+        where: { id, tenantId, categoryId: transition.from }, // 期待カテゴリが一致するときのみ更新
+        data: { categoryId: transition.to },
+      });
+      return result.count > 0;
     },
 
-    // 拠点を更新 (tenantId スコープ、null で未指定に戻す。フォローアップ 2026-07-14 #4)
-    async updateLocation(id, locationId, tenantId) {
-      await db.ticket.updateMany({ where: { id, tenantId }, data: { locationId } });
+    // 拠点を更新 (tenantId スコープ、null で未指定に戻す。フォローアップ 2026-07-14 #4)。
+    // updateAssignee と同じく フォローアップ 2026-07-16 で CAS 保護を追加した
+    async updateLocation(id, transition, tenantId) {
+      const result = await db.ticket.updateMany({
+        where: { id, tenantId, locationId: transition.from }, // 期待拠点が一致するときのみ更新
+        data: { locationId: transition.to },
+      });
+      return result.count > 0;
     },
 
     // エスカレーション扱いに更新 (tenantId スコープ)。期待する現在状態 expectedStatus を where 条件に

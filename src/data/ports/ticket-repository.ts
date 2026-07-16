@@ -208,13 +208,31 @@ export interface TicketRepository {
     dueDates: { firstResponseDueAt: Date | null; resolutionDueAt: Date | null },
     tenantId: string,
   ): Promise<boolean>;
-  // 担当者更新 (tenantId スコープ。null で未アサイン)
-  updateAssignee(id: string, assigneeId: string | null, tenantId: string): Promise<void>;
+  // 担当者更新 (tenantId スコープ。null で未アサイン)。期待する現在担当者 transition.from を
+  // where 条件に含めた原子的更新で、check-then-act 競合時 (0 件更新) は false を返す
+  // (updateStatus/updatePriority/markEscalated と同じ契約。フォローアップ 2026-07-16:
+  // 担当者・カテゴリ・拠点だけこの保護が無く、2 つの変更が競合すると片方が静かに失われた
+  // うえ history の oldValue も不正確になり得たギャップの解消)
+  updateAssignee(
+    id: string,
+    transition: { from: string | null; to: string | null },
+    tenantId: string,
+  ): Promise<boolean>;
   // カテゴリ更新 (tenantId スコープ。null で未分類。フォローアップ 2026-07-14 #4:
-  // メール/LINE 取り込みチケットの事後変更を可能にするために追加)
-  updateCategory(id: string, categoryId: string | null, tenantId: string): Promise<void>;
-  // 拠点更新 (tenantId スコープ。null で未指定。フォローアップ 2026-07-14 #4: 同上)
-  updateLocation(id: string, locationId: string | null, tenantId: string): Promise<void>;
+  // メール/LINE 取り込みチケットの事後変更を可能にするために追加)。updateAssignee と同じく
+  // フォローアップ 2026-07-16 で CAS 保護を追加した
+  updateCategory(
+    id: string,
+    transition: { from: string | null; to: string | null },
+    tenantId: string,
+  ): Promise<boolean>;
+  // 拠点更新 (tenantId スコープ。null で未指定。フォローアップ 2026-07-14 #4: 同上)。
+  // updateAssignee と同じく フォローアップ 2026-07-16 で CAS 保護を追加した
+  updateLocation(
+    id: string,
+    transition: { from: string | null; to: string | null },
+    tenantId: string,
+  ): Promise<boolean>;
   // エスカレーション状態にする (tenantId スコープ)。期待する現在状態 expectedStatus を where 条件に
   // 含めた原子的更新で、check-then-act 競合時は false を返す (updateStatus と同じ契約。
   // フォローアップ 2026-07-15 #2)
