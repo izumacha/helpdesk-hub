@@ -3,12 +3,14 @@ import type { Prisma } from '@/generated/prisma';
 // 全ステータスを反復するためドメイン型をインポート
 import type { TicketStatus } from '@/domain/types';
 // チケットリポジトリ契約と関連型をインポート
-import type {
-  AssigneeWorkloadRow,
-  DashboardStats,
-  QualityMetrics,
-  TicketListFilter,
-  TicketRepository,
+import {
+  type AssigneeWorkloadRow,
+  type DashboardStats,
+  type QualityMetrics,
+  type TicketListFilter,
+  type TicketRepository,
+  TICKET_DETAIL_COMMENTS_LIMIT,
+  TICKET_DETAIL_HISTORY_LIMIT,
 } from '@/data/ports/ticket-repository';
 // Prisma 行 → ドメイン型のマッパー関数群
 import {
@@ -95,18 +97,27 @@ export function makeTicketRepo(db: PrismaLike): TicketRepository {
         where: { id, tenantId },
         include: {
           ...REFS_INCLUDE, // 起票者/担当者/カテゴリ
-          // コメントは古い順に、投稿者名と添付一覧を JOIN
+          // コメントは直近 (最新) TICKET_DETAIL_COMMENTS_LIMIT 件を新しい順に取得する
+          // (フォローアップ 2026-07-16 #4: §8 一覧取得の上限必須化。長期化したチケットで
+          // コメントが無制限に積み上がるのを防ぐ)。取得後に古い順へ並べ替えて返す
+          // (下の整形処理を参照。表示上の「古い順」は維持したまま、直近の会話を優先する)。
+          // /code-review ultra 指摘対応: createdAt だけの orderBy だと同時刻タイの際に
+          // 「上限のどちら側に切り詰められるか」が不定になり得るため、id を第 2 キーにして
+          // 決定的な並び順を保証する (audit のキーセットページネーションと同じ考え方)
           comments: {
-            orderBy: { createdAt: 'asc' },
+            orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+            take: TICKET_DETAIL_COMMENTS_LIMIT,
             include: {
               author: { select: { id: true, name: true } },
               // 各コメントに紐づく添付 (古い順)
               attachments: { orderBy: { createdAt: 'asc' } },
             },
           },
-          // 履歴は新しい順に、変更者名を JOIN
+          // 履歴は直近 (最新) TICKET_DETAIL_HISTORY_LIMIT 件を新しい順に取得する
+          // (フォローアップ 2026-07-16 #4: 同上。id を第 2 キーにする理由も上記コメントと同じ)
           histories: {
-            orderBy: { createdAt: 'desc' },
+            orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+            take: TICKET_DETAIL_HISTORY_LIMIT,
             include: { changedBy: { select: { id: true, name: true } } },
           },
           // 紐づく FAQ 候補 (存在すれば ID のみ)
@@ -116,6 +127,11 @@ export function makeTicketRepo(db: PrismaLike): TicketRepository {
             where: { commentId: null },
             orderBy: { createdAt: 'asc' },
           },
+          // コメント/履歴の切り詰め前の総数 (上の include とは別に集計するため 1 クエリで同時取得できる)。
+          // /code-review ultra 指摘対応: comments.length/histories.length をそのまま件数表示に使うと
+          // 上限超過時に画面が実際より少ない件数を表示し、かつ切り詰められたことも伝わらないため、
+          // 総数を別途保持する
+          _count: { select: { comments: true, histories: true } },
         },
       });
       // チケットが存在しなければ null を返す
@@ -123,11 +139,15 @@ export function makeTicketRepo(db: PrismaLike): TicketRepository {
       // 取得結果を TicketDetail 形式に整形
       return {
         ...toTicketWithRefs(row),
-        comments: row.comments.map((c) => ({
+        // DB へは直近上限件数を新しい順で問い合わせたため (フォローアップ 2026-07-16 #4)、
+        // 表示契約である「古い順」に戻すためここで反転する
+        comments: [...row.comments].reverse().map((c) => ({
           ...toComment(c),
           author: toUserSummary(c.author),
           attachments: c.attachments.map(toAttachmentSummary), // 各コメントの添付一覧
         })),
+        commentCount: row._count.comments, // 切り詰め前の総コメント数
+        historyCount: row._count.histories, // 切り詰め前の総履歴数
         histories: row.histories.map((h) => ({
           ...toHistory(h),
           changedBy: toUserSummary(h.changedBy),

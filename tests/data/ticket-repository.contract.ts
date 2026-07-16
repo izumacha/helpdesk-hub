@@ -13,6 +13,11 @@ import { describe, expect, it, beforeEach } from 'vitest';
 import type { Repos, UnitOfWork } from '@/data/ports/unit-of-work';
 // シード返り値で使うユーザー型
 import type { User } from '@/domain/types';
+// findByIdWithDetail のコメント/履歴上限 (フォローアップ 2026-07-16 #4)
+import {
+  TICKET_DETAIL_COMMENTS_LIMIT,
+  TICKET_DETAIL_HISTORY_LIMIT,
+} from '@/data/ports/ticket-repository';
 
 // 既定で使うテナント ID (旧テストは単一テナントを前提に書かれているのでここで共通化)
 const TENANT_ID = 'default-tenant';
@@ -1115,6 +1120,78 @@ export function runTicketRepositoryContract(
       // 優先度・期限は変化していない (更新前の Low のまま)
       const after = await ctx.repos.tickets.findById(ticket.id, TENANT_ID);
       expect(after?.priority).toBe('Low');
+    });
+
+    // フォローアップ (2026-07-16 #4): findByIdWithDetail のネストした include (comments/histories)
+    // に上限が無く、CLAUDE.md §8「一覧取得は必ず上限を持たせる」に反していたギャップの回帰テスト。
+    // この 2 件は実行時間の都合上、上限をわずかに超える件数だけを作成して検証する
+    describe('findByIdWithDetail のコメント/履歴上限 (フォローアップ 2026-07-16 #4)', () => {
+      // 上限をどれだけ超えて作成するか (両テストで共有する。§6 マジック数値の重複を避ける)
+      const OVERFLOW = 3;
+      // コメントは直近 (最新) TICKET_DETAIL_COMMENTS_LIMIT 件のみを、表示契約どおり古い順で返す
+      it('コメントは直近 TICKET_DETAIL_COMMENTS_LIMIT 件のみを古い順で返す', async () => {
+        const { requester, categoryId } = await ctx.seedBasicFixture();
+        const ticket = await ctx.repos.tickets.create({
+          title: 't',
+          body: 'b',
+          priority: 'Low',
+          creatorId: requester.id,
+          categoryId,
+          tenantId: TENANT_ID,
+        });
+        // 上限を 3 件超える数のコメントを、本文に連番を埋め込んで順に作成する
+        const total = TICKET_DETAIL_COMMENTS_LIMIT + OVERFLOW;
+        for (let i = 0; i < total; i++) {
+          await ctx.repos.comments.create({
+            ticketId: ticket.id,
+            authorId: requester.id,
+            body: `comment-${i}`,
+            tenantId: TENANT_ID,
+          });
+          // 実 DB の createdAt はミリ秒精度のため、同時刻タイで順序が不定にならないよう
+          // 作成タイミングを確実にずらす (メモリアダプタでは Map の挿入順で安定ソートされるため
+          // 本来不要だが、Prisma アダプタと同じ契約テストを共有するため両方に適用する)
+          await new Promise((r) => setTimeout(r, 5));
+        }
+
+        const detail = await ctx.repos.tickets.findByIdWithDetail(ticket.id, TENANT_ID);
+        // 直近 (最新) の TICKET_DETAIL_COMMENTS_LIMIT 件だけが残る (先頭 3 件が切り捨てられる)
+        expect(detail?.comments).toHaveLength(TICKET_DETAIL_COMMENTS_LIMIT);
+        expect(detail?.comments[0].body).toBe('comment-3');
+        expect(detail?.comments[detail.comments.length - 1].body).toBe(`comment-${total - 1}`);
+      });
+
+      // 履歴は直近 (最新) TICKET_DETAIL_HISTORY_LIMIT 件のみを新しい順で返す
+      it('履歴は直近 TICKET_DETAIL_HISTORY_LIMIT 件のみを新しい順で返す', async () => {
+        const { requester, categoryId } = await ctx.seedBasicFixture();
+        const ticket = await ctx.repos.tickets.create({
+          title: 't',
+          body: 'b',
+          priority: 'Low',
+          creatorId: requester.id,
+          categoryId,
+          tenantId: TENANT_ID,
+        });
+        // 上限を 3 件超える数の履歴を、newValue に連番を埋め込んで順に記録する
+        const total = TICKET_DETAIL_HISTORY_LIMIT + OVERFLOW;
+        for (let i = 0; i < total; i++) {
+          await ctx.repos.history.record({
+            ticketId: ticket.id,
+            changedById: requester.id,
+            field: 'priority',
+            oldValue: null,
+            newValue: `v${i}`,
+          });
+          // コメントのテストと同じ理由でタイミングをずらす
+          await new Promise((r) => setTimeout(r, 5));
+        }
+
+        const detail = await ctx.repos.tickets.findByIdWithDetail(ticket.id, TENANT_ID);
+        // 直近 (最新) の TICKET_DETAIL_HISTORY_LIMIT 件だけが残り、新しい順に並ぶ
+        expect(detail?.histories).toHaveLength(TICKET_DETAIL_HISTORY_LIMIT);
+        expect(detail?.histories[0].newValue).toBe(`v${total - 1}`);
+        expect(detail?.histories[detail.histories.length - 1].newValue).toBe('v3');
+      });
     });
   });
 }
