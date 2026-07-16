@@ -9,6 +9,7 @@
 import { describe, beforeAll, afterAll, beforeEach, expect, it } from 'vitest';
 import { PrismaClient } from '@/generated/prisma';
 import { buildPrismaRepos } from '@/data/adapters/prisma';
+import { FAQ_LIST_LIMIT } from '@/data/ports/faq-repository';
 
 const TENANT_A = 'tenant-a';
 const TENANT_B = 'tenant-b';
@@ -94,7 +95,7 @@ describe.runIf(SHOULD_RUN)('FaqRepository (prisma adapter)', () => {
       answer: 'AA',
       tenantId: TENANT_A,
     });
-    const result = await repos.faq.list(TENANT_A, { limit: 200 });
+    const result = await repos.faq.list(TENANT_A, { limit: FAQ_LIST_LIMIT });
     expect(result).toHaveLength(1);
     expect(result[0].ticket.title).toBe('テナントAのチケット');
     expect(result[0].createdBy.name).toBe('エージェントA');
@@ -130,7 +131,7 @@ describe.runIf(SHOULD_RUN)('FaqRepository (prisma adapter)', () => {
       tenantId: TENANT_A,
     });
 
-    const result = await repos.faq.listPublished(TENANT_A, { limit: 200 });
+    const result = await repos.faq.listPublished(TENANT_A, { limit: FAQ_LIST_LIMIT });
     expect(result).toEqual([
       { id: published.id, question: '公開済みの質問', answer: '公開済みの回答' },
     ]);
@@ -160,6 +161,11 @@ describe.runIf(SHOULD_RUN)('FaqRepository (prisma adapter)', () => {
         answer: `回答${i}`,
         tenantId: TENANT_A,
       });
+      // 実 DB の createdAt はミリ秒精度のため、順序アサーションが同一ミリ秒の
+      // タイに左右されないよう作成タイミングを確実にずらす
+      // (/code-review ultra 指摘対応: memory アダプタ版の同名テストは
+      // setTimeout で明示的にずらしていたが、この契約テストには無かった)
+      await new Promise((r) => setTimeout(r, 5));
     }
     for (let i = 0; i < 2; i++) {
       const ticket = await repos.tickets.create({
@@ -180,6 +186,8 @@ describe.runIf(SHOULD_RUN)('FaqRepository (prisma adapter)', () => {
       });
       await repos.faq.updateStatus(faq.id, { from: 'Candidate', to: 'Published' }, TENANT_A);
       lastPublishedId = faq.id;
+      // 同一ミリ秒の createdAt タイを避けるため作成タイミングをずらす (上と同じ理由)
+      await new Promise((r) => setTimeout(r, 5));
     }
 
     // 全 4 件のうち limit: 1 なら 1 件だけ (最新のもの) が返る

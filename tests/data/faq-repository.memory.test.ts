@@ -6,6 +6,7 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { createMemoryContext, type Store } from '@/data/adapters/memory';
 import type { Repos } from '@/data/ports/unit-of-work';
+import { FAQ_LIST_LIMIT } from '@/data/ports/faq-repository';
 
 const TENANT_A = 'tenant-a';
 const TENANT_B = 'tenant-b';
@@ -94,7 +95,7 @@ describe('FaqRepository (memory)', () => {
       tenantId: TENANT_B,
     });
 
-    const result = await repos.faq.list(TENANT_A, { limit: 200 });
+    const result = await repos.faq.list(TENANT_A, { limit: FAQ_LIST_LIMIT });
     expect(result).toHaveLength(1);
     expect(result[0].ticket.title).toBe('テナントAの問い合わせ');
     expect(result[0].createdBy.name).toBe(AGENT_A);
@@ -119,7 +120,7 @@ describe('FaqRepository (memory)', () => {
       answer: 'A2',
       tenantId: TENANT_A,
     });
-    const result = await repos.faq.list(TENANT_A, { limit: 200 });
+    const result = await repos.faq.list(TENANT_A, { limit: FAQ_LIST_LIMIT });
     expect(result.map((f) => f.id)).toEqual([second.id, first.id]);
   });
 
@@ -194,7 +195,7 @@ describe('FaqRepository (memory)', () => {
     });
     await repos.faq.updateStatus(publishedB.id, { from: 'Candidate', to: 'Published' }, TENANT_B);
 
-    const result = await repos.faq.listPublished(TENANT_A, { limit: 200 });
+    const result = await repos.faq.listPublished(TENANT_A, { limit: FAQ_LIST_LIMIT });
     expect(result).toHaveLength(1);
     expect(result[0]).toEqual({
       id: published.id,

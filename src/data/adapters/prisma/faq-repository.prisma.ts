@@ -1,5 +1,9 @@
 // FAQ リポジトリの契約 (port)、マッパー、Prisma 共通型をインポート
-import type { FaqListItem, FaqRepository } from '@/data/ports/faq-repository';
+import {
+  resolveFaqListLimit,
+  type FaqListItem,
+  type FaqRepository,
+} from '@/data/ports/faq-repository';
 import { toFaq } from './mappers';
 import type { PrismaLike } from './types';
 
@@ -18,7 +22,7 @@ export function makeFaqRepo(db: PrismaLike): FaqRepository {
       const rows = await db.faqCandidate.findMany({
         where: { tenantId }, // テナントスコープ (必須)
         orderBy: { createdAt: 'desc' }, // 新しい順
-        take: opts.limit, // 件数上限
+        take: resolveFaqListLimit(opts.limit), // 件数上限 (呼び出し元の指定値をさらにクランプ)
         include: {
           // 関連チケットの最小情報を JOIN
           ticket: { select: { id: true, title: true } },
@@ -42,7 +46,7 @@ export function makeFaqRepo(db: PrismaLike): FaqRepository {
       return db.faqCandidate.findMany({
         where: { tenantId, status: 'Published' }, // テナントスコープ + 公開済みのみ
         orderBy: { createdAt: 'desc' }, // 新しい順
-        take: opts.limit, // 件数上限
+        take: resolveFaqListLimit(opts.limit), // 件数上限 (呼び出し元の指定値をさらにクランプ)
         select: { id: true, question: true, answer: true }, // 質問/回答/IDのみ取得 (範囲最小化)
       });
     },

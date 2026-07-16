@@ -8,6 +8,16 @@ import type { FaqCandidate, FaqStatus } from '@/domain/types';
 // audit ログの PAGE_LIMIT (200 件) と同じ規模感に揃える
 export const FAQ_LIST_LIMIT = 200;
 
+// 呼び出し側が指定した limit を FAQ_LIST_LIMIT 以下にクランプする。
+// /code-review ultra 指摘対応: 現状の唯一の呼び出し元 (/faq ページ) は常に FAQ_LIST_LIMIT
+// そのものを渡すため実害はないが、audit/quarantine の `resolveAuditLimit`
+// （`src/data/adapters/audit-pagination.ts`）と同じく、将来 Server Action や API が
+// ユーザー入力由来の limit をそのまま渡すようになっても Prisma/メモリ両アダプタ側で
+// 無制限クエリにならないよう、アダプタ層でも下限として機能させる (fail-closed の多層防御)
+export function resolveFaqListLimit(requested: number): number {
+  return Math.min(requested, FAQ_LIST_LIMIT);
+}
+
 // FAQ 候補を新規作成するときの入力値
 export interface CreateFaqInput {
   ticketId: string; // 元となったチケット ID

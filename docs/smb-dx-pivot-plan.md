@@ -1061,6 +1061,28 @@ Phase 2 の差別化の本丸であるメール/LINE 取り込みチャネルを
   別途フォローアップとして追加する）。
 - 回帰テスト: `tests/data/faq-repository.memory.test.ts` / `faq-repository.contract.prisma.test.ts`
   に、`limit` が新しい順に件数を上限化することを検証するテストを追加した。
+- `/code-review ultra` 指摘対応: 複数の独立レビューエージェントが収斂して指摘した以下 3 件を追加修正した。
+  - **アダプタ層に多層防御のクランプが無かった**: 現状の唯一の呼び出し元（`/faq` ページ）は常に
+    `FAQ_LIST_LIMIT` そのものを渡すため実害は無いが、`audit`/`quarantine` の
+    `resolveAuditLimit`（`src/data/adapters/audit-pagination.ts`）が「呼び出し元の指定値を
+    アダプタ側でも上限クランプする」多層防御を持つのに対し、`FaqRepository` の両アダプタは
+    `opts.limit` を無条件に `take`/`slice` へ渡すのみだった。`resolveFaqListLimit(requested)`
+    （`src/data/ports/faq-repository.ts`）を追加し、Prisma/メモリ両アダプタで
+    `take: resolveFaqListLimit(opts.limit)` / `.slice(0, resolveFaqListLimit(opts.limit))`
+    に変更した。将来 Server Action や API がユーザー入力由来の limit をそのまま渡すように
+    なっても、アダプタ層で上限を超えないことを保証する。
+  - **テストが `FAQ_LIST_LIMIT` を使わずリテラル `200` を直書きしていた**: §6「マジック数値を
+    避け単一の参照元に置く」に反し、`audit`/`quarantine` のテストが `AUDIT_MAX_LIMIT` を
+    import する既存の慣習からも外れていた。3 テストファイル（`faq-repository.memory.test.ts`・
+    `faq-repository.contract.prisma.test.ts`・`faq-actions.test.ts`）すべてで
+    `FAQ_LIST_LIMIT` を import して使うよう修正した（新設の limit 上限化テスト自体が使う
+    `{ limit: 1 }` は意図的に小さい値を検証するためのものなので対象外）。
+  - **新設の Prisma 契約テストに createdAt タイの潜在的なフレーキーさがあった**: 新しい順の
+    上限化を検証するテストが、実 DB へ複数のチケット/FAQ 候補を明示的な間隔なしで連続作成して
+    おり、`createdAt`（ミリ秒精度）が同一ミリ秒に揃うと順序アサーションが不安定になり得た。
+    同ファイルの兄弟テスト（メモリアダプタ版）は `setTimeout` で明示的に間隔を空けていたのに対し、
+    この契約テストだけ同種のガードが無い非対称があった。作成のたびに 5ms の間隔を空けるよう
+    修正した。
 
 ### スケジュール感
 

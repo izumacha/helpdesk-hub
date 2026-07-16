@@ -1,5 +1,9 @@
 // FAQ リポジトリの契約 (port) と、ドメイン型/ストア関連をインポート
-import type { FaqListItem, FaqRepository } from '@/data/ports/faq-repository';
+import {
+  resolveFaqListLimit,
+  type FaqListItem,
+  type FaqRepository,
+} from '@/data/ports/faq-repository';
 import type { FaqCandidate } from '@/domain/types';
 import { nextId, type Store } from './store';
 
@@ -20,7 +24,7 @@ export function makeFaqRepo(store: Store): FaqRepository {
       const rows = [...store.faq.values()]
         .filter((f) => f.tenantId === tenantId)
         .sort((a, b) => +b.createdAt - +a.createdAt)
-        .slice(0, opts.limit);
+        .slice(0, resolveFaqListLimit(opts.limit)); // 呼び出し元の指定値をさらにクランプ
       // 関連チケットと作成者を引き当てて結合
       return rows.map<FaqListItem>((f) => {
         const ticket = store.tickets.get(f.ticketId); // 元チケット
@@ -44,7 +48,7 @@ export function makeFaqRepo(store: Store): FaqRepository {
       return [...store.faq.values()]
         .filter((f) => f.tenantId === tenantId && f.status === 'Published')
         .sort((a, b) => +b.createdAt - +a.createdAt)
-        .slice(0, opts.limit)
+        .slice(0, resolveFaqListLimit(opts.limit)) // 呼び出し元の指定値をさらにクランプ
         .map((f) => ({ id: f.id, question: f.question, answer: f.answer }));
     },
 
