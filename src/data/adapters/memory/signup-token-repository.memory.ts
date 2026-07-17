@@ -98,5 +98,16 @@ export function makeSignupTokenRepo(store: Store): SignupTokenRepository {
       // 件数を返す
       return count;
     },
+
+    // 指定メール宛の未消費・未失効トークンをすべて消費済み扱いにする (consumedAt を now にする)。
+    // expiresAt ではなく consumedAt を書き換える理由は port の定義コメントを参照
+    async invalidateActiveByEmail(email, now) {
+      for (const [id, t] of store.signupTokens) {
+        // email 一致 + 未消費 + 未失効の行だけを対象にする
+        if (t.email === email && t.consumedAt === null && t.expiresAt > now) {
+          store.signupTokens.set(id, { ...t, consumedAt: now });
+        }
+      }
+    },
   };
 }

@@ -19,6 +19,14 @@ export const MAGIC_LINK_RATE_LIMIT_WINDOW_MS = 15 * 60 * 1000;
 // 上記の窓内で許容される発行回数の上限。これを超えた場合は新規発行をスキップする
 export const MAGIC_LINK_RATE_LIMIT_MAX = 5;
 
+// 監査で発見したギャップ対応: メール単位のレート制限 (上記) だけでは、攻撃者が毎回異なる
+// メールアドレスを指定することで実質無制限に回避できてしまう (request-signup.ts の
+// SIGNUP_REQUEST_GLOBAL_RATE_LIMIT と同じ理由。requestMagicLink は実際に登録済みユーザーの
+// メール送信 + DB 書き込みを伴うため、エンドポイント全体で固定キーの頭打ちも必要)。
+// requestSignup より緩めにするのは、こちらは「新規テナント作成」を伴わず送信対象も既存
+// ユーザーに限られ、踏み台としての実害がやや小さいため
+export const MAGIC_LINK_REQUEST_GLOBAL_RATE_LIMIT = { limit: 30, windowMs: 60_000 } as const;
+
 // 32 byte (256 bit) のランダム値を URL 安全な base64url 文字列にして返す
 // base64url なので URL に直接入れても percent-encode が要らない
 export function generateMagicLinkToken(): string {

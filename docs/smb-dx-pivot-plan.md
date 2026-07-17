@@ -1254,6 +1254,55 @@ Handler が一つも無く、実際には一度もチェックが行われてい
   レート制限バケットをテスト間で初期化する `__resetRateLimits()` を `beforeEach` に追加し、
   新しいレート制限によって既存テストが意図せず 429 になる回帰を防いだ。
 
+#### 4.17 フォローアップ（2026-07-17 #4）: マジックリンク発行にエンドポイント全体のレート制限が無かった
+
+監査で発見したギャップ。§7.1.2 で追加された `requestSignup`（セルフサーブサインアップ）は
+「メール単位のレート制限だけでは、攻撃者が毎回異なるメールアドレスを使うことで実質無制限に
+回避できる」という理由で、固定キーのエンドポイント全体レート制限 (`SIGNUP_REQUEST_GLOBAL_
+RATE_LIMIT`) を追加済みだったが、兄弟にあたる `requestMagicLink`（通常のログイン用マジック
+リンク発行）には同じ対策が入っていなかった。`deliverMagicLinkIfUserExists` はメール単位で
+15 分 5 通に制限するのみで、エンドポイント全体としては無制限に呼び出せてしまい、DB 負荷
+（`countRecentByEmail`/`deleteExpired` の毎回実行）や、既知の登録メールを狙ったメール
+爆撃（同じメールに対して 15 分ごとに 5 通ずつ、無期限に送り続けられる）が可能だった。
+
+- `src/lib/magic-link.ts` に `MAGIC_LINK_REQUEST_GLOBAL_RATE_LIMIT`（60 秒 30 回。
+  requestSignup より緩めなのは、新規テナント作成を伴わず送信対象も既存ユーザーに限られ、
+  踏み台としての実害がやや小さいため）を追加した。
+- `requestMagicLink`（`src/features/auth/actions/request-magic-link.ts`）の列挙対策マスクの
+  外側で `enforceRateLimit('magic-link-request:global', ...)` を呼ぶようにした
+  (`requestSignup` と同じ配置。上限到達時は例外をそのまま伝播させる — どのメールでも同じ
+  「混み合っている」応答になるため列挙耐性は壊れない)。
+- 回帰テスト: `tests/features/request-magic-link.test.ts` に、異なるメールアドレスを使っても
+  エンドポイント全体の上限で頭打ちになることの回帰テストを追加した。
+
+#### 4.18 フォローアップ（2026-07-17 #5）: マジックリンク/サインアップリンクの再送で古いリンクが有効なまま残っていた
+
+監査で発見したギャップ。`deliverMagicLinkIfUserExists`/`deliverSignupOrLogin` は呼び出すたびに
+新しいトークンを発行するだけで、同一メール宛の既存の未消費トークンを無効化していなかった。
+メール単位のレート制限 (15 分 5 通) の範囲内であれば、再送を繰り返すたびに同時に有効な
+ログイン/サインアップリンクが最大 5 件まで積み上がる状態になり、「間違って古いメールを
+転送してしまった」「古いメールが共有/侵害された受信箱に残っていた」場合に、ユーザーが
+「最新の 1 通だけが有効なはず」と思っていても古いリンクでログイン/サインアップが成立して
+しまっていた。OTP/マジックリンク方式の一般的なベストプラクティス（再発行時に旧トークンを
+失効させる）から外れたギャップだった。
+
+- `MagicLinkRepository`/`SignupTokenRepository`（両 Port）に `invalidateActiveByEmail(email,
+  now): Promise<void>` を追加した。指定メール宛の「未消費 かつ 未失効」なトークンをすべて
+  消費済み扱い (`consumedAt = now`) にする。
+  **`expiresAt` ではなく `consumedAt` を書き換える設計にした理由**: 当初 `expiresAt = now`
+  で実装したところ、次回呼び出し時の `deleteExpired`（掃除処理）がその行を早期に物理削除して
+  しまい、`countRecentByEmail`（`createdAt` ベースの発行レート制限カウント）が過去の発行分を
+  数えられなくなって「15 分 5 通」の上限が実質無効化される回帰を自己レビューで発見したため、
+  行を消さずワンタイム性だけを止める `consumedAt` 方式に変更した (`consumeValidToken` が
+  既に持つ「未消費フラグ」の仕組みをそのまま再利用する)。
+- `deliverMagicLinkIfUserExists`（`src/lib/magic-link-delivery.ts`）・`deliverSignupOrLogin`
+  （`src/features/auth/actions/request-signup.ts`）の両方で、ユーザー存在確認・レート制限
+  チェックを通過し新しいトークンを実際に発行する直前に `invalidateActiveByEmail` を呼ぶ。
+- 回帰テスト: 両 Repository の memory/Prisma 契約テストに「未消費・未失効のトークンだけを
+  対象にすること」の単体テストを追加。`tests/features/request-magic-link.test.ts` /
+  `tests/features/request-signup.test.ts` に「再送すると古いリンクは無効化され、新しいリンク
+  だけが使えること」の統合テストを追加した。
+
 ### スケジュール感
 
 ```

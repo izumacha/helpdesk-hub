@@ -53,6 +53,12 @@ export async function deliverMagicLinkIfUserExists(
   // 未登録のメールに対しては何も発行しない (列挙されない)
   if (!userExists) return;
 
+  // 監査で発見したギャップ対応: 新しいトークンを発行する前に、このメール宛の未消費・未失効
+  // トークンをすべて失効させる。これをしないと TTL (15分) の間に再送を繰り返すたびに有効な
+  // リンクが増え続け、誤って転送した古いメールのリンクが後から踏まれてもログインできてしまう。
+  // 「最新の 1 通だけが有効」という状態にすることで、古いリンクは即座に使えなくなる。
+  await repos.magicLinks.invalidateActiveByEmail(email, new Date());
+
   // 256-bit のランダムトークンを生成し、SHA-256 ハッシュを DB に記録する (Web Crypto は async)
   const rawToken = generateMagicLinkToken();
   const tokenHash = await hashMagicLinkToken(rawToken);

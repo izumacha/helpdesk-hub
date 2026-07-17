@@ -74,5 +74,14 @@ export function makeMagicLinkRepo(db: PrismaLike): MagicLinkRepository {
         where: { email, createdAt: { gte: since } },
       });
     },
+
+    // 指定メール宛の未消費・未失効トークンをすべて消費済み扱いにする (consumedAt を now にする)。
+    // expiresAt ではなく consumedAt を書き換える理由は port の定義コメントを参照
+    async invalidateActiveByEmail(email, now) {
+      await db.magicLinkToken.updateMany({
+        where: { email, consumedAt: null, expiresAt: { gt: now } },
+        data: { consumedAt: now },
+      });
+    },
   };
 }

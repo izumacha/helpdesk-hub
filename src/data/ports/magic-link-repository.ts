@@ -34,4 +34,15 @@ export interface MagicLinkRepository {
 
   // 指定メール宛に since 以降に発行されたトークン件数を返す (発行レート制限用)
   countRecentByEmail(email: string, since: Date): Promise<number>;
+
+  // 指定メール宛の「未消費 かつ 未失効」なトークンをすべて消費済み扱いにする (consumedAt を now にする)。
+  // 監査で発見したギャップ対応: 再送のたびに新しいトークンを発行するだけでは、TTL 内 (15分) に
+  // 複数回リクエストすると同時に有効なリンクが複数残ってしまう (例: 誤って転送した古いメールの
+  // リンクが後から踏まれてもログインできてしまう)。新しいトークンを発行する直前に呼び出し、
+  // 「最新の 1 通だけが有効」という状態にする。
+  // expiresAt ではなく consumedAt を書き換えるのは、expiresAt を書き換えると deleteExpired が
+  // 次回呼び出し時にその行を物理削除してしまい、countRecentByEmail (createdAt ベースのレート制限
+  // カウント) が過去の発行分を数えられなくなって上限が実質無効化されるため (行を消さずに
+  // ワンタイム性だけを止める consumeValidToken と同じ「未消費フラグ」を再利用する)。
+  invalidateActiveByEmail(email: string, now: Date): Promise<void>;
 }

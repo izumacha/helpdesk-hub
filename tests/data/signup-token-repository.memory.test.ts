@@ -186,4 +186,39 @@ describe('SignupTokenRepository (memory)', () => {
     // 別メールは 1 件
     expect(await repos.signupTokens.countRecentByEmail('other@example.com', since)).toBe(1);
   });
+
+  // invalidateActiveByEmail: 監査で発見したギャップ対応。未消費・未失効のトークンを
+  // 消費済み扱いにし、以後 consumeValidToken で使えなくすること
+  it('invalidateActiveByEmail は未消費・未失効のトークンだけを消費済みにする', async () => {
+    const { repos } = createMemoryContext();
+    const now = new Date();
+    // 対象: 未消費 + 未失効
+    await repos.signupTokens.create({
+      email: 'target@example.com',
+      tokenHash: 'active',
+      expiresAt: new Date(now.getTime() + 10 * ONE_MINUTE),
+    });
+    // 対象外: 既に消費済み
+    await repos.signupTokens.create({
+      email: 'target@example.com',
+      tokenHash: 'already-consumed',
+      expiresAt: new Date(now.getTime() + 10 * ONE_MINUTE),
+    });
+    await repos.signupTokens.consumeValidToken({ tokenHash: 'already-consumed', now });
+    // 対象外: 別メール宛
+    await repos.signupTokens.create({
+      email: 'other@example.com',
+      tokenHash: 'other-active',
+      expiresAt: new Date(now.getTime() + 10 * ONE_MINUTE),
+    });
+
+    await repos.signupTokens.invalidateActiveByEmail('target@example.com', now);
+
+    // 未消費・未失効だったトークンは消費済みになり、もう使えない
+    expect(await repos.signupTokens.consumeValidToken({ tokenHash: 'active', now })).toBeNull();
+    // 別メール宛のトークンは影響を受けない
+    expect(
+      await repos.signupTokens.consumeValidToken({ tokenHash: 'other-active', now }),
+    ).not.toBeNull();
+  });
 });

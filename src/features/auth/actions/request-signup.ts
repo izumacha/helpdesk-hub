@@ -118,6 +118,10 @@ async function deliverSignupOrLogin(
   // 上限超過なら新規発行をスキップ (例外は投げない: 列挙対策で呼び出し側からは成功/失敗が見えない)
   if (recent >= SIGNUP_RATE_LIMIT_MAX) return;
 
+  // 監査で発見したギャップ対応: 新しいトークンを発行する前に、このメール宛の未消費・未失効
+  // トークンをすべて失効させる (magic-link-delivery.ts の invalidateActiveByEmail と同じ理由)。
+  await repos.signupTokens.invalidateActiveByEmail(email, new Date());
+
   // 256-bit のランダムトークンを生成し、SHA-256 ハッシュを DB に記録する (Web Crypto は async)
   const rawToken = generateSignupToken();
   const tokenHash = await hashSignupToken(rawToken);

@@ -100,6 +100,31 @@ describe('requestSignup', () => {
     expect(store.magicLinks.size).toBe(0);
   });
 
+  // 監査で発見したギャップ対応: 再送すると古いトークンは無効化され、新しいトークンだけが使える
+  it('サインアップリンクを再送すると、古いリンクは無効化され新しいリンクだけが使える', async () => {
+    const requestSignup = await loadAction();
+
+    // 1 回目のリクエストでトークンを発行する
+    await requestSignup({ email: 'reissue@example.com' });
+    expect(sentMessages).toHaveLength(1);
+    const firstMatch = sentMessages[0].text.match(
+      /https?:\/\/\S+\/signup\/complete\?token=([A-Za-z0-9_-]+)/,
+    );
+    const firstRawToken = firstMatch![1];
+
+    // 2 回目のリクエスト (再送) で新しいトークンを発行する
+    await requestSignup({ email: 'reissue@example.com' });
+    expect(sentMessages).toHaveLength(2);
+
+    // 古いトークンはもう consumeValidToken で使えない (消費済み扱い)
+    const firstTokenHash = await hashSignupToken(firstRawToken);
+    const consumed = await repos.signupTokens.consumeValidToken({
+      tokenHash: firstTokenHash,
+      now: new Date(),
+    });
+    expect(consumed).toBeNull();
+  });
+
   // 既存ユーザーのメールで要求された場合は、新しいテナントを作らず通常のログイン用
   // マジックリンクを送ること (列挙耐性: 応答からは経路の違いが分からない)
   it('既存ユーザーのメールでは SignupToken を発行せずログイン用マジックリンクを送る', async () => {

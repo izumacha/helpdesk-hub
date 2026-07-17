@@ -42,7 +42,7 @@ export function makeMagicLinkRepo(store: Store): MagicLinkRepository {
     // tokenHash で「未消費かつ失効前」のトークンを原子的に消費する。
     // JS は単一スレッドのため、check + update の間に他の callback は割り込めない。
     // ただし関数本体で await を一切使わないことで、見た目上の同時呼び出し
-     // (Promise.all([consume, consume])) でも片方しか成功しないことを保証する。
+    // (Promise.all([consume, consume])) でも片方しか成功しないことを保証する。
     async consumeValidToken({ tokenHash, now }) {
       // 全トークンを走査して tokenHash 一致のエントリを探す
       let target: { id: string; row: { consumedAt: Date | null; expiresAt: Date } } | null = null;
@@ -97,6 +97,17 @@ export function makeMagicLinkRepo(store: Store): MagicLinkRepository {
       }
       // 件数を返す
       return count;
+    },
+
+    // 指定メール宛の未消費・未失効トークンをすべて消費済み扱いにする (consumedAt を now にする)。
+    // expiresAt ではなく consumedAt を書き換える理由は port の定義コメントを参照
+    async invalidateActiveByEmail(email, now) {
+      for (const [id, t] of store.magicLinks) {
+        // email 一致 + 未消費 + 未失効の行だけを対象にする
+        if (t.email === email && t.consumedAt === null && t.expiresAt > now) {
+          store.magicLinks.set(id, { ...t, consumedAt: now });
+        }
+      }
     },
   };
 }
