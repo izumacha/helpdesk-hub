@@ -3,6 +3,10 @@
 // 1テナントの送信失敗が他テナントを止めないことをメモリアダプタで検証する。
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+// レート制限バケットをテスト間で初期化するヘルパー
+import { __resetRateLimits } from '@/lib/rate-limit';
+// 「上限までは429にならず、上限+1回目で429になる」の共通アサーションヘルパー
+import { expectRateLimitTripsAfter } from './sso-rate-limit-assertions';
 // メモリ実装の context (store/repos)
 import { createMemoryContext, type Store } from '@/data/adapters/memory';
 // リポジトリ束の型
@@ -112,6 +116,10 @@ describe('POST /api/internal/trial-reminders', () => {
       sentMessages.push(message);
     };
     vi.stubEnv('TRIAL_REMINDER_CRON_SECRET', CRON_SECRET);
+    // 監査で発見したギャップ対応で追加したレート制限のバケットをテスト間でクリアする
+    // (このファイルは 1 テストあたり複数回 POST するため、リセットしないと後続のテストが
+    // 前のテストのカウントを引き継いで意図せず 429 になってしまう)
+    __resetRateLimits();
   });
 
   afterEach(() => {
@@ -260,5 +268,15 @@ describe('POST /api/internal/trial-reminders', () => {
     expect(store.tenants.get('t-fail')?.trialReminderLastSentDaysBefore).toBeNull();
     // 成功したテナントは永続化される
     expect(store.tenants.get('t-ok')?.trialReminderLastSentDaysBefore).toBe(5);
+  });
+
+  // 監査で発見したギャップ対応: 共有シークレットのみで守られたこの経路にレート制限が無く、
+  // シークレット漏洩時に無制限に叩けてしまっていた。固定キーのレート制限 (60秒5回) を追加した
+  describe('レート制限 (監査で発見したギャップ対応)', () => {
+    // 上限 (5回/60秒) を超えると、認証結果 (トークン不一致) より前に429を返す
+    it('固定キーのレート制限を超えると429を返す', async () => {
+      const POST = await loadRoute();
+      await expectRateLimitTripsAfter(() => POST(makeRequest('wrong-token')), 5);
+    });
   });
 });

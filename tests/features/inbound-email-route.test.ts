@@ -1077,5 +1077,59 @@ describe('POST /api/inbound/email', () => {
       // クリーンアップされ残らないこと
       expect(storage.entries.size).toBe(0);
     });
+
+    // 回帰防止 (監査で発見したギャップ対応): メールスレッド継続は同じチケットへの追記を
+    // 何度でも繰り返せるため、チケット当たりの添付総数上限 (MAX_ATTACHMENTS_PER_TICKET=100)
+    // に既に達している場合は、テナント累計サイズ上限と同じく添付なしで取り込みを継続する
+    // (Webhook はユーザーへの即時フィードバック画面が無いため、起票/追記自体は失敗させない)
+    it('チケットの添付総数が上限に達しているスレッド追記は添付なしで継続される', async () => {
+      const { POST } = await import('@/app/api/inbound/email/route');
+      // 1 通目: 新規起票 (添付なし)
+      const first = await POST(
+        makeRequest({ ...VALID_EMAIL, messageId: '<attach-cap-1@example.com>' }),
+      );
+      expect(first.status).toBe(201);
+      const { ticketId } = (await first.json()) as { ticketId: string };
+
+      // このチケットに上限ちょうど (100 件) まで既存添付を積み上げておく
+      for (let i = 0; i < 100; i += 1) {
+        await repos.attachments.create({
+          ticketId,
+          commentId: null,
+          uploaderId: MEMBER_ID,
+          tenantId: TENANT,
+          mimeType: 'image/png',
+          size: 10,
+          originalName: `existing-${i}.png`,
+          storageKey: `${TENANT}/${ticketId}/existing-${i}.png`,
+          storage: 'local',
+        });
+      }
+
+      // 2 通目: 1 通目への返信に画像添付 (上限超過)
+      const file = makeAttachmentFile('overflow.png', 'image/png', 'overflow-bytes');
+      const reply = await POST(
+        makeAttachmentRequest(
+          {
+            to: VALID_EMAIL.to,
+            from: VALID_EMAIL.from,
+            subject: 'Re: プリンターが動きません',
+            text: '101枚目の写真です',
+            'in-reply-to': '<attach-cap-1@example.com>',
+            'message-id': '<attach-cap-2@example.com>',
+          },
+          [file],
+        ),
+      );
+      // 起票/追記自体は失敗しない (200 でスレッド追記として処理される)
+      expect(reply.status).toBe(200);
+      // コメント本体は保存されるが、添付は追加されない (既存 100 件のまま)
+      const comments = [...store.comments.values()].filter((c) => c.ticketId === ticketId);
+      expect(comments).toHaveLength(1);
+      const attachments = [...store.attachments.values()].filter((a) => a.ticketId === ticketId);
+      expect(attachments).toHaveLength(100);
+      // 新しいファイルは storage にも書き込まれない
+      expect(storage.entries.size).toBe(0);
+    });
   });
 });

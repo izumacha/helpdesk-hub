@@ -35,7 +35,12 @@ import { commentBodySchema } from '@/lib/validations/ticket';
 import { validateUploadedFiles } from '@/lib/validations/attachment';
 // 添付ファイルのストレージ保存 / 失敗時クリーンアップの共通ヘルパー (POST /api/tickets・
 // POST /api/inbound/email と共有。/code-review ultra 指摘対応: 3 箇所目の重複を解消)
-import { persistAttachments, cleanupWrittenAttachments } from '@/lib/attachment-persistence';
+// checkTicketAttachmentQuota はチケット当たりの添付総数上限チェック (監査で発見したギャップ対応)
+import {
+  persistAttachments,
+  cleanupWrittenAttachments,
+  checkTicketAttachmentQuota,
+} from '@/lib/attachment-persistence';
 // Phase 4 課金: 添付累計サイズ上限チェック (チケット作成時添付と共有)
 import { checkAttachmentQuota } from '@/lib/tenant-plan';
 // Phase 4: Slack/Teams/Chatwork 外部通知のベストエフォート送信共通ヘルパー
@@ -133,6 +138,21 @@ export async function POST(req: Request, { params }: Params) {
   if (!authorIsAgent && ticket.creatorId !== authorId) {
     // 存在を隠すため 404 で揃える (RBAC で 403 を返すと添付の有無が漏れる)
     return NextResponse.json({ error: 'チケットが見つかりません' }, { status: 404 });
+  }
+
+  // 監査で発見したギャップ対応: チケット当たりの添付総数上限 (MAX_ATTACHMENTS_PER_TICKET) を
+  // 超えないか確認する。1 回のリクエストの件数は validateUploadedFiles (MAX_ATTACHMENTS_PER_UPLOAD)
+  // が既に見ているが、コメント追記を繰り返すとチケット単位の総数は際限なく積み上がってしまう
+  if (attachmentValidation.files.length > 0) {
+    const ticketQuotaCheck = await checkTicketAttachmentQuota(
+      repos,
+      ticketId,
+      tenantId,
+      attachmentValidation.files.length,
+    );
+    if (!ticketQuotaCheck.ok) {
+      return validationError(ticketQuotaCheck.message, ['files']);
+    }
   }
 
   // 通知の送信先を決定する (既存 addComment と同じロジック)

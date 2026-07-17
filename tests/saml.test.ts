@@ -54,7 +54,21 @@ function generateKeyPair(): { key: string; certPem: string; certB64: string } {
   try {
     execFileSync(
       'openssl',
-      ['req', '-x509', '-newkey', 'rsa:2048', '-keyout', join(dir, 'k.pem'), '-out', join(dir, 'c.pem'), '-days', '2', '-nodes', '-subj', '/CN=test-idp'],
+      [
+        'req',
+        '-x509',
+        '-newkey',
+        'rsa:2048',
+        '-keyout',
+        join(dir, 'k.pem'),
+        '-out',
+        join(dir, 'c.pem'),
+        '-days',
+        '2',
+        '-nodes',
+        '-subj',
+        '/CN=test-idp',
+      ],
       { stdio: 'ignore' },
     );
     // 生成物を読み込む
@@ -119,7 +133,10 @@ function makeSignedResponse(opts: ResponseOptions = {}): string {
   sig.canonicalizationAlgorithm = 'http://www.w3.org/2001/10/xml-exc-c14n#';
   // 署名は Assertion の Issuer の直後に挿入する
   sig.computeSignature(responseXml, {
-    location: { reference: `//*[local-name(.)='Assertion']/*[local-name(.)='Issuer']`, action: 'after' },
+    location: {
+      reference: `//*[local-name(.)='Assertion']/*[local-name(.)='Issuer']`,
+      action: 'after',
+    },
   });
   let signed = sig.getSignedXml();
   // 署名後に本文を改竄する (署名検証が失敗することを確認するため)
@@ -191,8 +208,20 @@ describe.skipIf(!hasOpenssl)('SAML アサーション検証', () => {
   // メールは小文字化される
   it('メールアドレスを小文字に正規化する', async () => {
     const saml = createSamlInstance(makeConfig(), BASE_URL, TENANT_ID);
-    const identity = await validateSamlResponse(saml, makeSignedResponse({ email: 'User@Example.com' }), IDP_ENTITY_ID);
+    const identity = await validateSamlResponse(
+      saml,
+      makeSignedResponse({ email: 'User@Example.com' }),
+      IDP_ENTITY_ID,
+    );
     expect(identity.email).toBe('user@example.com'); // 小文字化
+  });
+
+  // リプレイ防止 (§9) の一意キーとして、アサーション XML の ID 属性を取り出せる
+  it('アサーション ID (リプレイ防止の一意キー) を取り出す', async () => {
+    const saml = createSamlInstance(makeConfig(), BASE_URL, TENANT_ID);
+    // makeSignedResponse の Assertion タグは常に ID="_a1" で組み立てている
+    const identity = await validateSamlResponse(saml, makeSignedResponse(), IDP_ENTITY_ID);
+    expect(identity.assertionId).toBe('_a1');
   });
 
   // 異常系: 署名後に本文を改竄すると拒否される
@@ -207,7 +236,11 @@ describe.skipIf(!hasOpenssl)('SAML アサーション検証', () => {
   it('Audience が一致しない応答を拒否する (別 SP 宛)', async () => {
     const saml = createSamlInstance(makeConfig(), BASE_URL, TENANT_ID);
     await expect(
-      validateSamlResponse(saml, makeSignedResponse({ audience: 'https://other-sp.example.com' }), IDP_ENTITY_ID),
+      validateSamlResponse(
+        saml,
+        makeSignedResponse({ audience: 'https://other-sp.example.com' }),
+        IDP_ENTITY_ID,
+      ),
     ).rejects.toThrow();
   });
 
@@ -215,7 +248,11 @@ describe.skipIf(!hasOpenssl)('SAML アサーション検証', () => {
   it('Issuer が設定の IdP と異なる応答を拒否する', async () => {
     const saml = createSamlInstance(makeConfig(), BASE_URL, TENANT_ID);
     await expect(
-      validateSamlResponse(saml, makeSignedResponse({ issuer: 'https://evil-idp.example.com' }), IDP_ENTITY_ID),
+      validateSamlResponse(
+        saml,
+        makeSignedResponse({ issuer: 'https://evil-idp.example.com' }),
+        IDP_ENTITY_ID,
+      ),
     ).rejects.toThrow();
   });
 
@@ -243,7 +280,9 @@ describe.skipIf(!hasOpenssl)('SAML アサーション検証', () => {
 describe('SSO 設定の不備ガード', () => {
   // 証明書が空の設定は SAML 構築時に弾かれる
   it('証明書が空の設定は createSamlInstance が例外を投げる', () => {
-    expect(() => createSamlInstance(makeConfig({ idpX509Cert: '   ' }), BASE_URL, TENANT_ID)).toThrow();
+    expect(() =>
+      createSamlInstance(makeConfig({ idpX509Cert: '   ' }), BASE_URL, TENANT_ID),
+    ).toThrow();
   });
   // IdP SSO URL が空の設定も弾かれる
   it('IdP SSO URL が空の設定は例外を投げる', () => {

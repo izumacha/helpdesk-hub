@@ -14,6 +14,7 @@ import { makeLocationRepo } from './location-repository.prisma';
 import { makeMagicLinkRepo } from './magic-link-repository.prisma';
 import { makeNotificationRepo } from './notification-repository.prisma';
 import { makeQuarantinedEmailRepo } from './quarantined-email-repository.prisma';
+import { makeSamlAssertionRepo } from './saml-assertion-repository.prisma';
 import { makeSettingsAuditLogRepo } from './settings-audit-log-repository.prisma';
 import { makeSignupTokenRepo } from './signup-token-repository.prisma';
 import { makeSsoConfigRepo } from './sso-config-repository.prisma';
@@ -49,6 +50,7 @@ export function buildPrismaRepos(db: PrismaLike): Repos {
     lineLinkCodes: makeLineLinkCodeRepo(db), // LINE 連携コード処理の冪等化 (Phase 2.1 フォローアップ)
     locations: makeLocationRepo(db), // Phase 4 多拠点
     ssoConfigs: makeSsoConfigRepo(db), // Phase 4 Enterprise: SAML SSO 設定
+    samlAssertions: makeSamlAssertionRepo(db), // Phase 4 Enterprise SSO フォローアップ: リプレイ防止記録
     lineConfigs: makeLineConfigRepo(db), // Phase 2 フォローアップ: テナント単位の LINE 連携設定
     settingsAudit: makeSettingsAuditLogRepo(db), // §4.2 フォローアップ: 設定変更監査ログ
     quarantinedEmails: makeQuarantinedEmailRepo(db), // §3.2 フォローアップ: 隔離した受信メールの記録
