@@ -56,7 +56,11 @@ function assertConfigComplete(config: TenantSsoConfig): void {
 
 // テナントの SSO 設定 + 基底 URL から node-saml の SP インスタンスを構築する。
 // 設定不備があれば例外を投げる (呼び出し側で 4xx/5xx に変換する)。
-export function createSamlInstance(config: TenantSsoConfig, baseUrl: string, tenantId: string): SAML {
+export function createSamlInstance(
+  config: TenantSsoConfig,
+  baseUrl: string,
+  tenantId: string,
+): SAML {
   // 設定の完全性を確認する (不備なら throw)
   assertConfigComplete(config);
   // SP の各 URL を組み立てる
@@ -99,6 +103,26 @@ export async function getSsoLoginUrl(saml: SAML, relayState = ''): Promise<strin
 export interface SamlIdentity {
   email: string; // ログインすべきユーザーのメールアドレス (小文字正規化済み)
   nameId: string; // IdP が発行した NameID (監査・突き合わせ用)
+  assertionId: string; // SAML アサーション ID (リプレイ防止の一意キーとして呼び出し側で使用)
+}
+
+// 検証済みアサーションの ID 属性を取り出す純粋関数。
+// node-saml の Profile#getAssertion() は、アサーション XML を xml2js
+// (tagNameProcessors: [stripPrefix]) で解析済みの構造体をそのまま返す。
+// ルート要素が <Assertion> 自身であるため `parsed.Assertion.$.ID` で属性値を取れる。
+// /code-review ultra 指摘対応: 当初はこの XML 文字列を正規表現で自前パースしていたが、
+// 属性の並び順・引用符の種類・名前空間接頭辞の書き方は IdP 実装によって異なりうり、
+// 文字列パースでは正当な IdP のアサーションを誤って拒否しかねなかった (fail-closed のため
+// ログイン不能という形で表面化する)。node-saml が既に解析済みの構造体を読むことで、
+// 表記ゆれに影響されない取得方法にする。
+function extractAssertionId(profile: Record<string, unknown>): string | null {
+  // getAssertion が無い (想定外の Profile 形状) 場合は取得不能として扱う
+  if (typeof profile.getAssertion !== 'function') return null;
+  // 解析済みのアサーション構造体を取得する
+  const parsed = profile.getAssertion() as { Assertion?: { $?: { ID?: unknown } } } | undefined;
+  const id = parsed?.Assertion?.$?.ID;
+  // 文字列かつ空でない場合のみ採用する (それ以外は呼び出し側で fail-closed に扱う)
+  return typeof id === 'string' && id ? id : null;
 }
 
 // SAMLResponse (base64) を検証し、本人のメールアドレスを取り出す。
@@ -138,8 +162,17 @@ export async function validateSamlResponse(
   if (!email || !email.includes('@')) {
     throw new Error('SAML レスポンスにメールアドレスが含まれていません。');
   }
+
+  // リプレイ防止 (§9) の一意キーとして使うアサーション ID を取り出す。
+  // 取得できなければ「同一アサーションの再利用」を検知できず fail-open になってしまうため、
+  // ここで検証失敗として拒否する (fail-closed)。
+  const assertionId = extractAssertionId(profile);
+  if (!assertionId) {
+    throw new Error('SAML アサーションから ID を取得できませんでした。');
+  }
+
   // 本人情報を返す
-  return { email, nameId: nameId || email };
+  return { email, nameId: nameId || email, assertionId };
 }
 
 // SAML プロファイルから文字列属性を 1 つ取り出すヘルパー (配列なら先頭、無ければ undefined)。

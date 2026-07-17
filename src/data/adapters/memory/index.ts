@@ -13,6 +13,7 @@ import { makeLocationRepo } from './location-repository.memory';
 import { makeMagicLinkRepo } from './magic-link-repository.memory';
 import { makeNotificationRepo } from './notification-repository.memory';
 import { makeQuarantinedEmailRepo } from './quarantined-email-repository.memory';
+import { makeSamlAssertionRepo } from './saml-assertion-repository.memory';
 import { makeSettingsAuditLogRepo } from './settings-audit-log-repository.memory';
 import { makeSignupTokenRepo } from './signup-token-repository.memory';
 import { makeSsoConfigRepo } from './sso-config-repository.memory';
@@ -48,6 +49,7 @@ export function buildMemoryRepos(store: Store): Repos {
     lineLinkCodes: makeLineLinkCodeRepo(store), // LINE 連携コード処理の冪等化 (Phase 2.1 フォローアップ)
     locations: makeLocationRepo(store), // Phase 4 多拠点
     ssoConfigs: makeSsoConfigRepo(store), // Phase 4 Enterprise: SAML SSO 設定
+    samlAssertions: makeSamlAssertionRepo(store), // Phase 4 Enterprise SSO フォローアップ: リプレイ防止記録
     lineConfigs: makeLineConfigRepo(store), // Phase 2 フォローアップ: テナント単位の LINE 連携設定
     settingsAudit: makeSettingsAuditLogRepo(store), // §4.2 フォローアップ: 設定変更監査ログ
     quarantinedEmails: makeQuarantinedEmailRepo(store), // §3.2 フォローアップ: 隔離した受信メールの記録

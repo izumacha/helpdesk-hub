@@ -21,6 +21,15 @@ export const MAX_ATTACHMENT_SIZE_BYTES = 10 * 1024 * 1024;
 // 現場の追加写真は概ね 1〜3 枚で済む想定だが余裕を持って 5 枚まで許可する
 export const MAX_ATTACHMENTS_PER_UPLOAD = 5;
 
+// 1 件のチケットに生涯で蓄積できる添付ファイルの総数上限。
+// MAX_ATTACHMENTS_PER_UPLOAD は「1 回のリクエスト」しか見ないため、同じチケットへの
+// コメント追記 (Web フォーム・メールスレッド継続) を繰り返すと際限なく積み上がってしまう
+// (監査で発見したギャップ: AttachmentRepository.countByTicket は「5 枚上限チェック用」として
+// 用意されていたが、この総数チェックとして呼び出す箇所が一つも無かった)。
+// 現場での運用上、1 件の問い合わせに 100 枚を超える写真が必要になることは通常想定しづらいため、
+// 余裕を持ってこの値にする
+export const MAX_ATTACHMENTS_PER_TICKET = 100;
+
 // MIME に対応する一般的な拡張子の対応表 (保存先キー組み立てや配信時の Content-Disposition で利用)
 export const MIME_TO_EXTENSION: Record<AllowedImageMimeType, string> = {
   'image/jpeg': 'jpg', // JPEG は .jpg を採用 (.jpeg ではなく短い方)

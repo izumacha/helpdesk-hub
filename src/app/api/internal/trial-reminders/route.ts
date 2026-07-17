@@ -35,6 +35,18 @@ import { getEmailSender } from '@/lib/email';
 import { resolveAppBaseUrl } from '@/lib/app-url';
 // 定数時間比較の共通ヘルパー (LINE Webhook 署名検証と共有)
 import { constantTimeStringEqual } from '@/lib/timing-safe-compare';
+// Route Handler 向け共通レート制限ラッパー (inbound-email/inbound-line/sso-acs と共有)
+import { checkRouteRateLimit } from '@/lib/route-rate-limit';
+
+// 監査で発見したギャップ対応: この経路は共有シークレットのみで認証しており、シークレットが
+// 漏洩した場合に無制限に叩かれる (総当たり・多重実行によるスパム送信/DB 走査) 経路になっていた。
+// 他の全ての秘密情報/署名ゲート付き公開エンドポイント (inbound-email/inbound-line/sso-acs) は
+// 固定キーのレート制限を持つのに、この内部 cron エンドポイントだけ持っていなかった。
+// 正規の利用は 1 日 1 回程度の cron 実行 (+ 手動再実行 workflow_dispatch) のみのため、
+// 正規利用を妨げない範囲で厳しめの値にする
+const TRIAL_REMINDER_RATE_LIMIT = { limit: 5, windowMs: 60_000 } as const;
+const TRIAL_REMINDER_RATE_LIMIT_MESSAGE =
+  'リクエストが多すぎます。しばらくしてから再試行してください';
 
 // Authorization ヘッダの "Bearer <token>" から token 部分だけを取り出す。
 // 形式が違えば null を返す (呼び出し側で認証失敗として扱う)
@@ -46,6 +58,15 @@ function extractBearerToken(header: string | null): string | null {
 
 // POST /api/internal/trial-reminders : Free trial 終了間近のテナント管理者へリマインダーメールを送る
 export async function POST(request: Request): Promise<NextResponse> {
+  // 固定キーのレート制限を認証より前に適用する (シークレット比較・DB 走査より前に弾く。
+  // sso-acs/route.ts の「テナント解決より前に置く」のと同じ考え方)
+  const rateLimitResponse = checkRouteRateLimit(
+    'trial-reminders:unauthenticated',
+    TRIAL_REMINDER_RATE_LIMIT,
+    TRIAL_REMINDER_RATE_LIMIT_MESSAGE,
+  );
+  if (rateLimitResponse) return rateLimitResponse;
+
   // 共有シークレットを環境変数から取得する。未設定なら fail-closed で即座に拒否する
   // (production での設定漏れに気づけるよう、CLAUDE.md §9 のパターンに合わせて起動時ではなく
   // リクエスト時にエラーにする。この経路はユーザー向けではなく運用者の cron 設定ミスなので、
