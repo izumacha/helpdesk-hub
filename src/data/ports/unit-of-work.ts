@@ -11,6 +11,7 @@ import type { LocationRepository } from './location-repository';
 import type { MagicLinkRepository } from './magic-link-repository';
 import type { NotificationRepository } from './notification-repository';
 import type { QuarantinedEmailRepository } from './quarantined-email-repository';
+import type { SamlAssertionRepository } from './saml-assertion-repository';
 import type { SettingsAuditLogRepository } from './settings-audit-log-repository';
 import type { SignupTokenRepository } from './signup-token-repository';
 import type { SsoConfigRepository } from './sso-config-repository';
@@ -39,6 +40,7 @@ export interface Repos {
   lineLinkCodes: LineLinkCodeRepository; // LINE 連携コード処理の冪等化記録 (Phase 2.1 フォローアップ)
   locations: LocationRepository; // Phase 4 多拠点: テナント内の店舗・拠点
   ssoConfigs: SsoConfigRepository; // Phase 4 Enterprise: テナント単位の SAML SSO 設定
+  samlAssertions: SamlAssertionRepository; // Phase 4 Enterprise SSO フォローアップ: アサーションのリプレイ防止記録
   lineConfigs: LineConfigRepository; // Phase 2 フォローアップ: テナント単位の LINE 連携設定
   settingsAudit: SettingsAuditLogRepository; // §4.2 フォローアップ: 設定変更監査ログ
   quarantinedEmails: QuarantinedEmailRepository; // §3.2 フォローアップ: 隔離した受信メールの記録

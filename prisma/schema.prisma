@@ -225,6 +225,7 @@ model Tenant {
   invitations       Invitation[] // メンバー招待リンク (発行〜受諾までのワンタイムトークン)
   emailThreadRefs   EmailThreadRef[] // メールスレッド継続用の Message-ID 対応表 (Phase 2)
   lineMessageRefs   LineMessageRef[] // LINE メッセージ ID → チケット 対応表 (取り込みの冪等化 / Phase 2)
+  samlAssertionRefs SamlAssertionRef[] // Phase 4 Enterprise SSO: アサーションのリプレイ防止記録
   locations         Location[] // Phase 4 多拠点: テナント内の店舗・拠点
   ssoConfig         TenantSsoConfig? // Phase 4 Enterprise: SAML SSO 設定 (1 テナント 1 件・未設定なら null)
   lineConfig        TenantLineConfig? // Phase 2 フォローアップ: LINE 公式アカウント連携設定 (1 テナント 1 件・未設定なら null)
@@ -694,6 +695,30 @@ model LineLinkCodeRef {
   id            String   @id @default(cuid()) // 主キー
   lineMessageId String   @unique // LINE メッセージ ID (連携コードとして処理済み)
   createdAt     DateTime @default(now()) // 記録日時
+}
+
+// ─────────────────────────────────────────────
+// SamlAssertionRef (SAML アサーションのリプレイ防止記録 / Phase 4 Enterprise SSO フォローアップ)
+// ─────────────────────────────────────────────
+// docs/smb-dx-pivot-plan.md §6.1 Enterprise「SSO(SAML)」フォローアップ。
+// ACS (/api/auth/sso/<tenantId>/acs) は署名・Issuer・Audience・期限を検証するが、有効期限内の
+// 同一 SAMLResponse を攻撃者が複数回 POST しても署名検証自体は毎回成功してしまう (リプレイ攻撃。
+// 一度盗聴/傍受された正当な SAMLResponse で、有効期限内なら無制限にログインセッションを
+// 発行できてしまう)。SAML アサーション ID (<Assertion ID="...">) を使用済みとして記録し、
+// 2 回目以降の同一アサーションを拒否する。EmailThreadRef / LineMessageRef と同じ
+// 「一意キーで冪等化 (ここでは逆に多重利用を拒否)」パターン。
+// アサーション ID は SP (このアプリ) ではなく IdP が発行するため、複数テナントの IdP 間で
+// たまたま ID が衝突しても誤って別テナントの利用を拒否しないよう tenantId でスコープする。
+model SamlAssertionRef {
+  id          String   @id @default(cuid()) // 主キー
+  assertionId String // SAML アサーション ID (<Assertion ID="..."> の値)
+  createdAt   DateTime @default(now()) // 記録日時 (= 初回使用日時)
+
+  tenantId String // 所属テナント (突き合わせは必ずこのスコープ内で行う §9)
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade) // テナント削除で連鎖削除
+
+  @@unique([tenantId, assertionId]) // テナント内でアサーション ID は一意 (2 回目以降=リプレイを検知)
+  @@index([tenantId]) // テナントスコープ検索用
 }
 
 // ─────────────────────────────────────────────

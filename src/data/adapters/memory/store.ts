@@ -45,6 +45,14 @@ export interface LineMessageRefRow {
   createdAt: Date; // 記録日時
 }
 
+// メモリ内で保持する SAML アサーションのリプレイ防止記録 1 行 (Phase 4 Enterprise SSO フォローアップ)
+export interface SamlAssertionRefRow {
+  id: string; // 行 ID
+  assertionId: string; // SAML アサーション ID
+  tenantId: string; // 所属テナント ID (突き合わせスコープのキー)
+  createdAt: Date; // 記録日時 (= 初回使用日時)
+}
+
 // テスト用アダプタが使うインメモリストア。
 // `idSeq` カウンタはストアごとに独立しているので、テストコンテキスト間で状態が混ざらず
 // 連番 ID も安定して再現できる。
@@ -64,6 +72,7 @@ export interface Store {
   attachments: Map<string, Attachment>; // 添付ファイルのメタ情報 (画像)
   emailThreadRefs: Map<string, EmailThreadRefRow>; // メール Message-ID → チケット 対応表 (Phase 2)
   lineMessageRefs: Map<string, LineMessageRefRow>; // LINE メッセージ ID → チケット 対応表 (Phase 2 冪等化)
+  samlAssertionRefs: Map<string, SamlAssertionRefRow>; // SAML アサーションのリプレイ防止記録 (Phase 4 Enterprise SSO)
   // LINE 連携コード処理 (紐付け成功/競合) の冪等化記録。起票を伴わないため lineMessageRefs
   // の対象外になる連携コード処理の再送検出用 (§4 Phase 2.1 フォローアップ)。
   // messageId はプラットフォーム全体で一意なため Set のみで十分 (tenantId スコープ不要)
@@ -94,6 +103,7 @@ export function createEmptyStore(): Store {
     attachments: new Map(),
     emailThreadRefs: new Map(),
     lineMessageRefs: new Map(),
+    samlAssertionRefs: new Map(),
     lineLinkCodeRefs: new Set(),
     locations: new Map(), // Phase 4 多拠点: テナント内の店舗・拠点
     ssoConfigs: new Map(), // Phase 4 Enterprise: SAML SSO 設定
@@ -122,6 +132,7 @@ export function cloneStore(src: Store): Store {
     attachments: new Map(src.attachments),
     emailThreadRefs: new Map(src.emailThreadRefs),
     lineMessageRefs: new Map(src.lineMessageRefs),
+    samlAssertionRefs: new Map(src.samlAssertionRefs),
     lineLinkCodeRefs: new Set(src.lineLinkCodeRefs),
     locations: new Map(src.locations), // Phase 4 多拠点
     ssoConfigs: new Map(src.ssoConfigs), // Phase 4 Enterprise: SAML SSO 設定
@@ -149,6 +160,7 @@ export function overwriteStore(dst: Store, src: Store): void {
   dst.attachments = new Map(src.attachments);
   dst.emailThreadRefs = new Map(src.emailThreadRefs);
   dst.lineMessageRefs = new Map(src.lineMessageRefs);
+  dst.samlAssertionRefs = new Map(src.samlAssertionRefs);
   dst.lineLinkCodeRefs = new Set(src.lineLinkCodeRefs);
   dst.locations = new Map(src.locations); // Phase 4 多拠点
   dst.ssoConfigs = new Map(src.ssoConfigs); // Phase 4 Enterprise: SAML SSO 設定

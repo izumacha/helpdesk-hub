@@ -34,7 +34,12 @@ import {
 import { validateUploadedFilesLenient } from '@/lib/validations/attachment';
 // 添付ファイルのストレージ保存 / 失敗時クリーンアップの共通ヘルパー (POST /api/tickets・
 // POST /api/tickets/[id]/comments と共有。/code-review ultra 指摘対応: 3 箇所目の重複を解消)
-import { persistAttachments, cleanupWrittenAttachments } from '@/lib/attachment-persistence';
+// checkTicketAttachmentQuota はチケット当たりの添付総数上限チェック (監査で発見したギャップ対応)
+import {
+  persistAttachments,
+  cleanupWrittenAttachments,
+  checkTicketAttachmentQuota,
+} from '@/lib/attachment-persistence';
 // 新規起票時の初期ステータスを mode から決める共通ルール (Web フォーム起票と単一の源を共有)
 import { initialStatusForMode } from '@/domain/ticket-status';
 // コメント通知の宛先決定 (Web フォーム経由コメントと共有するヘルパー)
@@ -580,6 +585,28 @@ export async function POST(req: Request) {
       );
       // 通知メッセージ (Web フォーム経由コメントと同じ文言に揃える)
       const message = `チケット「${ticket.title}」に新しいコメントが追加されました`;
+
+      // 監査で発見したギャップ対応: チケット当たりの添付総数上限を超えないか確認する。
+      // メールスレッド継続は同じチケットへの追記を何度でも繰り返せるため、テナント累計サイズ上限
+      // だけでは「1 件のチケットに無制限に添付が積み上がる」ことを防げない。Webhook はユーザーへ
+      // 即時フィードバックする画面が無いため、上限超過時は失敗させず添付なしで取り込みを継続する
+      // (このファイル内の累計サイズ上限チェックと同じ lenient な方針)。
+      if (validatedAttachments.length > 0) {
+        const ticketQuotaCheck = await checkTicketAttachmentQuota(
+          repos,
+          ticket.id,
+          tenant.id,
+          validatedAttachments.length,
+        );
+        if (!ticketQuotaCheck.ok) {
+          console.warn(
+            '[POST /api/inbound/email] attachments exceed per-ticket limit, continuing without them',
+            { reason: ticketQuotaCheck.message },
+          );
+          validatedAttachments = [];
+        }
+      }
+
       // フォローアップ (2026-07-13): 添付ファイルのストレージ書き込みはトランザクション外の
       // 副作用のため、失敗時に後始末できるよう書き込み済みキーを蓄えておく
       // (POST /api/tickets/[id]/comments と同じ方針)

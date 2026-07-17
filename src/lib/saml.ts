@@ -56,7 +56,11 @@ function assertConfigComplete(config: TenantSsoConfig): void {
 
 // テナントの SSO 設定 + 基底 URL から node-saml の SP インスタンスを構築する。
 // 設定不備があれば例外を投げる (呼び出し側で 4xx/5xx に変換する)。
-export function createSamlInstance(config: TenantSsoConfig, baseUrl: string, tenantId: string): SAML {
+export function createSamlInstance(
+  config: TenantSsoConfig,
+  baseUrl: string,
+  tenantId: string,
+): SAML {
   // 設定の完全性を確認する (不備なら throw)
   assertConfigComplete(config);
   // SP の各 URL を組み立てる
@@ -99,6 +103,18 @@ export async function getSsoLoginUrl(saml: SAML, relayState = ''): Promise<strin
 export interface SamlIdentity {
   email: string; // ログインすべきユーザーのメールアドレス (小文字正規化済み)
   nameId: string; // IdP が発行した NameID (監査・突き合わせ用)
+  assertionId: string; // SAML アサーション ID (リプレイ防止の一意キーとして呼び出し側で使用)
+}
+
+// アサーション XML のルート要素 (開始タグ) から ID 属性を取り出す純粋関数。
+// node-saml の Profile#getAssertionXml() はこの検証済みアサーション 1 件だけの生 XML を返し、
+// そのルート要素が <Assertion> 自身なので、開始タグの ID 属性がアサーション ID になる。
+// 文字列の先頭だけを対象にし、量指定子のネストも使わないため信頼できない入力でも ReDoS しない (§9)。
+function extractAssertionId(assertionXml: string): string | null {
+  // 先頭の空白を許容しつつ、最初の開始タグの ID="..." だけを 1 回のパスで抜き出す
+  const match = /^\s*<[^>]*\bID="([^"]+)"/.exec(assertionXml);
+  // 見つからなければ null (呼び出し側で fail-closed に扱う)
+  return match ? match[1] : null;
 }
 
 // SAMLResponse (base64) を検証し、本人のメールアドレスを取り出す。
@@ -138,8 +154,19 @@ export async function validateSamlResponse(
   if (!email || !email.includes('@')) {
     throw new Error('SAML レスポンスにメールアドレスが含まれていません。');
   }
+
+  // リプレイ防止 (§9) の一意キーとして使うアサーション ID を取り出す。
+  // 取得できなければ「同一アサーションの再利用」を検知できず fail-open になってしまうため、
+  // ここで検証失敗として拒否する (fail-closed)。
+  const assertionXml =
+    typeof profile.getAssertionXml === 'function' ? profile.getAssertionXml() : '';
+  const assertionId = extractAssertionId(assertionXml);
+  if (!assertionId) {
+    throw new Error('SAML アサーションから ID を取得できませんでした。');
+  }
+
   // 本人情報を返す
-  return { email, nameId: nameId || email };
+  return { email, nameId: nameId || email, assertionId };
 }
 
 // SAML プロファイルから文字列属性を 1 つ取り出すヘルパー (配列なら先頭、無ければ undefined)。

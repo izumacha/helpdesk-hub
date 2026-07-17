@@ -682,4 +682,81 @@ describe('POST /api/tickets/[id]/comments', () => {
       expect(res.status).toBe(201);
     });
   });
+
+  // 回帰防止 (監査で発見したギャップ対応): 1 回のアップロード件数上限 (5 件) は
+  // MAX_ATTACHMENTS_PER_UPLOAD が防ぐが、コメント追記を繰り返して同じチケットに際限なく
+  // 添付を積み上げる (総数の上限が無い) ことは AttachmentRepository.countByTicket が
+  // 一度も呼ばれておらず防げていなかった。
+  describe('チケット当たりの添付総数上限', () => {
+    // 既にチケット当たりの上限 (MAX_ATTACHMENTS_PER_TICKET=100) に達している場合、
+    // 1 件でも追加しようとすると 422 で拒否される
+    it('チケットの添付総数が上限に達していると追加添付を422で拒否する', async () => {
+      const { ticketId } = await seed();
+      // 上限ちょうど (100 件) まで既存添付を積み上げておく
+      for (let i = 0; i < 100; i += 1) {
+        await repos.attachments.create({
+          ticketId,
+          commentId: null,
+          uploaderId: REQUESTER,
+          tenantId: TENANT,
+          mimeType: 'image/jpeg',
+          size: 10,
+          originalName: `existing-${i}.jpg`,
+          storageKey: `${TENANT}/${ticketId}/existing-${i}.jpg`,
+          storage: 'local',
+        });
+      }
+
+      mockSession = buildSession(REQUESTER, 'requester', TENANT);
+      const { POST } = await import('@/app/api/tickets/[id]/comments/route');
+      const res = await POST(
+        buildRequest('101枚目の写真です', [makeFile('p.jpg', 'image/jpeg', 'jpeg-data')]),
+        makeParams(ticketId),
+      );
+      expect(res.status).toBe(422);
+      // コメントも新規添付も保存されていない
+      const comments = [...store.comments.values()].filter((c) => c.ticketId === ticketId);
+      expect(comments).toHaveLength(0);
+      expect(storage.entries.size).toBe(0);
+    });
+
+    // 上限未満なら通常どおり成功する
+    it('チケットの添付総数が上限未満なら追加添付は成功する', async () => {
+      const { ticketId } = await seed();
+      mockSession = buildSession(REQUESTER, 'requester', TENANT);
+      const { POST } = await import('@/app/api/tickets/[id]/comments/route');
+      const res = await POST(
+        buildRequest('1枚目の写真です', [makeFile('p.jpg', 'image/jpeg', 'jpeg-data')]),
+        makeParams(ticketId),
+      );
+      expect(res.status).toBe(201);
+    });
+
+    // 別チケットの添付件数は突き合わせ対象にならない (クロスチケット遮断)
+    it('別チケットの添付件数は上限判定に影響しない', async () => {
+      const { ticketId, ticketB } = await seed();
+      // 別チケット (ticketB) に上限分の添付を積み上げておく
+      for (let i = 0; i < 100; i += 1) {
+        await repos.attachments.create({
+          ticketId: ticketB,
+          commentId: null,
+          uploaderId: 'u-b',
+          tenantId: TENANT_B,
+          mimeType: 'image/jpeg',
+          size: 10,
+          originalName: `other-${i}.jpg`,
+          storageKey: `${TENANT_B}/${ticketB}/other-${i}.jpg`,
+          storage: 'local',
+        });
+      }
+
+      mockSession = buildSession(REQUESTER, 'requester', TENANT);
+      const { POST } = await import('@/app/api/tickets/[id]/comments/route');
+      const res = await POST(
+        buildRequest('自分のチケットへの写真です', [makeFile('p.jpg', 'image/jpeg', 'jpeg-data')]),
+        makeParams(ticketId),
+      );
+      expect(res.status).toBe(201);
+    });
+  });
 });
