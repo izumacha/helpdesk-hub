@@ -1303,6 +1303,35 @@ RATE_LIMIT`) を追加済みだったが、兄弟にあたる `requestMagicLink`
   `tests/features/request-signup.test.ts` に「再送すると古いリンクは無効化され、新しいリンク
   だけが使えること」の統合テストを追加した。
 
+**`/code-review ultra` フォローアップレビューで発見した 3 件を追加修正した**:
+
+- **失効呼び出しの順序による二重ロックアウト**: 当初は「新規トークン発行の**前**に旧トークンを
+  失効させる」実装だったため、その直後のメール送信が (SMTP 不調等で) 失敗すると、新規トークンは
+  rollback で削除され、かつ旧トークンも既に失効済みという「両方とも使えない」二重ロックアウトが
+  起きた。`invalidateActiveByEmail` の呼び出しをメール送信**成功後**に移し、送信失敗時は旧トークン
+  が手つかずのまま残る (ユーザーは直前のリンクで引き続きログイン/サインアップできる)よう変更した。
+  この並び替えにより、新規作成した自分自身のトークンまで対象にしてしまうため、
+  `invalidateActiveByEmail` に `excludeId` (直前に作成した新規トークンの ID) を必須引数として
+  追加した。
+- **SSO ハンドオフトークンとの意図しない共有**: `MagicLinkToken` テーブルは、通常のログイン用
+  マジックリンクだけでなく §6.1「SSO(SAML)」の ACS (`/api/auth/sso/<tenantId>/acs`) がセッション
+  引き渡し用トークンとしても再利用している (「実績あるマジックリンク経路を再利用する」設計)。
+  この区別が無いまま `invalidateActiveByEmail`/`countRecentByEmail` を実装したため、
+  進行中の SSO ログイン (ACS が発行したハンドオフトークン) が無関係な `requestMagicLink`/
+  `requestSignup` 呼び出しに巻き込まれて失効させられたり、SSO ログインの頻度が通常のマジック
+  リンク発行レート制限を消費してしまったりする状態だった。`MagicLinkToken.purpose`
+  (`login` | `ssoHandoff`) を追加し、ACS ルートは `ssoHandoff` を明示指定、
+  `countRecentByEmail`/`invalidateActiveByEmail` は `login` 用途だけを対象にするよう修正した。
+- **失効/消費の境界判定の食い違い**: `invalidateActiveByEmail` は `expiresAt: { gt: now }` で
+  「未失効」を判定していたが、実際にログイン時に使う `consumeValidToken` は `{ gte: now }` で
+  判定しており、`expiresAt` がちょうど `now` と一致する極めて稀な境界の瞬間だけ、本来失効させる
+  べきトークンが失効対象から漏れるという食い違いがあった。`invalidateActiveByEmail` 側を
+  `consumeValidToken` と同じ `gte` に揃えた。
+- 回帰テスト: `excludeId` で自分自身を除外すること・`ssoHandoff` 用途のトークンを対象にしない
+  こと (`countRecentByEmail`/`invalidateActiveByEmail` 双方) の単体テストを両 Repository の
+  memory/Prisma 契約テストに追加。`tests/features/request-magic-link.test.ts` に「進行中の
+  SSO ハンドオフトークンは通常のマジックリンク発行で無効化されない」ことの統合テストを追加した。
+
 ### スケジュール感
 
 ```

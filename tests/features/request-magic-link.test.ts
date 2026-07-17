@@ -338,6 +338,7 @@ describe('requestMagicLink', () => {
       consumedAt: null,
       requestedIp: null,
       createdAt: new Date(now - 30 * 60_000),
+      purpose: 'login',
     });
     store.magicLinks.set('mlt-ok', {
       id: 'mlt-ok',
@@ -347,6 +348,7 @@ describe('requestMagicLink', () => {
       consumedAt: null,
       requestedIp: null,
       createdAt: new Date(now - 1 * 60_000),
+      purpose: 'login',
     });
     // Action 呼び出し (これで掃除 + 新規発行が起きる)
     const requestMagicLink = await loadAction();
@@ -410,5 +412,40 @@ describe('requestMagicLink', () => {
       now: new Date(),
     });
     expect(consumed).toBeNull();
+  });
+
+  // 監査で発見したギャップ対応: 進行中の SSO ログイン (ACS が発行した ssoHandoff 用途の
+  // 引き渡しトークン) が、無関係な requestMagicLink 呼び出しで巻き込まれて失効しないこと
+  it('進行中のSSOハンドオフトークンは通常のマジックリンク発行で無効化されない', async () => {
+    // ユーザー seed
+    store.users.set('u-sso', {
+      id: 'u-sso',
+      email: 'sso-user@example.com',
+      name: 'sso',
+      passwordHash: 'x',
+      role: 'agent',
+      tenantId: 'default-tenant',
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    // SSO ACS が発行した、進行中のハンドオフトークンを直接シードする (route.ts と同じ purpose)
+    const now = new Date();
+    await repos.magicLinks.create({
+      email: 'sso-user@example.com',
+      tokenHash: 'sso-handoff-hash',
+      expiresAt: new Date(now.getTime() + 2 * 60_000),
+      purpose: 'ssoHandoff',
+    });
+
+    // 同じメールで通常のログイン用マジックリンクを要求する
+    const requestMagicLink = await loadAction();
+    await requestMagicLink({ email: 'sso-user@example.com' });
+
+    // SSO ハンドオフトークンは影響を受けず、引き続き使える
+    const consumed = await repos.magicLinks.consumeValidToken({
+      tokenHash: 'sso-handoff-hash',
+      now,
+    });
+    expect(consumed).not.toBeNull();
   });
 });

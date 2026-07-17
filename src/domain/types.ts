@@ -301,6 +301,15 @@ export interface FaqCandidate {
   tenantId: string; // 所属テナント ID (マルチテナント化のキー)
 }
 
+// マジックリンクトークンの用途。同じ MagicLinkToken テーブルを、通常のログイン用マジックリンク
+// (login) と SAML SSO ACS のセッション引き渡し (ssoHandoff、src/app/api/auth/sso/<tenantId>/
+// acs/route.ts が発行) の両方が共有しているため、レート制限件数 (countRecentByEmail) や
+// 再送時の旧トークン失効 (invalidateActiveByEmail) を「通常のログイン用マジックリンク」だけに
+// 限定するための判別子として使う (監査で発見したギャップ対応: 追加当初はこの区別が無く、
+// requestMagicLink/requestSignup の呼び出しが進行中の SSO ログインの引き渡しトークンまで
+// 巻き込んで失効させてしまっていた)。
+export type MagicLinkPurpose = 'login' | 'ssoHandoff';
+
 // マジックリンク (パスワードレス認証) のワンタイムトークン 1 件分
 // 生トークンは URL のみで保持し、DB には SHA-256 ハッシュ (tokenHash) を保存する
 export interface MagicLinkToken {
@@ -311,6 +320,7 @@ export interface MagicLinkToken {
   consumedAt: Date | null; // 消費済み時刻。null なら未使用 (単回使用を強制)
   requestedIp: string | null; // 発行リクエスト元 IP (監査用)
   createdAt: Date; // 作成日時
+  purpose: MagicLinkPurpose; // この行の用途 (login | ssoHandoff)
 }
 
 // セルフサーブサインアップ (docs/smb-dx-pivot-plan.md §7.1) のワンタイムトークン 1 件分。

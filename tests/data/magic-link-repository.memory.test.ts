@@ -76,6 +76,7 @@ describe('MagicLinkRepository (memory)', () => {
       consumedAt: null,
       requestedIp: null,
       createdAt: new Date(Date.now() - 30 * ONE_MINUTE),
+      purpose: 'login',
     });
     // 消費試行は null
     const result = await repos.magicLinks.consumeValidToken({
@@ -200,7 +201,7 @@ describe('MagicLinkRepository (memory)', () => {
       expiresAt: new Date(now.getTime() + 10 * ONE_MINUTE),
     });
 
-    await repos.magicLinks.invalidateActiveByEmail('target@example.com', now);
+    await repos.magicLinks.invalidateActiveByEmail('target@example.com', now, 'no-such-id');
 
     // 未消費・未失効だったトークンは消費済みになり、もう使えない
     expect(await repos.magicLinks.consumeValidToken({ tokenHash: 'active', now })).toBeNull();
@@ -208,5 +209,64 @@ describe('MagicLinkRepository (memory)', () => {
     expect(
       await repos.magicLinks.consumeValidToken({ tokenHash: 'other-active', now }),
     ).not.toBeNull();
+  });
+
+  // invalidateActiveByEmail: excludeId で渡した ID (直前に作成した新規トークン自身) は対象外にすること
+  it('invalidateActiveByEmail は excludeId で渡したトークン自身を対象にしない', async () => {
+    const { repos } = createMemoryContext();
+    const now = new Date();
+    const justCreated = await repos.magicLinks.create({
+      email: 'self@example.com',
+      tokenHash: 'just-created',
+      expiresAt: new Date(now.getTime() + 10 * ONE_MINUTE),
+    });
+
+    await repos.magicLinks.invalidateActiveByEmail('self@example.com', now, justCreated.id);
+
+    // excludeId で渡した自分自身は消費済みにならず、引き続き使える
+    expect(
+      await repos.magicLinks.consumeValidToken({ tokenHash: 'just-created', now }),
+    ).not.toBeNull();
+  });
+
+  // invalidateActiveByEmail: SSO ACS が発行した ssoHandoff 用途のトークンは対象外にすること
+  // (監査で発見したギャップ対応: 通常のマジックリンク発行が進行中の SSO ログインを巻き込まない)
+  it('invalidateActiveByEmail は ssoHandoff 用途のトークンを対象にしない', async () => {
+    const { repos } = createMemoryContext();
+    const now = new Date();
+    await repos.magicLinks.create({
+      email: 'sso@example.com',
+      tokenHash: 'sso-handoff-token',
+      expiresAt: new Date(now.getTime() + 2 * ONE_MINUTE),
+      purpose: 'ssoHandoff',
+    });
+
+    await repos.magicLinks.invalidateActiveByEmail('sso@example.com', now, 'no-such-id');
+
+    // ssoHandoff 用途のトークンは影響を受けず、引き続き使える
+    expect(
+      await repos.magicLinks.consumeValidToken({ tokenHash: 'sso-handoff-token', now }),
+    ).not.toBeNull();
+  });
+
+  // countRecentByEmail: ssoHandoff 用途のトークンは通常のマジックリンク発行レート制限に数えないこと
+  it('countRecentByEmail は ssoHandoff 用途のトークンを数えない', async () => {
+    const { repos } = createMemoryContext();
+    const now = new Date();
+    await repos.magicLinks.create({
+      email: 'sso2@example.com',
+      tokenHash: 'sso-handoff-2',
+      expiresAt: new Date(now.getTime() + 2 * ONE_MINUTE),
+      purpose: 'ssoHandoff',
+    });
+    await repos.magicLinks.create({
+      email: 'sso2@example.com',
+      tokenHash: 'login-token',
+      expiresAt: new Date(now.getTime() + 15 * ONE_MINUTE),
+    });
+
+    const since = new Date(now.getTime() - 15 * ONE_MINUTE);
+    // login 用途の 1 件だけを数える (ssoHandoff は含めない)
+    expect(await repos.magicLinks.countRecentByEmail('sso2@example.com', since)).toBe(1);
   });
 });

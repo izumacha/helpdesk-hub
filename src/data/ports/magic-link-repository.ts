@@ -1,5 +1,5 @@
 // マジックリンクトークンのドメイン型を参照
-import type { MagicLinkToken } from '@/domain/types';
+import type { MagicLinkPurpose, MagicLinkToken } from '@/domain/types';
 
 // マジックリンク (パスワードレス認証) のワンタイムトークン保管リポジトリ契約 (port)
 // 発行時点ではユーザー (= テナント) が未確定なので、本ポートのメソッドは tenantId を取らない。
@@ -11,6 +11,9 @@ export interface MagicLinkRepository {
     tokenHash: string; // 生トークンの SHA-256 ハッシュ
     expiresAt: Date; // 失効時刻
     requestedIp?: string | null; // 発行リクエスト元 IP (任意)
+    // この行の用途。省略時は 'login' (通常のログイン用マジックリンク)。
+    // SSO ACS のセッション引き渡しトークンだけが 'ssoHandoff' を明示的に渡す
+    purpose?: MagicLinkPurpose;
   }): Promise<MagicLinkToken>;
 
   // tokenHash で 1 件取得 (見つからなければ null)。読み取り専用の検査用途
@@ -32,17 +35,27 @@ export interface MagicLinkRepository {
   // expiresAt が now より前のトークンを一括削除 (掃除用)。削除件数を返す
   deleteExpired(now: Date): Promise<number>;
 
-  // 指定メール宛に since 以降に発行されたトークン件数を返す (発行レート制限用)
+  // 指定メール宛に since 以降に発行された「login 用途」のトークン件数を返す (発行レート制限用)。
+  // /code-review ultra 指摘対応: SSO ACS が発行する 'ssoHandoff' 行はここでは数えない
+  // (SSO ログインの頻度が通常のマジックリンク発行レート制限を消費してしまうのを防ぐ)。
   countRecentByEmail(email: string, since: Date): Promise<number>;
 
-  // 指定メール宛の「未消費 かつ 未失効」なトークンをすべて消費済み扱いにする (consumedAt を now にする)。
+  // 指定メール宛の「未消費 かつ 未失効 かつ login 用途」なトークンをすべて消費済み扱いにする
+  // (consumedAt を now にする)。
   // 監査で発見したギャップ対応: 再送のたびに新しいトークンを発行するだけでは、TTL 内 (15分) に
   // 複数回リクエストすると同時に有効なリンクが複数残ってしまう (例: 誤って転送した古いメールの
-  // リンクが後から踏まれてもログインできてしまう)。新しいトークンを発行する直前に呼び出し、
+  // リンクが後から踏まれてもログインできてしまう)。新しいトークンを発行した直後に呼び出し、
   // 「最新の 1 通だけが有効」という状態にする。
-  // expiresAt ではなく consumedAt を書き換えるのは、expiresAt を書き換えると deleteExpired が
-  // 次回呼び出し時にその行を物理削除してしまい、countRecentByEmail (createdAt ベースのレート制限
-  // カウント) が過去の発行分を数えられなくなって上限が実質無効化されるため (行を消さずに
-  // ワンタイム性だけを止める consumeValidToken と同じ「未消費フラグ」を再利用する)。
-  invalidateActiveByEmail(email: string, now: Date): Promise<void>;
+  // - excludeId: 直前に作成した新しいトークン自身の ID。渡さないと、新規作成 → 送信成功後の
+  //   この呼び出しが自分自身も対象にしてしまい、発行した直後のトークンが即座に使えなくなる。
+  // - 'ssoHandoff' 行は対象外にする (/code-review ultra 指摘対応: 対象にしてしまうと、
+  //   進行中の SSO ログインの引き渡しトークンが無関係な magic-link 発行に巻き込まれて
+  //   失効してしまっていた)。
+  // - expiresAt ではなく consumedAt を書き換えるのは、expiresAt を書き換えると deleteExpired が
+  //   次回呼び出し時にその行を物理削除してしまい、countRecentByEmail (createdAt ベースの
+  //   レート制限カウント) が過去の発行分を数えられなくなって上限が実質無効化されるため
+  //   (行を消さずにワンタイム性だけを止める consumeValidToken と同じ「未消費フラグ」を再利用する)。
+  // - 「未失効」の判定は consumeValidToken の expiresAt >= now と揃える (両者の食い違いで
+  //   境界の一瞬だけ判定がずれるのを防ぐ)。
+  invalidateActiveByEmail(email: string, now: Date, excludeId: string): Promise<void>;
 }

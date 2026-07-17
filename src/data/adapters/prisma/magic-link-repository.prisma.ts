@@ -17,6 +17,7 @@ export function makeMagicLinkRepo(db: PrismaLike): MagicLinkRepository {
           tokenHash: input.tokenHash, // 生トークンの SHA-256 ハッシュ
           expiresAt: input.expiresAt, // 失効時刻
           requestedIp: input.requestedIp ?? null, // 発行リクエスト元 IP (任意)
+          purpose: input.purpose ?? 'login', // 省略時は通常のログイン用マジックリンク扱い
         },
       });
       // 作成行をドメイン型に変換して返す
@@ -67,19 +68,26 @@ export function makeMagicLinkRepo(db: PrismaLike): MagicLinkRepository {
       return result.count;
     },
 
-    // 指定メール宛に since 以降に発行されたトークン件数を数える (レート制限用)
+    // 指定メール宛に since 以降に発行された login 用途のトークン件数を数える (レート制限用)。
+    // purpose: 'login' で絞り、SSO ACS 発行の 'ssoHandoff' 行は対象外にする
     async countRecentByEmail(email, since) {
-      // email + createdAt >= since で件数取得
       return db.magicLinkToken.count({
-        where: { email, createdAt: { gte: since } },
+        where: { email, createdAt: { gte: since }, purpose: 'login' },
       });
     },
 
-    // 指定メール宛の未消費・未失効トークンをすべて消費済み扱いにする (consumedAt を now にする)。
-    // expiresAt ではなく consumedAt を書き換える理由は port の定義コメントを参照
-    async invalidateActiveByEmail(email, now) {
+    // 指定メール宛の未消費・未失効・login 用途のトークンをすべて消費済み扱いにする
+    // (consumedAt を now にする)。excludeId で直前に作成した新規トークン自身は対象外にする。
+    // expiresAt ではなく consumedAt を書き換える理由・purpose で絞る理由は port の定義コメントを参照
+    async invalidateActiveByEmail(email, now, excludeId) {
       await db.magicLinkToken.updateMany({
-        where: { email, consumedAt: null, expiresAt: { gt: now } },
+        where: {
+          email,
+          consumedAt: null,
+          expiresAt: { gte: now }, // consumeValidToken と同じ境界判定 (gte) に揃える
+          purpose: 'login',
+          id: { not: excludeId },
+        },
         data: { consumedAt: now },
       });
     },

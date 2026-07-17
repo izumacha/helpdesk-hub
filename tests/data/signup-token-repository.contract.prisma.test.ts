@@ -237,13 +237,31 @@ describe.runIf(SHOULD_RUN)('SignupTokenRepository (prisma adapter)', () => {
       expiresAt: new Date(now.getTime() + 10 * ONE_MINUTE),
     });
 
-    await repos.signupTokens.invalidateActiveByEmail('target@example.com', now);
+    await repos.signupTokens.invalidateActiveByEmail('target@example.com', now, 'no-such-id');
 
     // 未消費・未失効だったトークンは消費済みになり、もう使えない
     expect(await repos.signupTokens.consumeValidToken({ tokenHash: 'active', now })).toBeNull();
     // 別メール宛のトークンは影響を受けない
     expect(
       await repos.signupTokens.consumeValidToken({ tokenHash: 'other-active', now }),
+    ).not.toBeNull();
+  });
+
+  // invalidateActiveByEmail: excludeId で渡した ID (直前に作成した新規トークン自身) は対象外にすること
+  it('invalidateActiveByEmailはexcludeIdで渡したトークン自身を対象にしない', async () => {
+    const repos = buildPrismaRepos(prisma);
+    const now = new Date();
+    const justCreated = await repos.signupTokens.create({
+      email: 'self@example.com',
+      tokenHash: 'just-created',
+      expiresAt: new Date(now.getTime() + 10 * ONE_MINUTE),
+    });
+
+    await repos.signupTokens.invalidateActiveByEmail('self@example.com', now, justCreated.id);
+
+    // excludeId で渡した自分自身は消費済みにならず、引き続き使える
+    expect(
+      await repos.signupTokens.consumeValidToken({ tokenHash: 'just-created', now }),
     ).not.toBeNull();
   });
 });

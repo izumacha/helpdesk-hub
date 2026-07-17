@@ -118,10 +118,6 @@ async function deliverSignupOrLogin(
   // 上限超過なら新規発行をスキップ (例外は投げない: 列挙対策で呼び出し側からは成功/失敗が見えない)
   if (recent >= SIGNUP_RATE_LIMIT_MAX) return;
 
-  // 監査で発見したギャップ対応: 新しいトークンを発行する前に、このメール宛の未消費・未失効
-  // トークンをすべて失効させる (magic-link-delivery.ts の invalidateActiveByEmail と同じ理由)。
-  await repos.signupTokens.invalidateActiveByEmail(email, new Date());
-
   // 256-bit のランダムトークンを生成し、SHA-256 ハッシュを DB に記録する (Web Crypto は async)
   const rawToken = generateSignupToken();
   const tokenHash = await hashSignupToken(rawToken);
@@ -148,4 +144,11 @@ async function deliverSignupOrLogin(
     // 元の送信エラーを再 throw (呼び出し側の try-catch で握り潰される)
     throw err;
   }
+
+  // 監査で発見したギャップ対応: 新しいトークンの送信に成功した後で、このメール宛の
+  // 未消費・未失効トークン (自分自身を除く) をすべて消費済み扱いにする
+  // (magic-link-delivery.ts の invalidateActiveByEmail と同じ理由・同じ配置)。
+  // /code-review ultra 指摘対応: 送信前に呼んでいた当初の実装は、送信失敗時に「新しいトークンは
+  // rollback で削除され、かつ古いトークンも失効済み」という二重の締め出しを起こしていた。
+  await repos.signupTokens.invalidateActiveByEmail(email, new Date(), created.id);
 }
