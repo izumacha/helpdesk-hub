@@ -709,6 +709,10 @@ model LineLinkCodeRef {
 // 「一意キーで冪等化 (ここでは逆に多重利用を拒否)」パターン。
 // アサーション ID は SP (このアプリ) ではなく IdP が発行するため、複数テナントの IdP 間で
 // たまたま ID が衝突しても誤って別テナントの利用を拒否しないよう tenantId でスコープする。
+// LineLinkCodeRef と同じく TTL で消さず永続保持する: SSO は Enterprise 限定機能で 1 テナント
+// あたりのログイン頻度は低く、件数は実運用でも小さい想定 (アサーション自体は数分で失効するが、
+// 「既に使った」という記録自体は消しても安全上の利益が無く、消すこと自体がリプレイ再許可の
+// バグを生みかねないため、あえて残す)。
 model SamlAssertionRef {
   id          String   @id @default(cuid()) // 主キー
   assertionId String // SAML アサーション ID (<Assertion ID="..."> の値)

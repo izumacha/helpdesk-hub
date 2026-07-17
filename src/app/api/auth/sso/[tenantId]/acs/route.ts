@@ -118,19 +118,6 @@ export async function POST(req: Request, { params }: Params) {
     return errorRedirect('sso-invalid');
   }
 
-  // リプレイ対策: 同一アサーション (tenantId + assertionId) の 2 回目以降の利用を拒否する。
-  // 署名検証は「正当な IdP が発行した」ことしか保証せず、有効期限内の同じ SAMLResponse を
-  // 攻撃者が繰り返し POST しても検証は毎回成功してしまうため、消費済みかどうかを別途記録する
-  // (一意制約によるアトミックな判定。同時に同じアサーションで 2 リクエストが来ても片方だけ通る)。
-  const isFirstUse = await repos.samlAssertions.recordIfNew({ tenantId, assertionId });
-  if (!isFirstUse) {
-    // メールアドレスはログに残さず、リプレイ検知の事実だけを残す
-    console.warn(
-      '[sso-acs] 同一 SAML アサーションの再利用を検知しました (リプレイ防止により拒否)。',
-    );
-    return errorRedirect('sso-invalid');
-  }
-
   // メールに対応する既存ユーザーを引く
   const user = await repos.users.findByEmail(email);
   // ユーザーが存在しない、または別テナントのユーザーなら拒否する (クロステナント防止 + JIT 無効)
@@ -138,6 +125,22 @@ export async function POST(req: Request, { params }: Params) {
     // 監査用に警告ログを残す (メールアドレスはログに残さず件数のみ気付ける程度に留める)
     console.warn('[sso-acs] SSO 本人に対応するテナント内ユーザーが見つかりません。');
     return errorRedirect('sso-no-user');
+  }
+
+  // リプレイ対策: 同一アサーション (tenantId + assertionId) の 2 回目以降の利用を拒否する。
+  // 署名検証は「正当な IdP が発行した」ことしか保証せず、有効期限内の同じ SAMLResponse を
+  // 攻撃者が繰り返し POST しても検証は毎回成功してしまうため、消費済みかどうかを別途記録する
+  // (一意制約によるアトミックな判定。同時に同じアサーションで 2 リクエストが来ても片方だけ通る)。
+  // /code-review ultra 指摘対応: ユーザー未登録チェックより後に行う。先に記録してしまうと、
+  // まだアカウントが用意されていないだけの正当なアサーション (sso-no-user で失敗) が「消費済み」
+  // として焼却され、後でアカウントを作成しても有効期限内の同じアサーションを再送できなくなる。
+  const isFirstUse = await repos.samlAssertions.recordIfNew({ tenantId, assertionId });
+  if (!isFirstUse) {
+    // メールアドレスはログに残さず、リプレイ検知の事実だけを残す
+    console.warn(
+      '[sso-acs] 同一 SAML アサーションの再利用を検知しました (リプレイ防止により拒否)。',
+    );
+    return errorRedirect('sso-invalid');
   }
 
   // セッション発行: ワンタイムトークンを 1 件発行してマジックリンクのコールバックへ渡す

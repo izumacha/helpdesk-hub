@@ -106,15 +106,23 @@ export interface SamlIdentity {
   assertionId: string; // SAML アサーション ID (リプレイ防止の一意キーとして呼び出し側で使用)
 }
 
-// アサーション XML のルート要素 (開始タグ) から ID 属性を取り出す純粋関数。
-// node-saml の Profile#getAssertionXml() はこの検証済みアサーション 1 件だけの生 XML を返し、
-// そのルート要素が <Assertion> 自身なので、開始タグの ID 属性がアサーション ID になる。
-// 文字列の先頭だけを対象にし、量指定子のネストも使わないため信頼できない入力でも ReDoS しない (§9)。
-function extractAssertionId(assertionXml: string): string | null {
-  // 先頭の空白を許容しつつ、最初の開始タグの ID="..." だけを 1 回のパスで抜き出す
-  const match = /^\s*<[^>]*\bID="([^"]+)"/.exec(assertionXml);
-  // 見つからなければ null (呼び出し側で fail-closed に扱う)
-  return match ? match[1] : null;
+// 検証済みアサーションの ID 属性を取り出す純粋関数。
+// node-saml の Profile#getAssertion() は、アサーション XML を xml2js
+// (tagNameProcessors: [stripPrefix]) で解析済みの構造体をそのまま返す。
+// ルート要素が <Assertion> 自身であるため `parsed.Assertion.$.ID` で属性値を取れる。
+// /code-review ultra 指摘対応: 当初はこの XML 文字列を正規表現で自前パースしていたが、
+// 属性の並び順・引用符の種類・名前空間接頭辞の書き方は IdP 実装によって異なりうり、
+// 文字列パースでは正当な IdP のアサーションを誤って拒否しかねなかった (fail-closed のため
+// ログイン不能という形で表面化する)。node-saml が既に解析済みの構造体を読むことで、
+// 表記ゆれに影響されない取得方法にする。
+function extractAssertionId(profile: Record<string, unknown>): string | null {
+  // getAssertion が無い (想定外の Profile 形状) 場合は取得不能として扱う
+  if (typeof profile.getAssertion !== 'function') return null;
+  // 解析済みのアサーション構造体を取得する
+  const parsed = profile.getAssertion() as { Assertion?: { $?: { ID?: unknown } } } | undefined;
+  const id = parsed?.Assertion?.$?.ID;
+  // 文字列かつ空でない場合のみ採用する (それ以外は呼び出し側で fail-closed に扱う)
+  return typeof id === 'string' && id ? id : null;
 }
 
 // SAMLResponse (base64) を検証し、本人のメールアドレスを取り出す。
@@ -158,9 +166,7 @@ export async function validateSamlResponse(
   // リプレイ防止 (§9) の一意キーとして使うアサーション ID を取り出す。
   // 取得できなければ「同一アサーションの再利用」を検知できず fail-open になってしまうため、
   // ここで検証失敗として拒否する (fail-closed)。
-  const assertionXml =
-    typeof profile.getAssertionXml === 'function' ? profile.getAssertionXml() : '';
-  const assertionId = extractAssertionId(assertionXml);
+  const assertionId = extractAssertionId(profile);
   if (!assertionId) {
     throw new Error('SAML アサーションから ID を取得できませんでした。');
   }
