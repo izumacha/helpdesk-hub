@@ -36,6 +36,10 @@ import { resolveAppBaseUrl } from '@/lib/app-url';
 import { getEmailSender } from '@/lib/email';
 // 既存ユーザー宛のマジックリンク発行・送信ロジック (§7.1 セルフサーブサインアップと共有 / §6 DRY)
 import { deliverMagicLinkIfUserExists } from '@/lib/magic-link-delivery';
+// エンドポイント全体の固定キーレート制限値 (監査で発見したギャップ対応)
+import { MAGIC_LINK_REQUEST_GLOBAL_RATE_LIMIT } from '@/lib/magic-link';
+// 連打防止のための共通レート制限ヘルパー (request-signup.ts 等と共有)
+import { enforceRateLimit } from '@/lib/rate-limit';
 // 列挙耐性のための最低遅延ヘルパー・遅延値 (セルフサーブサインアップと共有 / §6 DRY)
 import { atLeast, ENUMERATION_MASK_DELAY_MS } from '@/lib/timing';
 // 入力検証スキーマ
@@ -58,6 +62,14 @@ export async function requestMagicLink(input: { email: string }): Promise<Reques
   }
   // 検証後の正規化済みメール
   const email = parsed.data.email;
+
+  // 監査で発見したギャップ対応: メール単位のレート制限 (deliverMagicLinkIfUserExists 内)
+  // だけでは、攻撃者が毎回異なるメールアドレスを使うことで実質無制限に回避できる。
+  // このエンドポイントは実在ユーザーへの実際のメール送信 + DB 書き込みを伴うため、
+  // request-signup.ts と同じくエンドポイント全体で固定キーの頭打ちを設ける
+  // (§9 公開エンドポイント保護)。上限到達時は列挙耐性の対象外 (どのメールでも同じ
+  // 「混み合っている」応答になるため詮索の手がかりにならない) としてそのまま例外を伝播させる
+  enforceRateLimit('magic-link-request:global', MAGIC_LINK_REQUEST_GLOBAL_RATE_LIMIT);
 
   // ── 列挙対策マスクの外で設定不備を先に表面化させる ──
   // getEmailSender() / resolveAppBaseUrl() は環境変数の妥当性チェックを兼ねるため、

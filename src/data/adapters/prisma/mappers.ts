@@ -157,6 +157,7 @@ export function toMagicLinkToken(row: MagicLinkRow): MagicLinkToken {
     consumedAt: row.consumedAt,
     requestedIp: row.requestedIp,
     createdAt: row.createdAt,
+    purpose: row.purpose, // login | ssoHandoff (Prisma enum の値をそのまま使う)
   };
 }
 

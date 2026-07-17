@@ -144,4 +144,11 @@ async function deliverSignupOrLogin(
     // 元の送信エラーを再 throw (呼び出し側の try-catch で握り潰される)
     throw err;
   }
+
+  // 監査で発見したギャップ対応: 新しいトークンの送信に成功した後で、このメール宛の
+  // 未消費・未失効トークン (自分自身を除く) をすべて消費済み扱いにする
+  // (magic-link-delivery.ts の invalidateActiveByEmail と同じ理由・同じ配置)。
+  // /code-review ultra 指摘対応: 送信前に呼んでいた当初の実装は、送信失敗時に「新しいトークンは
+  // rollback で削除され、かつ古いトークンも失効済み」という二重の締め出しを起こしていた。
+  await repos.signupTokens.invalidateActiveByEmail(email, new Date(), created.id);
 }

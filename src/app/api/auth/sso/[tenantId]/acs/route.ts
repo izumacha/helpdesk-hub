@@ -152,8 +152,19 @@ export async function POST(req: Request, { params }: Params) {
   const expiresAt = new Date(Date.now() + SSO_HANDOFF_TTL_MS);
   // 発行元 IP を監査用に取得する (プロキシ経由の x-forwarded-for を優先)
   const requestedIp = req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() || null;
-  // ワンタイムトークンを保存する (consume はマジックリンクのコールバックが原子的に行う)
-  await repos.magicLinks.create({ email: user.email, tokenHash, expiresAt, requestedIp });
+  // ワンタイムトークンを保存する (consume はマジックリンクのコールバックが原子的に行う)。
+  // /code-review ultra 指摘対応: purpose を 'ssoHandoff' にして通常のログイン用マジックリンク
+  // (login) と区別する。区別しないと、requestMagicLink/requestSignup の
+  // invalidateActiveByEmail/countRecentByEmail がこの引き渡しトークンまで対象にしてしまい、
+  // 進行中の SSO ログインが無関係な操作で失効させられたり、SSO ログイン自体が通常のマジック
+  // リンク発行レート制限を消費してしまったりする
+  await repos.magicLinks.create({
+    email: user.email,
+    tokenHash,
+    expiresAt,
+    requestedIp,
+    purpose: 'ssoHandoff',
+  });
 
   // ── ログイン CSRF / セッション固定対策 (ユーザー操作を必須化する確認ページ) ──
   // ACS は未認証で到達でき、IdP-initiated SSO では未承諾の署名付きアサーションも受理する

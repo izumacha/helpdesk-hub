@@ -8,6 +8,9 @@ import type { Repos } from '@/data/ports/unit-of-work';
 import type { EmailSender } from '@/lib/email';
 // マジックリンク URL 構築 (fake send 内で URL に含まれるトークンを取り出すために使う)
 import { hashMagicLinkToken } from '@/lib/magic-link';
+// レート制限バケットをテスト間で初期化するヘルパー (監査で発見したギャップ対応で追加した
+// エンドポイント全体のレート制限を、このファイルのテスト間で持ち越さないようにする)
+import { __resetRateLimits } from '@/lib/rate-limit';
 
 // 各テスト前に書き換える依存。Action import 前に getter で参照させる
 let store: Store;
@@ -82,11 +85,14 @@ beforeEach(() => {
     chatworkRoomId: null, // Slack 通知未設定 (テスト用フィクスチャ)
     createdAt: new Date(),
   });
+  // レート制限バケットをクリアする (前のテストの呼び出し回数を持ち越さない)
+  __resetRateLimits();
 });
 
 // 各テスト後に環境変数スタブを必ず巻き戻す
 afterEach(() => {
   vi.unstubAllEnvs();
+  __resetRateLimits();
 });
 
 describe('requestMagicLink', () => {
@@ -332,6 +338,7 @@ describe('requestMagicLink', () => {
       consumedAt: null,
       requestedIp: null,
       createdAt: new Date(now - 30 * 60_000),
+      purpose: 'login',
     });
     store.magicLinks.set('mlt-ok', {
       id: 'mlt-ok',
@@ -341,6 +348,7 @@ describe('requestMagicLink', () => {
       consumedAt: null,
       requestedIp: null,
       createdAt: new Date(now - 1 * 60_000),
+      purpose: 'login',
     });
     // Action 呼び出し (これで掃除 + 新規発行が起きる)
     const requestMagicLink = await loadAction();
@@ -350,5 +358,94 @@ describe('requestMagicLink', () => {
     expect(store.magicLinks.has('mlt-old')).toBe(false);
     expect(store.magicLinks.has('mlt-ok')).toBe(true);
     expect(store.magicLinks.size).toBe(2);
+  });
+
+  // 監査で発見したギャップ対応: 異なるメールアドレスを使ってもエンドポイント全体の固定キー
+  // レート制限で頭打ちになること (request-signup.ts の同種テストと同じ方式)
+  it('レート制限: 異なるメールアドレスを使ってもエンドポイント全体の上限 (1分30件) で頭打ちになる', async () => {
+    const requestMagicLink = await loadAction();
+    // 上限 (30 件) ぴったりまでは、未登録メールでも (列挙対策で送信自体はされないが) 発行が許される
+    for (let i = 0; i < 30; i++) {
+      await requestMagicLink({ email: `flood-${i}@example.com` });
+    }
+    // 31 件目は別のメールアドレスでも、全体レート制限に引っかかり例外を投げる
+    await expect(requestMagicLink({ email: 'flood-overflow@example.com' })).rejects.toThrow(
+      /頻度が高すぎます/,
+    );
+  });
+
+  // 監査で発見したギャップ対応: 再送すると古いリンクは無効化され、新しいリンクだけが使えること
+  it('マジックリンクを再送すると、古いリンクは無効化され新しいリンクだけが使える', async () => {
+    // ユーザー seed
+    store.users.set('u-reissue', {
+      id: 'u-reissue',
+      email: 'reissue@example.com',
+      name: 'r',
+      passwordHash: 'x',
+      role: 'requester',
+      tenantId: 'default-tenant',
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+
+    const requestMagicLink = await loadAction();
+
+    // 1 回目のリクエストでトークンを発行する
+    await requestMagicLink({ email: 'reissue@example.com' });
+    expect(sentMessages).toHaveLength(1);
+    const firstMatch = sentMessages[0].text.match(/https?:\/\/\S+token=([A-Za-z0-9_-]+)/);
+    const firstRawToken = firstMatch![1];
+
+    // 2 回目のリクエスト (再送) で新しいトークンを発行する
+    await requestMagicLink({ email: 'reissue@example.com' });
+    expect(sentMessages).toHaveLength(2);
+
+    // 古いトークンは行としては残るが、消費済み (使用不可) 扱いになっている
+    const firstTokenHash = await hashMagicLinkToken(firstRawToken);
+    const firstRow = [...store.magicLinks.values()].find((t) => t.tokenHash === firstTokenHash);
+    expect(firstRow).toBeDefined();
+    expect(firstRow!.consumedAt).not.toBeNull();
+
+    // consumeValidToken (実際のログインコールバックが使う原子的消費) も古いトークンを拒否する
+    const consumed = await repos.magicLinks.consumeValidToken({
+      tokenHash: firstTokenHash,
+      now: new Date(),
+    });
+    expect(consumed).toBeNull();
+  });
+
+  // 監査で発見したギャップ対応: 進行中の SSO ログイン (ACS が発行した ssoHandoff 用途の
+  // 引き渡しトークン) が、無関係な requestMagicLink 呼び出しで巻き込まれて失効しないこと
+  it('進行中のSSOハンドオフトークンは通常のマジックリンク発行で無効化されない', async () => {
+    // ユーザー seed
+    store.users.set('u-sso', {
+      id: 'u-sso',
+      email: 'sso-user@example.com',
+      name: 'sso',
+      passwordHash: 'x',
+      role: 'agent',
+      tenantId: 'default-tenant',
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    // SSO ACS が発行した、進行中のハンドオフトークンを直接シードする (route.ts と同じ purpose)
+    const now = new Date();
+    await repos.magicLinks.create({
+      email: 'sso-user@example.com',
+      tokenHash: 'sso-handoff-hash',
+      expiresAt: new Date(now.getTime() + 2 * 60_000),
+      purpose: 'ssoHandoff',
+    });
+
+    // 同じメールで通常のログイン用マジックリンクを要求する
+    const requestMagicLink = await loadAction();
+    await requestMagicLink({ email: 'sso-user@example.com' });
+
+    // SSO ハンドオフトークンは影響を受けず、引き続き使える
+    const consumed = await repos.magicLinks.consumeValidToken({
+      tokenHash: 'sso-handoff-hash',
+      now,
+    });
+    expect(consumed).not.toBeNull();
   });
 });

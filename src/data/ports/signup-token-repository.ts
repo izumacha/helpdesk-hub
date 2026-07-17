@@ -27,4 +27,12 @@ export interface SignupTokenRepository {
 
   // 指定メール宛に since 以降に発行されたトークン件数を返す (発行レート制限用)
   countRecentByEmail(email: string, since: Date): Promise<number>;
+
+  // 指定メール宛の「未消費 かつ 未失効」なトークンをすべて消費済み扱いにする (consumedAt を now にする)。
+  // 監査で発見したギャップ対応: MagicLinkRepository.invalidateActiveByEmail と同じ理由・同じ実装方針
+  // (再送のたびに古いリンクも有効なまま残ってしまう問題への対応。expiresAt ではなく consumedAt を
+  // 書き換えるのは deleteExpired による早期物理削除で countRecentByEmail のカウントが狂うのを防ぐため)。
+  // - excludeId: 直前に作成した新しいトークン自身の ID (自己失効を防ぐため必須)。
+  // - 「未失効」の判定は consumeValidToken の expiresAt >= now と揃える。
+  invalidateActiveByEmail(email: string, now: Date, excludeId: string): Promise<void>;
 }

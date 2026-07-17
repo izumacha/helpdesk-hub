@@ -19,6 +19,7 @@ export function makeMagicLinkRepo(store: Store): MagicLinkRepository {
         consumedAt: null, // 作成直後は未消費
         requestedIp: input.requestedIp ?? null,
         createdAt: new Date(),
+        purpose: input.purpose ?? 'login', // 省略時は通常のログイン用マジックリンク扱い
       };
       // ストアの Map に登録
       store.magicLinks.set(token.id, token);
@@ -42,7 +43,7 @@ export function makeMagicLinkRepo(store: Store): MagicLinkRepository {
     // tokenHash で「未消費かつ失効前」のトークンを原子的に消費する。
     // JS は単一スレッドのため、check + update の間に他の callback は割り込めない。
     // ただし関数本体で await を一切使わないことで、見た目上の同時呼び出し
-     // (Promise.all([consume, consume])) でも片方しか成功しないことを保証する。
+    // (Promise.all([consume, consume])) でも片方しか成功しないことを保証する。
     async consumeValidToken({ tokenHash, now }) {
       // 全トークンを走査して tokenHash 一致のエントリを探す
       let target: { id: string; row: { consumedAt: Date | null; expiresAt: Date } } | null = null;
@@ -85,18 +86,38 @@ export function makeMagicLinkRepo(store: Store): MagicLinkRepository {
       return count;
     },
 
-    // 指定メール宛に since 以降に発行されたトークン件数を数える
+    // 指定メール宛に since 以降に発行された login 用途のトークン件数を数える。
+    // purpose: 'login' で絞り、SSO ACS 発行の 'ssoHandoff' 行は対象外にする
     async countRecentByEmail(email, since) {
       let count = 0; // カウンタ
       // 全トークンを走査
       for (const t of store.magicLinks.values()) {
-        // email 一致 + createdAt >= since の条件で数える
-        if (t.email === email && t.createdAt >= since) {
+        // email 一致 + createdAt >= since + login 用途の条件で数える
+        if (t.email === email && t.createdAt >= since && t.purpose === 'login') {
           count += 1;
         }
       }
       // 件数を返す
       return count;
+    },
+
+    // 指定メール宛の未消費・未失効・login 用途のトークンをすべて消費済み扱いにする
+    // (consumedAt を now にする)。excludeId で直前に作成した新規トークン自身は対象外にする。
+    // expiresAt ではなく consumedAt を書き換える理由・purpose で絞る理由は port の定義コメントを参照
+    async invalidateActiveByEmail(email, now, excludeId) {
+      for (const [id, t] of store.magicLinks) {
+        // email 一致 + 未消費 + 未失効 (consumeValidToken と同じ gte 境界) + login 用途 +
+        // 直前に作成した新規トークン自身は除外、の条件をすべて満たす行だけを対象にする
+        if (
+          t.email === email &&
+          t.consumedAt === null &&
+          t.expiresAt >= now &&
+          t.purpose === 'login' &&
+          id !== excludeId
+        ) {
+          store.magicLinks.set(id, { ...t, consumedAt: now });
+        }
+      }
     },
   };
 }
