@@ -43,6 +43,10 @@ import { resolveStatusFromLabel, getStatusLabelsForMode } from '@/lib/constants'
 import { broadcastUnreadCountToMany } from '@/features/notifications/notify';
 // Phase 4 課金: 月間チケット上限チェック (Web フォーム・メール/LINE 取り込みと共有)
 import { getMonthlyTicketQuota } from '@/lib/tenant-plan';
+// 拠点・カテゴリの名前解決を網羅的に行うための上限値 (監査で発見したギャップ対応。
+// 既定の表示用上限 (LOCATION_LIST_LIMIT/CATEGORY_LIST_LIMIT) とは別の、CSV インポート専用の上限)
+import { LOCATION_LIST_MATCHING_LIMIT } from '@/data/ports/location-repository';
+import { CATEGORY_LIST_MATCHING_LIMIT } from '@/data/ports/category-repository';
 // Phase 4: Slack/Teams/Chatwork 外部通知ヘルパー (Web フォーム・メール・LINE 取り込みと共有)
 import { notifyOutboundBestEffort } from '@/lib/outbound-notify';
 // 優先度から初回応答期限を計算する SLA ヘルパー (Web フォーム・メール・LINE 取り込みと共有)
@@ -635,11 +639,19 @@ export async function importTickets(csvText: string): Promise<ImportTicketsResul
   // 限らず依頼者もなり得るため、agentsForAssignee (listAgents) ではなく listByTenant (全ロール) を
   // 別途取得する。同一テナント内で対象が重なっても listAgents とは目的の異なる独立した取得のため、
   // 拠点・カテゴリ・エージェント一覧と合わせて Promise.all で並列化する (§8 パフォーマンス)。
+  // 監査で発見したギャップ対応: listByTenant/list は既定で表示用の上限 (LOCATION_LIST_LIMIT /
+  // CATEGORY_LIST_LIMIT = 200件) にクランプされる (§8)。この名前解決は「テナントの拠点/カテゴリを
+  // 漏れなく引く」網羅性が必須のため、既定値のまま呼ぶと 201 件目以降の拠点/カテゴリが対応表から
+  // 抜け落ち、実在する名前を CSV で指定しても「見つかりません」という誤ったエラーになってしまう
+  // (表示用の上限とは別に、CSV インポートのような一括処理向けの上限 (LOCATION_LIST_MATCHING_LIMIT /
+  // CATEGORY_LIST_MATCHING_LIMIT) を明示的に渡す)
   const [locationsByName, categoriesByName, agentsForAssignee, usersForCreator] = await Promise.all(
     [
-      buildNameToIdMap(locationIndex !== -1, () => repos.locations.listByTenant(tenantId)),
+      buildNameToIdMap(locationIndex !== -1, () =>
+        repos.locations.listByTenant(tenantId, { limit: LOCATION_LIST_MATCHING_LIMIT }),
+      ),
       buildNameToIdMap(categoryIndex !== -1 && mode !== 'lite', () =>
-        repos.categories.list(tenantId),
+        repos.categories.list(tenantId, { limit: CATEGORY_LIST_MATCHING_LIMIT }),
       ),
       assigneeIndex !== -1 ? repos.users.listAgents(tenantId) : Promise.resolve(null),
       creatorIndex !== -1 ? repos.users.listByTenant(tenantId) : Promise.resolve(null),

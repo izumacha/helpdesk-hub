@@ -52,10 +52,11 @@ describe('TenantRepository.updateMode (memory)', () => {
     seed();
   });
 
-  // 正常系: 指定テナントの mode を lite → pro に切り替えられる (expectedPlanIn 省略 = 無条件更新)
+  // 正常系: 指定テナントの mode を lite → pro に切り替えられる (expectedPlanIn に現在のプラン
+  // 'free' (seed 参照) を含めることで CAS を素通りさせる)
   it('対象テナントの mode を pro に更新できる', async () => {
-    // テナント A を pro に切り替える
-    const updated = await repos.tenants.updateMode(TENANT_A, 'pro');
+    // テナント A を pro に切り替える (expectedPlanIn に現在のプラン 'free' を含める)
+    const updated = await repos.tenants.updateMode(TENANT_A, 'pro', ['free']);
     // 更新できたことを示す true が返る
     expect(updated).toBe(true);
     // 再取得しても pro が永続化されている
@@ -66,7 +67,7 @@ describe('TenantRepository.updateMode (memory)', () => {
   // 分離: あるテナントの更新が他テナントに波及しない
   it('他テナントの mode には影響しない', async () => {
     // テナント A だけを pro に切り替える
-    await repos.tenants.updateMode(TENANT_A, 'pro');
+    await repos.tenants.updateMode(TENANT_A, 'pro', ['free']);
     // テナント B は元の lite のままであること
     const tenantB = await repos.tenants.findById(TENANT_B);
     expect(tenantB?.mode).toBe('lite');
@@ -74,7 +75,7 @@ describe('TenantRepository.updateMode (memory)', () => {
 
   // 異常系: 存在しないテナント ID は false を返す (fail-closed。Prisma の updateMany と同じ 0 件挙動)
   it('存在しないテナント ID はfalseを返す', async () => {
-    const updated = await repos.tenants.updateMode('no-such-tenant', 'pro');
+    const updated = await repos.tenants.updateMode('no-such-tenant', 'pro', ['free']);
     expect(updated).toBe(false);
   });
 

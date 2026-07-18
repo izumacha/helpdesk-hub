@@ -1,5 +1,8 @@
-// Location リポジトリの契約 (port) と一覧の上限件数定数
-import { LOCATION_LIST_LIMIT, type LocationRepository } from '@/data/ports/location-repository';
+// Location リポジトリの契約 (port) と一覧の上限クランプ関数
+import {
+  resolveLocationListLimit,
+  type LocationRepository,
+} from '@/data/ports/location-repository';
 // ドメイン型
 import type { Location } from '@/domain/types';
 // Prisma の Location 行型
@@ -25,13 +28,13 @@ function toLocation(row: LocationRow): Location {
 // Prisma クライアントを使った Location リポジトリを生成するファクトリ関数
 export function makeLocationRepo(db: PrismaLike): LocationRepository {
   return {
-    // テナント内の全拠点を名前昇順で取得する
-    async listByTenant(tenantId) {
+    // テナント内の全拠点を名前昇順で取得する (opts.limit 省略時は表示用の既定上限)
+    async listByTenant(tenantId, opts) {
       // テナントスコープで絞り込み、拠点名で昇順ソートして取得する
       const rows = await db.location.findMany({
         where: { tenantId },
         orderBy: { name: 'asc' },
-        take: LOCATION_LIST_LIMIT, // §8 一覧取得は必ず上限を持たせる
+        take: resolveLocationListLimit(opts?.limit), // §8 一覧取得は必ず上限を持たせる (呼び出し元の指定値をさらにクランプ)
       });
       // 各行をドメイン型に変換して返す
       return rows.map(toLocation);

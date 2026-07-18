@@ -1,18 +1,21 @@
-// カテゴリリポジトリの契約 (port)・一覧の上限件数定数と、Prisma クライアント共通型をインポート
-import { CATEGORY_LIST_LIMIT, type CategoryRepository } from '@/data/ports/category-repository';
+// カテゴリリポジトリの契約 (port)・一覧の上限クランプ関数と、Prisma クライアント共通型をインポート
+import {
+  resolveCategoryListLimit,
+  type CategoryRepository,
+} from '@/data/ports/category-repository';
 import type { PrismaLike } from './types';
 
 // Prisma クライアントを使ったカテゴリリポジトリを生成する関数
 export function makeCategoryRepo(db: PrismaLike): CategoryRepository {
   return {
-    // 当該テナントのカテゴリを名前昇順で取得
-    async list(tenantId) {
-      // Prisma の findMany で tenantId スコープのみ全件取得
+    // 当該テナントのカテゴリを名前昇順で取得する (opts.limit 省略時は表示用の既定上限)
+    async list(tenantId, opts) {
+      // Prisma の findMany で tenantId スコープのみを取得
       const rows = await db.category.findMany({
         where: { tenantId }, // テナントスコープ (必須)
         orderBy: { name: 'asc' }, // 名前昇順
         select: { id: true, name: true }, // id と name だけ取得
-        take: CATEGORY_LIST_LIMIT, // §8 一覧取得は必ず上限を持たせる
+        take: resolveCategoryListLimit(opts?.limit), // §8 一覧取得は必ず上限を持たせる (呼び出し元の指定値をさらにクランプ)
       });
       // 結果をそのまま返す (port 契約と同じ形)
       return rows;

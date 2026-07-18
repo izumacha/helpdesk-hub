@@ -39,26 +39,28 @@ export async function updateTenantMode(formData: FormData): Promise<void> {
     throw new Error(parsed.error.issues[0]?.message ?? 'モードの指定が正しくありません');
   }
 
-  // プランゲート: Pro モードへの切替は Pro / Enterprise プランのみ (Free / Standard では不可 §6.1)。
-  // UI 非表示に頼らずサーバー側で強制する。Lite への切替はどのプランでも常に許可する。
+  // テナントの mode 列を更新する (id はセッション由来の tenantId のみ)。ここで parsed.data を
+  // 'pro'/'lite' の literal に narrow してから updateMode を呼ぶことで、port 側のオーバーロード
+  // (mode:'pro' のときだけ expectedPlanIn を必須にする) を型レベルで正しく選択させる
+  // (/code-review ultra 指摘対応: expectedPlanIn が省略可能な単一シグネチャのままだと、渡し
+  // 忘れてもコンパイルが通ってしまい CAS 保護が黙って無効化されるため)。
+  let updated: boolean;
   if (parsed.data === 'pro') {
+    // プランゲート: Pro モードへの切替は Pro / Enterprise プランのみ (Free / Standard では不可
+    // §6.1)。UI 非表示に頼らずサーバー側で強制する。
     const plan = await resolveTenantPlan(tenantId);
     if (!isProModeAllowed(plan)) {
       throw new Error('Pro モードは Pro / Enterprise プランでご利用いただけます。');
     }
+    // 監査で発見したギャップ対応: 上の isProModeAllowed 判定だけでは、判定とこの書き込みの間に
+    // Stripe Webhook 由来の自動ダウングレード (applyPlanChange) が割り込むと古いプラン判定の
+    // まま上書きしてしまう TOCTOU が残る。expectedPlanIn を渡した原子的な更新 (CAS) にすることで、
+    // 書き込み時点でも現在のプランが許可リストに含まれることを DB レベルで保証する。
+    updated = await repos.tenants.updateMode(tenantId, 'pro', [...PRO_MODE_ALLOWED_PLANS]);
+  } else {
+    // 'lite' への切替はどのプランでも常に許可されるため無条件更新
+    updated = await repos.tenants.updateMode(tenantId, 'lite');
   }
-
-  // テナントの mode 列を更新する (id はセッション由来の tenantId のみ)。
-  // 監査で発見したギャップ対応: 'pro' への切替は上の isProModeAllowed 判定だけでは、判定と
-  // この書き込みの間に Stripe Webhook 由来の自動ダウングレード (applyPlanChange) が割り込むと
-  // 古いプラン判定のまま上書きしてしまう TOCTOU が残る。expectedPlanIn を渡した原子的な更新
-  // (CAS) にすることで、書き込み時点でも現在のプランが許可リストに含まれることを DB レベルで
-  // 保証する。'lite' への切替は常に許可されるため expectedPlanIn は渡さない (無条件更新)。
-  const updated = await repos.tenants.updateMode(
-    tenantId,
-    parsed.data,
-    parsed.data === 'pro' ? [...PRO_MODE_ALLOWED_PLANS] : undefined,
-  );
   if (!updated) {
     // 0 件更新 = 判定後にプランが変わった (Stripe 由来のダウングレード等) ことによる競合
     throw new Error(

@@ -5,7 +5,11 @@
 
 import { beforeEach, describe, expect, it } from 'vitest';
 import { createMemoryContext, type Store } from '@/data/adapters/memory';
-import { LOCATION_LIST_LIMIT } from '@/data/ports/location-repository';
+import {
+  LOCATION_LIST_LIMIT,
+  LOCATION_LIST_MATCHING_LIMIT,
+  resolveLocationListLimit,
+} from '@/data/ports/location-repository';
 import type { Repos } from '@/data/ports/unit-of-work';
 
 const TENANT_A = 'tenant-a';
@@ -99,6 +103,47 @@ describe('LocationRepository.listByTenant (memory)', () => {
     }
     const result = await repos.locations.listByTenant(TENANT_A);
     expect(result).toHaveLength(LOCATION_LIST_LIMIT);
+  });
+
+  // 監査で発見したギャップ対応: opts.limit に LOCATION_LIST_MATCHING_LIMIT を明示的に渡すと、
+  // 表示用の既定上限 (LOCATION_LIST_LIMIT) を超えて取得できること (CSV インポートの名前解決が
+  // これに依存する)
+  it('opts.limitを指定すると既定上限を超えて取得できる', async () => {
+    for (let i = 0; i < LOCATION_LIST_LIMIT + 3; i += 1) {
+      await repos.locations.create({
+        tenantId: TENANT_A,
+        name: `拠点${String(i).padStart(4, '0')}`,
+        description: null,
+      });
+    }
+    const result = await repos.locations.listByTenant(TENANT_A, {
+      limit: LOCATION_LIST_MATCHING_LIMIT,
+    });
+    expect(result).toHaveLength(LOCATION_LIST_LIMIT + 3);
+  });
+});
+
+// resolveLocationListLimit (呼び出し元の指定値をクランプする純粋関数) の単体テスト。
+// アダプタ層の多層防御クランプが正しく機能することを、実データを介さず直接検証する
+// (resolveFaqListLimit と同じ「アダプタ経由ではなく関数自体を直接テストする」方針)
+describe('resolveLocationListLimit', () => {
+  // 未指定 (undefined) なら表示用の既定上限 (LOCATION_LIST_LIMIT) を返す
+  it('未指定ならLOCATION_LIST_LIMITを返す', () => {
+    expect(resolveLocationListLimit(undefined)).toBe(LOCATION_LIST_LIMIT);
+  });
+
+  // 指定値が LOCATION_LIST_MATCHING_LIMIT 以下ならそのまま返す
+  it('LOCATION_LIST_MATCHING_LIMIT以下ならそのまま返す', () => {
+    expect(resolveLocationListLimit(LOCATION_LIST_MATCHING_LIMIT)).toBe(
+      LOCATION_LIST_MATCHING_LIMIT,
+    );
+  });
+
+  // 指定値が LOCATION_LIST_MATCHING_LIMIT を超えるとクランプされる
+  it('LOCATION_LIST_MATCHING_LIMITを超えるとクランプされる', () => {
+    expect(resolveLocationListLimit(LOCATION_LIST_MATCHING_LIMIT + 1000)).toBe(
+      LOCATION_LIST_MATCHING_LIMIT,
+    );
   });
 });
 

@@ -166,6 +166,7 @@ export async function POST(request: Request) {
     MAGIC_LINK_CALLBACK_RATE_LIMIT,
     'しばらく時間をおいて再度お試しください',
   );
+  // 制限超過なら 429 の NextResponse をそのまま返す (超過なしなら null が返り後続処理を続ける)
   if (limitResponse) return limitResponse;
 
   // クロスオリジン CSRF 対策: 同一オリジンからのフォーム送信であることを検証する。

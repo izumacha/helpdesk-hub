@@ -10,6 +10,10 @@ import { createMemoryContext, type Store } from '@/data/adapters/memory';
 import type { Repos } from '@/data/ports/unit-of-work';
 // レート制限をテスト間でクリアする内部用関数
 import { __resetRateLimits } from '@/lib/rate-limit';
+// 拠点一覧の表示用上限 (CSV インポートの名前解決がこの上限を超えても機能することの回帰テストで使う)
+import { LOCATION_LIST_LIMIT } from '@/data/ports/location-repository';
+// カテゴリ一覧の表示用上限 (同上)
+import { CATEGORY_LIST_LIMIT } from '@/data/ports/category-repository';
 
 // 外部通知 (Slack/Teams/Chatwork) テスト用の Slack Webhook URL (実際には送信されない)
 const SLACK_WEBHOOK_URL = 'https://hooks.slack.com/services/T000/B000/xxx';
@@ -340,6 +344,26 @@ describe('importTickets', () => {
       const ticket = [...store.tickets.values()][0];
       expect(ticket?.locationId).toBeNull();
     });
+
+    // 監査で発見したギャップ対応: listByTenant は表示用に LOCATION_LIST_LIMIT (200件) で
+    // 上限化されているが、CSV インポートの名前解決は網羅性が必要なため LOCATION_LIST_MATCHING_LIMIT
+    // を明示的に指定して取得する。201件目 (名前順で LOCATION_LIST_LIMIT を超える位置) の拠点も
+    // 正しく解決できることを確認する (この回帰が無ければ「拠点が見つかりません」エラーになる)
+    it('LOCATION_LIST_LIMIT を超える拠点数でも名前解決できる', async () => {
+      // 名前昇順で LOCATION_LIST_LIMIT+1 番目に来るよう、ゼロ埋め連番の拠点名を作る
+      for (let i = 0; i <= LOCATION_LIST_LIMIT; i += 1) {
+        await seedLocation(`拠点${String(i).padStart(4, '0')}`);
+      }
+      // 名前順で最後 (201番目、インデックス LOCATION_LIST_LIMIT) の拠点名を CSV で指定する
+      const targetName = `拠点${String(LOCATION_LIST_LIMIT).padStart(4, '0')}`;
+      const importTickets = await loadAction();
+      const csv = `件名,拠点\n複合機の紙詰まり,${targetName}`;
+      const result = await importTickets(csv);
+
+      // 表示用の上限を超えた位置の拠点名でも、見つからないエラーにはならず正しく起票される
+      expect(result.errors).toHaveLength(0);
+      expect(result.imported).toBe(1);
+    });
   });
 
   // フォローアップ (2026-07-11): 「カテゴリ」列の名前解決
@@ -409,6 +433,25 @@ describe('importTickets', () => {
       expect(result.errors).toHaveLength(0);
       const ticket = [...store.tickets.values()][0];
       expect(ticket?.categoryId).toBeNull();
+    });
+
+    // 監査で発見したギャップ対応: list は表示用に CATEGORY_LIST_LIMIT (200件) で上限化されて
+    // いるが、CSV インポートの名前解決は網羅性が必要なため CATEGORY_LIST_MATCHING_LIMIT を
+    // 明示的に指定して取得する。201件目のカテゴリも正しく解決できることを確認する
+    it('Pro テナントで CATEGORY_LIST_LIMIT を超えるカテゴリ数でも名前解決できる', async () => {
+      const tenant = store.tenants.get(TENANT)!;
+      store.tenants.set(TENANT, { ...tenant, mode: 'pro' });
+      // 名前昇順で CATEGORY_LIST_LIMIT+1 番目に来るよう、ゼロ埋め連番のカテゴリ名を作る
+      for (let i = 0; i <= CATEGORY_LIST_LIMIT; i += 1) {
+        await seedCategory(`カテゴリ${String(i).padStart(4, '0')}`);
+      }
+      const targetName = `カテゴリ${String(CATEGORY_LIST_LIMIT).padStart(4, '0')}`;
+      const importTickets = await loadAction();
+      const csv = `件名,カテゴリ\n複合機の紙詰まり,${targetName}`;
+      const result = await importTickets(csv);
+
+      expect(result.errors).toHaveLength(0);
+      expect(result.imported).toBe(1);
     });
 
     // 回帰テスト (/code-review ultra 指摘対応 2026-07-11): カテゴリは拠点と異なり Pro モード

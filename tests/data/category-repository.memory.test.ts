@@ -5,7 +5,11 @@
 
 import { beforeEach, describe, expect, it } from 'vitest';
 import { createMemoryContext } from '@/data/adapters/memory';
-import { CATEGORY_LIST_LIMIT } from '@/data/ports/category-repository';
+import {
+  CATEGORY_LIST_LIMIT,
+  CATEGORY_LIST_MATCHING_LIMIT,
+  resolveCategoryListLimit,
+} from '@/data/ports/category-repository';
 import type { Repos } from '@/data/ports/unit-of-work';
 
 const TENANT_A = 'tenant-a';
@@ -73,5 +77,41 @@ describe('CategoryRepository (memory)', () => {
     }
     const result = await repos.categories.list(TENANT_A);
     expect(result).toHaveLength(CATEGORY_LIST_LIMIT);
+  });
+
+  // 監査で発見したギャップ対応: opts.limit に CATEGORY_LIST_MATCHING_LIMIT を明示的に渡すと、
+  // 表示用の既定上限 (CATEGORY_LIST_LIMIT) を超えて取得できること (CSV インポートの名前解決が
+  // これに依存する)
+  it('opts.limitを指定すると既定上限を超えて取得できる', async () => {
+    for (let i = 0; i < CATEGORY_LIST_LIMIT + 3; i += 1) {
+      await repos.categories.create({
+        name: `カテゴリ${String(i).padStart(4, '0')}`,
+        tenantId: TENANT_A,
+      });
+    }
+    const result = await repos.categories.list(TENANT_A, { limit: CATEGORY_LIST_MATCHING_LIMIT });
+    expect(result).toHaveLength(CATEGORY_LIST_LIMIT + 3);
+  });
+});
+
+// resolveCategoryListLimit (呼び出し元の指定値をクランプする純粋関数) の単体テスト。
+describe('resolveCategoryListLimit', () => {
+  // 未指定 (undefined) なら表示用の既定上限 (CATEGORY_LIST_LIMIT) を返す
+  it('未指定ならCATEGORY_LIST_LIMITを返す', () => {
+    expect(resolveCategoryListLimit(undefined)).toBe(CATEGORY_LIST_LIMIT);
+  });
+
+  // 指定値が CATEGORY_LIST_MATCHING_LIMIT 以下ならそのまま返す
+  it('CATEGORY_LIST_MATCHING_LIMIT以下ならそのまま返す', () => {
+    expect(resolveCategoryListLimit(CATEGORY_LIST_MATCHING_LIMIT)).toBe(
+      CATEGORY_LIST_MATCHING_LIMIT,
+    );
+  });
+
+  // 指定値が CATEGORY_LIST_MATCHING_LIMIT を超えるとクランプされる
+  it('CATEGORY_LIST_MATCHING_LIMITを超えるとクランプされる', () => {
+    expect(resolveCategoryListLimit(CATEGORY_LIST_MATCHING_LIMIT + 1000)).toBe(
+      CATEGORY_LIST_MATCHING_LIMIT,
+    );
   });
 });

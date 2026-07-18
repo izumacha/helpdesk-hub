@@ -9,7 +9,10 @@
 import { describe, beforeAll, afterAll, beforeEach, expect, it } from 'vitest';
 import { PrismaClient } from '@/generated/prisma';
 import { buildPrismaRepos } from '@/data/adapters/prisma';
-import { CATEGORY_LIST_LIMIT } from '@/data/ports/category-repository';
+import {
+  CATEGORY_LIST_LIMIT,
+  CATEGORY_LIST_MATCHING_LIMIT,
+} from '@/data/ports/category-repository';
 
 const TENANT_A = 'tenant-a';
 const TENANT_B = 'tenant-b';
@@ -94,5 +97,19 @@ describe.runIf(SHOULD_RUN)('CategoryRepository (prisma adapter)', () => {
     }
     const result = await repos.categories.list(TENANT_A);
     expect(result).toHaveLength(CATEGORY_LIST_LIMIT);
+  });
+
+  // 監査で発見したギャップ対応: opts.limit に CATEGORY_LIST_MATCHING_LIMIT を明示的に渡すと、
+  // 実 DB でも表示用の既定上限を超えて取得できること (CSV インポートの名前解決が依存する経路)
+  it('opts.limitを指定すると実DBでも既定上限を超えて取得できる', async () => {
+    const repos = buildPrismaRepos(prisma);
+    for (let i = 0; i < CATEGORY_LIST_LIMIT + 3; i += 1) {
+      await repos.categories.create({
+        name: `カテゴリ${String(i).padStart(4, '0')}`,
+        tenantId: TENANT_A,
+      });
+    }
+    const result = await repos.categories.list(TENANT_A, { limit: CATEGORY_LIST_MATCHING_LIMIT });
+    expect(result).toHaveLength(CATEGORY_LIST_LIMIT + 3);
   });
 });

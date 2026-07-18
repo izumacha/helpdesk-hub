@@ -58,7 +58,7 @@ describe.runIf(SHOULD_RUN)('TenantRepository (prisma adapter)', () => {
     const repos = buildPrismaRepos(prisma);
     const a = await repos.tenants.create({ name: 'A組織', mode: 'lite' });
     const b = await repos.tenants.create({ name: 'B組織', mode: 'lite' });
-    const updated = await repos.tenants.updateMode(a.id, 'pro');
+    const updated = await repos.tenants.updateMode(a.id, 'pro', ['free']);
     expect(updated).toBe(true);
     const reloadedA = await repos.tenants.findById(a.id);
     const reloadedB = await repos.tenants.findById(b.id);

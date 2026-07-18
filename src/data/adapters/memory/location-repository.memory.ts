@@ -1,5 +1,8 @@
-// Location リポジトリの契約 (port) と一覧の上限件数定数
-import { LOCATION_LIST_LIMIT, type LocationRepository } from '@/data/ports/location-repository';
+// Location リポジトリの契約 (port) と一覧の上限クランプ関数
+import {
+  resolveLocationListLimit,
+  type LocationRepository,
+} from '@/data/ports/location-repository';
 // ドメイン型
 import type { Location } from '@/domain/types';
 // メモリストアと ID 生成ヘルパー
@@ -8,14 +11,14 @@ import { nextId, type Store } from './store';
 // メモリ版 Location リポジトリを生成するファクトリ関数
 export function makeLocationRepo(store: Store): LocationRepository {
   return {
-    // テナント内の全拠点を名前昇順で返す
-    async listByTenant(tenantId) {
+    // テナント内の全拠点を名前昇順で返す (opts.limit 省略時は表示用の既定上限)
+    async listByTenant(tenantId, opts) {
       // テナントスコープで絞り込み
       const rows = [...store.locations.values()].filter((loc) => loc.tenantId === tenantId);
       // 拠点名でアルファベット/日本語順に昇順ソート
       rows.sort((a, b) => a.name.localeCompare(b.name, 'ja'));
-      // §8 一覧取得は必ず上限を持たせる (Prisma アダプタの take と揃える)
-      return rows.slice(0, LOCATION_LIST_LIMIT);
+      // §8 一覧取得は必ず上限を持たせる (Prisma アダプタの take と揃える。呼び出し元の指定値をさらにクランプ)
+      return rows.slice(0, resolveLocationListLimit(opts?.limit));
     },
 
     // ID + tenantId で 1 件取得
