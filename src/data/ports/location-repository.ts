@@ -3,6 +3,8 @@
 
 // 拠点ドメイン型
 import type { Location } from '@/domain/types';
+// 「表示用 / 一括処理用」2 段クランプの共通ロジック (category-repository.ts と重複させない)
+import { resolveListLimit } from '@/data/ports/list-limit';
 
 // テナント内の拠点一覧の既定上限件数 (§8 一覧取得は必ず上限を持たせる)。UI 表示 (設定画面の
 // 拠点管理・ダッシュボードの拠点フィルタ・チケット詳細/一覧のプルダウン) 向けの規模感で、
@@ -24,8 +26,7 @@ export const LOCATION_LIST_MATCHING_LIMIT = 10_000;
 // 以下にクランプする (resolveFaqListLimit と同じ「アダプタ層での多層防御クランプ」方針。
 // 未指定時に低い表示用の既定値、指定時でも高い網羅用の上限を超えさせない)
 export function resolveLocationListLimit(requested?: number): number {
-  if (requested === undefined) return LOCATION_LIST_LIMIT;
-  return Math.min(requested, LOCATION_LIST_MATCHING_LIMIT);
+  return resolveListLimit(requested, LOCATION_LIST_LIMIT, LOCATION_LIST_MATCHING_LIMIT);
 }
 
 // 拠点リポジトリの契約 (port)。テナントスコープで CRUD 操作を提供する

@@ -1,3 +1,6 @@
+// 「表示用 / 一括処理用」2 段クランプの共通ロジック (location-repository.ts と重複させない)
+import { resolveListLimit } from '@/data/ports/list-limit';
+
 // カテゴリの一覧表示などに使う軽量なカテゴリ情報
 export interface CategorySummary {
   id: string; // カテゴリ ID
@@ -16,8 +19,7 @@ export const CATEGORY_LIST_MATCHING_LIMIT = 10_000;
 // 呼び出し側が指定した limit (未指定なら CATEGORY_LIST_LIMIT) を CATEGORY_LIST_MATCHING_LIMIT
 // 以下にクランプする (resolveFaqListLimit / resolveLocationListLimit と同じ方針)
 export function resolveCategoryListLimit(requested?: number): number {
-  if (requested === undefined) return CATEGORY_LIST_LIMIT;
-  return Math.min(requested, CATEGORY_LIST_MATCHING_LIMIT);
+  return resolveListLimit(requested, CATEGORY_LIST_LIMIT, CATEGORY_LIST_MATCHING_LIMIT);
 }
 
 // カテゴリ取得用リポジトリの契約 (port)

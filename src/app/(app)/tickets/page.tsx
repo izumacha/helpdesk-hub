@@ -23,6 +23,11 @@ import { TicketTabs } from '@/features/tickets/components/TicketTabs';
 import { buildTicketListFilter } from '@/features/tickets/build-filter';
 // CSV エクスポートボタン (Client Component — Suspense でラップして使う)
 import { CsvExportButton } from '@/features/tickets/components/CsvExportButton';
+// 監査で発見したギャップ対応: list/listByTenant は既定で表示用の上限 (200 件) しか返さない。
+// 本ページの絞り込みプルダウンは全カテゴリ・全拠点が選択肢の前提のため、CSV インポートと同じ
+// 網羅的な上限を明示的に渡す (未指定のままだと 201 件目以降が選択肢から消える)
+import { CATEGORY_LIST_MATCHING_LIMIT } from '@/data/ports/category-repository';
+import { LOCATION_LIST_MATCHING_LIMIT } from '@/data/ports/location-repository';
 
 // 1 ページあたりの表示件数
 const PAGE_SIZE = 20;
@@ -103,13 +108,13 @@ export default async function TicketsPage({ searchParams }: Props) {
       tenantId,
     }),
     repos.tickets.count(filter, tenantId),
-    repos.categories.list(tenantId),
+    repos.categories.list(tenantId, { limit: CATEGORY_LIST_MATCHING_LIMIT }),
     // 担当者プルダウン用ユーザーは agent/admin のみ (依頼者には不要)
     isAgent ? repos.users.listAgents(tenantId) : Promise.resolve([]),
     // テナントの動作モード (lite | pro) を取得し、ステータス表記を Lite/Pro で切り替える
     getCurrentTenantMode(tenantId),
     // Phase 4 多拠点: 拠点一覧をフィルタプルダウン用に取得する
-    repos.locations.listByTenant(tenantId),
+    repos.locations.listByTenant(tenantId, { limit: LOCATION_LIST_MATCHING_LIMIT }),
   ]);
 
   // 総ページ数を計算

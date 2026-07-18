@@ -6,6 +6,11 @@ import { repos } from '@/data';
 import { TicketForm } from '@/features/tickets/components/TicketForm';
 // 現在ログイン中のテナントの動作モード (lite | pro) を取得するヘルパー
 import { getCurrentTenantMode } from '@/lib/tenant';
+// 監査で発見したギャップ対応: list/listByTenant は既定で表示用の上限 (200 件) しか返さない。
+// 本フォームのプルダウンは全カテゴリ・全拠点が選択肢の前提のため、CSV インポートと同じ
+// 網羅的な上限を明示的に渡す (未指定のままだと 201 件目以降が選べなくなる)
+import { CATEGORY_LIST_MATCHING_LIMIT } from '@/data/ports/category-repository';
+import { LOCATION_LIST_MATCHING_LIMIT } from '@/data/ports/location-repository';
 
 // /tickets/new : 新規チケット作成ページ (Server Component)
 export default async function NewTicketPage() {
@@ -18,10 +23,10 @@ export default async function NewTicketPage() {
   const tenantId = session.user.tenantId;
   // カテゴリ一覧・テナント mode・拠点一覧を並列取得する
   const [categories, mode, locations] = await Promise.all([
-    repos.categories.list(tenantId),
+    repos.categories.list(tenantId, { limit: CATEGORY_LIST_MATCHING_LIMIT }),
     getCurrentTenantMode(tenantId),
     // Phase 4 多拠点: 拠点プルダウン用の一覧を取得する
-    repos.locations.listByTenant(tenantId),
+    repos.locations.listByTenant(tenantId, { limit: LOCATION_LIST_MATCHING_LIMIT }),
   ]);
 
   return (

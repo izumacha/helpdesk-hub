@@ -26,6 +26,10 @@ import { resolveTenantPlan } from '@/lib/tenant-plan';
 import { isEmailInboundAllowed } from '@/lib/plan-guard';
 // §7.1.2 フォローアップ: 「はじめかた」ステップをプランに応じて出し分ける純粋ヘルパー
 import { buildGettingStartedSteps } from '@/lib/getting-started-steps';
+// 監査で発見したギャップ対応: listByTenant は既定で表示用の上限 (LOCATION_LIST_LIMIT = 200) しか
+// 返さない。本ページの拠点フィルタは「テナントの全拠点」が前提のため、CSV インポートと同じ
+// 網羅的な上限を明示的に渡す (未指定のままだと 201 拠点目以降が選択肢から消える)
+import { LOCATION_LIST_MATCHING_LIMIT } from '@/data/ports/location-repository';
 
 // チュートリアルセクションを表示するかどうかの閾値 (テナント全体のチケット件数がこれ未満なら表示)
 // 初期サンプルチケット 2 件を含む。小規模なインポート (数件程度) までは表示し続けるため 10 に設定
@@ -69,7 +73,9 @@ export default async function DashboardPage({ searchParams }: Props) {
     // §4.1 フォローアップ: 多店舗テナントは Pro ダッシュボードと同様に拠点で絞り込めるようにする
     // (Lite は既定モードであり、多拠点の SMB が最も多くこの画面を使うため Pro 限定のままでは
     // §4.1 で埋めたはずのギャップが Lite テナントに対しては残ってしまう)
-    const locations = await repos.locations.listByTenant(tenantId);
+    const locations = await repos.locations.listByTenant(tenantId, {
+      limit: LOCATION_LIST_MATCHING_LIMIT,
+    });
     // URL の locationId は当該テナントの拠点一覧に実在するものだけを有効とみなす (Pro 側と同じ検証)
     const selectedLocationId = resolveSelectedLocationId(sp.locationId, locations);
     // チュートリアルを表示する条件 (エージェントかつチケット件数が閾値未満)
@@ -96,8 +102,11 @@ export default async function DashboardPage({ searchParams }: Props) {
   }
 
   // 以降は Pro モードの従来ダッシュボード (情シス向けのフル集計)
-  // Phase 4 多拠点: テナントの拠点一覧を取得する (フィルタ UI の表示要否・選択肢に使う)
-  const locations = await repos.locations.listByTenant(tenantId);
+  // Phase 4 多拠点: テナントの拠点一覧を取得する (フィルタ UI の表示要否・選択肢に使う)。
+  // Lite 側と同じ理由で網羅的な上限を明示する
+  const locations = await repos.locations.listByTenant(tenantId, {
+    limit: LOCATION_LIST_MATCHING_LIMIT,
+  });
   // URL の locationId は当該テナントの拠点一覧に実在するものだけを有効とみなす
   const selectedLocationId = resolveSelectedLocationId(sp.locationId, locations);
 

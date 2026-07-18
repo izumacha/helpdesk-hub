@@ -356,8 +356,11 @@ describe('importTickets', () => {
       }
       // 名前順で最後 (201番目、インデックス LOCATION_LIST_LIMIT) の拠点名を CSV で指定する
       const targetName = `拠点${String(LOCATION_LIST_LIMIT).padStart(4, '0')}`;
+      // テスト対象の importTickets アクションを読み込む
       const importTickets = await loadAction();
+      // 201番目の拠点名を指定した CSV データを組み立てる
       const csv = `件名,拠点\n複合機の紙詰まり,${targetName}`;
+      // インポートを実行する
       const result = await importTickets(csv);
 
       // 表示用の上限を超えた位置の拠点名でも、見つからないエラーにはならず正しく起票される
@@ -439,18 +442,26 @@ describe('importTickets', () => {
     // いるが、CSV インポートの名前解決は網羅性が必要なため CATEGORY_LIST_MATCHING_LIMIT を
     // 明示的に指定して取得する。201件目のカテゴリも正しく解決できることを確認する
     it('Pro テナントで CATEGORY_LIST_LIMIT を超えるカテゴリ数でも名前解決できる', async () => {
+      // 現在のテナントを取得する
       const tenant = store.tenants.get(TENANT)!;
+      // カテゴリ列が意味を持つ Pro モードへ切り替える
       store.tenants.set(TENANT, { ...tenant, mode: 'pro' });
       // 名前昇順で CATEGORY_LIST_LIMIT+1 番目に来るよう、ゼロ埋め連番のカテゴリ名を作る
       for (let i = 0; i <= CATEGORY_LIST_LIMIT; i += 1) {
         await seedCategory(`カテゴリ${String(i).padStart(4, '0')}`);
       }
+      // 名前順で最後 (201番目、インデックス CATEGORY_LIST_LIMIT) のカテゴリ名を CSV で指定する
       const targetName = `カテゴリ${String(CATEGORY_LIST_LIMIT).padStart(4, '0')}`;
+      // テスト対象の importTickets アクションを読み込む
       const importTickets = await loadAction();
+      // 201番目のカテゴリ名を指定した CSV データを組み立てる
       const csv = `件名,カテゴリ\n複合機の紙詰まり,${targetName}`;
+      // インポートを実行する
       const result = await importTickets(csv);
 
+      // 表示用の上限を超えた位置のカテゴリ名でも、見つからないエラーにはならない
       expect(result.errors).toHaveLength(0);
+      // 正しく起票される
       expect(result.imported).toBe(1);
     });
 
