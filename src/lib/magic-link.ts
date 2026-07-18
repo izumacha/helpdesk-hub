@@ -27,6 +27,15 @@ export const MAGIC_LINK_RATE_LIMIT_MAX = 5;
 // ユーザーに限られ、踏み台としての実害がやや小さいため
 export const MAGIC_LINK_REQUEST_GLOBAL_RATE_LIMIT = { limit: 30, windowMs: 60_000 } as const;
 
+// 監査で発見したギャップ対応: マジックリンクの「発行」(上記) にはエンドポイント全体の
+// レート制限があったが、発行されたトークンを消費する「コールバック」
+// (POST /api/auth/magic-link/callback) には一切無かった。トークンは高エントロピーで
+// 推測は現実的でないものの、この経路は毎回 DB 参照 (consumeValidToken) を伴うため、
+// レート制限が無いと不正なトークンでの POST を無制限に送りつけて DB 負荷を上げる
+// DoS の的になる (SSO ACS の SSO_UNAUTHENTICATED_RATE_LIMIT と同じ考え方の
+// 「テナント/ユーザーに紐づく前の固定キー制限」)。
+export const MAGIC_LINK_CALLBACK_RATE_LIMIT = { limit: 60, windowMs: 60_000 } as const;
+
 // 32 byte (256 bit) のランダム値を URL 安全な base64url 文字列にして返す
 // base64url なので URL に直接入れても percent-encode が要らない
 export function generateMagicLinkToken(): string {

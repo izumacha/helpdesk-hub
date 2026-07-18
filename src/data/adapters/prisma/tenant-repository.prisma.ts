@@ -82,12 +82,19 @@ export function makeTenantRepo(db: PrismaLike): TenantRepository {
       return toTenant(row);
     },
 
-    // テナントの動作モード (lite | pro) を更新し、更新後の行をドメイン型で返す
-    async updateMode(id, mode) {
-      // 主キー (tenantId) で対象テナントを特定し mode 列のみ更新する
-      const row = await db.tenant.update({ where: { id }, data: { mode } });
-      // 更新後の行をドメイン型に詰め替えて返す
-      return toTenant(row);
+    // テナントの動作モード (lite | pro) を更新する。
+    // 'pro' への切替時のみ expectedPlanIn を where 条件に含めた原子的な更新 (CAS) にする
+    // (Stripe Webhook 由来の自動ダウングレードとの TOCTOU 競合防止。ポートのコメント参照)。
+    // 'lite' への切替や expectedPlanIn 省略時は無条件更新。updateMany の対象は主キー (id) のみ
+    // (または + subscriptionPlan) のため、他テナントへ波及する余地はない
+    async updateMode(id, mode, expectedPlanIn) {
+      const where: Prisma.TenantWhereInput =
+        mode === 'pro' && expectedPlanIn
+          ? { id, subscriptionPlan: { in: expectedPlanIn } }
+          : { id };
+      const result = await db.tenant.updateMany({ where, data: { mode } });
+      // 1 件以上更新できたか (0 件ならプラン不一致による競合、または対象不在) を返す
+      return result.count > 0;
     },
 
     // メール取り込み用の inboundToken を (再)発行する。主キーで対象テナントを特定し列のみ更新する

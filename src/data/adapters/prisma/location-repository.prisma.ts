@@ -1,5 +1,5 @@
-// Location リポジトリの契約 (port)
-import type { LocationRepository } from '@/data/ports/location-repository';
+// Location リポジトリの契約 (port) と一覧の上限件数定数
+import { LOCATION_LIST_LIMIT, type LocationRepository } from '@/data/ports/location-repository';
 // ドメイン型
 import type { Location } from '@/domain/types';
 // Prisma の Location 行型
@@ -31,6 +31,7 @@ export function makeLocationRepo(db: PrismaLike): LocationRepository {
       const rows = await db.location.findMany({
         where: { tenantId },
         orderBy: { name: 'asc' },
+        take: LOCATION_LIST_LIMIT, // §8 一覧取得は必ず上限を持たせる
       });
       // 各行をドメイン型に変換して返す
       return rows.map(toLocation);

@@ -1332,6 +1332,55 @@ RATE_LIMIT`) を追加済みだったが、兄弟にあたる `requestMagicLink`
   memory/Prisma 契約テストに追加。`tests/features/request-magic-link.test.ts` に「進行中の
   SSO ハンドオフトークンは通常のマジックリンク発行で無効化されない」ことの統合テストを追加した。
 
+#### 4.19 フォローアップ（2026-07-18）: テナントモード変更の TOCTOU・招待受諾/マジックリンクコールバックのレート制限漏れ・拠点/カテゴリ一覧の上限漏れ
+
+コードベース監査（既存フォローアップ群と同じ「済マーク済みの機能を実装から再点検する」観点）で
+発見した 3 件のギャップの修正。
+
+- **`updateTenantMode` に Stripe Webhook 由来の自動ダウングレードとの TOCTOU が残っていた**:
+  §1.4/§1.5/§4.13 でチケット・FAQ 側の状態変更に導入した「期待する現在状態を where 条件に
+  含めた原子的な更新 (CAS)」が、`TenantRepository.updateMode` には一度も適用されていなかった。
+  `updateTenantMode`（`src/features/settings/actions/update-tenant-mode.ts`）は
+  `isProModeAllowed(plan)` の判定と `updateMode` の書き込みが別ステップのため、判定直後に
+  Stripe Webhook 由来の自動ダウングレード（`applyPlanChange` の `updateMode(id, 'lite')`、§4.4）
+  が割り込むと、古いプラン判定のまま Pro モードへ上書きしてしまう競合が起こり得た
+  （§9「認可はサーバー側で強制する」が意図する防御が TOCTOU の窓で崩れる）。
+  `src/lib/plan-guard.ts` に `PRO_MODE_ALLOWED_PLANS`（`isProModeAllowed` の単一の源）を追加し、
+  `TenantRepository.updateMode(id, mode, expectedPlanIn?)` の契約を、'pro' への切替時のみ
+  `expectedPlanIn` を where 条件に含めた原子的な更新（0 件なら `false`）にした（Prisma/メモリ
+  両アダプタ対応）。`updateTenantMode` は 0 件更新時に「プランが変更された可能性があるため
+  再読み込みしてください」という日本語エラーを throw する。
+- **招待受諾・マジックリンクコールバックにエンドポイント全体のレート制限が無かった**:
+  §4.16/§4.17 で「公開 (未認証) エンドポイントは固定キーのレート制限を持つ」方針を trial-reminders・
+  マジックリンク発行に適用したが、同じ公開エンドポイントである `acceptInvitation`
+  （`src/features/auth/actions/accept-invitation.ts`。シート上限の TOCTOU 防止のため
+  Serializable 分離レベルのトランザクションを毎回開く、通常よりコストの高い操作）と、
+  マジックリンクの「発行」ではなく「消費」を行う `POST /api/auth/magic-link/callback`
+  には一切無かった。トークン自体は高エントロピーで推測は現実的でないが、レート制限が無いと
+  不正なトークンでの連打により高コストな Serializable トランザクションや DB 参照を無制限に
+  発生させる DoS の的になる（§9 公開エンドポイント保護）。`INVITE_ACCEPT_GLOBAL_RATE_LIMIT`
+  （`src/lib/invite.ts`）と `MAGIC_LINK_CALLBACK_RATE_LIMIT`（`src/lib/magic-link.ts`）を追加し、
+  前者は `enforceRateLimit`（Server Action 向け）、後者は `checkRouteRateLimit`
+  （sso-acs 等と共有する Route Handler 向けラッパー）で、それぞれのハンドラの最初に適用した。
+- **拠点・カテゴリ一覧に上限が無かった**: §4.11/§4.12 で「一覧取得は必ず上限を持たせる」
+  （§8）を FAQ・チケット詳細のコメント/履歴に適用したが、`LocationRepository.listByTenant` と
+  `CategoryRepository.list` は依然として上限無しの `findMany` のままだった。拠点・カテゴリの
+  作成には既存のレート制限（§4.1 系フォローアップ）があるが、それは作成 "速度" しか抑えず
+  累計件数には上限が無い。`LOCATION_LIST_LIMIT`/`CATEGORY_LIST_LIMIT`（各 200 件。
+  `FAQ_LIST_LIMIT` と同じ規模感）を追加し、Prisma アダプタは `take`、メモリアダプタは
+  `slice` で上限化した。
+- 回帰テスト: `tests/data/tenant-repository.{memory,contract.prisma}.test.ts` に
+  `expectedPlanIn` の CAS 動作（許可リストに現在のプランが含まれない場合は `false`）を追加。
+  `tests/features/update-tenant-mode.test.ts` に、事前チェック後にプランがダウングレードされた
+  TOCTOU の再現テストを追加。`tests/features/accept-invitation.test.ts` に全体レート制限の
+  回帰テストを追加（マジックリンクコールバック側は、`next-auth` パッケージの実行時 import が
+  本リポジトリの Vitest 環境では `next/server` の解決に失敗し単体テスト不可能なため
+  — `POST /api/auth/magic-link/callback` に既存のテストファイルが 1 つも無かったのもこれが
+  理由 — 自動テストは追加せず、`checkRouteRateLimit` 自体の単体テスト
+  (`tests/route-rate-limit.test.ts`) と手動でのコードレビューで確認した）。
+  `tests/data/{location,category}-repository.{memory,contract.prisma}.test.ts` に上限件数の
+  回帰テストを追加した。
+
 ### スケジュール感
 
 ```

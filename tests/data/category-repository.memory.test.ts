@@ -5,6 +5,7 @@
 
 import { beforeEach, describe, expect, it } from 'vitest';
 import { createMemoryContext } from '@/data/adapters/memory';
+import { CATEGORY_LIST_LIMIT } from '@/data/ports/category-repository';
 import type { Repos } from '@/data/ports/unit-of-work';
 
 const TENANT_A = 'tenant-a';
@@ -59,5 +60,18 @@ describe('CategoryRepository (memory)', () => {
   it('findByIdは存在しないIDにnullを返す', async () => {
     const result = await repos.categories.findById('no-such-category', TENANT_A);
     expect(result).toBeNull();
+  });
+
+  // 監査で発見したギャップ対応: 上限件数を超えて作成しても CATEGORY_LIST_LIMIT 件までに
+  // 切り詰められること (§8 一覧取得は必ず上限を持たせる)
+  it('listは上限件数で切り詰める', async () => {
+    for (let i = 0; i < CATEGORY_LIST_LIMIT + 3; i += 1) {
+      await repos.categories.create({
+        name: `カテゴリ${String(i).padStart(4, '0')}`,
+        tenantId: TENANT_A,
+      });
+    }
+    const result = await repos.categories.list(TENANT_A);
+    expect(result).toHaveLength(CATEGORY_LIST_LIMIT);
   });
 });

@@ -18,9 +18,16 @@ export interface TenantRepository {
     inboundToken?: string | null;
     trialEndsAt?: Date | null; // §7.2 Free trial の終了日時 (未指定なら null = トライアル無し)
   }): Promise<Tenant>;
-  // テナントの動作モード (lite | pro) を更新し、更新後の Tenant を返す
-  // id はセッション由来の tenantId のみを渡す契約 (リクエスト入力から注入しないこと = クロステナント防止)
-  updateMode(id: string, mode: TenantMode): Promise<Tenant>;
+  // テナントの動作モード (lite | pro) を更新する。
+  // id はセッション由来の tenantId のみを渡す契約 (リクエスト入力から注入しないこと = クロステナント防止)。
+  // 監査で発見したギャップ対応: 'pro' への切替時に expectedPlanIn を渡すと、その配列に現在の
+  // 契約プラン (subscriptionPlan) が含まれる場合のみ更新する原子的な更新 (CAS) になり、
+  // 0 件更新なら false を返す。これにより「プラン確認 (isProModeAllowed) → 書き込み」の間に
+  // Stripe Webhook 由来の自動ダウングレード (applyPlanChange の updateMode(id, 'lite')) が
+  // 割り込んでも、古いプラン判定のまま Pro モードへ上書きされることを防ぐ。
+  // 'lite' への切替は常にどのプランでも許可されるため expectedPlanIn は無視し、無条件更新で
+  // 常に true を返す (省略時も同様)。
+  updateMode(id: string, mode: TenantMode, expectedPlanIn?: SubscriptionPlan[]): Promise<boolean>;
   // メール取り込み用の inboundToken を (再)発行する。マイグレーション前から存在し未発行のままの
   // テナントへの初回発行、および漏洩・スパム混入時の再発行 (ローテーション) の両方に使う。
   // id はセッション由来の tenantId のみを渡す契約 (クロステナント防止)

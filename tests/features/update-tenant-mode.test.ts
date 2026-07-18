@@ -128,4 +128,32 @@ describe('updateTenantMode', () => {
     await updateTenantMode(makeForm('pro'));
     expect(store.tenants.get(TENANT_ID)?.mode).toBe('pro');
   });
+
+  // 監査で発見したギャップ対応: プラン確認 (isProModeAllowed) と書き込みの間に Stripe Webhook
+  // 由来の自動ダウングレードが割り込んだ TOCTOU を再現する。resolveTenantPlan の読み取り時点では
+  // 'pro' だったが、書き込み時点では実際の subscriptionPlan が既に 'free' に変わっている
+  // (=Stripe の解約 Webhook が先に反映された) ケースで、CAS が競合を検知して安全に拒否すること
+  it('プラン確認後にプランがダウングレードされていた場合は競合エラーになる', async () => {
+    seedTenant('pro'); // 事前チェック用のスナップショット (resolveTenantPlan がこれを見る)
+    // モジュールキャッシュを破棄し、以降の import で新しい vi.doMock を確実に反映させる
+    // (このモジュールは既に他のテストで読み込み済みの可能性があるため)
+    vi.resetModules();
+    vi.doMock('@/lib/tenant-plan', () => ({
+      // 事前チェックは 'pro' を返す (=まだダウングレードを認識していない古い読み取り)
+      resolveTenantPlan: async () => 'pro',
+    }));
+    // 事前チェック後・書き込み前に実際の行が 'free' へダウングレードされた状況を再現する
+    store.tenants.set(TENANT_ID, {
+      ...store.tenants.get(TENANT_ID)!,
+      subscriptionPlan: 'free',
+    });
+    const { updateTenantMode } = await import('@/features/settings/actions/update-tenant-mode');
+    await expect(updateTenantMode(makeForm('pro'))).rejects.toThrow(
+      'モードを変更できませんでした。プランが変更された可能性があるため、画面を再読み込みしてください。',
+    );
+    // mode は 'lite' のまま (誤って 'pro' へ書き換わっていないこと)
+    expect(store.tenants.get(TENANT_ID)?.mode).toBe('lite');
+    // 以降のテストに影響しないようモックを解除する
+    vi.doUnmock('@/lib/tenant-plan');
+  });
 });

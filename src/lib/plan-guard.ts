@@ -91,13 +91,19 @@ export function isLineIntegrationAllowed(plan: SubscriptionPlan): boolean {
   return plan === 'pro' || plan === 'enterprise';
 }
 
+// Pro モードへの切替を許可するプランの一覧 (単一の源)。isProModeAllowed だけでなく、
+// TenantRepository.updateMode の原子的な CAS (compare-and-swap) 更新の where 条件にも
+// そのまま渡す (監査で発見したギャップ対応: 管理者操作と Stripe Webhook 由来の自動
+// ダウングレードが競合する TOCTOU を防ぐため、プラン判定と書き込みを同じ配列で揃える)
+export const PRO_MODE_ALLOWED_PLANS: readonly SubscriptionPlan[] = ['pro', 'enterprise'];
+
 // Pro モード (7 ステータス・SLA・エスカレーション等) の利用可否
 // Standard と Pro の両方で Pro モードを許可する判断については、
 // 画面の mode フラグ (lite/pro) を管理者が個別に切り替える設計のため、
 // プラン上は Pro / Enterprise プランが既定で pro mode になる
 export function isProModeAllowed(plan: SubscriptionPlan): boolean {
   // Pro / Enterprise プランで Pro モードのフル機能を有効化できる
-  return plan === 'pro' || plan === 'enterprise';
+  return PRO_MODE_ALLOWED_PLANS.includes(plan);
 }
 
 // SSO (SAML) シングルサインオンの利用可否 (Enterprise のみ)。

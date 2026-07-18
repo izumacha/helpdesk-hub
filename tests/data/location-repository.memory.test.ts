@@ -5,6 +5,7 @@
 
 import { beforeEach, describe, expect, it } from 'vitest';
 import { createMemoryContext, type Store } from '@/data/adapters/memory';
+import { LOCATION_LIST_LIMIT } from '@/data/ports/location-repository';
 import type { Repos } from '@/data/ports/unit-of-work';
 
 const TENANT_A = 'tenant-a';
@@ -84,6 +85,20 @@ describe('LocationRepository.listByTenant (memory)', () => {
     const result = await repos.locations.listByTenant(TENANT_A);
     expect(result).toHaveLength(1);
     expect(result[0].name).toBe('A拠点');
+  });
+
+  // 監査で発見したギャップ対応: 上限件数を超えて作成しても LOCATION_LIST_LIMIT 件までに
+  // 切り詰められること (§8 一覧取得は必ず上限を持たせる)
+  it('上限件数で切り詰める', async () => {
+    for (let i = 0; i < LOCATION_LIST_LIMIT + 3; i += 1) {
+      await repos.locations.create({
+        tenantId: TENANT_A,
+        name: `拠点${String(i).padStart(4, '0')}`,
+        description: null,
+      });
+    }
+    const result = await repos.locations.listByTenant(TENANT_A);
+    expect(result).toHaveLength(LOCATION_LIST_LIMIT);
   });
 });
 

@@ -29,6 +29,16 @@ export const INVITE_RATE_LIMIT_MAX = 30;
 // (バッチが大きすぎて他の招待発行を長時間ブロックしないようにする意図)
 export const MAX_BULK_INVITE_ROWS = INVITE_RATE_LIMIT_MAX;
 
+// 監査で発見したギャップ対応: 招待「受諾」(accept-invitation.ts) は公開 (未認証) の
+// Server Action で、シート上限の TOCTOU 防止のため Serializable 分離レベルのトランザクションを
+// 毎回開く (通常の Read Committed より書き込み競合検知のオーバーヘッドが大きい)。上記の
+// INVITE_RATE_LIMIT_MAX は「招待の発行」側 (テナント単位) のみを制限しており、requestMagicLink /
+// requestSignup と同じ理由で「受諾」側にはエンドポイント全体の固定キー制限が無かった。
+// 招待トークンは高エントロピーで推測は現実的でないが、無制限に POST できると不正なトークンで
+// 高コストな Serializable トランザクションを繰り返し発生させる DoS の的になるため追加する
+// (§9 公開エンドポイント保護)
+export const INVITE_ACCEPT_GLOBAL_RATE_LIMIT = { limit: 30, windowMs: 60_000 } as const;
+
 // 指定した baseUrl と生トークンから、招待される人が踏む受諾ページの URL を組み立てる
 // 例: buildInviteUrl('http://localhost:3000', 'xxx') -> 'http://localhost:3000/invite/xxx'
 export function buildInviteUrl(baseUrl: string, rawToken: string): string {

@@ -1,5 +1,5 @@
-// カテゴリリポジトリの契約 (port) と、テスト用メモリストア型をインポート
-import type { CategoryRepository } from '@/data/ports/category-repository';
+// カテゴリリポジトリの契約 (port)・一覧の上限件数定数と、テスト用メモリストア型をインポート
+import { CATEGORY_LIST_LIMIT, type CategoryRepository } from '@/data/ports/category-repository';
 import { nextId, type Store } from './store';
 
 // メモリストアを使ったカテゴリリポジトリを生成するファクトリ関数
@@ -10,7 +10,8 @@ export function makeCategoryRepo(store: Store): CategoryRepository {
       return [...store.categories.values()] // Map から配列化
         .filter((c) => c.tenantId === tenantId) // テナントで絞る
         .map((c) => ({ id: c.id, name: c.name })) // 返却用に id/name だけ抽出
-        .sort((a, b) => a.name.localeCompare(b.name)); // 名前でロケール順に並び替え
+        .sort((a, b) => a.name.localeCompare(b.name)) // 名前でロケール順に並び替え
+        .slice(0, CATEGORY_LIST_LIMIT); // §8 一覧取得は必ず上限を持たせる (Prisma アダプタの take と揃える)
     },
     // ID 指定 + tenantId スコープで 1 件取得 (存在しないか他テナントなら null)
     async findById(id, tenantId) {

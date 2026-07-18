@@ -1,5 +1,5 @@
-// カテゴリリポジトリの契約 (port) と、Prisma クライアント共通型をインポート
-import type { CategoryRepository } from '@/data/ports/category-repository';
+// カテゴリリポジトリの契約 (port)・一覧の上限件数定数と、Prisma クライアント共通型をインポート
+import { CATEGORY_LIST_LIMIT, type CategoryRepository } from '@/data/ports/category-repository';
 import type { PrismaLike } from './types';
 
 // Prisma クライアントを使ったカテゴリリポジトリを生成する関数
@@ -12,6 +12,7 @@ export function makeCategoryRepo(db: PrismaLike): CategoryRepository {
         where: { tenantId }, // テナントスコープ (必須)
         orderBy: { name: 'asc' }, // 名前昇順
         select: { id: true, name: true }, // id と name だけ取得
+        take: CATEGORY_LIST_LIMIT, // §8 一覧取得は必ず上限を持たせる
       });
       // 結果をそのまま返す (port 契約と同じ形)
       return rows;

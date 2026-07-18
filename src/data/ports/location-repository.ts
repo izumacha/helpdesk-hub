@@ -4,9 +4,14 @@
 // 拠点ドメイン型
 import type { Location } from '@/domain/types';
 
+// テナント内の拠点一覧の上限件数 (§8 一覧取得は必ず上限を持たせる)。FAQ_LIST_LIMIT / PAGE_LIMIT
+// と同じ規模感に揃える。拠点作成は §4.1 で 1 分あたりのレート制限を設けているが、それは作成
+// "速度" しか抑えず累計件数には上限が無かったため、一覧取得側にも上限を追加する
+export const LOCATION_LIST_LIMIT = 200;
+
 // 拠点リポジトリの契約 (port)。テナントスコープで CRUD 操作を提供する
 export interface LocationRepository {
-  // テナント内の全拠点を名前昇順で取得する
+  // テナント内の全拠点を名前昇順で取得する (上限 LOCATION_LIST_LIMIT 件)
   listByTenant(tenantId: string): Promise<Location[]>;
   // ID + tenantId で 1 件取得 (他テナントの ID なら null を返す)
   findById(id: string, tenantId: string): Promise<Location | null>;
