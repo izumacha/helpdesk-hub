@@ -2,8 +2,8 @@
 import type { TenantRepository } from '@/data/ports/tenant-repository';
 // 課金プラン型 (Stripe 課金プランの型チェック)
 import type { SubscriptionPlan } from '@/domain/types';
-// ドメイン型
-import type { Tenant } from '@/domain/types';
+// ドメイン型・テナントモード型
+import type { Tenant, TenantMode } from '@/domain/types';
 // Prisma の Tenant 行型
 import type { Prisma } from '@/generated/prisma';
 // Prisma クライアント/トランザクション共通型
@@ -82,12 +82,29 @@ export function makeTenantRepo(db: PrismaLike): TenantRepository {
       return toTenant(row);
     },
 
-    // テナントの動作モード (lite | pro) を更新し、更新後の行をドメイン型で返す
-    async updateMode(id, mode) {
-      // 主キー (tenantId) で対象テナントを特定し mode 列のみ更新する
-      const row = await db.tenant.update({ where: { id }, data: { mode } });
-      // 更新後の行をドメイン型に詰め替えて返す
-      return toTenant(row);
+    // テナントの動作モード (lite | pro) を更新する。
+    // 'pro' への切替時のみ expectedPlanIn を where 条件に含めた原子的な更新 (CAS) にする
+    // (Stripe Webhook 由来の自動ダウングレードとの TOCTOU 競合防止。ポートのコメント参照)。
+    // 'lite' への切替や expectedPlanIn 省略時は無条件更新。updateMany の対象は主キー (id) のみ
+    // (または + subscriptionPlan) のため、他テナントへ波及する余地はない
+    // port のオーバーロード (mode:'lite' は expectedPlanIn 無し / mode:'pro' は必須) を単一の
+    // 実装関数で満たすため、パラメータ型を明示する (未annotationだと最初のオーバーロードの
+    // シグネチャだけが contextual typing で採用され、'pro' 呼び出しが型エラーになるため)
+    async updateMode(
+      id: string,
+      mode: TenantMode,
+      expectedPlanIn?: SubscriptionPlan[],
+    ): Promise<boolean> {
+      // 'pro' への切替かつ expectedPlanIn 指定時のみ、現在のプランも where 条件に含める
+      // (それ以外は主キー (id) だけで絞り込む無条件更新)
+      const where: Prisma.TenantWhereInput =
+        mode === 'pro' && expectedPlanIn
+          ? { id, subscriptionPlan: { in: expectedPlanIn } }
+          : { id };
+      // 条件に一致する行だけを更新する (0 件・1 件のどちらもあり得る updateMany)
+      const result = await db.tenant.updateMany({ where, data: { mode } });
+      // 1 件以上更新できたか (0 件ならプラン不一致による競合、または対象不在) を返す
+      return result.count > 0;
     },
 
     // メール取り込み用の inboundToken を (再)発行する。主キーで対象テナントを特定し列のみ更新する

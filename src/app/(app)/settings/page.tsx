@@ -41,6 +41,10 @@ import { buildSpUrls } from '@/lib/saml';
 import { resolveAppBaseUrl } from '@/lib/app-url';
 // メール取り込み用の転送先アドレスを組み立てるヘルパー (取り込みトークン + 配信ドメイン)
 import { buildInboundAddress } from '@/lib/inbound-email';
+// 監査で発見したギャップ対応: listByTenant は既定で表示用の上限 (LOCATION_LIST_LIMIT = 200) しか
+// 返さない。本ページは拠点の「管理」画面 (LocationsSection) であり全件が前提のため、CSV インポート
+// と同じ網羅的な上限を明示的に渡す (未指定のままだと 201 拠点目以降が管理画面から見えなくなる)
+import { LOCATION_LIST_MATCHING_LIMIT } from '@/data/ports/location-repository';
 
 // /settings : テナント設定ページ (現状は Lite/Pro モードの切替のみ。管理者専用)
 export default async function SettingsPage() {
@@ -64,8 +68,8 @@ export default async function SettingsPage() {
     // テナント情報 (slackWebhookUrl / プラン / Stripe 情報の現在値を取得)。共有キャッシュ経由
     // にすることで、同一リクエスト内の (app)/layout.tsx (mode/plan 解決) と Tenant SELECT を共有する
     getCachedTenant(session.user.tenantId),
-    // 拠点一覧 (LocationsSection の初期値として渡す)
-    repos.locations.listByTenant(session.user.tenantId),
+    // 拠点一覧 (LocationsSection の初期値として渡す)。管理画面のため網羅的な上限を明示する
+    repos.locations.listByTenant(session.user.tenantId, { limit: LOCATION_LIST_MATCHING_LIMIT }),
     // 現在のスタッフ人数 (agent/admin のみ)。Stripe ダウングレード後にプラン上限を
     // 超えていないかを BillingSection で警告表示するために使う
     repos.users.countByTenant(session.user.tenantId),

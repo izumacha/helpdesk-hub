@@ -58,11 +58,48 @@ describe.runIf(SHOULD_RUN)('TenantRepository (prisma adapter)', () => {
     const repos = buildPrismaRepos(prisma);
     const a = await repos.tenants.create({ name: 'A組織', mode: 'lite' });
     const b = await repos.tenants.create({ name: 'B組織', mode: 'lite' });
-    await repos.tenants.updateMode(a.id, 'pro');
+    const updated = await repos.tenants.updateMode(a.id, 'pro', ['free']);
+    expect(updated).toBe(true);
     const reloadedA = await repos.tenants.findById(a.id);
     const reloadedB = await repos.tenants.findById(b.id);
     expect(reloadedA?.mode).toBe('pro');
     expect(reloadedB?.mode).toBe('lite');
+  });
+
+  // 監査で発見したギャップ対応: expectedPlanIn を渡した CAS (compare-and-swap) が実 DB でも
+  // 効くことの確認。現在の契約プランが許可リストに含まれない場合は更新せず false を返す
+  // (Stripe Webhook 由来の自動ダウングレードと管理者操作の TOCTOU 競合防止)
+  it('expectedPlanInに現在のプランが含まれない場合は更新せずfalseを返す', async () => {
+    // Prisma アダプタ経由のリポジトリ束を組み立てる
+    const repos = buildPrismaRepos(prisma);
+    // subscriptionPlan 省略時の既定は 'free' (Tenant.create の port 契約参照)
+    const tenant = await repos.tenants.create({ name: 'A組織', mode: 'lite' });
+    // 現在のプラン ('free') が expectedPlanIn ('pro'/'enterprise') に含まれないため更新は不成立
+    const updated = await repos.tenants.updateMode(tenant.id, 'pro', ['pro', 'enterprise']);
+    // CAS が不一致で false を返すことを確認する
+    expect(updated).toBe(false);
+    // DB を再読込して実際にモードが変わっていないことを確認する
+    const reloaded = await repos.tenants.findById(tenant.id);
+    // mode は元の 'lite' のまま
+    expect(reloaded?.mode).toBe('lite');
+  });
+
+  // expectedPlanIn に現在のプランが含まれる場合は実 DB でも更新される
+  it('expectedPlanInに現在のプランが含まれる場合は更新される', async () => {
+    // Prisma アダプタ経由のリポジトリ束を組み立てる
+    const repos = buildPrismaRepos(prisma);
+    // subscriptionPlan 省略時の既定は 'free' のテナントを作成する
+    const tenant = await repos.tenants.create({ name: 'A組織', mode: 'lite' });
+    // Stripe 連携情報の更新経由で subscriptionPlan を 'pro' にする
+    await repos.tenants.updateStripeSubscription(tenant.id, { subscriptionPlan: 'pro' });
+    // 現在のプラン ('pro') が expectedPlanIn に含まれるため CAS が成立し更新される
+    const updated = await repos.tenants.updateMode(tenant.id, 'pro', ['pro', 'enterprise']);
+    // CAS が一致で true を返すことを確認する
+    expect(updated).toBe(true);
+    // DB を再読込して実際に mode が変わったことを確認する
+    const reloaded = await repos.tenants.findById(tenant.id);
+    // mode が 'pro' に更新されている
+    expect(reloaded?.mode).toBe('pro');
   });
 
   // updateNotificationChannels は渡したフィールドだけ更新し、undefined は現状維持する (部分更新契約)
@@ -136,7 +173,10 @@ describe.runIf(SHOULD_RUN)('TenantRepository (prisma adapter)', () => {
       name: 'trial-near',
       trialEndsAt: new Date('2026-07-05T00:00:00Z'),
     });
-    await repos.tenants.create({ name: 'trial-expired', trialEndsAt: new Date('2026-06-25T00:00:00Z') });
+    await repos.tenants.create({
+      name: 'trial-expired',
+      trialEndsAt: new Date('2026-06-25T00:00:00Z'),
+    });
     await repos.tenants.create({ name: 'no-trial' }); // trialEndsAt 未指定 (null)
 
     const result = await repos.tenants.listActiveTrials(now, 100);

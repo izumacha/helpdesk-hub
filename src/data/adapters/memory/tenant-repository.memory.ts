@@ -1,7 +1,7 @@
 // Tenant リポジトリの契約 (port)
 import type { TenantRepository } from '@/data/ports/tenant-repository';
-// ドメイン型
-import type { Tenant } from '@/domain/types';
+// ドメイン型・テナントモード型・課金プラン型
+import type { SubscriptionPlan, Tenant, TenantMode } from '@/domain/types';
 // メモリストア型と ID 生成関数
 import { nextId, type Store } from './store';
 
@@ -57,16 +57,28 @@ export function makeTenantRepo(store: Store): TenantRepository {
       return { ...tenant };
     },
 
-    // テナントの動作モード (lite | pro) を更新し、更新後の Tenant を返す
-    async updateMode(id, mode) {
-      // 対象テナントを Map から取得 (存在しなければ Prisma の update と同様にエラー)
+    // テナントの動作モード (lite | pro) を更新する (Prisma アダプタの updateMany と同じ CAS 契約)。
+    // 'pro' への切替時のみ expectedPlanIn で現在の subscriptionPlan を検証する
+    // port のオーバーロードを単一の実装関数で満たすためパラメータ型を明示する
+    // (Prisma アダプタの updateMode と同じ理由)
+    async updateMode(
+      id: string,
+      mode: TenantMode,
+      expectedPlanIn?: SubscriptionPlan[],
+    ): Promise<boolean> {
+      // 対象テナントを Map から取得 (存在しなければ Prisma の updateMany と同様に false)
       const t = store.tenants.get(id);
-      if (!t) throw new Error('テナントが見つかりません');
+      // 存在しないテナント ID は Prisma の updateMany (0 件更新) と同じく false を返す
+      if (!t) return false;
+      // 'pro' への切替かつ expectedPlanIn 指定時のみ、現在のプランが許可リストに含まれるか検証する
+      if (mode === 'pro' && expectedPlanIn && !expectedPlanIn.includes(t.subscriptionPlan)) {
+        // プランが許可リストに含まれない (競合、または元々不許可) — 更新せず false
+        return false;
+      }
       // mode だけ差し替えた新しいオブジェクトを作り Map に書き戻す
-      const updated = { ...t, mode };
-      store.tenants.set(id, updated);
-      // 防御的コピーを返す (呼び出し側で破壊されないように)
-      return { ...updated };
+      store.tenants.set(id, { ...t, mode });
+      // 更新できたことを示す true を返す
+      return true;
     },
 
     // メール取り込み用の inboundToken を (再)発行する

@@ -19,10 +19,13 @@
 import { hash } from 'bcryptjs';
 // データ層の Composition Root (リポジトリ束とトランザクション境界)
 import { repos, uow } from '@/data';
-// 招待トークンのハッシュ化 (生トークン → DB 保存値と同じ SHA-256 へ)
-import { hashInviteToken } from '@/lib/invite';
+// 招待トークンのハッシュ化 (生トークン → DB 保存値と同じ SHA-256 へ) と、受諾側の
+// エンドポイント全体レート制限値 (監査で発見したギャップ対応)
+import { hashInviteToken, INVITE_ACCEPT_GLOBAL_RATE_LIMIT } from '@/lib/invite';
 // Prisma の一意制約違反 (P2002) 判定の共通ヘルパー (6 箇所に重複していた判定を一元化 / §6 DRY)
 import { isUniqueConstraintError } from '@/lib/prisma-errors';
+// 連打防止のための共通レート制限ヘルパー (request-magic-link.ts 等と共有)
+import { enforceRateLimit } from '@/lib/rate-limit';
 // 受諾フォームの入力検証スキーマと、ユーザー入力メールの検証・正規化スキーマ
 import { acceptInvitationSchema, emailSchema } from '@/lib/validations/invite';
 // Phase 4 課金: プランごとのスタッフシート空き状況チェック (create-invitation.ts と共有)。
@@ -41,6 +44,11 @@ export async function acceptInvitation(
   rawToken: string,
   formData: FormData,
 ): Promise<AcceptInvitationResult> {
+  // 監査で発見したギャップ対応: 公開 (未認証) アクションかつ Serializable トランザクションを
+  // 伴うため、不正なトークンでの連打による DB 負荷増大を防ぐ固定キーの全体レート制限を
+  // 最初に適用する (§9 公開エンドポイント保護。requestMagicLink/requestSignup と同じ設計)
+  enforceRateLimit('invitation-accept:global', INVITE_ACCEPT_GLOBAL_RATE_LIMIT);
+
   // フォーム入力 (氏名・パスワード) を Zod で検証する
   const parsed = acceptInvitationSchema.safeParse({
     name: formData.get('name'),

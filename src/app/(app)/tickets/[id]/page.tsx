@@ -47,6 +47,11 @@ import { getSlaState, SLA_LABELS, SLA_COLORS, FIRST_RESPONSE_HOURS_BY_PRIORITY }
 import { getAllowedTransitions, getCompletionStatuses } from '@/domain/ticket-status';
 // FAQ 候補登録フォーム
 import { FaqCandidateForm } from '@/features/faq/components/FaqCandidateForm';
+// 監査で発見したギャップ対応: list/listByTenant は既定で表示用の上限 (200 件) しか返さない。
+// 本ページのカテゴリ/拠点変更プルダウンは全件が選択肢の前提のため (現在値が 201 件目以降だと
+// 選択肢から欠落し編集不能になる)、CSV インポートと同じ網羅的な上限を明示的に渡す
+import { CATEGORY_LIST_MATCHING_LIMIT } from '@/data/ports/category-repository';
+import { LOCATION_LIST_MATCHING_LIMIT } from '@/data/ports/location-repository';
 
 // /tickets/[id] ページの props (動的セグメント id を受け取る)
 interface Props {
@@ -97,9 +102,13 @@ export default async function TicketDetailPage({ params }: Props) {
     getCurrentTenantMode(tenantId),
     // エージェント時のみカテゴリ候補一覧を取得 (Pro モード専用の概念だが、mode 判定前に
     // Promise.all で並列化するため取得自体は agents と同様に isAgent だけで判定する)
-    isAgent ? repos.categories.list(tenantId) : Promise.resolve([]),
+    isAgent
+      ? repos.categories.list(tenantId, { limit: CATEGORY_LIST_MATCHING_LIMIT })
+      : Promise.resolve([]),
     // エージェント時のみ拠点候補一覧を取得 (Lite/Pro 両方で使える概念)
-    isAgent ? repos.locations.listByTenant(tenantId) : Promise.resolve([]),
+    isAgent
+      ? repos.locations.listByTenant(tenantId, { limit: LOCATION_LIST_MATCHING_LIMIT })
+      : Promise.resolve([]),
   ]);
 
   // チケットが存在しなければ 404

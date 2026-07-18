@@ -13,7 +13,7 @@ import { assertAdminSession } from '@/lib/role';
 // テナントモード入力 (lite | pro) の Zod 検証スキーマ
 import { tenantModeSchema } from '@/lib/validations/tenant';
 // Pro モード機能のプランゲート (§6.1 料金プラン: Pro / Enterprise のみ利用可能)
-import { isProModeAllowed } from '@/lib/plan-guard';
+import { isProModeAllowed, PRO_MODE_ALLOWED_PLANS } from '@/lib/plan-guard';
 // テナントの現在プランを解決する共通ヘルパー (複数箇所での重複を避ける)
 import { resolveTenantPlan } from '@/lib/tenant-plan';
 // 設定変更監査ログへの記録を共通化するヘルパー
@@ -39,17 +39,34 @@ export async function updateTenantMode(formData: FormData): Promise<void> {
     throw new Error(parsed.error.issues[0]?.message ?? 'モードの指定が正しくありません');
   }
 
-  // プランゲート: Pro モードへの切替は Pro / Enterprise プランのみ (Free / Standard では不可 §6.1)。
-  // UI 非表示に頼らずサーバー側で強制する。Lite への切替はどのプランでも常に許可する。
+  // テナントの mode 列を更新する (id はセッション由来の tenantId のみ)。ここで parsed.data を
+  // 'pro'/'lite' の literal に narrow してから updateMode を呼ぶことで、port 側のオーバーロード
+  // (mode:'pro' のときだけ expectedPlanIn を必須にする) を型レベルで正しく選択させる
+  // (/code-review ultra 指摘対応: expectedPlanIn が省略可能な単一シグネチャのままだと、渡し
+  // 忘れてもコンパイルが通ってしまい CAS 保護が黙って無効化されるため)。
+  let updated: boolean;
   if (parsed.data === 'pro') {
+    // プランゲート: Pro モードへの切替は Pro / Enterprise プランのみ (Free / Standard では不可
+    // §6.1)。UI 非表示に頼らずサーバー側で強制する。
     const plan = await resolveTenantPlan(tenantId);
     if (!isProModeAllowed(plan)) {
       throw new Error('Pro モードは Pro / Enterprise プランでご利用いただけます。');
     }
+    // 監査で発見したギャップ対応: 上の isProModeAllowed 判定だけでは、判定とこの書き込みの間に
+    // Stripe Webhook 由来の自動ダウングレード (applyPlanChange) が割り込むと古いプラン判定の
+    // まま上書きしてしまう TOCTOU が残る。expectedPlanIn を渡した原子的な更新 (CAS) にすることで、
+    // 書き込み時点でも現在のプランが許可リストに含まれることを DB レベルで保証する。
+    updated = await repos.tenants.updateMode(tenantId, 'pro', [...PRO_MODE_ALLOWED_PLANS]);
+  } else {
+    // 'lite' への切替はどのプランでも常に許可されるため無条件更新
+    updated = await repos.tenants.updateMode(tenantId, 'lite');
   }
-
-  // テナントの mode 列を更新 (id はセッション由来の tenantId のみ)
-  await repos.tenants.updateMode(tenantId, parsed.data);
+  if (!updated) {
+    // 0 件更新 = 判定後にプランが変わった (Stripe 由来のダウングレード等) ことによる競合
+    throw new Error(
+      'モードを変更できませんでした。プランが変更された可能性があるため、画面を再読み込みしてください。',
+    );
+  }
 
   // モード変更はラベル・遷移表・メニュー表示など広範囲に影響するため、
   // 設定画面と主要画面 (一覧 / ダッシュボード) のキャッシュを無効化して再描画させる

@@ -5,8 +5,10 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { buildMemoryRepos, createMemoryContext, type Store } from '@/data/adapters/memory';
 // リポジトリ束 / UnitOfWork の型
 import type { Repos, UnitOfWork } from '@/data/ports/unit-of-work';
-// 招待トークンのハッシュ化 (DB 保存値と同じ SHA-256 を作るために使う)
-import { hashInviteToken } from '@/lib/invite';
+// 招待トークンのハッシュ化 (DB 保存値と同じ SHA-256 を作るために使う) と全体レート制限値
+import { hashInviteToken, INVITE_ACCEPT_GLOBAL_RATE_LIMIT } from '@/lib/invite';
+// レート制限の履歴をテスト間でクリアする内部用関数
+import { __resetRateLimits } from '@/lib/rate-limit';
 
 // 各テスト前に書き換える依存。Action import 前に getter で参照させる
 let store: Store;
@@ -39,6 +41,9 @@ beforeEach(() => {
   store = ctx.store;
   repos = ctx.repos;
   uow = ctx.uow;
+  // レート制限の履歴をテスト間でクリアする (INVITE_ACCEPT_GLOBAL_RATE_LIMIT のテストが
+  // 他のテストの呼び出し回数を引き継いで誤って引っかからないようにする)
+  __resetRateLimits();
   // 現在時刻 (テナント作成日時に使う)
   const now = new Date();
   // テナント A / B を投入する (User の FK 先として必要)
@@ -312,5 +317,22 @@ describe('acceptInvitation', () => {
     expect((err as Error).message).toMatch(/既に登録/);
     // 生の Prisma エラー文言 (フィールド名等) が漏れていないこと
     expect((err as Error).message).not.toMatch(/email`|Unique constraint/);
+  });
+
+  // 監査で発見したギャップ対応: 公開 (未認証) アクションかつ Serializable トランザクションを
+  // 伴うため、不正なトークンでの連打を固定キーの全体レート制限で頭打ちにすること。
+  // 異なるトークン (テナント) で呼んでもエンドポイント全体で共有の上限に引っかかることを確認する
+  it('全体レート制限を超えると異なるトークンでも拒否される', async () => {
+    const acceptInvitation = await loadAction();
+    // 上限ちょうどまでは異なる無効トークンで呼んでも「無効」エラー (レート制限には引っかからない)
+    for (let i = 0; i < INVITE_ACCEPT_GLOBAL_RATE_LIMIT.limit; i += 1) {
+      await expect(
+        acceptInvitation(`bogus-token-${i}`, makeForm({ name: 'x', password: 'password123' })),
+      ).rejects.toThrow(/無効|使用/);
+    }
+    // 上限+1 件目は別のトークンでも全体レート制限に引っかかる
+    await expect(
+      acceptInvitation('bogus-token-overflow', makeForm({ name: 'x', password: 'password123' })),
+    ).rejects.toThrow(/頻度が高すぎます/);
   });
 });

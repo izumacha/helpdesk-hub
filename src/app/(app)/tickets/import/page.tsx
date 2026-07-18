@@ -13,6 +13,10 @@ import { CsvImportForm } from '@/features/tickets/components/CsvImportForm';
 import Link from 'next/link';
 // 未ログイン / 権限不足時のリダイレクト
 import { redirect } from 'next/navigation';
+// 監査で発見したギャップ対応: list は既定で表示用の上限 (200 件) しか返さない。実際の
+// インポート処理 (import-tickets.ts) は網羅的な上限 (CATEGORY_LIST_MATCHING_LIMIT) で
+// カテゴリ名を解決するため、このプレビュー表示だけ 200 件で切れると実処理と一覧が食い違う
+import { CATEGORY_LIST_MATCHING_LIMIT } from '@/data/ports/category-repository';
 
 // チケット CSV インポートページ (Server Component)
 export default async function TicketImportPage() {
@@ -29,8 +33,9 @@ export default async function TicketImportPage() {
 
   // tenantId を使ってカテゴリ一覧を取得する (将来の列マッピング UI に備えた先行取得)
   const tenantId = session.user.tenantId;
-  // カテゴリをリポジトリ経由で取得する (tenantId スコープ)
-  const categories = await repos.categories.list(tenantId);
+  // カテゴリをリポジトリ経由で取得する (tenantId スコープ)。実際のインポート処理と
+  // 同じ網羅的な上限を使い、プレビューと実処理の一覧が食い違わないようにする
+  const categories = await repos.categories.list(tenantId, { limit: CATEGORY_LIST_MATCHING_LIMIT });
 
   return (
     <div className="space-y-6">

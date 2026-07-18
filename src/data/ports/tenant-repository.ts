@@ -18,9 +18,20 @@ export interface TenantRepository {
     inboundToken?: string | null;
     trialEndsAt?: Date | null; // §7.2 Free trial の終了日時 (未指定なら null = トライアル無し)
   }): Promise<Tenant>;
-  // テナントの動作モード (lite | pro) を更新し、更新後の Tenant を返す
-  // id はセッション由来の tenantId のみを渡す契約 (リクエスト入力から注入しないこと = クロステナント防止)
-  updateMode(id: string, mode: TenantMode): Promise<Tenant>;
+  // テナントの動作モード (lite | pro) を更新する。
+  // id はセッション由来の tenantId のみを渡す契約 (リクエスト入力から注入しないこと = クロステナント防止)。
+  // 監査で発見したギャップ対応: 'pro' への切替時は expectedPlanIn を渡し、その配列に現在の
+  // 契約プラン (subscriptionPlan) が含まれる場合のみ更新する原子的な更新 (CAS) にする。
+  // 0 件更新なら false を返す。これにより「プラン確認 (isProModeAllowed) → 書き込み」の間に
+  // Stripe Webhook 由来の自動ダウングレード (applyPlanChange の updateMode(id, 'lite')) が
+  // 割り込んでも、古いプラン判定のまま Pro モードへ上書きされることを防ぐ。
+  // 'pro' への切替オーバーロードは expectedPlanIn を必須にしている (/code-review ultra 指摘対応:
+  // 省略可能な第 3 引数のままだと、将来 'pro' へ切り替える呼び出しが増えたときに渡し忘れても
+  // コンパイルが通り、この CAS 保護だけが黙って無効化された無条件更新に戻ってしまうため、
+  // オーバーロードで型レベルの強制にした)。'lite' への切替は常にどのプランでも許可されるため
+  // expectedPlanIn を取らない (常に無条件更新で true を返す)。
+  updateMode(id: string, mode: 'lite'): Promise<boolean>;
+  updateMode(id: string, mode: 'pro', expectedPlanIn: SubscriptionPlan[]): Promise<boolean>;
   // メール取り込み用の inboundToken を (再)発行する。マイグレーション前から存在し未発行のままの
   // テナントへの初回発行、および漏洩・スパム混入時の再発行 (ローテーション) の両方に使う。
   // id はセッション由来の tenantId のみを渡す契約 (クロステナント防止)

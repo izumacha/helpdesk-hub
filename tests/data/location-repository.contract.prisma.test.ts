@@ -13,6 +13,10 @@
 import { describe, beforeAll, afterAll, beforeEach, expect, it } from 'vitest';
 import { PrismaClient } from '@/generated/prisma';
 import { buildPrismaRepos } from '@/data/adapters/prisma';
+import {
+  LOCATION_LIST_LIMIT,
+  LOCATION_LIST_MATCHING_LIMIT,
+} from '@/data/ports/location-repository';
 
 const TENANT_A = 'default-tenant';
 const TENANT_B = 'tenant-b';
@@ -93,6 +97,38 @@ describe.runIf(SHOULD_RUN)('LocationRepository (prisma adapter)', () => {
     const result = await repos.locations.listByTenant(TENANT_A);
     expect(result).toHaveLength(1);
     expect(result[0].name).toBe('A拠点');
+  });
+
+  // 監査で発見したギャップ対応: 上限件数を超えて作成しても LOCATION_LIST_LIMIT 件までに
+  // 切り詰められること (§8 一覧取得は必ず上限を持たせる。実 DB の take が効くことの確認)
+  it('listByTenantは上限件数で切り詰める', async () => {
+    const repos = buildPrismaRepos(prisma);
+    for (let i = 0; i < LOCATION_LIST_LIMIT + 3; i += 1) {
+      await repos.locations.create({
+        tenantId: TENANT_A,
+        name: `拠点${String(i).padStart(4, '0')}`,
+        description: null,
+      });
+    }
+    const result = await repos.locations.listByTenant(TENANT_A);
+    expect(result).toHaveLength(LOCATION_LIST_LIMIT);
+  });
+
+  // 監査で発見したギャップ対応: opts.limit に LOCATION_LIST_MATCHING_LIMIT を明示的に渡すと、
+  // 実 DB でも表示用の既定上限を超えて取得できること (CSV インポートの名前解決が依存する経路)
+  it('opts.limitを指定すると実DBでも既定上限を超えて取得できる', async () => {
+    const repos = buildPrismaRepos(prisma);
+    for (let i = 0; i < LOCATION_LIST_LIMIT + 3; i += 1) {
+      await repos.locations.create({
+        tenantId: TENANT_A,
+        name: `拠点${String(i).padStart(4, '0')}`,
+        description: null,
+      });
+    }
+    const result = await repos.locations.listByTenant(TENANT_A, {
+      limit: LOCATION_LIST_MATCHING_LIMIT,
+    });
+    expect(result).toHaveLength(LOCATION_LIST_LIMIT + 3);
   });
 
   // 他テナントの ID を渡すと null を返す (クロステナントアクセス防止)

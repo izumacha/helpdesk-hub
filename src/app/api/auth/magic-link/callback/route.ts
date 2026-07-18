@@ -39,6 +39,10 @@ import { CredentialsSignin } from 'next-auth';
 import { redirect } from 'next/navigation';
 // HTML に外部由来文字列を安全に差し込むためのエスケープ関数 (XSS 対策)
 import { escapeHtml } from '@/lib/html-escape';
+// トークン消費 (POST) 側の固定キーレート制限値 (監査で発見したギャップ対応)
+import { MAGIC_LINK_CALLBACK_RATE_LIMIT } from '@/lib/magic-link';
+// Route Handler 向け共通レート制限ラッパー (inbound-email/inbound-line/sso-acs と共有)
+import { checkRouteRateLimit } from '@/lib/route-rate-limit';
 
 // GET ハンドラ: トークンを消費せず HTML 確認ページを返す。
 // メールゲートウェイのプリフェッチ対策として、実際の認証は POST でのみ行う。
@@ -155,6 +159,16 @@ export async function GET(request: Request) {
 // POST ハンドラ: フォーム送信でトークンを受け取り実際に認証を行う。
 // ユーザーが明示的にボタンをクリックした場合のみ到達する。
 export async function POST(request: Request) {
+  // 固定キーの全体レート制限を最初に適用する (CSRF 検証やトークン消費 (DB 参照) より前に弾き、
+  // 不正なトークンでの連打による DB 負荷増大を防ぐ。sso-acs と同じ「最初に置く」方針)
+  const limitResponse = checkRouteRateLimit(
+    'magic-link-callback',
+    MAGIC_LINK_CALLBACK_RATE_LIMIT,
+    'しばらく時間をおいて再度お試しください',
+  );
+  // 制限超過なら 429 の NextResponse をそのまま返す (超過なしなら null が返り後続処理を続ける)
+  if (limitResponse) return limitResponse;
+
   // クロスオリジン CSRF 対策: 同一オリジンからのフォーム送信であることを検証する。
   // 検証戦略:
   //   1. Sec-Fetch-Site ヘッダ (Chrome 76+ / Firefox 90+): ブラウザが必ず付与し

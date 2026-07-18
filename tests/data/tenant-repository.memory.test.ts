@@ -52,12 +52,13 @@ describe('TenantRepository.updateMode (memory)', () => {
     seed();
   });
 
-  // 正常系: 指定テナントの mode を lite → pro に切り替えられる
+  // 正常系: 指定テナントの mode を lite → pro に切り替えられる (expectedPlanIn に現在のプラン
+  // 'free' (seed 参照) を含めることで CAS を素通りさせる)
   it('対象テナントの mode を pro に更新できる', async () => {
-    // テナント A を pro に切り替える
-    const updated = await repos.tenants.updateMode(TENANT_A, 'pro');
-    // 戻り値の mode が pro になっている
-    expect(updated.mode).toBe('pro');
+    // テナント A を pro に切り替える (expectedPlanIn に現在のプラン 'free' を含める)
+    const updated = await repos.tenants.updateMode(TENANT_A, 'pro', ['free']);
+    // 更新できたことを示す true が返る
+    expect(updated).toBe(true);
     // 再取得しても pro が永続化されている
     const reloaded = await repos.tenants.findById(TENANT_A);
     expect(reloaded?.mode).toBe('pro');
@@ -66,24 +67,47 @@ describe('TenantRepository.updateMode (memory)', () => {
   // 分離: あるテナントの更新が他テナントに波及しない
   it('他テナントの mode には影響しない', async () => {
     // テナント A だけを pro に切り替える
-    await repos.tenants.updateMode(TENANT_A, 'pro');
+    await repos.tenants.updateMode(TENANT_A, 'pro', ['free']);
     // テナント B は元の lite のままであること
     const tenantB = await repos.tenants.findById(TENANT_B);
     expect(tenantB?.mode).toBe('lite');
   });
 
-  // 異常系: 存在しないテナント ID はエラーになる (fail-closed)
-  it('存在しないテナント ID はエラーになる', async () => {
-    // 未登録の ID で更新しようとすると reject される
-    await expect(repos.tenants.updateMode('no-such-tenant', 'pro')).rejects.toThrow();
+  // 異常系: 存在しないテナント ID は false を返す (fail-closed。Prisma の updateMany と同じ 0 件挙動)
+  it('存在しないテナント ID はfalseを返す', async () => {
+    const updated = await repos.tenants.updateMode('no-such-tenant', 'pro', ['free']);
+    expect(updated).toBe(false);
   });
 
   // 冪等: 同じ mode への更新でも成功し値が保たれる
   it('同じ mode への更新でも値が保たれる', async () => {
     // 既に lite のテナントを lite に更新する
     const updated = await repos.tenants.updateMode(TENANT_A, 'lite');
-    // mode は lite のまま
-    expect(updated.mode).toBe('lite');
+    expect(updated).toBe(true);
+    const reloaded = await repos.tenants.findById(TENANT_A);
+    expect(reloaded?.mode).toBe('lite');
+  });
+
+  // 監査で発見したギャップ対応: expectedPlanIn を渡した CAS (compare-and-swap) の検証。
+  // 現在の契約プランが許可リストに含まれない場合は更新せず false を返す
+  // (Stripe Webhook 由来の自動ダウングレードと管理者操作の TOCTOU 競合防止)
+  it('expectedPlanInに現在のプランが含まれない場合は更新せずfalseを返す', async () => {
+    // テナント A は 'free' プラン (seed 参照)。'pro'/'enterprise' のみ許可するリストを渡す
+    const updated = await repos.tenants.updateMode(TENANT_A, 'pro', ['pro', 'enterprise']);
+    expect(updated).toBe(false);
+    // 実際に mode は変更されていないこと
+    const reloaded = await repos.tenants.findById(TENANT_A);
+    expect(reloaded?.mode).toBe('lite');
+  });
+
+  // expectedPlanIn に現在のプランが含まれる場合は更新される
+  it('expectedPlanInに現在のプランが含まれる場合は更新される', async () => {
+    // テナント A のプランを 'pro' に書き換えてから CAS 付きで更新する
+    store.tenants.set(TENANT_A, { ...store.tenants.get(TENANT_A)!, subscriptionPlan: 'pro' });
+    const updated = await repos.tenants.updateMode(TENANT_A, 'pro', ['pro', 'enterprise']);
+    expect(updated).toBe(true);
+    const reloaded = await repos.tenants.findById(TENANT_A);
+    expect(reloaded?.mode).toBe('pro');
   });
 });
 
