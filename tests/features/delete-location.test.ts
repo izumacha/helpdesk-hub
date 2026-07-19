@@ -140,6 +140,7 @@ describe('deleteLocation', () => {
       resolvedAt: null,
       escalatedAt: null,
       escalationReason: null,
+      slaReminderNotifiedForDueAt: null,
       creatorId: 'creator-1',
       assigneeId: null,
       categoryId: null,

@@ -10,6 +10,9 @@ import type {
 } from '@/domain/types';
 // 添付ファイルのサマリ型 (詳細画面でサムネ表示する際に必要な最小情報)
 import type { AttachmentSummary } from '@/domain/attachment-summary';
+// SLA 期限接近リマインダーの判定に使う最小フィールド集合 (§6 一元管理: 判定ロジックと
+// 同じ形の型を再利用し、port 側で別の型を作って定義がずれるのを防ぐ)
+import type { SlaReminderCandidate } from '@/lib/sla-reminder';
 import type { Page, Sort, TextFilter } from './filters';
 
 // チケット一覧の絞り込み条件
@@ -151,6 +154,13 @@ export interface QualityMetrics {
   totalCount: number;
 }
 
+// listSlaDueSoonCandidates が返す行 (通知作成・冪等化更新に必要な最小フィールドのみ)
+export interface TicketSlaReminderCandidate extends SlaReminderCandidate {
+  id: string; // チケット ID
+  tenantId: string; // 所属テナント (通知作成の tenantId スコープに必須)
+  title: string; // 通知文言の組み立てに使う件名
+}
+
 // チケットリポジトリの契約 (port)
 // 全メソッドの ID 系引数は tenantId 必須化済。テナント越境参照/更新を Adapter 層で遮断する
 export interface TicketRepository {
@@ -267,4 +277,18 @@ export interface TicketRepository {
   // 初回応答日時を記録する (tenantId スコープ)。呼び出し側が「まだ未応答」を確認してから
   // 呼ぶ前提 (2 回目以降の呼び出しで上書きしないための判定は呼び出し側の責務)
   markFirstResponded(id: string, at: Date, tenantId: string): Promise<void>;
+
+  /**
+   * SLA 期限接近リマインダー (issue-backlog #20) の対象候補チケットを、全テナント横断で取得する
+   * (POST /api/internal/sla-reminders から呼ばれる cron 用。trial-reminders と同じく内部エンドポイント
+   * が全テナントを横断して処理する設計のため、他メソッドと異なり tenantId 引数を取らない)。
+   * DB 側では「未解決 かつ 担当者あり かつ resolutionDueAt が警告帯 (now 〜 now+DEFAULT_WARNING_THRESHOLD_MS)
+   * 内」まで絞り込んで返す (§8 一覧取得は必ず上限を持たせる)。「本当に通知すべきか」
+   * (既に同じ期限で通知済みでないか等) の最終判定は呼び出し側が src/lib/sla-reminder.ts の
+   * needsSlaDueSoonReminder に通して行う契約 (DB クエリは効率のための粗い事前絞り込みに徹する)
+   */
+  listSlaDueSoonCandidates(now: Date, limit: number): Promise<TicketSlaReminderCandidate[]>;
+  // SLA 期限接近リマインダーの冪等化フラグ (slaReminderNotifiedForDueAt) を更新する
+  // (tenantId スコープ)。dueAt には通知対象と判定した時点の resolutionDueAt をそのまま渡す
+  markSlaReminderNotified(id: string, dueAt: Date, tenantId: string): Promise<void>;
 }

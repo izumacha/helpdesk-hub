@@ -6,7 +6,12 @@ import { isAgent } from '@/lib/role';
 // /code-review ultra 指摘対応: 「/api/internal/」配下丸ごとをプレフィックスで除外すると、
 // 「内部向け = 安全」という誤解を招きやすい名前のため、将来ここに認証を自前実装し忘れた
 // 別ルートが追加されてもセッション認証ガードの対象から外れないよう、個別ルートを明示列挙する
-const INTERNAL_CRON_ROUTES = ['/api/internal/trial-reminders'];
+const INTERNAL_CRON_ROUTES = [
+  '/api/internal/trial-reminders',
+  // issue-backlog #20 フォローアップ: SLA 期限接近リマインダー (POST /api/internal/sla-reminders)。
+  // trial-reminders と同じく共有シークレットで自前認可するため、明示的にここへ追加する
+  '/api/internal/sla-reminders',
+];
 
 // 認証ミドルウェア
 // - ログイン状態のチェック (未ログインは /login に飛ばす or API は 401 を返す)
@@ -32,11 +37,11 @@ export default auth((req) => {
   // ルート側で HMAC 署名検証 (stripe.webhooks.constructEvent) を行うため、
   // セッション認証ガードの対象外にする (Phase 4 課金)。
   const isApiWebhook = req.nextUrl.pathname.startsWith('/api/webhooks/');
-  // 内部 cron 専用エンドポイント (trial-reminders) はブラウザセッションを持たず、
+  // 内部 cron 専用エンドポイント (trial-reminders / sla-reminders) はブラウザセッションを持たず、
   // GitHub Actions 等の定期実行ジョブから共有シークレット (Authorization: Bearer) で
   // 叩かれる。ルート側で constantTimeStringEqual による検証を行うため、ここでは
   // isApiInbound / isApiWebhook と同じ理由でセッション認証ガードの対象外にする
-  // (§7.2.1 Free trial 終了リマインダー。対象ルートは INTERNAL_CRON_ROUTES で明示列挙)。
+  // (§7.2.1 Free trial 終了リマインダー・issue-backlog #20。対象ルートは INTERNAL_CRON_ROUTES で明示列挙)。
   const isApiInternal = INTERNAL_CRON_ROUTES.includes(req.nextUrl.pathname);
   const isApiRoute = req.nextUrl.pathname.startsWith('/api/');
 

@@ -23,6 +23,8 @@ import {
 } from './mappers';
 // Prisma クライアント共通型
 import type { PrismaLike } from './types';
+// SLA 期限接近リマインダーの「警告帯」窓の長さ (§6 一元管理: sla.ts の getSlaState と同じ値を使う)
+import { DEFAULT_WARNING_THRESHOLD_MS } from '@/lib/sla';
 
 // ドメインのフィルター条件 + tenantId を Prisma の WhereInput に変換するヘルパー
 // tenantId は **必ず AND 条件として注入** し、テナント越境参照を遮断する
@@ -356,6 +358,43 @@ export function makeTicketRepo(db: PrismaLike): TicketRepository {
       await db.ticket.updateMany({
         where: { id, tenantId, firstRespondedAt: null },
         data: { firstRespondedAt: at },
+      });
+    },
+
+    // issue-backlog #20 フォローアップ: SLA 期限接近リマインダーの対象候補を取得する
+    // (全テナント横断。POST /api/internal/sla-reminders から呼ばれる)
+    async listSlaDueSoonCandidates(now, limit) {
+      const rows = await db.ticket.findMany({
+        where: {
+          resolvedAt: null, // 未解決のみ
+          status: { notIn: ['Resolved', 'Closed'] }, // 業務上の終息状態は除外 (overdue フィルタと同じ規約)
+          assigneeId: { not: null }, // 担当者未アサインは通知先が無いので対象外
+          resolutionDueAt: {
+            gt: now, // まだ超過していない (超過後は対象外。sla-reminder.ts のコメント参照)
+            lte: new Date(now.getTime() + DEFAULT_WARNING_THRESHOLD_MS), // 警告帯の窓内
+          },
+        },
+        select: {
+          id: true,
+          tenantId: true,
+          title: true,
+          assigneeId: true,
+          resolutionDueAt: true,
+          resolvedAt: true,
+          slaReminderNotifiedForDueAt: true,
+        },
+        take: limit, // §8 一覧取得は必ず上限を持たせる
+        orderBy: { resolutionDueAt: 'asc' }, // 期限が近い順 (ログ確認時の見やすさのため)
+      });
+      // Prisma 行 → 呼び出し側 (needsSlaDueSoonReminder) が期待する形にそのまま詰め替える
+      return rows;
+    },
+
+    // issue-backlog #20 フォローアップ: SLA 期限接近リマインダーの冪等化フラグを更新する
+    async markSlaReminderNotified(id, dueAt, tenantId) {
+      await db.ticket.updateMany({
+        where: { id, tenantId },
+        data: { slaReminderNotifiedForDueAt: dueAt },
       });
     },
 

@@ -48,7 +48,10 @@ export function calculateFirstResponseDueAt(priority: Priority, from: Date): Dat
 // 解決期限 (24〜168 時間の窓) 向けに調整された値。初回応答期限は窓が 4〜24 時間と
 // 短いため、この既定値をそのまま使うと起票直後から常に warning になってしまう
 // (回帰防止: getSlaState の呼び出し側は窓の長さに応じた閾値を明示的に渡すこと)
-const DEFAULT_WARNING_THRESHOLD_MS = 24 * 60 * 60 * 1000;
+// issue-backlog #20 フォローアップ: SLA 期限接近リマインダー (src/lib/sla-reminder.ts) の
+// DB 側の絞り込みクエリでも同じ「警告帯」の窓を使うため export する (§6 一元管理: 画面バッジと
+// リマインダー通知の「期限間近」の定義を同じ 1 つの値に揃え、別々に定義してずれるのを防ぐ)
+export const DEFAULT_WARNING_THRESHOLD_MS = 24 * 60 * 60 * 1000;
 
 // 期限日時と解決日時から現在の SLA 状態を判定する関数。
 // warningThresholdMs: 「期限間近」とみなす残り時間 (ミリ秒)。省略時は解決期限向けの
