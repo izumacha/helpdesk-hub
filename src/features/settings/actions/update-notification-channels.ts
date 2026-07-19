@@ -19,6 +19,8 @@ import { recordSettingsAudit } from '@/lib/settings-audit';
 
 // Chatwork API トークンの最大長 (常識的な上限。これを超える入力は不正として弾く)
 const CHATWORK_TOKEN_MAX_LENGTH = 200;
+// Chatwork ルーム ID の最大長 (常識的な上限。トークンと同じ方針で入力を弾く)
+const CHATWORK_ROOM_ID_MAX_LENGTH = 200;
 // Chatwork ルーム ID が数字のみで構成されるかを検証する正規表現 (パスインジェクション防止)
 const CHATWORK_ROOM_ID_PATTERN = /^\d+$/;
 
@@ -99,6 +101,10 @@ export async function updateNotificationChannels(
   // トークンが長すぎる入力は不正として弾く (ヘッダに載るため常識的な上限を設ける)
   if (hasToken && chatworkApiTokenRaw.length > CHATWORK_TOKEN_MAX_LENGTH) {
     return { error: 'Chatwork API トークンの形式が正しくありません' };
+  }
+  // ルーム ID が長すぎる入力は不正として弾く (トークンと同じ常識的な上限を設ける)
+  if (hasRoomId && chatworkRoomIdRaw.length > CHATWORK_ROOM_ID_MAX_LENGTH) {
+    return { error: 'Chatwork ルーム ID は数字で入力してください' };
   }
   // ルーム ID は数字のみ許可する (URL パスに埋め込むためインジェクションを防ぐ)
   if (hasRoomId && !CHATWORK_ROOM_ID_PATTERN.test(chatworkRoomIdRaw)) {
