@@ -69,21 +69,32 @@ function listActionFiles(): string[] {
 
 // ファイル本文から「実行時に存在する export」の名前一覧を静的に抽出する。
 // 型のみの export (export type / export interface) は実行時に消えるため対象外。
-// export const / export function (非 async) / 再 export (export { ... }) / export default は
-// 「アクション以外の公開」としてそのまま検出し、テスト側で失敗させる。
+// それ以外の export 行は fail-closed で扱う: 意図された形 (export async function) だけを
+// 名前として抽出し、未知の形 (export * / class / enum / const / 再 export / default 等) は
+// すべて禁止マーカーとして記録し、許可リスト照合で必ず失敗させる
+// (/code-review ultra 指摘対応 2026-07-19: 既知形の列挙だけだと export * 等が無音で通るため)。
 function extractRuntimeExports(source: string): string[] {
-  // 検出した実行時 export 名を貯める配列
+  // 検出した実行時 export 名 (または禁止形マーカー) を貯める配列
   const names: string[] = [];
-  // 行頭の export 宣言を走査する (このリポジトリの整形規則では export は行頭に置かれる)
-  const exportPattern =
-    /^export\s+(?:async\s+function\s+(\w+)|function\s+(\w+)|const\s+(\w+)|let\s+(\w+)|var\s+(\w+)|default\b|\{)/gm;
-  // マッチごとに名前 (または禁止形の目印) を記録する
-  for (const m of source.matchAll(exportPattern)) {
-    // async function 以外の実行時 export はエンドポイントとして意図されないため、
-    // マーカー付きで記録して許可リスト照合で必ず失敗させる
-    const name = m[1] ?? (m[2] ? `[sync-function] ${m[2]}` : undefined) ?? m[3] ?? m[4] ?? m[5];
-    // export default / export { ... } は名前が取れないため形そのものを記録する
-    names.push(name ?? `[forbidden-form] ${m[0].trim()}`);
+  // 行頭の export で始まる行をすべて走査する (このリポジトリの整形規則では export は行頭に置かれる)
+  for (const m of source.matchAll(/^export\s.*$/gm)) {
+    // export 行の全文 (末尾空白は落とす)
+    const line = m[0].trimEnd();
+    // 型のみの export は実行時に消えるためスキップする
+    if (/^export\s+(type|interface|declare)\b/.test(line)) {
+      continue;
+    }
+    // 意図された唯一の形: 行頭の export async function 宣言 (generator の * は含まない)
+    const action = /^export\s+async\s+function\s+(\w+)\s*\(/.exec(line);
+    // async function なら関数名を記録する
+    if (action) {
+      names.push(action[1]);
+      continue;
+    }
+    // それ以外の実行時 export (export * / class / enum / const / let / var / default /
+    // export { ... } / async function* 等) はエンドポイントとして意図されないため、
+    // 行そのものを禁止マーカーとして記録し、許可リストと一致せず必ず失敗させる
+    names.push(`[forbidden-form] ${line}`);
   }
   // 抽出結果を返す
   return names;
