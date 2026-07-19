@@ -225,6 +225,7 @@ export const NOTIFICATION_TYPE_LABELS: Record<string, string> = {
   statusChanged: 'ステータス変更',
   priorityChanged: '優先度変更',
   imported: '一括取り込み', // CSV・メール一括インポートで複数チケットが追加されたことを通知する
+  slaDueSoon: 'SLA期限間近', // issue-backlog #20 フォローアップ: 解決期限が警告帯に入ったことの通知
 };
 
 // 変更履歴の oldValue / newValue を field 種別に応じて日本語表示に変換する関数

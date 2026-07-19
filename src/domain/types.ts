@@ -117,7 +117,8 @@ export type NotificationType =
   | 'commented' // コメント追加通知
   | 'statusChanged' // ステータス変更通知
   | 'priorityChanged' // 優先度変更通知
-  | 'imported'; // CSV・メール一括取り込みで複数チケットが追加された通知
+  | 'imported' // CSV・メール一括取り込みで複数チケットが追加された通知
+  | 'slaDueSoon'; // issue-backlog #20 フォローアップ: SLA 解決期限が近い (警告帯) ことの通知
 
 // テナントの動作モード (Lite=SMB 既定 / Pro=現行フル機能)
 export type TenantMode = 'lite' | 'pro';
@@ -241,6 +242,9 @@ export interface Ticket {
   resolvedAt: Date | null; // 解決した日時。未解決なら null
   escalatedAt: Date | null; // エスカレーションした日時。していなければ null
   escalationReason: string | null; // エスカレーション理由のテキスト
+  // issue-backlog #20 フォローアップ: SLA 期限接近リマインダーの冪等化フラグ。
+  // 「どの resolutionDueAt に対して通知済みか」を保持する (未通知/対象外なら null)
+  slaReminderNotifiedForDueAt: Date | null;
   creatorId: string; // 起票者ユーザー ID
   assigneeId: string | null; // 担当者ユーザー ID (未アサインなら null)
   categoryId: string | null; // カテゴリ ID (未分類なら null)

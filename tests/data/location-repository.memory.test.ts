@@ -35,6 +35,7 @@ function seedTicket(id: string, tenantId: string, locationId: string | null) {
     resolvedAt: null,
     escalatedAt: null,
     escalationReason: null,
+    slaReminderNotifiedForDueAt: null,
     creatorId: 'creator-1',
     assigneeId: null,
     categoryId: null,

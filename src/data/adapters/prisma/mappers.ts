@@ -88,6 +88,7 @@ export function toTicket(row: TicketRow): Ticket {
     resolvedAt: row.resolvedAt,
     escalatedAt: row.escalatedAt,
     escalationReason: row.escalationReason,
+    slaReminderNotifiedForDueAt: row.slaReminderNotifiedForDueAt, // SLA 期限接近リマインダーの冪等化フラグ
     creatorId: row.creatorId,
     assigneeId: row.assigneeId,
     categoryId: row.categoryId,

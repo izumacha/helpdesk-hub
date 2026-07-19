@@ -102,6 +102,7 @@ enum NotificationType {
   statusChanged // ステータス変更通知
   priorityChanged // 優先度変更通知
   imported // CSV・メール一括取り込みによる複数チケット追加通知
+  slaDueSoon // issue-backlog #20 フォローアップ: SLA 解決期限が近い (警告帯) ことの通知
 }
 
 // テナント (組織) の動作モード。SMB 向けピボットの Lite/Pro 二層に対応
@@ -431,6 +432,12 @@ model Ticket {
   resolutionDueAt    DateTime? // 解決期限
   firstRespondedAt   DateTime? // 実際の初回応答日時
   resolvedAt         DateTime? // 解決日時
+  // issue-backlog #20 フォローアップ: SLA 期限接近リマインダー (POST /api/internal/sla-reminders) の
+  // 冪等化フラグ。「送信済みか」という真偽値ではなく「どの resolutionDueAt に対して送信済みか」を
+  // 保持することで、優先度変更等で resolutionDueAt が再計算されたときに他のコード (updatePriority 等)
+  // を一切変更せずとも自動的に再アーム状態になる (値が変われば一致しなくなるため)。
+  // src/lib/sla-reminder.ts の needsSlaDueSoonReminder が「resolutionDueAt と一致するか」で判定する
+  slaReminderNotifiedForDueAt DateTime?
 
   // Escalation (エスカレーション情報)
   escalatedAt      DateTime? // エスカレーション発生日時

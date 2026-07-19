@@ -1,0 +1,51 @@
+# issue-backlog #20 フォローアップ: SLA 期限接近リマインダーの定期実行。
+#
+# 仕組み:
+#   - 毎時 1 回 (cron) と手動実行 (workflow_dispatch) で、デプロイ済みアプリの
+#     POST /api/internal/sla-reminders を共有シークレット付きで叩く。
+#   - trial-reminders.yml と同じく、このリポジトリ自体はビルド・デプロイを行わず、
+#     常に稼働中のアプリ経由でのみ実行する設計。
+#   - SLA の警告帯 (§lib/sla.ts DEFAULT_WARNING_THRESHOLD_MS = 24 時間) はトライアル終了
+#     リマインダー (日単位) より粒度が細かいため、trial-reminders (daily) より高頻度の
+#     毎時実行にする。
+#   - Secret `SLA_REMINDER_CRON_SECRET` が未設定なら、ジョブは安全に no-op で終了する
+#     (fail-closed: 認証情報が無い状態で叩かない)。
+#
+# セキュリティ上の注意:
+#   - SLA_REMINDER_CRON_SECRET はエンドポイント側 (process.env) と同じ値を Secret に登録すること。
+#   - APP_BASE_URL は trial-reminders.yml と共有の公開情報 Variable (Secret ではない)。
+
+name: SLA Reminders
+
+on:
+  schedule:
+    # 毎時 0 分に実行する (トライアルリマインダーの日次実行と時間をずらして負荷分散)
+    - cron: '0 * * * *'
+  # 手動トリガも許可する (Actions 画面の Run workflow ボタン)
+  workflow_dispatch:
+
+# 既定の GITHUB_TOKEN は読み取りのみで十分 (このジョブはリポジトリに書き込まない)
+permissions:
+  contents: read
+
+jobs:
+  send-reminders:
+    name: Call sla-reminders endpoint
+    runs-on: ubuntu-latest
+    steps:
+      # Secret / Variable が両方設定されているときだけ実行する。
+      # 未設定なら no-op (このリポジトリを fork した環境でもジョブが赤くならないようにする)。
+      - name: Call endpoint
+        env:
+          SLA_REMINDER_CRON_SECRET: ${{ secrets.SLA_REMINDER_CRON_SECRET }}
+          APP_BASE_URL: ${{ vars.APP_BASE_URL }}
+        run: |
+          if [ -z "${SLA_REMINDER_CRON_SECRET}" ] || [ -z "${APP_BASE_URL}" ]; then
+            echo "SLA_REMINDER_CRON_SECRET または APP_BASE_URL が未設定のためスキップします (no-op)。" >&2
+            exit 0
+          fi
+          # レスポンスボディを表示しつつ、HTTP ステータスが 2xx でなければジョブを失敗させる
+          curl --fail-with-body -sS \
+            -X POST \
+            -H "Authorization: Bearer ${SLA_REMINDER_CRON_SECRET}" \
+            "${APP_BASE_URL%/}/api/internal/sla-reminders"
