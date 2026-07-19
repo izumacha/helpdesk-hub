@@ -1,7 +1,9 @@
 // サインアップ完了フォーム (Client Component)
 import { CompleteSignupForm } from '@/features/auth/components/CompleteSignupForm';
-// トークンの有効性を読み取り専用で判定する (消費はしない)
-import { isSignupAcceptable } from '@/features/auth/actions/complete-signup';
+// トークンの有効性を読み取り専用で判定する (消費はしない)。
+// /code-review ultra 指摘対応 (2026-07-19): 'use server' モジュールから import すると
+// ヘルパーが公開エンドポイント化するため、Server Action ではない lib モジュールから読む
+import { isSignupAcceptable } from '@/lib/signup-acceptance';
 // 共通ブランドマーク (シンボル + ワードマーク)
 import { Logo } from '@/components/brand/Logo';
 

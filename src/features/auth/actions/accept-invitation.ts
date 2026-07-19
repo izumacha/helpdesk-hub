@@ -17,8 +17,8 @@
 
 // bcrypt によるパスワードハッシュ化 (seed と同じ cost 12)
 import { hash } from 'bcryptjs';
-// データ層の Composition Root (リポジトリ束とトランザクション境界)
-import { repos, uow } from '@/data';
+// データ層の Composition Root (トランザクション境界。リポジトリはトランザクション内の tx 経由で使う)
+import { uow } from '@/data';
 // 招待トークンのハッシュ化 (生トークン → DB 保存値と同じ SHA-256 へ) と、受諾側の
 // エンドポイント全体レート制限値 (監査で発見したギャップ対応)
 import { hashInviteToken, INVITE_ACCEPT_GLOBAL_RATE_LIMIT } from '@/lib/invite';
@@ -172,21 +172,4 @@ export async function acceptInvitation(
 
   // トランザクションの結果 (作成に使ったメール) を返す
   return result;
-}
-
-// 受諾ページが「このトークンが今この瞬間に有効か」を表示判定するための読み取り専用ヘルパー。
-// 消費はしない (ページ表示で焼かないため)。期限切れ / 使用済み / 不在なら false を返す。
-export async function isInvitationAcceptable(
-  rawToken: string,
-): Promise<{ acceptable: boolean; needsEmail: boolean }> {
-  // 生トークンを DB 保存値と同じ SHA-256 ハッシュへ変換する
-  const tokenHash = await hashInviteToken(rawToken);
-  // tokenHash で招待を引く (読み取りのみ)
-  const invitation = await repos.invitations.findByTokenHash(tokenHash);
-  // 不在 / 使用済み / 失効はいずれも受諾不可
-  if (!invitation || invitation.consumedAt !== null || invitation.expiresAt < new Date()) {
-    return { acceptable: false, needsEmail: false };
-  }
-  // 招待にメールが無い場合は、受諾フォームでメール入力を求める必要がある
-  return { acceptable: true, needsEmail: invitation.email === null };
 }
