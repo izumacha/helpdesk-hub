@@ -97,6 +97,29 @@ describe('in-memory notification broadcaster', () => {
     expect(healthy.enqueue).toHaveBeenCalledTimes(2);
   });
 
+  // フォローアップ (監査で発見したギャップ): getSubscriberCount は現在の同時接続数を返す
+  // (route.ts が新規接続の可否判定に使う)
+  it('登録済み接続数を返す (未登録は0)', () => {
+    const broadcaster = createInMemoryNotificationBroadcaster();
+    // 未登録ユーザーは 0
+    expect(broadcaster.getSubscriberCount('user-a')).toBe(0);
+
+    const ctrl1 = fakeController();
+    const ctrl2 = fakeController();
+    broadcaster.addSubscriber('user-a', ctrl1);
+    broadcaster.addSubscriber('user-a', ctrl2);
+    // 2 本登録すれば 2
+    expect(broadcaster.getSubscriberCount('user-a')).toBe(2);
+
+    broadcaster.removeSubscriber('user-a', ctrl1);
+    // 1 本解除すれば 1
+    expect(broadcaster.getSubscriberCount('user-a')).toBe(1);
+
+    broadcaster.removeSubscriber('user-a', ctrl2);
+    // 全解除で 0 (キー自体も削除される内部実装だが、戻り値としては 0 のまま)
+    expect(broadcaster.getSubscriberCount('user-a')).toBe(0);
+  });
+
   // 複数のブロードキャスタは状態を共有しない (生成ごとに独立)
   it('isolates state between independent broadcaster instances', () => {
     const a = createInMemoryNotificationBroadcaster();

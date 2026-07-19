@@ -71,5 +71,10 @@ export function createInMemoryNotificationBroadcaster(): NotificationBroadcaster
         subscribers.delete(userId);
       }
     },
+
+    // 指定ユーザーの現在の同時接続数を返す (未登録なら 0)
+    getSubscriberCount(userId) {
+      return subscribers.get(userId)?.size ?? 0;
+    },
   };
 }

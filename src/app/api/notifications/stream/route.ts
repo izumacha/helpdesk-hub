@@ -5,7 +5,7 @@ import { auth } from '@/lib/auth';
 // 未読件数を (キャッシュ付きで) 取得する関数
 import { getUnreadNotificationCount } from '@/lib/notifications';
 // SSE 購読者をプロセス内 Map に登録/解除する関数
-import { addSubscriber, removeSubscriber } from '@/lib/sse-subscribers';
+import { addSubscriber, getSubscriberCount, removeSubscriber } from '@/lib/sse-subscribers';
 // Route Handler 向け共通レート制限ラッパー
 import { checkRouteRateLimit } from '@/lib/route-rate-limit';
 
@@ -24,6 +24,13 @@ const KEEPALIVE_INTERVAL_MS = 30_000;
 // EventSource はデフォルトで約 3 秒間隔で再接続を試みるため (下記 SSE_RETRY_MS 参照)、
 // 複数タブを開く通常利用や短時間のサーバー再起動時の再接続の波を吸収できる値にする
 const SSE_CONNECT_RATE_LIMIT = { limit: 60, windowMs: 60_000 } as const;
+
+// フォローアップ (監査で発見したギャップ): 上記コメントに「別の課題として残る」と明記していた
+// 同時接続数そのものの上限。1 ユーザーが接続を張りっぱなしのまま SSE_CONNECT_RATE_LIMIT
+// (60回/分) の頻度で新規接続を積み重ねると、確立済みの接続が閉じられないまま Set が単調増加し、
+// サーバーのメモリ・ファイルディスクリプタを圧迫し得る (CLAUDE.md §9 DoS/リソース枯渇防止)。
+// 通常利用 (複数タブ・複数デバイスでの同時ログイン) を妨げない範囲で上限を設ける
+const MAX_CONCURRENT_CONNECTIONS_PER_USER = 12;
 
 // SSE の retry フィールドで指定するクライアントの再接続間隔 (ミリ秒)。
 // ブラウザの EventSource 既定値 (約3秒) より長くすることで、サーバー再起動やレート制限
@@ -68,6 +75,16 @@ export async function GET(): Promise<Response> {
     '接続が多すぎます。しばらく時間をおいて再度お試しください',
   );
   if (rateLimitResponse) return rateLimitResponse;
+
+  // フォローアップ (監査で発見したギャップ): 同時接続数そのものの上限。頻度制限とは別に、
+  // 既に張られている接続数がここで弾く (Retry-After は「何秒待てば空くか」を保証できないため
+  // 付けない。クライアントは SSE_RETRY_MS 後に自動再接続し、他のタブ/接続が閉じれば通る)
+  if (getSubscriberCount(userId) >= MAX_CONCURRENT_CONNECTIONS_PER_USER) {
+    return NextResponse.json(
+      { error: '同時接続数の上限に達しています。他のタブを閉じてから再度お試しください' },
+      { status: 429 },
+    );
+  }
 
   // ストリーム制御用のコントローラを外側スコープで保持
   let controller!: ReadableStreamDefaultController<Uint8Array>;

@@ -15,7 +15,7 @@
  */
 
 // データ層の Composition Root (リポジトリ束とトランザクション境界)
-import { uow } from '@/data';
+import { repos, uow } from '@/data';
 // 現在のセッション (ログイン中ユーザー) を取得
 import { auth } from '@/lib/auth';
 // 連打防止のための共通レート制限ヘルパー
@@ -26,8 +26,8 @@ import { isUniqueConstraintError } from '@/lib/prisma-errors';
 import { assertAdminSession } from '@/lib/role';
 // テナント作成フォームの入力検証スキーマ
 import { createTenantSchema } from '@/lib/validations/invite';
-// §7.2 Free trial の期間 (30 日) をミリ秒で表す定数
-import { FREE_TRIAL_DURATION_MS } from '@/lib/plan-guard';
+// §7.2 Free trial の期間 (30 日) をミリ秒で表す定数 / フォローアップ: 新規組織作成のプランゲート
+import { FREE_TRIAL_DURATION_MS, isAdditionalTenantCreationAllowed } from '@/lib/plan-guard';
 // テナント + 初代管理者作成の共通ロジック (§7.1 セルフサーブサインアップと共有 / §6 DRY)
 import { provisionTenantWithAdmin } from '@/lib/tenant-provisioning';
 // フォローアップ (2026-07-14 #2): テナント作成 (admin 権限付与) を監査ログへ記録する共通ヘルパー
@@ -47,6 +47,20 @@ export async function createTenant(formData: FormData): Promise<CreateTenantResu
   assertAdminSession(session);
   // テナント作成の連打を抑制 (60 秒あたり 5 回まで、ユーザー単位)
   enforceRateLimit(`tenant-create:${session.user.id}`, { limit: 5, windowMs: 60_000 });
+
+  // フォローアップ (監査で発見したギャップ): この機能には admin ロールという以外のゲートが
+  // 一切無く、Free プラン (§7.2 の 30 日トライアル中を含む) の管理者でも無制限に新しい組織を
+  // 作れてしまっていた。新規作成された組織もまた raw plan 'free' + 新しいトライアルを持つため、
+  // 「新テナントの管理者としてログインし直しては、また新しい組織を作る」を繰り返すことで
+  // トライアルを無限に連鎖させる悪用経路になっていた。呼び出し元テナントが実際に課金している
+  // (Free 以外の) プランのときだけこの機能を許可する (isAdditionalTenantCreationAllowed の
+  // JSDoc 参照: 意図的に生の subscriptionPlan を使い、トライアル昇格を経由させない)
+  const callerTenant = await repos.tenants.findById(session.user.tenantId);
+  if (!callerTenant || !isAdditionalTenantCreationAllowed(callerTenant.subscriptionPlan)) {
+    throw new Error(
+      '新しい組織の作成は有料プランでのみご利用いただけます。Free プランやトライアル中はご利用になれません。',
+    );
+  }
 
   // フォーム入力を Zod で検証する
   const parsed = createTenantSchema.safeParse({

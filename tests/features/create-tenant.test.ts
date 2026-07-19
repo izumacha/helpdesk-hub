@@ -56,7 +56,10 @@ beforeEach(() => {
   sessionRole = 'admin';
   // レート制限履歴をクリア (テスト間の干渉を防ぐ)
   __resetRateLimits();
-  // 呼び出し元テナントを 1 つ用意しておく
+  // 呼び出し元テナントを 1 つ用意しておく。
+  // フォローアップ (監査で発見したギャップ): 新規組織作成は有料プラン限定のゲートを追加したため、
+  // 既存の正常系テスト群がそのまま通るよう、既定フィクスチャは課金済み (standard) にしておく
+  // (Free/トライアル限定の拒否シナリオは専用の describe ブロックで個別に検証する)
   store.tenants.set(CALLER_TENANT, {
     id: CALLER_TENANT,
     name: '呼び出し元組織',
@@ -64,7 +67,7 @@ beforeEach(() => {
     industry: null,
     inboundToken: null, // メール取り込み未発行 (テスト用フィクスチャ)
     slackWebhookUrl: null,
-    subscriptionPlan: 'free' as const,
+    subscriptionPlan: 'standard' as const,
     stripeCustomerId: null,
     stripeSubscriptionId: null,
     stripeSubscriptionStatus: null,
@@ -246,5 +249,72 @@ describe('createTenant', () => {
     ).rejects.toThrow(/既に登録/);
     // テナント数は増えていない (ロールバックされている)
     expect(store.tenants.size).toBe(before);
+  });
+
+  // フォローアップ (監査で発見したギャップ): admin ロールという以外のゲートが無く、
+  // Free プラン (トライアル中を含む) の管理者が無制限に新しい組織を作れてしまっていた
+  // (新テナントの管理者としてログインし直しては再度作る、というトライアル連鎖の悪用経路)。
+  // 呼び出し元テナントが有料プランのときだけ許可することを検証する
+  describe('新規組織作成のプランゲート', () => {
+    // Free プラン (トライアル無し) の呼び出し元は拒否される
+    it('呼び出し元がFreeプランだと拒否される', async () => {
+      store.tenants.set(CALLER_TENANT, {
+        ...store.tenants.get(CALLER_TENANT)!,
+        subscriptionPlan: 'free',
+        trialEndsAt: null,
+      });
+      const before = store.tenants.size;
+      const createTenant = await loadAction();
+      await expect(
+        createTenant(
+          makeForm({
+            tenantName: '悪用組織',
+            adminName: '悪用 太郎',
+            adminEmail: 'abuse1@example.com',
+            adminPassword: 'password123',
+          }),
+        ),
+      ).rejects.toThrow(/有料プラン/);
+      // テナントは作成されていない
+      expect(store.tenants.size).toBe(before);
+    });
+
+    // §7.2 Free trial 中 (raw plan は free のまま) の呼び出し元も拒否される。
+    // 昇格後の実効プラン (Standard 相当) では判定しないことの回帰防止
+    // (トライアル管理者が新テナントを作り、その新テナントの管理者としてログインし直して
+    // さらに新テナントを作る…という連鎖を断ち切るのが本ゲートの目的のため)
+    it('呼び出し元がFreeトライアル中でも拒否される', async () => {
+      store.tenants.set(CALLER_TENANT, {
+        ...store.tenants.get(CALLER_TENANT)!,
+        subscriptionPlan: 'free',
+        trialEndsAt: new Date(Date.now() + 10 * 24 * 60 * 60 * 1000), // トライアル残り10日
+      });
+      const createTenant = await loadAction();
+      await expect(
+        createTenant(
+          makeForm({
+            tenantName: '悪用組織2',
+            adminName: '悪用 次郎',
+            adminEmail: 'abuse2@example.com',
+            adminPassword: 'password123',
+          }),
+        ),
+      ).rejects.toThrow(/有料プラン/);
+    });
+
+    // 有料プラン (Standard 以上) の呼び出し元は許可される (デフォルトフィクスチャで検証済みの
+    // 他の正常系テストと同じ前提だが、ゲート追加の意図を明示するため個別にも確認する)
+    it('呼び出し元がStandardプランなら許可される', async () => {
+      const createTenant = await loadAction();
+      const result = await createTenant(
+        makeForm({
+          tenantName: '正規組織',
+          adminName: '正規 太郎',
+          adminEmail: 'legit@example.com',
+          adminPassword: 'password123',
+        }),
+      );
+      expect(result.tenantId).not.toBe(CALLER_TENANT);
+    });
   });
 });

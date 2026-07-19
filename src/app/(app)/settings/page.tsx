@@ -30,6 +30,7 @@ import { repos } from '@/data';
 // (Standard 相当) を解決する唯一の判定ロジック (SSOT)。トライアル中かどうかの判定を
 // ここで再実装しない
 import {
+  isAdditionalTenantCreationAllowed,
   isEmailInboundAllowed,
   isLineIntegrationAllowed,
   isSsoAllowed,
@@ -85,6 +86,12 @@ export default async function SettingsPage() {
   // sso-context.ts 参照)、設定の有無自体はプランに関わらず常に取得する。
   const ssoAllowed = isSsoAllowed(tenant?.subscriptionPlan ?? 'free');
   const lineAllowed = isLineIntegrationAllowed(tenant?.subscriptionPlan ?? 'free');
+  // フォローアップ (監査で発見したギャップ): 新規組織作成 (createTenant) は有料プランのみ許可
+  // する。isAdditionalTenantCreationAllowed の JSDoc のとおり、意図的に raw な subscriptionPlan
+  // を使う (§7.2 トライアル中の実効プラン昇格を経由させない。トライアル連鎖の抑止が目的のため)
+  const additionalTenantCreationAllowed = isAdditionalTenantCreationAllowed(
+    tenant?.subscriptionPlan ?? 'free',
+  );
   // §7.2 Free trial 中の実効プラン (Standard 相当への昇格を含む)。契約プラン自体は
   // subscriptionPlan のままなので、スタッフ上限の超過判定など「今実際に適用されている上限」を
   // 見る箇所は必ずこちらを使う (BillingSection の isOverUserLimit 等)
@@ -361,24 +368,29 @@ export default async function SettingsPage() {
         </section>
       )}
 
-      {/* テナント (組織) 作成カード */}
-      <section className="space-y-4 rounded-2xl bg-white p-6 shadow-sm ring-1 ring-slate-100">
-        <div>
-          {/* セクション見出し */}
-          <h2 className="text-base font-semibold text-slate-900">新しい組織を作成</h2>
-          {/* 説明: 運用者が別組織を立ち上げる導線 */}
-          <p className="mt-1 text-sm text-slate-500">
-            別の組織（テナント）を新規に作成し、その初代管理者を登録します。
-          </p>
-        </div>
-        {/* テナント作成フォームへの導線 (別ページ) */}
-        <Link
-          href="/settings/tenants/new"
-          className="inline-block rounded-lg border border-teal-300 bg-white px-4 py-2 text-sm font-semibold text-teal-800 transition hover:bg-teal-50"
-        >
-          組織を作成する
-        </Link>
-      </section>
+      {/* テナント (組織) 作成カード。フォローアップ (監査で発見したギャップ): 有料プランの
+          管理者にのみ表示する (Free / トライアル中はトライアル連鎖の悪用経路になるため非表示。
+          サーバー側の createTenant アクション自体も同じゲートで強制しており、この非表示は
+          あくまで UX 上の案内。§9 UI 非表示に頼らない) */}
+      {additionalTenantCreationAllowed && (
+        <section className="space-y-4 rounded-2xl bg-white p-6 shadow-sm ring-1 ring-slate-100">
+          <div>
+            {/* セクション見出し */}
+            <h2 className="text-base font-semibold text-slate-900">新しい組織を作成</h2>
+            {/* 説明: 運用者が別組織を立ち上げる導線 */}
+            <p className="mt-1 text-sm text-slate-500">
+              別の組織（テナント）を新規に作成し、その初代管理者を登録します。
+            </p>
+          </div>
+          {/* テナント作成フォームへの導線 (別ページ) */}
+          <Link
+            href="/settings/tenants/new"
+            className="inline-block rounded-lg border border-teal-300 bg-white px-4 py-2 text-sm font-semibold text-teal-800 transition hover:bg-teal-50"
+          >
+            組織を作成する
+          </Link>
+        </section>
+      )}
     </div>
   );
 }

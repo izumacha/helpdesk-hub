@@ -230,6 +230,33 @@ describe('updateNotificationChannels', () => {
     expect(saved?.slackLastFailureAt).not.toBeNull();
   });
 
+  // フォローアップ (監査で発見したギャップ): 読み取り→検証→無条件書き込みの check-then-act
+  // (TOCTOU) だった。他の管理者による並行更新が挟まると 0 件更新 (競合) になり、
+  // 後勝ちで上書きしないことを確認する (faq-actions.test.ts の TOCTOU 再現と同じ手法)
+  it('他の管理者による並行更新と競合すると保存されず、その値を上書きしない', async () => {
+    const current = await repos.tenants.findById(TENANT_ID);
+    if (!current) throw new Error('seed missing tenant');
+    // 並行更新を模す: 先に別の管理者が Slack を設定したことにする
+    await repos.tenants.updateNotificationChannels(TENANT_ID, {
+      slackWebhookUrl: 'https://hooks.slack.com/services/CONCURRENT',
+    });
+    // findById だけが古いスナップショット (未設定のまま) を返す状況を作る (TOCTOU の再現)
+    vi.spyOn(repos.tenants, 'findById').mockResolvedValueOnce(current);
+    const { updateNotificationChannels } =
+      await import('@/features/settings/actions/update-notification-channels');
+    const result = await updateNotificationChannels(
+      {},
+      makeForm({ slackWebhookUrl: 'https://hooks.slack.com/services/STALE-WRITE' }),
+    );
+    expect(result.error).toBe(
+      '他の管理者による変更と競合しました。最新の設定を確認してから再度お試しください。',
+    );
+    expect(result.success).toBeUndefined();
+    // 並行更新の値が上書きされずに残っている
+    const saved = await repos.tenants.findById(TENANT_ID);
+    expect(saved?.slackWebhookUrl).toBe('https://hooks.slack.com/services/CONCURRENT');
+  });
+
   // レート制限: 60秒あたり10回を超える連打は拒否される
   it('60秒あたり10回を超える連打は拒否される', async () => {
     const { updateNotificationChannels } =

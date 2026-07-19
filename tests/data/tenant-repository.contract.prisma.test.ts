@@ -111,11 +111,34 @@ describe.runIf(SHOULD_RUN)('TenantRepository (prisma adapter)', () => {
       teamsWebhookUrl: 'https://teams.example/webhook',
     });
     // Slack だけ無効化する (teamsWebhookUrl は undefined = 現状維持のはず)
-    const updated = await repos.tenants.updateNotificationChannels(tenant.id, {
+    const ok = await repos.tenants.updateNotificationChannels(tenant.id, {
       slackWebhookUrl: null,
     });
-    expect(updated.slackWebhookUrl).toBeNull();
-    expect(updated.teamsWebhookUrl).toBe('https://teams.example/webhook');
+    expect(ok).toBe(true);
+    const updated = await repos.tenants.findById(tenant.id);
+    expect(updated?.slackWebhookUrl).toBeNull();
+    expect(updated?.teamsWebhookUrl).toBe('https://teams.example/webhook');
+  });
+
+  // フォローアップ (監査で発見したギャップ): updateNotificationChannels の CAS (compare-and-swap)。
+  // expected が現在値と食い違う (=他の管理者による並行更新) 場合は更新せず false を返す
+  it('updateNotificationChannelsはexpectedが現在値と食い違うと更新せずfalseを返す', async () => {
+    const repos = buildPrismaRepos(prisma);
+    const tenant = await repos.tenants.create({ name: 'A組織' });
+    // 並行更新を模す: 先に Slack を設定しておく
+    await repos.tenants.updateNotificationChannels(tenant.id, {
+      slackWebhookUrl: 'https://hooks.slack.com/services/CONCURRENT',
+    });
+    // 古い (null の) スナップショットを expected として渡す
+    const ok = await repos.tenants.updateNotificationChannels(
+      tenant.id,
+      { slackWebhookUrl: 'https://hooks.slack.com/services/STALE-WRITE' },
+      { slackWebhookUrl: null, teamsWebhookUrl: null, chatworkApiToken: null, chatworkRoomId: null },
+    );
+    expect(ok).toBe(false);
+    // 並行更新の値が上書きされずに残っている
+    const reloaded = await repos.tenants.findById(tenant.id);
+    expect(reloaded?.slackWebhookUrl).toBe('https://hooks.slack.com/services/CONCURRENT');
   });
 
   // recordOutboundChannelResult: 失敗記録は指定チャネルのカラムだけを更新する

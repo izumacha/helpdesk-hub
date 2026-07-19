@@ -68,8 +68,13 @@ export async function updateNotificationChannels(
   const tenantId = session.user.tenantId;
 
   // 監査で発見したギャップ対応: 更新前の設定値を取得しておく。どのチャネルが実際に
-  // 変更されたか (=管理者が修正を試みたか) を後で判定するために使う
+  // 変更されたか (=管理者が修正を試みたか) を後で判定するために使う。
+  // フォローアップ (監査で発見したギャップ): この読み取りスナップショットを CAS の
+  // expected としても使う (読み取りと書き込みの間に他の管理者が値を変えていないことを保証する)
   const beforeTenant = await repos.tenants.findById(tenantId);
+  if (!beforeTenant) {
+    return { error: 'テナント情報が見つかりません' };
+  }
 
   // 通知チャネル設定変更の連打を抑制 (60 秒あたり 10 回まで、テナント単位。
   // create/update/delete-location.ts と同じ上限・キー粒度の方針)
@@ -114,13 +119,31 @@ export async function updateNotificationChannels(
   const chatworkApiToken = hasToken ? chatworkApiTokenRaw : null;
   const chatworkRoomId = hasRoomId ? chatworkRoomIdRaw : null;
 
-  // テナントの通知チャネル設定を一括更新する (セッション由来の tenantId のみ使用してクロステナント防止)
-  await repos.tenants.updateNotificationChannels(tenantId, {
-    slackWebhookUrl: slackResult.value,
-    teamsWebhookUrl: teamsResult.value,
-    chatworkApiToken,
-    chatworkRoomId,
-  });
+  // テナントの通知チャネル設定を一括更新する (セッション由来の tenantId のみ使用してクロステナント防止)。
+  // フォローアップ (監査で発見したギャップ): 読み取り時点のスナップショット (beforeTenant) を
+  // expected として渡す CAS にする。他の管理者が読み取りと書き込みの間に値を変えていた場合は
+  // 0 件更新 (false) になり、その変更を黙って上書きしない
+  const updated = await repos.tenants.updateNotificationChannels(
+    tenantId,
+    {
+      slackWebhookUrl: slackResult.value,
+      teamsWebhookUrl: teamsResult.value,
+      chatworkApiToken,
+      chatworkRoomId,
+    },
+    {
+      slackWebhookUrl: beforeTenant.slackWebhookUrl,
+      teamsWebhookUrl: beforeTenant.teamsWebhookUrl,
+      chatworkApiToken: beforeTenant.chatworkApiToken,
+      chatworkRoomId: beforeTenant.chatworkRoomId,
+    },
+  );
+  if (!updated) {
+    // 競合時もフォームの表示を最新化できるよう再レンダリングしておく
+    // (StatusSelect/FaqStatusButton の router.refresh() と同じ「エラー時に最新状態を取り直す」方針)
+    revalidatePath('/settings');
+    return { error: '他の管理者による変更と競合しました。最新の設定を確認してから再度お試しください。' };
+  }
 
   // 設定ページを再レンダリングして最新値を反映する (監査ログの成否に関わらず必ず実行する)
   revalidatePath('/settings');
@@ -130,18 +153,17 @@ export async function updateNotificationChannels(
   // 次の送信成功まで残り続けるのを防ぐ)。触っていないチャネルは本当に直したわけではないため
   // 失敗記録を残したままにする。記録クリア自体の失敗は保存結果に影響させない (ログのみ)
   try {
-    if (beforeTenant && slackResult.value !== beforeTenant.slackWebhookUrl) {
+    if (slackResult.value !== beforeTenant.slackWebhookUrl) {
       // Slack の Webhook URL が変わったのでクリアする
       await repos.tenants.recordOutboundChannelResult(tenantId, 'slack', null);
     }
-    if (beforeTenant && teamsResult.value !== beforeTenant.teamsWebhookUrl) {
+    if (teamsResult.value !== beforeTenant.teamsWebhookUrl) {
       // Teams の Webhook URL が変わったのでクリアする
       await repos.tenants.recordOutboundChannelResult(tenantId, 'teams', null);
     }
     if (
-      beforeTenant &&
-      (chatworkApiToken !== beforeTenant.chatworkApiToken ||
-        chatworkRoomId !== beforeTenant.chatworkRoomId)
+      chatworkApiToken !== beforeTenant.chatworkApiToken ||
+      chatworkRoomId !== beforeTenant.chatworkRoomId
     ) {
       // Chatwork のトークン/ルーム ID のどちらかが変わったのでクリアする
       await repos.tenants.recordOutboundChannelResult(tenantId, 'chatwork', null);

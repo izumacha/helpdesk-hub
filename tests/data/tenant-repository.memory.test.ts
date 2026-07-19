@@ -225,6 +225,8 @@ describe('TenantRepository.updateInboundToken (memory)', () => {
 // Phase 4: 外部通知チャネル設定の部分更新 updateNotificationChannels の単体テスト。
 // 渡したフィールドだけ更新し、undefined のフィールドは現状維持することを確認する
 // (port の「部分更新 / undefined = skip」契約を memory アダプタで担保する)。
+// フォローアップ (監査で発見したギャップ): expected (CAS) 省略時は従来どおり無条件更新、
+// expected 指定時は読み取り時点の値と一致するときだけ更新することも合わせて検証する。
 describe('TenantRepository.updateNotificationChannels (memory)', () => {
   // 各テストの前にメモリ context を作り直してテナント A・B を投入する
   beforeEach(() => {
@@ -245,9 +247,12 @@ describe('TenantRepository.updateNotificationChannels (memory)', () => {
     const updated = await repos.tenants.updateNotificationChannels(TENANT_A, {
       slackWebhookUrl: null,
     });
+    // 更新できたことを示す true が返る
+    expect(updated).toBe(true);
     // Slack は null に更新され、Teams は前回値を維持していること
-    expect(updated.slackWebhookUrl).toBeNull();
-    expect(updated.teamsWebhookUrl).toBe('https://teams.example/webhook');
+    const reloaded = await repos.tenants.findById(TENANT_A);
+    expect(reloaded?.slackWebhookUrl).toBeNull();
+    expect(reloaded?.teamsWebhookUrl).toBe('https://teams.example/webhook');
   });
 
   // Chatwork トークン + ルーム ID を設定でき、再取得しても永続化されている
@@ -272,6 +277,44 @@ describe('TenantRepository.updateNotificationChannels (memory)', () => {
     // テナント B は未設定 (null) のままであること
     const tenantB = await repos.tenants.findById(TENANT_B);
     expect(tenantB?.slackWebhookUrl).toBeNull();
+  });
+
+  // CAS: expected が現在値と一致すれば更新できる
+  it('expectedが現在値と一致すれば更新できる', async () => {
+    const updated = await repos.tenants.updateNotificationChannels(
+      TENANT_A,
+      { slackWebhookUrl: 'https://hooks.slack.com/services/CCC' },
+      { slackWebhookUrl: null, teamsWebhookUrl: null, chatworkApiToken: null, chatworkRoomId: null },
+    );
+    expect(updated).toBe(true);
+    const reloaded = await repos.tenants.findById(TENANT_A);
+    expect(reloaded?.slackWebhookUrl).toBe('https://hooks.slack.com/services/CCC');
+  });
+
+  // CAS: expected が現在値と食い違えば更新されず false を返す (競合)
+  it('expectedが現在値と食い違えば更新せずfalseを返す', async () => {
+    // 先に別の書き込みで Slack を設定しておく (これが「並行更新」を模す)
+    await repos.tenants.updateNotificationChannels(TENANT_A, {
+      slackWebhookUrl: 'https://hooks.slack.com/services/CONCURRENT',
+    });
+    // 古い (null の) スナップショットを expected として渡す
+    const updated = await repos.tenants.updateNotificationChannels(
+      TENANT_A,
+      { slackWebhookUrl: 'https://hooks.slack.com/services/STALE-WRITE' },
+      { slackWebhookUrl: null, teamsWebhookUrl: null, chatworkApiToken: null, chatworkRoomId: null },
+    );
+    expect(updated).toBe(false);
+    // 並行更新の値が上書きされずに残っている
+    const reloaded = await repos.tenants.findById(TENANT_A);
+    expect(reloaded?.slackWebhookUrl).toBe('https://hooks.slack.com/services/CONCURRENT');
+  });
+
+  // CAS: 存在しないテナント ID なら false を返す
+  it('存在しないテナントIDに対してはfalseを返す', async () => {
+    const updated = await repos.tenants.updateNotificationChannels('ghost-tenant', {
+      slackWebhookUrl: 'https://hooks.slack.com/services/X',
+    });
+    expect(updated).toBe(false);
   });
 });
 

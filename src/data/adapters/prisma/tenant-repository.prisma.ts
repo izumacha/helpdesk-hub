@@ -114,11 +114,24 @@ export function makeTenantRepo(db: PrismaLike): TenantRepository {
       return toTenant(row);
     },
 
-    // Phase 4: 外部通知チャネル (Slack / Teams / Chatwork) の設定を部分更新する (null で無効化)
-    async updateNotificationChannels(id, data) {
-      // 主キーで対象テナントを特定する。undefined のフィールドは Prisma が skip するため現状維持
-      const row = await db.tenant.update({
-        where: { id },
+    // Phase 4: 外部通知チャネル (Slack / Teams / Chatwork) の設定を部分更新する (null で無効化)。
+    // フォローアップ (監査で発見したギャップ): expected が渡された場合のみ、読み取り時点の
+    // 4 チャネル値を where 条件にも含めた原子的な updateMany (CAS) にする。updateStatus (Faq/Ticket)
+    // と同じパターンで、0 件更新 (他の管理者による並行更新との競合) なら false を返す
+    async updateNotificationChannels(id, data, expected) {
+      // expected 指定時のみ、読み取り時点の値を where 条件に追加する (未指定なら主キーのみ)
+      const where: Prisma.TenantWhereInput = expected
+        ? {
+            id,
+            slackWebhookUrl: expected.slackWebhookUrl,
+            teamsWebhookUrl: expected.teamsWebhookUrl,
+            chatworkApiToken: expected.chatworkApiToken,
+            chatworkRoomId: expected.chatworkRoomId,
+          }
+        : { id };
+      // 条件に一致する行だけを更新する (0 件・1 件のどちらもあり得る updateMany)
+      const result = await db.tenant.updateMany({
+        where,
         data: {
           slackWebhookUrl: data.slackWebhookUrl, // Slack Webhook URL (undefined ならスキップ)
           teamsWebhookUrl: data.teamsWebhookUrl, // Teams Webhook URL (undefined ならスキップ)
@@ -126,8 +139,8 @@ export function makeTenantRepo(db: PrismaLike): TenantRepository {
           chatworkRoomId: data.chatworkRoomId, // Chatwork ルーム ID (undefined ならスキップ)
         },
       });
-      // 更新後の行をドメイン型に詰め替えて返す
-      return toTenant(row);
+      // 1 件以上更新できたか (0 件なら競合または対象不在) を返す
+      return result.count > 0;
     },
 
     // Phase 4 課金: Stripe の連携情報 (Customer ID / Subscription ID / 状態 / プラン) を一括更新
