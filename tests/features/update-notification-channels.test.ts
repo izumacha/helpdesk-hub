@@ -159,6 +159,32 @@ describe('updateNotificationChannels', () => {
     expect(result.error).toBe('Chatwork ルーム ID は数字で入力してください');
   });
 
+  // Chatwork ルーム ID はちょうど上限(200文字)なら保存できる (境界値)
+  it('Chatworkルーム IDがちょうど200文字なら保存できる', async () => {
+    const { updateNotificationChannels } =
+      await import('@/features/settings/actions/update-notification-channels');
+    const roomId200 = '1'.repeat(200);
+    const result = await updateNotificationChannels(
+      {},
+      makeForm({ chatworkApiToken: 'tok123', chatworkRoomId: roomId200 }),
+    );
+    expect(result.success).toBe(true);
+    const saved = await repos.tenants.findById(TENANT_ID);
+    expect(saved?.chatworkRoomId).toBe(roomId200);
+  });
+
+  // Chatwork ルーム ID は上限(200文字)を1文字でも超えると拒否される (境界値)
+  it('Chatworkルーム IDが201文字だと拒否される', async () => {
+    const { updateNotificationChannels } =
+      await import('@/features/settings/actions/update-notification-channels');
+    const roomId201 = '1'.repeat(201);
+    const result = await updateNotificationChannels(
+      {},
+      makeForm({ chatworkApiToken: 'tok123', chatworkRoomId: roomId201 }),
+    );
+    expect(result.error).toBe('Chatwork ルーム ID は数字で入力してください');
+  });
+
   // 監査で発見したギャップ対応: Webhook URL を修正して保存すると、その場ですぐに
   // 直近の失敗記録 (「⚠️ 最終送信失敗」バッジ) がクリアされる (次の送信成功を待たない)
   it('チャネルの設定値を変更すると直近の失敗記録がクリアされる', async () => {
