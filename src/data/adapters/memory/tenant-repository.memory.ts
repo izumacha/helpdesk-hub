@@ -94,10 +94,22 @@ export function makeTenantRepo(store: Store): TenantRepository {
     },
 
     // Phase 4: 外部通知チャネル (Slack / Teams / Chatwork) の設定を部分更新する (null で無効化)
-    async updateNotificationChannels(id, data) {
-      // 対象テナントを Map から取得 (存在しなければエラー)
+    // フォローアップ (監査で発見したギャップ): expected 指定時は Prisma アダプタと同じ CAS。
+    // 読み取り時点の 4 チャネル値と現在値が一致しなければ更新せず false を返す (競合)
+    async updateNotificationChannels(id, data, expected) {
+      // 対象テナントを Map から取得 (存在しなければ false)
       const t = store.tenants.get(id);
-      if (!t) throw new Error('テナントが見つかりません');
+      if (!t) return false;
+      // 期待する現在値が渡されていて、いずれか 1 つでも食い違えば競合として更新しない
+      if (
+        expected &&
+        (t.slackWebhookUrl !== expected.slackWebhookUrl ||
+          t.teamsWebhookUrl !== expected.teamsWebhookUrl ||
+          t.chatworkApiToken !== expected.chatworkApiToken ||
+          t.chatworkRoomId !== expected.chatworkRoomId)
+      ) {
+        return false;
+      }
       // 渡されたフィールドだけ差し替える (undefined なら既存値を維持する)
       const updated: Tenant = {
         ...t,
@@ -110,8 +122,8 @@ export function makeTenantRepo(store: Store): TenantRepository {
         chatworkRoomId: data.chatworkRoomId !== undefined ? data.chatworkRoomId : t.chatworkRoomId,
       };
       store.tenants.set(id, updated);
-      // 防御的コピーを返す
-      return { ...updated };
+      // 更新できたことを返す
+      return true;
     },
 
     // Phase 4 課金: Stripe の連携情報を一括更新する (Webhook 受信時に呼ぶ)

@@ -102,6 +102,47 @@ describe('GET /api/notifications/stream', () => {
     expect(res.headers.get('Retry-After')).toEqual(expect.any(String));
   });
 
+  // フォローアップ (監査で発見したギャップ): 接続確立の頻度制限とは別に、同時に張れる接続数
+  // そのものにも上限 (12) がある。既存の接続を閉じないまま張り続けると 13 本目で 429 になる
+  it('returns 429 once the per-user concurrent connection cap is exceeded', async () => {
+    mockSession = buildSession(REQUESTER_A);
+    const { GET } = await import('@/app/api/notifications/stream/route');
+    // 上限 (12本) までは接続を閉じずに張り続けられる
+    const opened: Response[] = [];
+    for (let i = 0; i < 12; i++) {
+      const res = await GET();
+      expect(res.status).toBe(200);
+      opened.push(res);
+    }
+    // 13 本目は同時接続数の上限に達しているため 429 になる (Retry-After は付けない)
+    const res = await GET();
+    expect(res.status).toBe(429);
+    expect(res.headers.get('Retry-After')).toBeNull();
+
+    // 後始末: 開いたままの接続を閉じる (テスト間のリソースリーク防止)
+    await Promise.all(opened.map((r) => closeStream(r)));
+  });
+
+  // 同時接続数の上限は接続を閉じれば再び空く (恒久的なロックアウトではない)
+  it('allows a new connection once a slot frees up after closing one', async () => {
+    mockSession = buildSession(REQUESTER_A);
+    const { GET } = await import('@/app/api/notifications/stream/route');
+    // 上限 (12本) まで張る
+    const opened: Response[] = [];
+    for (let i = 0; i < 12; i++) {
+      opened.push(await GET());
+    }
+    // 13 本目は上限超過で拒否される
+    expect((await GET()).status).toBe(429);
+    // 1 本閉じて枠を空ける
+    await closeStream(opened.pop()!);
+    // 空いた枠に新しい接続を張れる
+    const res = await GET();
+    expect(res.status).toBe(200);
+    await closeStream(res);
+    await Promise.all(opened.map((r) => closeStream(r)));
+  });
+
   // 分離: 別ユーザーの接続は独立してカウントされる (他人の連打で自分が巻き込まれない)
   it('tracks the rate limit independently per user', async () => {
     const { GET } = await import('@/app/api/notifications/stream/route');

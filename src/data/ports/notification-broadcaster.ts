@@ -13,4 +13,9 @@ export interface NotificationBroadcaster {
   addSubscriber(userId: string, controller: BroadcastController): void; // ユーザーの SSE 接続を登録
   removeSubscriber(userId: string, controller: BroadcastController): void; // 接続を解除
   broadcast(userId: string, count: number): void; // 指定ユーザーの全接続に未読件数を送信
+  // フォローアップ (監査で発見したギャップ): GET /api/notifications/stream は新規接続確立の
+  // *頻度* しかレート制限しておらず、同時に張れる接続数そのものには上限が無かった
+  // (ルートハンドラのコメントに残っていた既知の未対応課題)。呼び出し元 (route.ts) がストリームを
+  // 開く前にこの値を見て上限判定できるよう、現在の同時接続数を返す
+  getSubscriberCount(userId: string): number;
 }

@@ -4,6 +4,10 @@ import { auth } from '@/lib/auth';
 import Link from 'next/link';
 // テナント作成フォーム (Client Component)
 import { CreateTenantForm } from '@/features/settings/components/CreateTenantForm';
+// フォローアップ (監査で発見したギャップ): 新規組織作成のプランゲート判定
+import { isAdditionalTenantCreationAllowed } from '@/lib/plan-guard';
+// テナントの契約プラン (raw / 実効) をまとめて解決する共通ヘルパー (/audit ページと同じ方針)
+import { resolveTenantPlanDetail } from '@/lib/tenant-plan';
 
 // /settings/tenants/new : 新しい組織 (テナント) と初代管理者を作成するページ (管理者専用)
 export default async function NewTenantPage() {
@@ -18,6 +22,22 @@ export default async function NewTenantPage() {
     return (
       <div className="rounded-2xl bg-white py-20 text-center text-slate-400 ring-1 ring-slate-200">
         <p className="text-sm">この画面は管理者のみ利用できます。</p>
+      </div>
+    );
+  }
+
+  // フォローアップ (監査で発見したギャップ): 新規組織作成は有料プランのみ許可する
+  // (createTenant アクション自体も同じゲートで強制済み。UI 非表示だけに頼らない §9)。
+  // isAdditionalTenantCreationAllowed の契約どおり raw な契約プランを使う
+  // (§7.2 トライアル中の実効プラン昇格を経由させない = トライアル連鎖の抑止が目的のため)
+  const { rawPlan } = await resolveTenantPlanDetail(session.user.tenantId);
+  if (!isAdditionalTenantCreationAllowed(rawPlan)) {
+    return (
+      <div className="rounded-2xl bg-white py-20 text-center text-slate-400 ring-1 ring-slate-200">
+        <p className="text-sm">
+          新しい組織の作成は有料プランでご利用いただけます。Free
+          プランやトライアル中はご利用になれません。
+        </p>
       </div>
     );
   }

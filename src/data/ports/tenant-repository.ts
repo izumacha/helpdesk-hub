@@ -40,6 +40,13 @@ export interface TenantRepository {
   // 渡したフィールドだけ更新し、undefined のフィールドは現状維持する (部分更新)。
   // null を渡すと該当チャネルの通知を無効化する (設定画面の「削除」操作に対応)。
   // id はセッション由来の tenantId のみを渡すこと (クロステナント変更防止)。
+  // フォローアップ (監査で発見したギャップ): 読み取り→検証→無条件書き込みの check-then-act
+  // (TOCTOU) だった。updateStatus/updateContent (Faq)・updateStatus/markEscalated (Ticket) と
+  // 同じ CAS (compare-and-swap) パターンを適用する。expected を省略した場合は従来どおり
+  // 無条件の部分更新 (undefined = skip) のままとし、Promise<boolean> の戻り値だけ「更新できたか」
+  // を表す (呼び出し元が対象行を読んでいない内部用途向けの互換パスとして残す)。
+  // expected を渡した場合、読み取り時点の 4 チャネル値と現在値が一致するときだけ更新する
+  // (一致しない = 他の管理者による並行更新と競合。0 件更新なら false を返す)。
   updateNotificationChannels(
     id: string,
     data: {
@@ -48,7 +55,13 @@ export interface TenantRepository {
       chatworkApiToken?: string | null; // Chatwork API トークン
       chatworkRoomId?: string | null; // Chatwork ルーム ID
     },
-  ): Promise<Tenant>;
+    expected?: {
+      slackWebhookUrl: string | null; // 読み取り時点の Slack Webhook URL
+      teamsWebhookUrl: string | null; // 読み取り時点の Teams Webhook URL
+      chatworkApiToken: string | null; // 読み取り時点の Chatwork API トークン
+      chatworkRoomId: string | null; // 読み取り時点の Chatwork ルーム ID
+    },
+  ): Promise<boolean>;
   // Phase 4 課金: Stripe Billing の連携情報をまとめて更新する。
   // Stripe Webhook 受信時に呼び出し、Customer ID・Subscription ID・状態・プランを一括更新。
   // id はセッション/Webhook由来のテナント ID のみを渡すこと (クロステナント更新防止)。

@@ -1381,6 +1381,64 @@ RATE_LIMIT`) を追加済みだったが、兄弟にあたる `requestMagicLink`
   `tests/data/{location,category}-repository.{memory,contract.prisma}.test.ts` に上限件数の
   回帰テストを追加した。
 
+#### 4.20 フォローアップ（2026-07-19）: 新規組織作成のトライアル悪用経路・通知チャネル設定の TOCTOU・SSE 同時接続数上限の欠如
+
+コードベース監査（既存フォローアップ群と同じ「済マーク済みの機能を実装から再点検する」観点）で
+発見した 3 件のギャップの修正。
+
+- **新規組織作成 (`createTenant`) にプラン以外の抑止力が無く、トライアル (§7.2) を無限に
+  連鎖させられた**: `createTenant`（`src/features/settings/actions/create-tenant.ts`）は
+  `assertAdminSession`（admin ロールという以外のゲート無し）と 60 秒あたり 5 回のレート制限
+  しか持たず、Free プラン（§7.2 の 30 日間 Free trial 中を含む）の管理者でも無制限に新しい組織を
+  作成できた。新規作成された組織もまた raw plan `'free'` + 新しい 30 日トライアルを持つ
+  （`provisionTenantWithAdmin`）ため、「トライアル管理者としてログインし直しては、また新しい
+  組織を作る」を繰り返すことでトライアルを無限に連鎖させる悪用経路になっていた（§6/§7.2 が
+  前提とする「30 日間限定の Free trial」という商流を、レート制限のバースト制御だけでは防げない
+  形で無効化できてしまう）。呼び出し元テナントが実際に課金している（Free 以外の）プランの
+  ときだけ許可するゲート `isAdditionalTenantCreationAllowed`（`src/lib/plan-guard.ts`）を追加した。
+  他のプランゲート関数の多くは `resolveEffectivePlan()` でトライアル中の実効プラン（Standard
+  相当への昇格）を経由する使い方を想定しているが、この関数は意図的に生の (raw) `subscriptionPlan`
+  を受け取る契約にした（JSDoc に明記）。トライアル中の実効プランを経由すると、まさに今回
+  埋めようとしている悪用経路（トライアル管理者による連鎖）を素通りさせてしまうため。
+  `createTenant` アクション本体（サーバー側で強制。§9 UI 非表示に頼らない）と、`/settings` の
+  「新しい組織を作成」カード・`/settings/tenants/new` ページ（案内目的の UI 側ゲート）の
+  両方に適用した。
+- **`updateNotificationChannels` に check-then-act (TOCTOU) が残っていた**: §1.4/§1.5/§4.13/§4.19
+  で導入してきた「読み取り時点の期待状態を where 条件に含めた原子的な更新 (CAS)」パターンが、
+  設定変更系アクションのうち `updateNotificationChannels`
+  （`src/features/settings/actions/update-notification-channels.ts`）にだけ一度も適用されて
+  おらず、読み取り → 検証 → 無条件の `updateMany` という構成のまま残っていた。2 人の管理者が
+  ほぼ同時に異なるチャネル（例: 片方が Slack、もう片方が Chatwork）を編集すると、後勝ちで
+  片方の変更が触っていないフィールドごと黙って上書きされ得た。`TenantRepository.
+  updateNotificationChannels` の契約に `expected?`（読み取り時点の 4 チャネル値）を追加し、
+  指定時のみ原子的な条件付き更新（0 件なら競合として `false`）にした（Prisma/メモリ両アダプタ
+  対応。`expected` 省略時は既存の無条件部分更新のまま = 内部用途の後方互換パス）。
+  `updateNotificationChannels` アクションは既に取得済みの `beforeTenant` スナップショットを
+  `expected` としてそのまま渡し、競合時は「他の管理者による変更と競合しました」という
+  日本語エラーを返す（`FaqStatusButton`/`StatusSelect` と同じ「エラー時に `revalidatePath` で
+  最新状態を取り直す」契約に揃えた）。
+- **SSE の同時接続数そのものに上限が無かった**: `GET /api/notifications/stream`
+  （`src/app/api/notifications/stream/route.ts`）のコメントに「新規接続確立の *頻度* だけを
+  絞り、確立済みの接続を含む同時接続数そのものの上限は別の課題として残る」と明記されたまま
+  未対応だった。頻度制限（60 秒あたり 60 回）は接続を閉じずに張り続けるパターンには効かないため、
+  複数タブ・複数デバイスを開きっぱなしにする通常利用の延長、またはバグった再接続ループが、
+  プロセス内購読者 `Set`（`NotificationBroadcaster` の in-memory 実装）を単調増加させ、サーバーの
+  メモリ・ファイルディスクリプタを圧迫し得た（§9 DoS・リソース枯渇防止）。
+  `NotificationBroadcaster` に `getSubscriberCount(userId)` を追加し（メモリアダプタのみ。SSE は
+  設計上インプロセス限定のため Prisma アダプタは無い）、route.ts がストリームを開く前に
+  ユーザー単位の現在の同時接続数を確認し、`MAX_CONCURRENT_CONNECTIONS_PER_USER`（12。通常利用の
+  複数タブ・複数デバイスを妨げない範囲の値）以上なら 429 を返すようにした。頻度制限
+  （`checkRouteRateLimit`、Retry-After 付き）とは異なり、こちらは「何秒待てば空くか」を
+  保証できないため Retry-After は付けない（クライアントは SSE の `retry` フィールドで指定した
+  間隔で自動再接続し、他の接続が閉じれば通る）。
+- 回帰テスト: `tests/plan-guard.test.ts`・`tests/features/create-tenant.test.ts`
+  （Free/トライアル中の拒否・有料プランの許可）、`tests/data/tenant-repository.
+  {memory,contract.prisma}.test.ts`・`tests/features/update-notification-channels.test.ts`
+  （CAS の競合再現。TOCTOU 再現テストは §4.13 と同じ「`findById` だけ古いスナップショットを
+  返すよう一時的にモックする」手法）、`tests/data/notification-broadcaster.memory.test.ts`・
+  `tests/features/notifications-stream-route.test.ts`（同時接続数の上限到達 429・接続を閉じれば
+  再び空くこと）に、それぞれ回帰テストを追加した。
+
 ### スケジュール感
 
 ```

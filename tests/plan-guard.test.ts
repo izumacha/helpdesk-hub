@@ -7,6 +7,7 @@ import {
   MONTHLY_TICKET_LIMIT,
   ATTACHMENT_TOTAL_SIZE_LIMIT_BYTES,
   FREE_TRIAL_DURATION_MS,
+  isAdditionalTenantCreationAllowed,
   isEmailInboundAllowed,
   isAuditLogAllowed,
   isLineIntegrationAllowed,
@@ -102,6 +103,15 @@ describe('plan-guard: プランごとの上限と機能フラグ', () => {
     expect(isSsoAllowed('standard')).toBe(false); // Standard 不可
     expect(isSsoAllowed('pro')).toBe(false); // Pro 不可
     expect(isSsoAllowed('enterprise')).toBe(true); // Enterprise のみ可
+  });
+
+  // フォローアップ (監査で発見したギャップ): 新規組織作成は Free 以外の全プランで許可する
+  // (トライアル連鎖の悪用防止のため、この関数には raw plan を渡す契約であることが前提)
+  it('新規組織作成はFree以外の全プランで許可される', () => {
+    expect(isAdditionalTenantCreationAllowed('free')).toBe(false); // Free (トライアル中含む) は不可
+    expect(isAdditionalTenantCreationAllowed('standard')).toBe(true); // Standard 可
+    expect(isAdditionalTenantCreationAllowed('pro')).toBe(true); // Pro 可
+    expect(isAdditionalTenantCreationAllowed('enterprise')).toBe(true); // Enterprise 可
   });
 });
 

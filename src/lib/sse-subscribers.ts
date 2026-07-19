@@ -32,3 +32,9 @@ export function broadcast(userId: string, count: number): void {
   // 下位実装に処理を委譲
   notificationBroadcaster.broadcast(userId, count);
 }
+
+// 指定ユーザーの現在の同時接続数を取得する関数 (route.ts が新規接続の可否判定に使う)
+export function getSubscriberCount(userId: string): number {
+  // 下位実装に処理を委譲
+  return notificationBroadcaster.getSubscriberCount(userId);
+}
