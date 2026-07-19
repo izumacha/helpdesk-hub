@@ -16,8 +16,8 @@
  *  - パスワードは bcrypt でハッシュ化して保存する (平文は保存しない / §9。provisionTenantWithAdmin 内)。
  */
 
-// データ層の Composition Root (リポジトリ束とトランザクション境界)
-import { repos, uow } from '@/data';
+// データ層の Composition Root (トランザクション境界。リポジトリはトランザクション内の tx 経由で使う)
+import { uow } from '@/data';
 // §7.2 Free trial の期間 (30 日) をミリ秒で表す定数
 import { FREE_TRIAL_DURATION_MS } from '@/lib/plan-guard';
 // Prisma の一意制約違反 (P2002) 判定の共通ヘルパー (accept-invitation.ts と共有 / §6 DRY)
@@ -122,15 +122,4 @@ export async function completeSignup(
 
   // クライアントがログインに使うメールを返す
   return { email: provisioned.email };
-}
-
-// サインアップ完了ページが「このトークンが今この瞬間に有効か」を表示判定するための読み取り専用
-// ヘルパー。消費はしない (ページ表示で焼かないため)。期限切れ / 使用済み / 不在なら false を返す。
-export async function isSignupAcceptable(rawToken: string): Promise<boolean> {
-  // 生トークンを DB 保存値と同じ SHA-256 ハッシュへ変換する
-  const tokenHash = await hashSignupToken(rawToken);
-  // tokenHash でサインアップトークンを引く (読み取りのみ)
-  const signup = await repos.signupTokens.findByTokenHash(tokenHash);
-  // 不在 / 使用済み / 失効はいずれも受諾不可
-  return !!signup && signup.consumedAt === null && signup.expiresAt >= new Date();
 }

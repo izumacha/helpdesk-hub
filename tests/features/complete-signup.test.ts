@@ -24,9 +24,12 @@ vi.mock('@/data', () => ({
 }));
 
 // 動的 import: 上のモック設定が反映された後で対象を読み込む
+// (/code-review ultra 指摘対応 2026-07-19: isSignupAcceptable は公開エンドポイント化を防ぐため
+//  'use server' モジュールから @/lib/signup-acceptance へ移設)
 async function loadActions() {
   const mod = await import('@/features/auth/actions/complete-signup');
-  return { completeSignup: mod.completeSignup, isSignupAcceptable: mod.isSignupAcceptable };
+  const acceptance = await import('@/lib/signup-acceptance');
+  return { completeSignup: mod.completeSignup, isSignupAcceptable: acceptance.isSignupAcceptable };
 }
 
 // テストごとにクリーンな状態にする (テナントのシードは不要。complete-signup 自体がテナントを作る)
