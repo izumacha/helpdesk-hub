@@ -477,6 +477,10 @@ model Ticket {
   @@index([tenantId]) // テナントスコープ検索用
   @@index([tenantId, status]) // テナント別ステータス絞り込み用
   @@index([tenantId, createdAt(sort: Desc)]) // テナント別新着順
+  // issue-backlog #20 フォローアップ: SLA 期限接近リマインダー (POST /api/internal/sla-reminders) の
+  // listSlaDueSoonCandidates は全テナント横断で resolutionDueAt の範囲検索を行うため専用索引を追加する
+  // (/code-review ultra 指摘対応: 他の Ticket クエリと異なり resolutionDueAt を絞り込む索引が無かった)
+  @@index([resolutionDueAt])
 }
 
 // ─────────────────────────────────────────────

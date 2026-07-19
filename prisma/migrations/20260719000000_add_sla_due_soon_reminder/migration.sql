@@ -12,3 +12,7 @@ ALTER TYPE "NotificationType" ADD VALUE IF NOT EXISTS 'slaDueSoon';
 -- AlterTable: 「どの resolutionDueAt に対して通知済みか」を保持する冪等化フラグ。
 -- 既存行は未通知として扱うため NULL 許容・既定値なしで追加する。
 ALTER TABLE "Ticket" ADD COLUMN "slaReminderNotifiedForDueAt" TIMESTAMP(3);
+
+-- CreateIndex: listSlaDueSoonCandidates (全テナント横断で resolutionDueAt の範囲検索を行う) 用の索引。
+-- /code-review ultra 指摘対応: 他の Ticket クエリと異なり resolutionDueAt を絞り込む索引が無かった。
+CREATE INDEX "Ticket_resolutionDueAt_idx" ON "Ticket"("resolutionDueAt");

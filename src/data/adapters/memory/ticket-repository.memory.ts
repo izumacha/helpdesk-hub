@@ -398,7 +398,12 @@ export function makeTicketRepo(store: Store): TicketRepository {
     // (全テナント横断)。Prisma アダプタと同じ粗い事前絞り込み (未解決・担当者あり・警告帯の窓内)
     // を行い、「本当に通知すべきか」の最終判定は呼び出し側 (needsSlaDueSoonReminder) に委ねる
     async listSlaDueSoonCandidates(now, limit) {
+      // 警告帯の終端時刻 (この時刻以前に期限が来るものだけが対象)
       const windowEnd = new Date(now.getTime() + DEFAULT_WARNING_THRESHOLD_MS);
+      // 条件に合う候補を全件集める配列 (limit で打ち切らず、まず全件集めてから並べ替える。
+      // /code-review ultra 指摘対応: Map の反復順 (挿入順) で limit 件に達した時点で打ち切ると、
+      // Prisma アダプタの「orderBy 期限昇順 → take limit」と異なり、期限が近い順とは限らない
+      // 挿入順の先頭 limit 件を返してしまい、本来最優先で通知すべきチケットが漏れうる)
       const candidates: TicketSlaReminderCandidate[] = [];
       for (const t of store.tickets.values()) {
         if (t.resolvedAt != null) continue; // 未解決のみ (null/undefined 両対応)
@@ -407,6 +412,7 @@ export function makeTicketRepo(store: Store): TicketRepository {
         if (!t.resolutionDueAt) continue; // 期限未設定は対象外
         if (t.resolutionDueAt <= now) continue; // 既に超過
         if (t.resolutionDueAt > windowEnd) continue; // まだ警告帯に入っていない
+        // 条件を満たしたチケットを候補配列に追加する (この時点では並び順を気にしない)
         candidates.push({
           id: t.id,
           tenantId: t.tenantId,
@@ -416,16 +422,20 @@ export function makeTicketRepo(store: Store): TicketRepository {
           resolvedAt: t.resolvedAt,
           slaReminderNotifiedForDueAt: t.slaReminderNotifiedForDueAt,
         });
-        if (candidates.length >= limit) break; // §8 上限付き
       }
-      // Prisma アダプタと同じく期限が近い順に揃える
-      return candidates.sort((a, b) => a.resolutionDueAt!.getTime() - b.resolutionDueAt!.getTime());
+      // Prisma アダプタと同じく期限が近い順に並べ替えてから、上限件数だけ返す (§8 上限付き)
+      return candidates
+        .sort((a, b) => a.resolutionDueAt!.getTime() - b.resolutionDueAt!.getTime())
+        .slice(0, limit);
     },
 
     // issue-backlog #20 フォローアップ: SLA 期限接近リマインダーの冪等化フラグを更新する
     async markSlaReminderNotified(id, dueAt, tenantId) {
+      // 対象チケットを取得する
       const t = store.tickets.get(id);
+      // 存在しない、または他テナントのチケットなら何もしない (tenantId スコープ)
       if (!t || t.tenantId !== tenantId) return;
+      // 冪等化フラグ (slaReminderNotifiedForDueAt) だけを新しい期限値で上書きして保存する
       store.tickets.set(id, { ...t, slaReminderNotifiedForDueAt: dueAt });
     },
 

@@ -29,8 +29,8 @@ import {
 } from '@/lib/sla-reminder';
 // 未読件数の再配信 (SSE 経由で通知ベルへ即時反映)
 import { broadcastUnreadCount } from '@/features/notifications/notify';
-// 定数時間比較の共通ヘルパー (LINE Webhook 署名検証・trial-reminders と共有)
-import { constantTimeStringEqual } from '@/lib/timing-safe-compare';
+// 定数時間比較・Bearer トークン抽出の共通ヘルパー (LINE Webhook 署名検証・trial-reminders と共有)
+import { constantTimeStringEqual, extractBearerToken } from '@/lib/timing-safe-compare';
 // Route Handler 向け共通レート制限ラッパー (trial-reminders 等と共有)
 import { checkRouteRateLimit } from '@/lib/route-rate-limit';
 
@@ -39,14 +39,6 @@ import { checkRouteRateLimit } from '@/lib/route-rate-limit';
 const SLA_REMINDER_RATE_LIMIT = { limit: 5, windowMs: 60_000 } as const;
 const SLA_REMINDER_RATE_LIMIT_MESSAGE =
   'リクエストが多すぎます。しばらくしてから再試行してください';
-
-// Authorization ヘッダの "Bearer <token>" から token 部分だけを取り出す。
-// 形式が違えば null を返す (呼び出し側で認証失敗として扱う)
-function extractBearerToken(header: string | null): string | null {
-  if (!header) return null;
-  const match = header.match(/^Bearer (.+)$/);
-  return match ? match[1] : null;
-}
 
 // POST /api/internal/sla-reminders : SLA 解決期限が警告帯に入った未解決チケットの
 // 担当者へアプリ内通知を送る
@@ -57,6 +49,7 @@ export async function POST(request: Request): Promise<NextResponse> {
     SLA_REMINDER_RATE_LIMIT,
     SLA_REMINDER_RATE_LIMIT_MESSAGE,
   );
+  // 制限超過なら (429 レスポンスが返っているので) ここで処理を打ち切って返す
   if (rateLimitResponse) return rateLimitResponse;
 
   // 共有シークレットを環境変数から取得する。未設定なら fail-closed で即座に拒否する
@@ -112,8 +105,16 @@ export async function POST(request: Request): Promise<NextResponse> {
       });
       // 通知作成に成功した場合のみ、冪等化フラグ (この期限に対して通知済み) を永続化する。
       // 先に永続化すると、直後の broadcastUnreadCount 失敗時に「通知は作られたのに未読バッジが
-      // 更新されない」まま次回以降も再送されなくなる不整合が起きるため、通知作成の後に置く
+      // 更新されない」まま次回以降も再送されなくなる不整合が起きるため、通知作成の後に置く。
+      // 既知の制約 (trial-reminders と同じ設計): この永続化自体が例外を投げた場合 (DB 接続断等)、
+      // 通知は既に作成済みなのに冪等化フラグだけ書き込めず、次回実行時に同じ期限へ再度通知される
+      // (重複通知)。逆の順序 (先にフラグを立ててから通知を作る) にすれば重複は防げるが、
+      // 今度は通知作成自体が失敗したときに「フラグだけ立って一度も通知されない」まま
+      // (resolutionDueAt が変わらない限り) 永久に再試行されなくなる。後者の「静かに通知が
+      // 消える」方が「まれに重複する」より運用上気づきにくく害が大きいため、
+      // trial-reminders/route.ts (updateTrialReminderLastSent) と同じくこの順序を採用する
       await repos.tickets.markSlaReminderNotified(ticket.id, resolutionDueAt, ticket.tenantId);
+      // 通知作成・冪等化フラグ永続化のいずれも例外を投げなかった (=完了した) 件数として加算する
       remindersSent += 1;
       // 未読カウントを SSE で即時配信して通知ベルに反映させる (ベストエフォート)
       await broadcastUnreadCount(assigneeId, ticket.tenantId).catch((err) => {

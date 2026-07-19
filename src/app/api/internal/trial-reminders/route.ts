@@ -33,8 +33,8 @@ import {
 import { getEmailSender } from '@/lib/email';
 // アプリの公開ベース URL (メール内の設定画面リンク組み立てに使う)
 import { resolveAppBaseUrl } from '@/lib/app-url';
-// 定数時間比較の共通ヘルパー (LINE Webhook 署名検証と共有)
-import { constantTimeStringEqual } from '@/lib/timing-safe-compare';
+// 定数時間比較・Bearer トークン抽出の共通ヘルパー (LINE Webhook 署名検証・sla-reminders と共有)
+import { constantTimeStringEqual, extractBearerToken } from '@/lib/timing-safe-compare';
 // Route Handler 向け共通レート制限ラッパー (inbound-email/inbound-line/sso-acs と共有)
 import { checkRouteRateLimit } from '@/lib/route-rate-limit';
 
@@ -47,14 +47,6 @@ import { checkRouteRateLimit } from '@/lib/route-rate-limit';
 const TRIAL_REMINDER_RATE_LIMIT = { limit: 5, windowMs: 60_000 } as const;
 const TRIAL_REMINDER_RATE_LIMIT_MESSAGE =
   'リクエストが多すぎます。しばらくしてから再試行してください';
-
-// Authorization ヘッダの "Bearer <token>" から token 部分だけを取り出す。
-// 形式が違えば null を返す (呼び出し側で認証失敗として扱う)
-function extractBearerToken(header: string | null): string | null {
-  if (!header) return null;
-  const match = header.match(/^Bearer (.+)$/);
-  return match ? match[1] : null;
-}
 
 // POST /api/internal/trial-reminders : Free trial 終了間近のテナント管理者へリマインダーメールを送る
 export async function POST(request: Request): Promise<NextResponse> {
