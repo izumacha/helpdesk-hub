@@ -172,4 +172,15 @@ describe('createInvitation', () => {
     const result = await createInvitation(makeForm('requester'));
     expect(result.url).toContain('/invite/');
   });
+
+  // /security-review 指摘対応 (2026-07-19): 'use server' モジュールの export はすべて公開
+  // Server Action エンドポイントになるため、認証チェックを持たない issueInvitation を
+  // このモジュールから export してはならない (認証なしでクロステナント招待が発行できてしまう)。
+  // 公開面を「認証ゲート付きアクションのみ」に固定する回帰テスト。
+  it('アクションモジュールは認証ゲート付きの createInvitation だけを export する', async () => {
+    // アクションモジュールの実行時 export 一覧を取得する (型 export は実行時には存在しない)
+    const mod = await import('@/features/settings/actions/create-invitation');
+    // issueInvitation が再び export されたら公開エンドポイント化するため失敗させる
+    expect(Object.keys(mod)).toEqual(['createInvitation']);
+  });
 });

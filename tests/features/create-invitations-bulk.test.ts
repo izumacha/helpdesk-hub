@@ -297,7 +297,8 @@ describe('createInvitationsBulk', () => {
       auth: async () => ({ user: { id: ADMIN_ID, role: 'admin', tenantId: TENANT_ID } }),
     }));
     // issueInvitation を差し替え、特定の 1 行だけ Prisma 風の生エラーを投げさせる
-    vi.doMock('@/features/settings/actions/create-invitation', () => ({
+    // (/security-review 指摘対応 2026-07-19: issueInvitation は @/lib/invite-issue へ移設)
+    vi.doMock('@/lib/invite-issue', () => ({
       issueInvitation: async (input: { email?: string }) => {
         if (input.email === 'boom@example.com') {
           // Prisma の一意制約違反エラーを模した生メッセージ (DB スキーマ情報を含む想定)

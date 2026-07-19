@@ -22,8 +22,10 @@ import { auth } from '@/lib/auth';
 import { resolveAppBaseUrl } from '@/lib/app-url';
 // 管理者権限を強制する共通アサーション
 import { assertAdminSession } from '@/lib/role';
-// 招待発行の共有ロジック (createInvitation と同じヘルパーを再利用する)
-import { issueInvitation } from './create-invitation';
+// 招待発行の共有ロジック (createInvitation と同じヘルパーを再利用する)。
+// /security-review 指摘対応 (2026-07-19): 認証チェックを持たないヘルパーを 'use server'
+// モジュールから export すると公開エンドポイント化するため、@/lib/invite-issue へ移設した
+import { issueInvitation } from '@/lib/invite-issue';
 // 招待固有の定数 (レート制限) と、複数行テキストからメールアドレス候補を抽出する純粋関数
 import {
   INVITE_RATE_LIMIT_MAX,
