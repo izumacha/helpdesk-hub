@@ -14,6 +14,9 @@ import { getCurrentTenantMode } from '@/lib/tenant';
 import { getTutorialVideoUrl } from '@/lib/tutorial-video';
 // タブ ('mine' / 'overdue') の絞り込み条件を一元管理する純粋関数 (一覧ページと共有)
 import { applyTabFilter } from '@/features/tickets/tab-filter';
+// 監査で発見したギャップ対応: /tickets への drill-down リンクに選択中の拠点フィルタを
+// 引き継ぐための共通ヘルパー (Pro/Lite 両ブランチで共有 / §6 DRY)
+import { buildTicketListHref } from '@/features/tickets/dashboard-links';
 // データ層が公開しているチケット一覧フィルタ型 (件数取得の引数)
 import type { TicketListFilter } from '@/data/ports/ticket-repository';
 // 拠点の型 (Phase 4 多拠点。§4.1 フォローアップで Lite ダッシュボードにも拠点フィルタを追加する)
@@ -192,10 +195,12 @@ export default async function DashboardPage({ searchParams }: Props) {
         {/* フォローアップ (2026-07-11 #3): statCards が 6→7 件になったため sm:4 / lg:7 列に調整 */}
         <div className="grid grid-cols-2 gap-4 sm:grid-cols-4 lg:grid-cols-7">
           {statCards.map((card) => (
-            // カードクリックで該当ステータスのフィルタ済み一覧へ遷移
+            // カードクリックで該当ステータスのフィルタ済み一覧へ遷移。
+            // 監査で発見したギャップ対応: 選択中の拠点フィルタも引き継ぐ (でないと遷移先で
+            // 「全拠点」に戻り、カードで見た件数と一覧の表示件数が食い違う)
             <Link
               key={card.status}
-              href={`/tickets?status=${card.status}`}
+              href={buildTicketListHref(`status=${card.status}`, selectedLocationId)}
               className="rounded-2xl bg-white p-5 shadow-sm ring-1 ring-slate-100 transition duration-200 hover:-translate-y-0.5 hover:shadow-md hover:ring-teal-200"
             >
               <p className="text-3xl font-bold text-slate-900">{card.count}</p>
@@ -266,8 +271,9 @@ export default async function DashboardPage({ searchParams }: Props) {
                         {row.count}
                       </td>
                       <td className="px-5 py-3.5 text-right">
+                        {/* 監査で発見したギャップ対応: 選択中の拠点フィルタも引き継ぐ */}
                         <Link
-                          href={`/tickets?${query}`}
+                          href={buildTicketListHref(query, selectedLocationId)}
                           className="text-xs text-teal-700 transition hover:text-teal-800 hover:underline"
                         >
                           一覧を見る
@@ -493,9 +499,10 @@ async function LiteDashboard({
 
       {/* 2 枚タイル (スマホでは縦 1 列、sm 以上で 2 列) */}
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-        {/* 自分の未対応 (Open / InProgress)。落ち着いたティールで主要導線として強調 */}
+        {/* 自分の未対応 (Open / InProgress)。落ち着いたティールで主要導線として強調。
+            監査で発見したギャップ対応: 選択中の拠点フィルタも引き継ぐ */}
         <Link
-          href="/tickets?tab=mine"
+          href={buildTicketListHref('tab=mine', selectedLocationId)}
           className="rounded-2xl bg-white p-6 shadow-sm ring-1 ring-slate-100 transition duration-200 hover:-translate-y-0.5 hover:shadow-md hover:ring-teal-200"
         >
           <p className="text-sm font-medium text-slate-500">自分の未対応</p>
@@ -503,9 +510,10 @@ async function LiteDashboard({
           <p className="mt-1 text-xs text-slate-400">未対応・対応中の問い合わせ</p>
         </Link>
 
-        {/* 期限切れ。件数 0 はニュートラル、1 件以上はロゼで注意喚起 */}
+        {/* 期限切れ。件数 0 はニュートラル、1 件以上はロゼで注意喚起。
+            監査で発見したギャップ対応: 選択中の拠点フィルタも引き継ぐ */}
         <Link
-          href="/tickets?tab=overdue"
+          href={buildTicketListHref('tab=overdue', selectedLocationId)}
           className={`rounded-2xl bg-white p-6 shadow-sm ring-1 transition duration-200 hover:-translate-y-0.5 hover:shadow-md ${
             overdueCount > 0
               ? 'ring-rose-200 hover:ring-rose-300'
