@@ -30,6 +30,18 @@ export function makeSsoConfigRepo(store: Store): SsoConfigRepository {
       if (existing) {
         // 既存設定を取り出して値を更新する
         const cfg = store.ssoConfigs.get(existing)!;
+        // CAS: expected が渡されていれば、現在値がそれと一致するときだけ更新する
+        // (Prisma アダプタの updateMany 版 CAS と同じ契約。§9 fail-closed で後勝ち上書きを防ぐ)
+        if (
+          input.expected &&
+          (cfg.enabled !== input.expected.enabled ||
+            cfg.idpEntityId !== input.expected.idpEntityId ||
+            cfg.idpSsoUrl !== input.expected.idpSsoUrl ||
+            cfg.idpX509Cert !== input.expected.idpX509Cert)
+        ) {
+          // 読み取り後に他の更新が割り込んでいた (競合) ため null を返し、上書きしない
+          return null;
+        }
         // 更新後の設定オブジェクトを組み立てる (createdAt は維持、updatedAt を更新)
         const updated = {
           ...cfg,

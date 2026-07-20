@@ -9,6 +9,7 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { createMemoryContext, type Store } from '@/data/adapters/memory';
 import type { Repos } from '@/data/ports/unit-of-work';
+import { USER_LIST_LIMIT } from '@/data/ports/user-repository';
 import { putUser } from './user-fixtures';
 
 const TENANT = 'default-tenant';
@@ -82,6 +83,22 @@ describe('UserRepository (memory)', () => {
 
     const agents = await repos.users.listAgents(TENANT);
     expect(agents.map((a) => a.id)).toEqual(['u-agent-a', 'u-agent-b']);
+  });
+
+  // 監査で発見したギャップ対応 (2026-07-20): listAgents/listByTenant/listAgentIds/
+  // listAgentEmails/listAdminEmails のいずれも上限が無かった (Enterprise はスタッフ数
+  // 無制限のため理論上ではなく実際に無制限件数を返しうる)。USER_LIST_LIMIT 件を超えて
+  // 作成しても USER_LIST_LIMIT 件までに切り詰められることを、代表として listAgents で確認する
+  // (Prisma アダプタの take と同じ挙動)
+  it('listAgentsはUSER_LIST_LIMIT件を超えて作成してもUSER_LIST_LIMIT件までに切り詰める', async () => {
+    for (let i = 0; i < USER_LIST_LIMIT + 3; i += 1) {
+      putUser(store, `u-agent-${i}`, TENANT, {
+        role: 'agent',
+        name: `agent${String(i).padStart(6, '0')}`,
+      });
+    }
+    const agents = await repos.users.listAgents(TENANT);
+    expect(agents).toHaveLength(USER_LIST_LIMIT);
   });
 
   // listByTenant: ロール問わず全ユーザーを名前順で返す (フォローアップ 2026-07-14:

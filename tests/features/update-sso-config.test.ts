@@ -167,6 +167,41 @@ describe('updateSsoConfig', () => {
     expect(await repos.ssoConfigs.findByTenant(TENANT_ID)).toBeNull();
   });
 
+  // フォローアップ (監査で発見したギャップ): このフォームは常に現在値を全項目 defaultValue で
+  // 事前入力して丸ごと再送信する構成のため、読み取り (existing) →検証→無条件書き込みの
+  // check-then-act (TOCTOU) だった。他の管理者が IdP 証明書をローテーションした直後にこの
+  // リクエストが割り込むと、古い証明書のまま上書きしてローテーションを黙って巻き戻して
+  // しまう。CAS 化により 0 件更新 (競合) を検知し、後勝ちで上書きしないことを確認する
+  // (update-line-config.test.ts と同じ手法)
+  it('他の管理者による並行更新と競合すると保存されず、その値を上書きしない', async () => {
+    seedTenant('enterprise');
+    const { updateSsoConfig } = await import('@/features/settings/actions/update-sso-config');
+    // 1 回目: 通常どおり全項目を入力して作成 (これが「読み取り時点」の値になる)
+    await updateSsoConfig({}, makeForm({ enabled: true }));
+    const stale = await repos.ssoConfigs.findByTenant(TENANT_ID);
+    if (!stale) throw new Error('seed missing sso config');
+    // 並行更新を模す: 先に別の管理者が証明書をローテーションしたことにする
+    await repos.ssoConfigs.upsert({
+      tenantId: TENANT_ID,
+      enabled: true,
+      idpEntityId: stale.idpEntityId,
+      idpSsoUrl: stale.idpSsoUrl,
+      idpX509Cert: 'rotated-by-concurrent-admin-cert',
+    });
+    // findByTenant だけが古いスナップショット (ローテーション前) を返す状況を作る (TOCTOU の再現)
+    vi.spyOn(repos.ssoConfigs, 'findByTenant').mockResolvedValueOnce(stale);
+    // このリクエストは enabled だけ変更し、証明書等はフォームの defaultValue (古い値) のまま送信する
+    const result = await updateSsoConfig({}, makeForm({ enabled: false }));
+    expect(result.error).toBe(
+      '他の管理者による変更と競合しました。最新の設定を確認してから再度お試しください。',
+    );
+    expect(result.success).toBeUndefined();
+    // 並行更新 (ローテーション後) の値が上書きされずに残っている
+    const saved = await repos.ssoConfigs.findByTenant(TENANT_ID);
+    expect(saved?.idpX509Cert).toBe('rotated-by-concurrent-admin-cert');
+    expect(saved?.enabled).toBe(true);
+  });
+
   // レート制限: 60秒あたり10回を超える連打は拒否される (delete-sso-config.ts と共有)
   it('60秒あたり10回を超える連打は拒否される', async () => {
     seedTenant('enterprise');

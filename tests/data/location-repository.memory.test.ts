@@ -173,8 +173,50 @@ describe('LocationRepository.update (memory)', () => {
       name: '新名称',
       description: '新説明',
     });
-    expect(updated.name).toBe('新名称');
-    expect(updated.description).toBe('新説明');
+    // expected 未指定の無条件更新なので null にはならない
+    expect(updated?.name).toBe('新名称');
+    expect(updated?.description).toBe('新説明');
+  });
+
+  // 監査で発見したギャップ対応: expected (CAS) 省略時は従来どおり無条件更新、
+  // expected 指定時は読み取り時点の値と一致するときだけ更新することを検証する
+  // (LineConfigRepository.upsert の同名テストと同じ設計)
+  it('expectedが現在値と一致しない場合は更新せずnullを返す', async () => {
+    const location = await repos.locations.create({
+      tenantId: TENANT_A,
+      name: '現在の名前',
+      description: '現在の説明',
+    });
+    // 誤った (古い) expected を渡して更新を試みる
+    const result = await repos.locations.update(
+      location.id,
+      TENANT_A,
+      { name: '新しい名前', description: '新しい説明' },
+      { name: '食い違う古い名前', description: '現在の説明' },
+    );
+    // 競合とみなされ null を返す
+    expect(result).toBeNull();
+    // 実際の値は上書きされていない
+    const found = await repos.locations.findById(location.id, TENANT_A);
+    expect(found?.name).toBe('現在の名前');
+  });
+
+  // expected が現在値と一致すれば更新される
+  it('expectedが現在値と一致すれば更新できる', async () => {
+    const location = await repos.locations.create({
+      tenantId: TENANT_A,
+      name: '現在の名前',
+      description: '現在の説明',
+    });
+    const result = await repos.locations.update(
+      location.id,
+      TENANT_A,
+      { name: '新しい名前', description: '新しい説明' },
+      { name: '現在の名前', description: '現在の説明' },
+    );
+    expect(result?.name).toBe('新しい名前');
+    const found = await repos.locations.findById(location.id, TENANT_A);
+    expect(found?.name).toBe('新しい名前');
   });
 
   // 他テナントの拠点 ID を更新しようとするとエラーになる (fail-closed)

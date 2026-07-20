@@ -1,6 +1,18 @@
 // ドメイン層のユーザー型をインポート
 import type { Role, User, UserSummary } from '@/domain/types';
 
+// 監査で発見したギャップ対応 (2026-07-20): §4.11/§4.12/§4.19 で「一覧取得は必ず上限を持たせる」
+// (CLAUDE.md §8) を FaqRepository / TicketRepository の詳細一覧 / LocationRepository /
+// CategoryRepository に適用してきたが、UserRepository の一覧系メソッドだけは上限が無いまま
+// 残っていた。Enterprise プランはスタッフ数の上限が無い (`USER_LIMIT.enterprise = Infinity`、
+// src/lib/plan-guard.ts) ため、大規模な Enterprise テナントでは理論上ではなく実際に無制限の
+// 件数を返しうる。ロケーション/カテゴリと異なりこのリポジトリには「表示用のページング付き
+// 管理画面」が無く、呼び出し元はすべて「テナント内の対象ユーザー全員」を必要とする用途
+// (担当者プルダウン・CSV インポートの名前解決・通知の一斉送信・エスカレーション対象抽出) の
+// ため、表示用/網羅用の二段構成 (LOCATION_LIST_LIMIT/LOCATION_LIST_MATCHING_LIMIT) ではなく、
+// 単一の上限だけを設ける。値は網羅用途の上限 (LOCATION_LIST_MATCHING_LIMIT 等) と同じ規模に揃える
+export const USER_LIST_LIMIT = 10_000;
+
 // LINE ワンタイムコードによる紐付け試行の結果。
 // - linked: 連携成功 (userId は連携されたメンバー)。同一ユーザーの再送 (冪等) もここに含む。
 // - invalid: 一致するコードが無い / 失効済み (= そのテキストはコードではなかった)。

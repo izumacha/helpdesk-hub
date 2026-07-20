@@ -1,5 +1,5 @@
-// ユーザーリポジトリの契約 (port) と、ドメイン型/ストア型をインポート
-import type { UserRepository } from '@/data/ports/user-repository';
+// ユーザーリポジトリの契約 (port)・一覧系メソッド共通の上限と、ドメイン型/ストア型をインポート
+import { USER_LIST_LIMIT, type UserRepository } from '@/data/ports/user-repository';
 import type { User, UserSummary } from '@/domain/types';
 import { nextId, type Store } from './store';
 
@@ -64,8 +64,8 @@ export function makeUserRepo(store: Store): UserRepository {
       }
       // 名前でロケール順に並び替え
       agents.sort((a, b) => a.name.localeCompare(b.name));
-      // 結果を返す
-      return agents;
+      // 監査で発見したギャップ対応: USER_LIST_LIMIT で上限を設ける (Prisma アダプタの take と同じ)
+      return agents.slice(0, USER_LIST_LIMIT);
     },
 
     // 当該テナント内の全ユーザー (ロール問わず) を名前順で一覧取得 (フォローアップ 2026-07-14:
@@ -80,8 +80,8 @@ export function makeUserRepo(store: Store): UserRepository {
       }
       // 名前でロケール順に並び替え
       out.sort((a, b) => a.name.localeCompare(b.name));
-      // 結果を返す
-      return out;
+      // 監査で発見したギャップ対応: USER_LIST_LIMIT で上限を設ける
+      return out.slice(0, USER_LIST_LIMIT);
     },
 
     // 当該テナント内の agent または admin の ID だけを一覧取得
@@ -93,8 +93,8 @@ export function makeUserRepo(store: Store): UserRepository {
         if (u.tenantId !== tenantId) continue; // 他テナントは除外
         if (u.role === 'agent' || u.role === 'admin') ids.push(u.id);
       }
-      // 結果を返す
-      return ids;
+      // 監査で発見したギャップ対応: USER_LIST_LIMIT で上限を設ける
+      return ids.slice(0, USER_LIST_LIMIT);
     },
 
     // 指定 ID 群に含まれる当該テナント内ユーザーの概要をまとめて返す
@@ -121,8 +121,8 @@ export function makeUserRepo(store: Store): UserRepository {
         if (u.tenantId !== tenantId) continue; // 他テナントは除外
         if (u.role === 'agent' || u.role === 'admin') out.push({ id: u.id, email: u.email });
       }
-      // 結果を返す
-      return out;
+      // 監査で発見したギャップ対応: USER_LIST_LIMIT で上限を設ける
+      return out.slice(0, USER_LIST_LIMIT);
     },
 
     // §7.2 Free trial 終了リマインダー等、課金関連の通知先として admin のみの id + email を取得
@@ -134,8 +134,8 @@ export function makeUserRepo(store: Store): UserRepository {
         if (u.tenantId !== tenantId) continue; // 他テナントは除外
         if (u.role === 'admin') out.push({ id: u.id, email: u.email });
       }
-      // 結果を返す
-      return out;
+      // 監査で発見したギャップ対応: USER_LIST_LIMIT で上限を設ける
+      return out.slice(0, USER_LIST_LIMIT);
     },
 
     // Phase 4 課金: テナント内のスタッフ (agent + admin) 数を返す (プランのシート上限チェック用)
