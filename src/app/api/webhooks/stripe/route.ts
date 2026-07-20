@@ -90,8 +90,12 @@ export async function POST(request: Request): Promise<NextResponse> {
   try {
     await handleStripeEvent(stripeEvent);
   } catch (err) {
-    // テナント更新失敗は 500 で返す (Stripe が再送するため冪等性が重要)
-    // 再送時に重複処理しても安全なように updateStripeSubscription は上書き更新
+    // テナント更新失敗は 500 で返す (Stripe が再送するため冪等性が重要)。
+    // フォローアップ (2026-07-20): updateStripeSubscription は eventCreatedAt による CAS
+    // (配信順序チェック) を行うようになったが、同一イベントの再送 (event.created が同じ) は
+    // 「保存済みの直近処理イベント時刻 <= 今回の event.created」の条件に一致するため
+    // 通常どおり (べき等に) 再適用される。再送時に安全なのは古いイベントを弾く仕組みと
+    // 両立している
     console.error('[stripe-webhook] イベント処理エラー:', err);
     return NextResponse.json({ error: 'イベント処理に失敗しました' }, { status: 500 });
   }
@@ -111,7 +115,14 @@ async function handleStripeEvent(event: Stripe.Event): Promise<void> {
   const obj = event.data.object as unknown as Record<string, unknown>;
   // フォローアップ (監査で発見したギャップ 2026-07-20): Stripe イベント自体の発生時刻
   // (Unix 秒)。配信順序が保証されないため、適用可否の CAS 判定に使う (event.created は
-  // Stripe.Event が必ず持つフィールド)
+  // Stripe.Event が必ず持つフィールドだが、§9 fail-closed に従い型を信用せず値を検証する)。
+  // 不正な値のまま Date 化すると Invalid Date (NaN) になり、CAS の比較が常に false 判定
+  // (どんな比較も NaN を含むと false) になって配信順序チェックがそのテナントだけ無効化されて
+  // しまう。ここで検出して処理を中断し、呼び出し元 (POST ハンドラ) の catch で 500 を返して
+  // Stripe に再送させる方が安全 (§9: 不明なら拒否)
+  if (!Number.isFinite(event.created)) {
+    throw new Error(`Stripe イベントの created が不正です: ${String(event.created)}`);
+  }
   const eventCreatedAt = new Date(event.created * 1000);
 
   // サブスクリプション作成・更新イベント: プランと状態を更新する

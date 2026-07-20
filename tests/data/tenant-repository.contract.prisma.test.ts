@@ -133,12 +133,77 @@ describe.runIf(SHOULD_RUN)('TenantRepository (prisma adapter)', () => {
     const ok = await repos.tenants.updateNotificationChannels(
       tenant.id,
       { slackWebhookUrl: 'https://hooks.slack.com/services/STALE-WRITE' },
-      { slackWebhookUrl: null, teamsWebhookUrl: null, chatworkApiToken: null, chatworkRoomId: null },
+      {
+        slackWebhookUrl: null,
+        teamsWebhookUrl: null,
+        chatworkApiToken: null,
+        chatworkRoomId: null,
+      },
     );
     expect(ok).toBe(false);
     // 並行更新の値が上書きされずに残っている
     const reloaded = await repos.tenants.findById(tenant.id);
     expect(reloaded?.slackWebhookUrl).toBe('https://hooks.slack.com/services/CONCURRENT');
+  });
+
+  // フォローアップ (監査で発見したギャップ 2026-07-20): updateStripeSubscription に追加した
+  // eventCreatedAt による CAS (Stripe Webhook の配信順序非保証対策) が実 DB でも効くことの確認。
+  // 保存済みの stripeEventProcessedAt より古い event.created を渡すと更新されず false を返し、
+  // 実際に列も変わらないこと (=古いイベントで新しい状態を巻き戻さないこと) を検証する
+  it('updateStripeSubscriptionは保存済みより古いeventCreatedAtでは更新せずfalseを返す', async () => {
+    const repos = buildPrismaRepos(prisma);
+    const tenant = await repos.tenants.create({ name: 'A組織' });
+    // 「10 分前のイベントまで適用済み」の状態を作る (先に新しいイベントを適用する)
+    const newEventCreatedAt = new Date('2026-07-20T12:00:00Z');
+    await repos.tenants.updateStripeSubscription(
+      tenant.id,
+      { subscriptionPlan: 'pro', stripeSubscriptionStatus: 'active' },
+      newEventCreatedAt,
+    );
+    // それより 1 時間古い event.created を持つイベントが後から届いたとして更新を試みる
+    const staleEventCreatedAt = new Date('2026-07-20T11:00:00Z');
+    const applied = await repos.tenants.updateStripeSubscription(
+      tenant.id,
+      { subscriptionPlan: 'free', stripeSubscriptionStatus: 'canceled' },
+      staleEventCreatedAt,
+    );
+    // CAS 不成立で false を返す
+    expect(applied).toBe(false);
+    // DB を再読込して実際に古いイベントの内容 (free/canceled) が反映されていないことを確認する
+    const reloaded = await repos.tenants.findById(tenant.id);
+    expect(reloaded?.subscriptionPlan).toBe('pro');
+    expect(reloaded?.stripeSubscriptionStatus).toBe('active');
+    // 適用済みイベント時刻も新しいイベントのままで巻き戻っていない
+    expect(reloaded?.stripeEventProcessedAt?.toISOString()).toBe(newEventCreatedAt.toISOString());
+  });
+
+  // 保存済みより新しい (または未処理=null の) eventCreatedAt では通常どおり適用され、
+  // stripeEventProcessedAt がそのイベントの発生時刻に更新される
+  it('updateStripeSubscriptionは保存済みより新しいeventCreatedAtでは適用されstripeEventProcessedAtが更新される', async () => {
+    const repos = buildPrismaRepos(prisma);
+    const tenant = await repos.tenants.create({ name: 'A組織' });
+    // 未処理 (stripeEventProcessedAt = null) の状態から最初のイベントを適用する
+    const firstEventCreatedAt = new Date('2026-07-20T10:00:00Z');
+    const firstApplied = await repos.tenants.updateStripeSubscription(
+      tenant.id,
+      { subscriptionPlan: 'standard' },
+      firstEventCreatedAt,
+    );
+    expect(firstApplied).toBe(true);
+    // それより新しい 2 件目のイベントも通常どおり適用される
+    const secondEventCreatedAt = new Date('2026-07-20T10:05:00Z');
+    const secondApplied = await repos.tenants.updateStripeSubscription(
+      tenant.id,
+      { subscriptionPlan: 'pro' },
+      secondEventCreatedAt,
+    );
+    expect(secondApplied).toBe(true);
+    const reloaded = await repos.tenants.findById(tenant.id);
+    expect(reloaded?.subscriptionPlan).toBe('pro');
+    // 適用済みイベント時刻が最新の (2 件目の) イベント発生時刻に更新されている
+    expect(reloaded?.stripeEventProcessedAt?.toISOString()).toBe(
+      secondEventCreatedAt.toISOString(),
+    );
   });
 
   // recordOutboundChannelResult: 失敗記録は指定チャネルのカラムだけを更新する

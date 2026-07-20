@@ -40,6 +40,9 @@ function toTenant(row: TenantRow): Tenant {
     teamsLastFailureMessage: row.teamsLastFailureMessage,
     chatworkLastFailureAt: row.chatworkLastFailureAt,
     chatworkLastFailureMessage: row.chatworkLastFailureMessage,
+    // フォローアップ (監査で発見したギャップ 2026-07-20): Stripe Webhook 配信順序 CAS 用の
+    // 直近処理イベント時刻 (未処理なら null)
+    stripeEventProcessedAt: row.stripeEventProcessedAt,
     createdAt: row.createdAt,
   };
 }
