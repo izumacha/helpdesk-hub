@@ -40,6 +40,9 @@ function toTenant(row: TenantRow): Tenant {
     teamsLastFailureMessage: row.teamsLastFailureMessage,
     chatworkLastFailureAt: row.chatworkLastFailureAt,
     chatworkLastFailureMessage: row.chatworkLastFailureMessage,
+    // フォローアップ (監査で発見したギャップ 2026-07-20): Stripe Webhook 配信順序 CAS 用の
+    // 直近処理イベント時刻 (未処理なら null)
+    stripeEventProcessedAt: row.stripeEventProcessedAt,
     createdAt: row.createdAt,
   };
 }
@@ -143,11 +146,25 @@ export function makeTenantRepo(db: PrismaLike): TenantRepository {
       return result.count > 0;
     },
 
-    // Phase 4 課金: Stripe の連携情報 (Customer ID / Subscription ID / 状態 / プラン) を一括更新
-    async updateStripeSubscription(id, data) {
-      // undefined 以外のフィールドのみ更新する (Prisma は undefined を無視する)
-      const row = await db.tenant.update({
-        where: { id },
+    // Phase 4 課金: Stripe の連携情報 (Customer ID / Subscription ID / 状態 / プラン) を一括更新。
+    // フォローアップ (監査で発見したギャップ 2026-07-20): eventCreatedAt が渡された場合のみ、
+    // 「保存済みの stripeEventProcessedAt が null、またはそれ以下 (=今回のイベントの方が新しい
+    // か同時刻)」を where 条件に含めた原子的な updateMany (CAS) にする。Stripe Webhook の配信
+    // 順序は保証されないため、これが無いと古いイベントが後から届いて新しい状態を巻き戻しうる
+    async updateStripeSubscription(id, data, eventCreatedAt) {
+      // eventCreatedAt 省略時は主キーのみで絞り込む (順序チェックなし。従来どおりの無条件更新)
+      const where: Prisma.TenantWhereInput = eventCreatedAt
+        ? {
+            id,
+            OR: [
+              { stripeEventProcessedAt: null }, // まだ一度も Stripe イベントを適用していない
+              { stripeEventProcessedAt: { lte: eventCreatedAt } }, // 今回のイベントの方が新しいか同時刻
+            ],
+          }
+        : { id };
+      // 条件に一致する行だけを更新する (0 件・1 件のどちらもあり得る updateMany)
+      const result = await db.tenant.updateMany({
+        where,
         data: {
           // undefined なら Prisma が skip するため、明示的に条件分岐しない
           stripeCustomerId: data.stripeCustomerId,
@@ -155,10 +172,12 @@ export function makeTenantRepo(db: PrismaLike): TenantRepository {
           stripeSubscriptionStatus: data.stripeSubscriptionStatus,
           // subscriptionPlan は SubscriptionPlan 型として型チェックされた値のみ受け付ける
           subscriptionPlan: data.subscriptionPlan as SubscriptionPlan | undefined,
+          // eventCreatedAt を渡された場合のみ、直近処理イベント時刻を更新する
+          ...(eventCreatedAt ? { stripeEventProcessedAt: eventCreatedAt } : {}),
         },
       });
-      // 更新後の行をドメイン型に詰め替えて返す
-      return toTenant(row);
+      // 1 件以上更新できたか (0 件なら古いイベントとして無視された、または対象不在) を返す
+      return result.count > 0;
     },
 
     // §7.2 Free trial 終了リマインダー用: free プランかつトライアル進行中 (trialEndsAt > now)

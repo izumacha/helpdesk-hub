@@ -214,6 +214,14 @@ model Tenant {
   // (src/lib/trial-reminder.ts の resolveTrialReminderMilestone が参照する)
   trialReminderLastSentDaysBefore Int? // 直近に送信済みのマイルストーン閾値 (未送信なら null)
 
+  // 監査で発見したギャップ (2026-07-20): Stripe Webhook はイベントの配信順序を保証しない
+  // (Stripe 公式ドキュメントに明記: リトライ・ネットワーク遅延により、古いイベントが新しい
+  // イベントより後に届くことがある)。素朴な上書き (updateStripeSubscription) だけだと、
+  // 例えば「解約」イベントの後に届いた古い「作成」イベントが最新の解約状態を巻き戻してしまう。
+  // 直近に適用した Stripe イベントの発生時刻 (event.created) を保持し、CAS の比較対象にする
+  // (未処理なら null。null または保存値以下の event.created のイベントのみ適用する)
+  stripeEventProcessedAt DateTime?
+
   createdAt DateTime @default(now()) // 作成日時
 
   // 配下のリソース (テナント削除で連鎖削除)

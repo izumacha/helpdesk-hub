@@ -65,6 +65,14 @@ export interface TenantRepository {
   // Phase 4 課金: Stripe Billing の連携情報をまとめて更新する。
   // Stripe Webhook 受信時に呼び出し、Customer ID・Subscription ID・状態・プランを一括更新。
   // id はセッション/Webhook由来のテナント ID のみを渡すこと (クロステナント更新防止)。
+  //
+  // フォローアップ (監査で発見したギャップ 2026-07-20): Stripe は Webhook イベントの配信順序を
+  // 保証しない (公式ドキュメント記載。リトライ・ネットワーク遅延で古いイベントが新しいイベントより
+  // 後に届きうる)。eventCreatedAt (Stripe イベント自体の発生時刻 = event.created) を渡すと、
+  // 保存済みの直近処理イベント時刻より新しい (または未処理) ときだけ適用する CAS になる。
+  // updateMode/updateNotificationChannels と同じ「0 件更新なら false」の boolean 契約。
+  // eventCreatedAt を省略した場合は順序チェックをせず常に適用する (既存の契約テスト等、
+  // 順序保証が不要な呼び出し元との後方互換のため)
   updateStripeSubscription(
     id: string,
     data: {
@@ -73,7 +81,8 @@ export interface TenantRepository {
       stripeSubscriptionStatus?: string | null;
       subscriptionPlan?: SubscriptionPlan;
     },
-  ): Promise<Tenant>;
+    eventCreatedAt?: Date,
+  ): Promise<boolean>;
   // §7.2 Free trial 終了リマインダー用: 契約プランが free で、かつ trialEndsAt が now より
   // 未来 (=トライアル進行中) のテナントを limit 件までを上限に返す (§8 一覧取得は必ず上限を
   // 持たせる)。呼び出し側 (定期実行のリマインダー処理) が各テナントの残り日数からリマインド

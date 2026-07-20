@@ -47,8 +47,13 @@ vi.mock('@/lib/stripe', () => ({
   stripeStatusToPlan: () => planForNextCall.current,
 }));
 
-// テナントをシードする (mode / plan を指定可能)
-function seedTenant(mode: 'lite' | 'pro', plan: 'free' | 'standard' | 'pro' | 'enterprise'): void {
+// テナントをシードする (mode / plan を指定可能)。stripeEventProcessedAt は配信順序 CAS の
+// テストで「既にこの時刻のイベントまで適用済み」を再現するために使う (省略時は未処理 = null)
+function seedTenant(
+  mode: 'lite' | 'pro',
+  plan: 'free' | 'standard' | 'pro' | 'enterprise',
+  stripeEventProcessedAt: Date | null = null,
+): void {
   const now = new Date();
   store.tenants.set(TENANT, {
     id: TENANT,
@@ -65,16 +70,20 @@ function seedTenant(mode: 'lite' | 'pro', plan: 'free' | 'standard' | 'pro' | 'e
     teamsWebhookUrl: null,
     chatworkApiToken: null,
     chatworkRoomId: null,
+    stripeEventProcessedAt,
     createdAt: now,
   });
 }
 
-// Stripe イベント JSON + 署名ヘッダ (値は何でもよい。constructEvent はモック済み) を組み立てる
+// Stripe イベント JSON + 署名ヘッダ (値は何でもよい。constructEvent はモック済み) を組み立てる。
+// created (イベント自体の発生時刻。Unix 秒) は実際の Stripe イベントに必ず含まれるフィールドの
+// ため、個別テストが明示指定しない限り「現在時刻」を既定値として補う (配信順序 CAS のテストは
+// eventBody 側で created を明示的に上書きする)
 function makeRequest(eventBody: Record<string, unknown>): Request {
   return new Request('http://localhost/api/webhooks/stripe', {
     method: 'POST',
     headers: { 'content-type': 'application/json', 'stripe-signature': 'sig' },
-    body: JSON.stringify(eventBody),
+    body: JSON.stringify({ created: Math.floor(Date.now() / 1000), ...eventBody }),
   });
 }
 
@@ -231,6 +240,75 @@ describe('POST /api/webhooks/stripe', () => {
     // フォローアップ (2026-07-13): プランも mode も変化していないので監査ログは記録されない
     // (無関係なイベントで監査ログを埋めない)
     expect(await repos.settingsAudit.findAllByTenant({ tenantId: TENANT })).toHaveLength(0);
+  });
+
+  // フォローアップ (監査で発見したギャップ 2026-07-20): Stripe は Webhook イベントの配信順序を
+  // 保証しない。既に新しいイベント (例: 解約 canceled) を適用済みのテナントに、ネットワーク遅延で
+  // 後から届いた古いイベント (例: それより前の active への更新) を適用すると、最新の解約状態を
+  // 巻き戻してしまう。古いイベントは無視され、現在の状態 (プラン・mode) が変わらないことを確認する
+  it('保存済みより古い event.created の更新イベントは無視され状態が巻き戻らない', async () => {
+    // 「直近 10 分前のイベントまで適用済み」のテナントを用意する (現在 free/lite = 解約済み相当)
+    const processedAt = new Date();
+    seedTenant('lite', 'free', processedAt);
+    // このイベントは 1 時間前 (=保存済みより古い) に発生した「pro へのアップグレード」イベントとして届く
+    const staleEventCreatedAt = Math.floor((processedAt.getTime() - 60 * 60 * 1000) / 1000);
+    planForNextCall.current = 'pro';
+    const { POST } = await import('@/app/api/webhooks/stripe/route');
+    const res = await POST(
+      makeRequest({
+        created: staleEventCreatedAt,
+        type: 'customer.subscription.updated',
+        data: {
+          object: {
+            id: 'sub_1',
+            customer: 'cus_1',
+            status: 'active',
+            items: { data: [{ price: { id: 'price_pro' } }] },
+            metadata: { tenantId: TENANT },
+          },
+        },
+      }),
+    );
+    // Stripe には 200 を返す (エラーではなく意図的な無視。再送させない)
+    expect(res.status).toBe(200);
+    const tenant = store.tenants.get(TENANT)!;
+    // 古いイベントは無視され、free/lite のまま (pro に巻き戻らない)
+    expect(tenant.subscriptionPlan).toBe('free');
+    expect(tenant.mode).toBe('lite');
+    // 無視されたイベントは「変更」ではないため監査ログにも残らない
+    expect(await repos.settingsAudit.findAllByTenant({ tenantId: TENANT })).toHaveLength(0);
+  });
+
+  // 保存済みより新しい event.created のイベントは通常どおり適用され、
+  // 適用後の stripeEventProcessedAt がそのイベントの発生時刻に更新される
+  it('保存済みより新しい event.created の更新イベントは通常どおり適用される', async () => {
+    // 「1 時間前のイベントまで適用済み」のテナントを用意する
+    const oldProcessedAt = new Date(Date.now() - 60 * 60 * 1000);
+    seedTenant('pro', 'pro', oldProcessedAt);
+    // このイベントは「今」発生した解約イベントとして届く (保存済みより新しい)
+    const newEventCreatedAtSec = Math.floor(Date.now() / 1000);
+    const { POST } = await import('@/app/api/webhooks/stripe/route');
+    const res = await POST(
+      makeRequest({
+        created: newEventCreatedAtSec,
+        type: 'customer.subscription.deleted',
+        data: {
+          object: {
+            id: 'sub_1',
+            customer: 'cus_1',
+            status: 'canceled',
+            metadata: { tenantId: TENANT },
+          },
+        },
+      }),
+    );
+    expect(res.status).toBe(200);
+    const tenant = store.tenants.get(TENANT)!;
+    // 新しいイベントなので通常どおり反映される
+    expect(tenant.subscriptionPlan).toBe('free');
+    expect(tenant.mode).toBe('lite');
+    // 適用済みイベント時刻が今回のイベントの発生時刻に更新されている
+    expect(tenant.stripeEventProcessedAt?.getTime()).toBe(newEventCreatedAtSec * 1000);
   });
 
   // 署名ヘッダが無いリクエストは 400 で拒否する (なりすまし対策)
