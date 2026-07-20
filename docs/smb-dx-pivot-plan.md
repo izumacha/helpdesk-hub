@@ -1530,6 +1530,34 @@ complete-signup.ts`）だけは対象から漏れていた。`requestSignup`・`
   .test.ts` に、それぞれ CAS の競合再現（`findByTenant`/`findById` だけ古いスナップショットを
   返すよう一時的にモックする、§4.13 以来の手法）と上限切り詰めの回帰テストを追加した。
 
+#### 4.24 フォローアップ（2026-07-20 #3）: メール取り込みの定数時間比較が自前実装のまま・NotificationRepository.list が呼び出し側の limit を無条件に信頼していた
+
+コードベース監査で発見した 2 件のギャップの修正。ここまでの §4.21〜§4.23 で見つかった規模の
+ギャップと比べると影響は小さいが、同種の「兄弟には適用済みの対策が 1 箇所だけ漏れている」形の
+不整合であるため合わせて修正する。
+
+- **メール取り込み Webhook の共有シークレット比較が自前実装のままだった**:
+  `src/lib/timing-safe-compare.ts` の `constantTimeStringEqual` は、まさに LINE Webhook 署名
+  検証と内部 cron (trial-reminders/sla-reminders) の Bearer トークン検証で同じ「長さチェック→
+  `timingSafeEqual`」イディオムが複製されていたことを解消するために切り出された共通ヘルパーだが、
+  `POST /api/inbound/email`（`src/app/api/inbound/email/route.ts`）だけは `secretsMatch` という
+  同一ロジックの自前実装を使い続けていた。挙動そのものは今日時点で定数時間比較として正しく、
+  実害のある脆弱性ではないが、共通ヘルパーが解消しようとした「将来どちらか一方だけ書き換えられて
+  実装が乖離する」保守リスクをこの 1 箇所だけ再導入していた。`secretsMatch` を削除し
+  `constantTimeStringEqual` の呼び出しに置き換えた。
+- **`NotificationRepository.list` が呼び出し側の `limit` を無条件に信頼していた**:
+  `FaqRepository` / `LocationRepository` / `CategoryRepository` / `UserRepository`（§4.23）は
+  いずれもアダプタ自身が呼び出し側の `limit` をクランプし、クエリ自体が有界であることをアダプタが
+  保証する規約になっているが、`NotificationRepository.list` だけはこの規約から外れ、渡された
+  `limit` をそのまま `take`/`slice` に使っていた。現状の唯一の呼び出し元 (`/notifications` 画面)
+  は常に固定値 50 を渡すため実害は無いが、他の一覧系リポジトリと同じ「アダプタが自身の上限を
+  保証する」多層防御に揃えるため、`NOTIFICATION_LIST_MAX_LIMIT`（200。表示用途のため
+  `LOCATION_LIST_LIMIT` 等と同規模）を追加し、Prisma/メモリ両アダプタで `Math.min(limit, ...)`
+  によりクランプするようにした。
+- 回帰テスト: `tests/data/notification-repository.contract.ts`（memory/Prisma 両アダプタで共有する
+  契約テスト）に、`NOTIFICATION_LIST_MAX_LIMIT` を超える `limit` を指定してもクランプされることの
+  回帰テストを追加した。
+
 ### スケジュール感
 
 ```

@@ -1,7 +1,8 @@
-// 通知リポジトリの契約 (port) とドメイン型、ストア関連をインポート
-import type {
-  NotificationListItem,
-  NotificationRepository,
+// 通知リポジトリの契約 (port)・上限クランプ定数とドメイン型、ストア関連をインポート
+import {
+  NOTIFICATION_LIST_MAX_LIMIT,
+  type NotificationListItem,
+  type NotificationRepository,
 } from '@/data/ports/notification-repository';
 import type { Notification } from '@/domain/types';
 import { nextId, type Store } from './store';
@@ -41,11 +42,13 @@ export function makeNotificationRepo(store: Store): NotificationRepository {
     },
 
     // 指定ユーザーの通知を新しい順に limit 件取得 (関連チケット付き、tenantId スコープ)
+    // 監査で発見したギャップ対応: 呼び出し側の limit をそのまま信頼せず、
+    // NOTIFICATION_LIST_MAX_LIMIT を超えないようクランプする (Prisma アダプタの take と揃える)
     async list(userId, { limit }, tenantId) {
       const rows = [...store.notifications.values()] // 全通知を配列化
         .filter((n) => n.tenantId === tenantId && n.userId === userId) // テナント + ユーザー
         .sort((a, b) => +b.createdAt - +a.createdAt) // 新しい順にソート
-        .slice(0, limit); // 先頭 limit 件に切る
+        .slice(0, Math.min(limit, NOTIFICATION_LIST_MAX_LIMIT)); // 先頭 limit 件 (クランプ済み) に切る
       // 各通知に関連チケットの要約を結合して返す
       return rows.map<NotificationListItem>((n) => {
         const ticket = n.ticketId ? (store.tickets.get(n.ticketId) ?? null) : null; // 関連チケット取得
