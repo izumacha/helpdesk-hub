@@ -13,11 +13,15 @@ describe('buildTicketListHref', () => {
 
   // 拠点選択中なら、既存の条件を保ったまま locationId を末尾に付け足すこと
   it('拠点選択中なら既存の条件を維持したまま locationId を付け足す', () => {
-    expect(buildTicketListHref('status=Open', 'loc-1')).toBe('/tickets?status=Open&locationId=loc-1');
+    expect(buildTicketListHref('status=Open', 'loc-1')).toBe(
+      '/tickets?status=Open&locationId=loc-1',
+    );
   });
 
   // Lite ダッシュボードのタブ遷移 (tab=mine 等) でも同様に付け足せること
   it('tab クエリでも同様に locationId を付け足す', () => {
-    expect(buildTicketListHref('tab=overdue', 'loc-2')).toBe('/tickets?tab=overdue&locationId=loc-2');
+    expect(buildTicketListHref('tab=overdue', 'loc-2')).toBe(
+      '/tickets?tab=overdue&locationId=loc-2',
+    );
   });
 });
