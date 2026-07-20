@@ -1439,6 +1439,51 @@ RATE_LIMIT`) を追加済みだったが、兄弟にあたる `requestMagicLink`
   `tests/features/notifications-stream-route.test.ts`（同時接続数の上限到達 429・接続を閉じれば
   再び空くこと）に、それぞれ回帰テストを追加した。
 
+#### 4.21 フォローアップ（2026-07-20）: セルフサーブサインアップ完了にエンドポイント全体のレート制限が無かった
+
+コードベース監査（既存フォローアップ群と同じ「済マーク済みの機能を実装から再点検する」観点）で
+発見したギャップの修正。§4.19 で招待受諾 (`acceptInvitation`) とマジックリンクコールバックの
+レート制限漏れを埋めたが、同じ「公開 (未認証) アクション + Serializable トランザクション」の
+構造を持つ `completeSignup`（セルフサーブサインアップ完了。`src/features/auth/actions/
+complete-signup.ts`）だけは対象から漏れていた。`requestSignup`・`acceptInvitation`・
+`requestMagicLink` はいずれも冒頭で `enforceRateLimit` を呼ぶが、`completeSignup` には
+一切無く、不正なサインアップ完了トークンを連打されると、Serializable トランザクション + bcrypt
+ハッシュ化（cost 12）という重い処理をレート制限無しに繰り返し実行できてしまい、DB 負荷増大の
+踏み台になり得た（§9 公開エンドポイント保護）。
+
+- `src/lib/signup.ts` に `SIGNUP_COMPLETE_GLOBAL_RATE_LIMIT`（1 分 30 件）を追加した。
+  値は `acceptInvitation` の `INVITE_ACCEPT_GLOBAL_RATE_LIMIT` と同じにした（テナント作成という
+  同種の重さの操作であり、防御水準を割る理由がないため）。
+- `completeSignup` の先頭で `enforceRateLimit('signup-complete:global', ...)` を呼ぶ
+  (`acceptInvitation` と同じ設計。固定キーでエンドポイント全体を頭打ちにする)。
+- 回帰テスト: `tests/features/complete-signup.test.ts` に、上限件数まで（無効な）トークンで
+  呼んでも「無効」エラーのままだが、上限+1 件目は別のトークンでも全体レート制限に引っかかる
+  ことを確認するテストを追加した（`accept-invitation.test.ts` の同名テストと同じ設計）。
+
+#### 4.22 フォローアップ（2026-07-20）: ダッシュボードの拠点フィルタが一覧への drill-down で失われていた
+
+コードベース監査で発見したギャップの修正。§4.1/§4.1.1 で Pro/Lite 両ダッシュボードに拠点
+(`locationId`) フィルタを追加し、集計値は正しく絞り込まれるようになっていたが、その集計値
+から「一覧を見る」ために遷移するリンク（ステータス別件数カード・担当者別ワークロード行・Lite
+の「自分の未対応」「期限切れ」タイル、いずれも `src/app/(app)/dashboard/page.tsx`）はどれも
+`locationId` を含めずに `/tickets` へリンクしていた。拠点を選んだ状態でダッシュボードの数値を
+見てからカード/タイルをクリックすると、遷移先の一覧では絞り込みが「全拠点」に戻ってしまい、
+直前に見ていた件数と一覧の表示件数が一致しない事故があった。Lite モードでは `TicketFilters`
+に拠点セレクトが無い（§3.1「Lite はフリーワード検索のみ」）ため、Lite の管理者は一覧側で
+拠点フィルタを掛け直す手段が無く、ダッシュボードの拠点フィルタが drill-down 後は完全に
+失われていた。
+
+- `src/features/tickets/dashboard-links.ts` に `buildTicketListHref(baseQuery, locationId)`
+  を新設し、「拠点以外の絞り込み条件 + 選択中の拠点」から `/tickets` への href を組み立てる
+  処理を 1 か所に集約した（Pro/Lite 両ブランチ・4 箇所の呼び出し元で書き写さないための共通化。
+  §6 DRY）。
+- ステータスカード・担当者別ワークロード行・Lite の 2 タイル、いずれも本ヘルパー経由の
+  href に置き換えた。一覧側 (`tickets/page.tsx`) は元々 `sp.locationId` をモードに関わらず
+  そのままフィルタへ渡しており、集計は常に `tenantId` でスコープされるため、他テナントの
+  `locationId` が紛れ込んでも危険はない（§9）。
+- 回帰テスト: `tests/features/dashboard-links.test.ts` に `buildTicketListHref` の
+  境界値（拠点未選択・選択中・`tab=` クエリでも同様に付け足されること）を追加した。
+
 ### スケジュール感
 
 ```

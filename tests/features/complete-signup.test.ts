@@ -5,8 +5,11 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { buildMemoryRepos, createMemoryContext, type Store } from '@/data/adapters/memory';
 // リポジトリ束 / UnitOfWork の型
 import type { Repos, UnitOfWork } from '@/data/ports/unit-of-work';
-// サインアップトークンのハッシュ化 (DB 保存値と同じ SHA-256 を作るために使う)
-import { hashSignupToken } from '@/lib/signup';
+// サインアップトークンのハッシュ化 (DB 保存値と同じ SHA-256 を作るために使う) と、
+// 完了エンドポイントの全体レート制限値 (テストで上限件数を参照するために import する)
+import { hashSignupToken, SIGNUP_COMPLETE_GLOBAL_RATE_LIMIT } from '@/lib/signup';
+// テスト間でレート制限の状態を初期化するためのヘルパー (他テストの呼び出し回数を持ち越さない)
+import { __resetRateLimits } from '@/lib/rate-limit';
 
 // 各テスト前に書き換える依存。Action import 前に getter で参照させる
 let store: Store;
@@ -38,6 +41,8 @@ beforeEach(() => {
   store = ctx.store;
   repos = ctx.repos;
   uow = ctx.uow;
+  // 前のテストで消費したレート制限バケットを持ち越さない (下の全体レート制限テストと分離するため)
+  __resetRateLimits();
 });
 
 // サインアップトークンを 1 件作成して生トークンを返すヘルパー
@@ -225,6 +230,30 @@ describe('completeSignup', () => {
         makeForm({ tenantName: '', adminName: '名前', adminPassword: 'password123' }),
       ),
     ).rejects.toThrow(/組織名/);
+  });
+
+  // 監査で発見したギャップ対応 (2026-07-20): 公開 (未認証) アクションかつ Serializable
+  // トランザクションを伴うため、不正なトークンでの連打を固定キーの全体レート制限で頭打ちに
+  // すること。異なるトークンで呼んでもエンドポイント全体で共有の上限に引っかかることを確認する
+  // (accept-invitation.ts の同名テストと同じ設計)
+  it('全体レート制限を超えると異なるトークンでも拒否される', async () => {
+    const { completeSignup } = await loadActions();
+    // 上限ちょうどまでは異なる無効トークンで呼んでも「無効」エラー (レート制限には引っかからない)
+    for (let i = 0; i < SIGNUP_COMPLETE_GLOBAL_RATE_LIMIT.limit; i += 1) {
+      await expect(
+        completeSignup(
+          `bogus-token-${i}`,
+          makeForm({ tenantName: '組織X', adminName: 'x', adminPassword: 'password123' }),
+        ),
+      ).rejects.toThrow(/無効|使用/);
+    }
+    // 上限+1 件目は別のトークンでも全体レート制限に引っかかる
+    await expect(
+      completeSignup(
+        'bogus-token-overflow',
+        makeForm({ tenantName: '組織X', adminName: 'x', adminPassword: 'password123' }),
+      ),
+    ).rejects.toThrow(/頻度が高すぎます/);
   });
 });
 

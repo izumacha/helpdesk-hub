@@ -14,6 +14,9 @@
  *  - 消費 (単回使用ガード) とテナント + ユーザー作成を 1 トランザクションで行い、
  *    作成失敗時は消費もロールバックしてトークンを無駄に焼かない。
  *  - パスワードは bcrypt でハッシュ化して保存する (平文は保存しない / §9。provisionTenantWithAdmin 内)。
+ *  - 監査で発見したギャップ対応 (2026-07-20): 公開 (未認証) アクションかつ Serializable
+ *    トランザクションを伴うため、不正なトークンでの連打による DB 負荷増大を防ぐ固定キーの
+ *    全体レート制限を最初に適用する (accept-invitation.ts / requestMagicLink と同じ設計)。
  */
 
 // データ層の Composition Root (トランザクション境界。リポジトリはトランザクション内の tx 経由で使う)
@@ -22,8 +25,11 @@ import { uow } from '@/data';
 import { FREE_TRIAL_DURATION_MS } from '@/lib/plan-guard';
 // Prisma の一意制約違反 (P2002) 判定の共通ヘルパー (accept-invitation.ts と共有 / §6 DRY)
 import { isUniqueConstraintError } from '@/lib/prisma-errors';
-// サインアップトークンのハッシュ化 (生トークン → DB 保存値と同じ SHA-256 へ)
-import { hashSignupToken } from '@/lib/signup';
+// 連打防止のための共通レート制限ヘルパー (accept-invitation.ts / request-magic-link.ts と共有)
+import { enforceRateLimit } from '@/lib/rate-limit';
+// サインアップトークンのハッシュ化 (生トークン → DB 保存値と同じ SHA-256 へ) と、
+// このエンドポイント全体のレート制限値 (監査で発見したギャップ対応)
+import { hashSignupToken, SIGNUP_COMPLETE_GLOBAL_RATE_LIMIT } from '@/lib/signup';
 // テナント + 初代管理者作成の共通ロジック (create-tenant.ts と共有 / §6 DRY)
 import { provisionTenantWithAdmin } from '@/lib/tenant-provisioning';
 // フォローアップ (2026-07-14 #2): テナント作成 (admin 権限付与) を監査ログへ記録する共通ヘルパー
@@ -42,6 +48,11 @@ export async function completeSignup(
   rawToken: string,
   formData: FormData,
 ): Promise<CompleteSignupResult> {
+  // 監査で発見したギャップ対応: 公開 (未認証) アクションかつ Serializable トランザクションを
+  // 伴うため、不正なトークンでの連打による DB 負荷増大を防ぐ固定キーの全体レート制限を
+  // 最初に適用する (§9 公開エンドポイント保護。accept-invitation.ts と同じ設計)
+  enforceRateLimit('signup-complete:global', SIGNUP_COMPLETE_GLOBAL_RATE_LIMIT);
+
   // フォーム入力 (組織名・業種・氏名・パスワード) を Zod で検証する
   const parsed = completeSignupSchema.safeParse({
     tenantName: formData.get('tenantName'),
