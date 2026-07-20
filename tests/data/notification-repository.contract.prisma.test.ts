@@ -89,8 +89,25 @@ describe.runIf(SHOULD_RUN)('prisma adapter', () => {
       return { tenantA: TENANT_A, tenantB: TENANT_B, userAId, userBId };
     };
 
+    // 指定テナント・指定起票者でチケットを 1 件作り、その ID を返すシード
+    // (create のクロステナント fail-closed 検証で使用)
+    const seedTicket: NotificationContractContext['seedTicket'] = async (tenantId, creatorId) => {
+      // 本番と同じチケットリポジトリ経由でテスト用チケットを 1 件作成する
+      const ticket = await repos.tickets.create({
+        title: '契約テスト用チケット', // 件名 (テスト用ダミー)
+        body: '本文', // 本文 (テスト用ダミー)
+        priority: 'Medium', // 優先度は既定の Medium
+        creatorId, // 起票者
+        categoryId: null, // カテゴリ未分類
+        locationId: null, // 拠点未指定
+        tenantId, // 所属テナント
+      });
+      // 後続のテストが参照するチケット ID を返す
+      return ticket.id;
+    };
+
     // 組み立てた repos とシード関数を契約コンテキストとして返す
-    return { repo: repos.notifications, seedTwoTenants };
+    return { repo: repos.notifications, seedTwoTenants, seedTicket };
   }
 
   // memory 版と同一の契約スイートを Prisma 実装に対して実行する

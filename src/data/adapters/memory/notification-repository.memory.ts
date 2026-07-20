@@ -11,6 +11,17 @@ export function makeNotificationRepo(store: Store): NotificationRepository {
   return {
     // 通知を 1 件作成してストアに登録
     async create(input) {
+      // 関連チケットが指定されている場合のみ、そのチケットが指定テナントに属することを検証する。
+      // Prisma 実装 (コメント Adapter の issue #123 と同じパターン) に合わせ、
+      // 他テナントのチケットに紐づく通知の作成を fail-closed で防ぐ。
+      if (input.ticketId) {
+        // ストアから親チケットを取得する (無ければ undefined)
+        const parent = store.tickets.get(input.ticketId);
+        // 親チケットが無い、または別テナントなら作成を拒否する
+        if (!parent || parent.tenantId !== input.tenantId) {
+          throw new Error('チケットが見つかりません');
+        }
+      }
       // 新しい通知行を組み立てる (read は false で開始)
       const notification: Notification = {
         id: nextId(store, 'ntf'), // 'ntf_...' 形式の一意 ID

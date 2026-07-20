@@ -27,6 +27,9 @@ export interface NotificationContractContext {
     userAId: string; // テナント A に属するユーザー ID
     userBId: string; // テナント B に属するユーザー ID
   }>;
+  // 指定テナント・指定起票者でチケットを 1 件作り、その ID を返すシード
+  // (create のクロステナント fail-closed 検証に使う。seedTwoTenants の後に呼ぶこと)
+  seedTicket: (tenantId: string, creatorId: string) => Promise<string>;
 }
 
 // アダプタごとに渡される文脈で同一テストを実行する関数
@@ -112,6 +115,61 @@ export function runNotificationRepositoryContract(
 
       // テナント B には userA の通知が存在しないので、A 側の通知は未読のまま残る
       expect(await ctx.repo.countUnread(userAId, tenantA)).toBe(1);
+    });
+
+    // 関連チケットが同一テナントに属する場合は、ticketId 付きの通知を作成できること (正常系)
+    it('create accepts a ticketId that belongs to the same tenant', async () => {
+      // テナント A / B と各ユーザーを用意する
+      const { tenantA, userAId } = await ctx.seedTwoTenants();
+      // テナント A にチケットを 1 件作成する
+      const ticketId = await ctx.seedTicket(tenantA, userAId);
+      // 同じテナント A のチケットに紐づく通知を作成する → 成功する
+      const created = await ctx.repo.create({
+        userId: userAId,
+        type: 'commented',
+        message: 'チケットにコメントが追加されました',
+        ticketId,
+        tenantId: tenantA,
+      });
+      // 作成された通知が対象チケットに紐づいていること
+      expect(created.ticketId).toBe(ticketId);
+    });
+
+    // 関連チケットが別テナントに属する場合、create が fail-closed で拒否すること
+    // (コメント Adapter の issue #123 と同じ多層防御をアダプタ側で強制する回帰テスト)
+    it('create rejects a ticketId that belongs to another tenant', async () => {
+      // テナント A / B と各ユーザーを用意する
+      const { tenantA, tenantB, userAId, userBId } = await ctx.seedTwoTenants();
+      // テナント A にチケットを 1 件作成する
+      const ticketId = await ctx.seedTicket(tenantA, userAId);
+      // 攻撃想定: テナント B を名乗ってテナント A のチケットに紐づく通知を作ろうとする → 拒否される
+      await expect(
+        ctx.repo.create({
+          userId: userBId,
+          type: 'commented',
+          message: '侵入',
+          ticketId,
+          tenantId: tenantB,
+        }),
+      ).rejects.toThrow(/チケットが見つかりません/);
+      // 拒否された結果、テナント B 側に通知行は 1 件も作られていないこと
+      expect(await ctx.repo.countUnread(userBId, tenantB)).toBe(0);
+    });
+
+    // 存在しないチケット ID を指定した create も fail-closed で拒否すること
+    it('create rejects a non-existent ticketId', async () => {
+      // テナント A / B と各ユーザーを用意する
+      const { tenantA, userAId } = await ctx.seedTwoTenants();
+      // 実在しないチケット ID に紐づく通知を作ろうとする → 拒否される
+      await expect(
+        ctx.repo.create({
+          userId: userAId,
+          type: 'commented',
+          message: '宛先なし',
+          ticketId: 'no-such-ticket',
+          tenantId: tenantA,
+        }),
+      ).rejects.toThrow(/チケットが見つかりません/);
     });
   });
 }

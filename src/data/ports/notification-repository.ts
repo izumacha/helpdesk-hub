@@ -21,7 +21,11 @@ export interface NotificationListItem extends Notification {
 // markAllRead も tenantId 必須でクロステナント既読化を防ぐ
 // (userId を偽装されても他テナント由来の通知まで既読にできないようにする)。
 export interface NotificationRepository {
-  create(input: CreateNotificationInput): Promise<Notification>; // 通知を 1 件作成 (input.tenantId 必須)
+  // 通知を 1 件作成 (input.tenantId 必須)。
+  // input.ticketId が指定されている場合、そのチケットが input.tenantId に属さなければ
+  // fail-closed でエラーにする (コメント Adapter の issue #123 と同じ多層防御)。
+  // ticketId 無し (チケット非関連の通知) はこの検証をスキップする。
+  create(input: CreateNotificationInput): Promise<Notification>;
   countUnread(userId: string, tenantId: string): Promise<number>; // 未読件数を取得
   list(
     userId: string,

@@ -73,8 +73,24 @@ function makeMemoryContext(): NotificationContractContext {
     return { tenantA: TENANT_A, tenantB: TENANT_B, userAId, userBId };
   };
 
+  // 指定テナント・指定起票者でチケットを 1 件作り、その ID を返すシード
+  // (create のクロステナント fail-closed 検証で使用)
+  const seedTicket: NotificationContractContext['seedTicket'] = async (tenantId, creatorId) => {
+    // チケットリポジトリ経由でテスト用チケットを 1 件作成する
+    const ticket = await repos.tickets.create({
+      title: '契約テスト用チケット', // 件名 (テスト用ダミー)
+      body: '本文', // 本文 (テスト用ダミー)
+      priority: 'Medium', // 優先度は既定の Medium
+      creatorId, // 起票者
+      categoryId: null, // カテゴリ未分類
+      tenantId, // 所属テナント
+    });
+    // 後続のテストが参照するチケット ID を返す
+    return ticket.id;
+  };
+
   // 検証対象の通知リポジトリとシード関数を文脈として返す
-  return { repo: repos.notifications, seedTwoTenants };
+  return { repo: repos.notifications, seedTwoTenants, seedTicket };
 }
 
 // メモリアダプタが NotificationRepository 契約を満たしているかを実行する
