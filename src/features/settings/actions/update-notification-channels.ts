@@ -6,8 +6,9 @@
 
 // Next.js のキャッシュ無効化 (設定ページの再レンダリングに使う)
 import { revalidatePath } from 'next/cache';
-// 現在のセッション取得
-import { auth } from '@/lib/auth';
+// 「ログイン済み・admin・自テナント」を検証する共有ゲート (create-location.ts 等と同じ
+// 非throw系アクションで共有する。§6 DRY: 個別に複製していた認証+ロールブロックを集約)
+import { assertTenantAdmin } from '@/lib/tenant-admin-gate';
 // テナントリポジトリ
 import { repos } from '@/data';
 // SSRF 対策ガード (プライベート IP / ループバック / IPv6-mapped などを拒否する)
@@ -54,18 +55,12 @@ export async function updateNotificationChannels(
   _prevState: { error?: string; success?: boolean },
   formData: FormData,
 ): Promise<{ error?: string; success?: boolean }> {
-  // セッション取得と認証チェック
-  const session = await auth();
-  // 未ログインまたは tenantId 不在は拒否
-  if (!session?.user?.id || !session.user.tenantId) {
-    return { error: '認証が必要です' };
-  }
-  // 管理者以外は設定変更不可 (UI 非表示でも直接 Action 呼び出しを防ぐため Server Action 側でも検証)
-  if (session.user.role !== 'admin') {
-    return { error: 'この操作は管理者のみ実行できます' };
-  }
+  // 共有ゲートで「ログイン済み・admin・自テナント」をまとめて検証する
+  const gate = await assertTenantAdmin();
+  // ゲート不通過ならその理由をそのまま返す
+  if (!gate.ok) return { error: gate.error };
   // 検証済みの tenantId (セッション由来)
-  const tenantId = session.user.tenantId;
+  const tenantId = gate.tenantId;
 
   // 監査で発見したギャップ対応: 更新前の設定値を取得しておく。どのチャネルが実際に
   // 変更されたか (=管理者が修正を試みたか) を後で判定するために使う。
@@ -176,7 +171,7 @@ export async function updateNotificationChannels(
   // (chatworkApiToken 等の秘匿情報は記録しない。アクション名のみ)
   await recordSettingsAudit({
     tenantId,
-    actorId: session.user.id,
+    actorId: gate.userId,
     action: 'notification_channels_update',
     logPrefix: '[update-notification-channels]',
   });

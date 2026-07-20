@@ -63,16 +63,37 @@ export function makeLocationRepo(db: PrismaLike): LocationRepository {
     },
 
     // 拠点名・補足説明を更新する (tenantId スコープで他テナントは not-found エラー)
-    async update(id, tenantId, data) {
+    async update(id, tenantId, data, expected) {
       // まず対象拠点がこのテナントに属するか findFirst で確認する。
       // db.location.update の where は PK (id) のみで解決されるため tenantId は AND にならない。
       // deleteMany は任意 WHERE をサポートするが update は @@unique 経由でしか複合条件を取れない。
       // 事前 findFirst でテナント所有を検証してから id のみで更新することでクロステナントを防ぐ。
       const existing = await db.location.findFirst({ where: { id, tenantId } });
-      // 見つからない場合は他テナントの行か存在しない行 — 更新を拒否する
+      // 見つからない場合は他テナントの行か存在しない行 — 更新を拒否する (CAS 競合とは別の扱い)
       if (!existing) {
         throw new Error(`Location not found: ${id}`);
       }
+
+      // 監査で発見したギャップ対応: expected が渡された場合は CAS (compare-and-swap) 経路。
+      // 「読み取り時点の値」を where に足した updateMany で、書き込み直前にも現在値が
+      // 一致することを保証する (LineConfigRepository.upsert と同じ方針)。存在確認は
+      // 直前の findFirst で済んでいるため、ここでの 0 件は「その間に他の管理者が編集した」
+      // 競合を意味する
+      if (expected) {
+        const result = await db.location.updateMany({
+          where: { id, tenantId, name: expected.name, description: expected.description },
+          data: { name: data.name, description: data.description },
+        });
+        // 0 件更新 = 直前の読み取り後に他の管理者が値を変えていた (競合)。null を返し、
+        // 後勝ちで上書きしないようにする (§9 fail-closed)
+        if (result.count === 0) return null;
+        // 更新できた行を読み直してドメイン型で返す (updateMany は更新後の行を返さないため)
+        const row = await db.location.findFirst({ where: { id, tenantId } });
+        if (!row) return null;
+        return toLocation(row);
+      }
+
+      // expected 未指定: 従来どおりの無条件更新 (競合検知が不要な呼び出し)。
       // テナント所有を確認後、PK だけで更新する (Prisma の update は PK 必須)
       const row = await db.location.update({
         where: { id },

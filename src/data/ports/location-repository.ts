@@ -44,11 +44,17 @@ export interface LocationRepository {
     description?: string | null; // 補足説明 (任意)
   }): Promise<Location>;
   // 拠点名・補足説明を更新する (tenantId スコープで他テナントの ID は no-op)
+  // 監査で発見したギャップ対応 (2026-07-20): 拠点編集フォームは常に現在値を全項目
+  // defaultValue で事前入力して丸ごと再送信する構成のため (SSO/LINE 連携設定と同じ形)、
+  // 読み取り→無条件書き込みの間に他の管理者が並行更新すると check-then-act (TOCTOU) で
+  // 後勝ち上書きが起きる。expected を渡した場合のみ、書き込み直前の現在値がそれと一致する
+  // ときだけ更新する CAS になる (未指定なら従来どおり無条件更新)。
   update(
     id: string,
     tenantId: string,
     data: { name?: string; description?: string | null },
-  ): Promise<Location>;
+    expected?: { name: string; description: string | null },
+  ): Promise<Location | null>; // null は「見つからない」ではなく CAS 競合を意味する (not found は従来どおり例外)
   // 拠点を削除する。紐づくチケットの locationId は DB の ON DELETE SET NULL で null になる
   delete(id: string, tenantId: string): Promise<void>;
 }

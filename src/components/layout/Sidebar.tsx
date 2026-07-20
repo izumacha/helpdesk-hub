@@ -14,6 +14,8 @@ import type { Role, TenantMode } from '@/domain/types';
 import { FAQ_TERM_LABELS } from '@/lib/constants';
 // 共通ブランドマーク
 import { Logo } from '@/components/brand/Logo';
+// メニュー項目のアクティブ判定 (React/Next 非依存の純粋関数。単体テスト可能なため切り出し済み)
+import { isItemActive } from '@/lib/nav-active';
 // モバイルナビ Context (ハンバーガーで開閉するドロワー状態)
 import { useMobileNav } from './MobileNavProvider';
 
@@ -70,17 +72,8 @@ export function Sidebar({ role, mode }: Props) {
     // すべての制約を満たした項目だけ表示する
     return true;
   });
-  // メニュー項目がアクティブかどうかを判定 (完全一致 + 一部 prefix マッチ)
-  const isItemActive = (href: string) => {
-    // ルート "/" は完全一致のみ
-    if (href === '/') return pathname === '/';
-    // 完全一致なら即アクティブ
-    if (pathname === href) return true;
-    // nav item に完全一致するパスが存在する場合は prefix マッチを使わない
-    // （例: /tickets/new 閲覧時に /tickets を誤ってアクティブにしない）
-    const hasExactNavMatch = navItems.some((item) => item.href === pathname);
-    return !hasExactNavMatch && pathname.startsWith(`${href}/`);
-  };
+  // メニュー全項目の href 一覧 (デュアルハイライト防止の prefix マッチ判定に使う)
+  const navHrefs = navItems.map((item) => item.href);
 
   return (
     // ラッパー: モバイル時のバックドロップ + ドロワーを内包する
@@ -142,7 +135,7 @@ export function Sidebar({ role, mode }: Props) {
         <nav className={`flex-1 space-y-1 px-3 py-5 ${collapsed ? 'md:hidden' : ''}`}>
           {visibleItems.map((item) => {
             // この項目が現在のページかどうか
-            const isActive = isItemActive(item.href);
+            const isActive = isItemActive(pathname, item.href, navHrefs);
             // label が関数 (mode-aware) なら現在の mode で解決し、そうでなければそのまま使う
             const label = typeof item.label === 'function' ? item.label(mode) : item.label;
             return (

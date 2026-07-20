@@ -1439,6 +1439,125 @@ RATE_LIMIT`) を追加済みだったが、兄弟にあたる `requestMagicLink`
   `tests/features/notifications-stream-route.test.ts`（同時接続数の上限到達 429・接続を閉じれば
   再び空くこと）に、それぞれ回帰テストを追加した。
 
+#### 4.21 フォローアップ（2026-07-20）: セルフサーブサインアップ完了にエンドポイント全体のレート制限が無かった
+
+コードベース監査（既存フォローアップ群と同じ「済マーク済みの機能を実装から再点検する」観点）で
+発見したギャップの修正。§4.19 で招待受諾 (`acceptInvitation`) とマジックリンクコールバックの
+レート制限漏れを埋めたが、同じ「公開 (未認証) アクション + Serializable トランザクション」の
+構造を持つ `completeSignup`（セルフサーブサインアップ完了。`src/features/auth/actions/
+complete-signup.ts`）だけは対象から漏れていた。`requestSignup`・`acceptInvitation`・
+`requestMagicLink` はいずれも冒頭で `enforceRateLimit` を呼ぶが、`completeSignup` には
+一切無く、不正なサインアップ完了トークンを連打されると、Serializable トランザクション + bcrypt
+ハッシュ化（cost 12）という重い処理をレート制限無しに繰り返し実行できてしまい、DB 負荷増大の
+踏み台になり得た（§9 公開エンドポイント保護）。
+
+- `src/lib/signup.ts` に `SIGNUP_COMPLETE_GLOBAL_RATE_LIMIT`（1 分 30 件）を追加した。
+  値は `acceptInvitation` の `INVITE_ACCEPT_GLOBAL_RATE_LIMIT` と同じにした（テナント作成という
+  同種の重さの操作であり、防御水準を割る理由がないため）。
+- `completeSignup` の先頭で `enforceRateLimit('signup-complete:global', ...)` を呼ぶ
+  (`acceptInvitation` と同じ設計。固定キーでエンドポイント全体を頭打ちにする)。
+- 回帰テスト: `tests/features/complete-signup.test.ts` に、上限件数まで（無効な）トークンで
+  呼んでも「無効」エラーのままだが、上限+1 件目は別のトークンでも全体レート制限に引っかかる
+  ことを確認するテストを追加した（`accept-invitation.test.ts` の同名テストと同じ設計）。
+
+#### 4.22 フォローアップ（2026-07-20）: ダッシュボードの拠点フィルタが一覧への drill-down で失われていた
+
+コードベース監査で発見したギャップの修正。§4.1/§4.1.1 で Pro/Lite 両ダッシュボードに拠点
+(`locationId`) フィルタを追加し、集計値は正しく絞り込まれるようになっていたが、その集計値
+から「一覧を見る」ために遷移するリンク（ステータス別件数カード・担当者別ワークロード行・Lite
+の「自分の未対応」「期限切れ」タイル、いずれも `src/app/(app)/dashboard/page.tsx`）はどれも
+`locationId` を含めずに `/tickets` へリンクしていた。拠点を選んだ状態でダッシュボードの数値を
+見てからカード/タイルをクリックすると、遷移先の一覧では絞り込みが「全拠点」に戻ってしまい、
+直前に見ていた件数と一覧の表示件数が一致しない事故があった。Lite モードでは `TicketFilters`
+に拠点セレクトが無い（§3.1「Lite はフリーワード検索のみ」）ため、Lite の管理者は一覧側で
+拠点フィルタを掛け直す手段が無く、ダッシュボードの拠点フィルタが drill-down 後は完全に
+失われていた。
+
+- `src/features/tickets/dashboard-links.ts` に `buildTicketListHref(baseQuery, locationId)`
+  を新設し、「拠点以外の絞り込み条件 + 選択中の拠点」から `/tickets` への href を組み立てる
+  処理を 1 か所に集約した（Pro/Lite 両ブランチ・4 箇所の呼び出し元で書き写さないための共通化。
+  §6 DRY）。
+- ステータスカード・担当者別ワークロード行・Lite の 2 タイル、いずれも本ヘルパー経由の
+  href に置き換えた。一覧側 (`tickets/page.tsx`) は元々 `sp.locationId` をモードに関わらず
+  そのままフィルタへ渡しており、集計は常に `tenantId` でスコープされるため、他テナントの
+  `locationId` が紛れ込んでも危険はない（§9）。
+- 回帰テスト: `tests/features/dashboard-links.test.ts` に `buildTicketListHref` の
+  境界値（拠点未選択・選択中・`tab=` クエリでも同様に付け足されること）を追加した。
+
+#### 4.23 フォローアップ（2026-07-20 #2）: SSO 設定更新の TOCTOU・UserRepository 一覧の上限漏れ・拠点更新の TOCTOU
+
+コードベース監査（既存フォローアップ群と同じ「済マーク済みの機能を実装から再点検する」観点）で
+発見した 3 件のギャップの修正。
+
+- **`updateSsoConfig` に TOCTOU が残っていた**: §4.19/§4.20 で `updateNotificationChannels` /
+  `update-line-config.ts` に導入してきた CAS (compare-and-swap) パターンが、同じ「読み取り→
+  検証→無条件書き込み」構成を持つ `updateSsoConfig`（`src/features/settings/actions/
+  update-sso-config.ts`）には一度も適用されていなかった。SSO 設定フォームは LINE 連携設定と
+  異なり「空欄なら維持」という緩衝が無く、IdP EntityID/SSO URL/証明書の全項目を毎回
+  `defaultValue` で事前入力して丸ごと再送信する構成のため、他の管理者が IdP 証明書を
+  ローテーションした直後にこのリクエストが割り込むと、認証の信頼アンカーである証明書が
+  古い値のまま黙って上書きされてしまう（LINE 連携設定より実害の大きい変種）。
+  `SsoConfigRepository.upsert` に `expected`（読み取り時点の 4 フィールド値）を追加し、
+  指定時のみ原子的な条件付き更新（0 件なら競合として `null`）にした
+  （Prisma/メモリ両アダプタ対応）。`updateSsoConfig` は事前に `findByTenant` した
+  スナップショットを `expected` としてそのまま渡し、競合時は他の設定アクションと同じ
+  「他の管理者による変更と競合しました」を返す。
+- **`UserRepository` の一覧系メソッドに上限が無かった**: §4.11/§4.12/§4.19 で
+  「一覧取得は必ず上限を持たせる」（§8）を `FaqRepository` / `TicketRepository` の
+  コメント・履歴 / `LocationRepository` / `CategoryRepository` に適用してきたが、
+  `listAgents` / `listByTenant` / `listAgentIds` / `listAgentEmails` / `listAdminEmails`
+  だけは上限が無いまま残っていた。`USER_LIMIT.enterprise = Infinity`（`src/lib/
+  plan-guard.ts`）により Enterprise プランはスタッフ数上限が無いため、大規模テナントでは
+  理論上ではなく実際に無制限件数を返しうる（担当者プルダウン・CSV インポートの名前解決・
+  エスカレーション一斉メール・メール/LINE 取り込みの自動割当など、高頻度に呼ばれる経路が
+  対象）。拠点/カテゴリと異なりこのリポジトリには表示用ページング画面が無く、全呼び出し元が
+  「テナント内の対象者全員」を必要とするため、表示用/網羅用の二段構成ではなく単一の上限
+  `USER_LIST_LIMIT`（`src/data/ports/user-repository.ts`。網羅用途の規模である
+  `LOCATION_LIST_MATCHING_LIMIT` 等と同じ 10,000 に揃える）を追加し、Prisma アダプタは
+  `take`、メモリアダプタは `slice` で切り詰める。
+- **`updateLocation` にも同種の TOCTOU が残っていた**: 拠点編集フォームも SSO 設定と同じく
+  現在値を全項目事前入力して丸ごと再送信する構成のため、同じ穴が `LocationRepository.update`
+  にもあった。他の管理者の並行編集を上書きしうる実害は SSO ほど大きくない（表示名・補足説明の
+  巻き戻りのみ）が、同一クラスの欠陥の 2 件目として合わせて修正する。`update` に
+  `expected?: { name, description }` を追加し、指定時のみ CAS 経路（Prisma は
+  `updateMany` + 読み直し、メモリは値比較）にした。既存の「存在しない/他テナントの拠点」判定
+  (`findFirst` → 例外) は競合検知とは独立に維持し、CAS の 0 件更新だけを競合 (`null`) として
+  区別する。
+- 回帰テスト: `tests/features/update-sso-config.test.ts` / `tests/data/
+  sso-config-repository.{memory,contract.prisma}.test.ts`・`tests/data/user-repository.
+  memory.test.ts`（`USER_LIST_LIMIT` 超過時の切り詰め）・`tests/features/
+  update-location.test.ts` / `tests/data/location-repository.{memory,contract.prisma}
+  .test.ts` に、それぞれ CAS の競合再現（`findByTenant`/`findById` だけ古いスナップショットを
+  返すよう一時的にモックする、§4.13 以来の手法）と上限切り詰めの回帰テストを追加した。
+
+#### 4.24 フォローアップ（2026-07-20 #3）: メール取り込みの定数時間比較が自前実装のまま・NotificationRepository.list が呼び出し側の limit を無条件に信頼していた
+
+コードベース監査で発見した 2 件のギャップの修正。ここまでの §4.21〜§4.23 で見つかった規模の
+ギャップと比べると影響は小さいが、同種の「兄弟には適用済みの対策が 1 箇所だけ漏れている」形の
+不整合であるため合わせて修正する。
+
+- **メール取り込み Webhook の共有シークレット比較が自前実装のままだった**:
+  `src/lib/timing-safe-compare.ts` の `constantTimeStringEqual` は、まさに LINE Webhook 署名
+  検証と内部 cron (trial-reminders/sla-reminders) の Bearer トークン検証で同じ「長さチェック→
+  `timingSafeEqual`」イディオムが複製されていたことを解消するために切り出された共通ヘルパーだが、
+  `POST /api/inbound/email`（`src/app/api/inbound/email/route.ts`）だけは `secretsMatch` という
+  同一ロジックの自前実装を使い続けていた。挙動そのものは今日時点で定数時間比較として正しく、
+  実害のある脆弱性ではないが、共通ヘルパーが解消しようとした「将来どちらか一方だけ書き換えられて
+  実装が乖離する」保守リスクをこの 1 箇所だけ再導入していた。`secretsMatch` を削除し
+  `constantTimeStringEqual` の呼び出しに置き換えた。
+- **`NotificationRepository.list` が呼び出し側の `limit` を無条件に信頼していた**:
+  `FaqRepository` / `LocationRepository` / `CategoryRepository` / `UserRepository`（§4.23）は
+  いずれもアダプタ自身が呼び出し側の `limit` をクランプし、クエリ自体が有界であることをアダプタが
+  保証する規約になっているが、`NotificationRepository.list` だけはこの規約から外れ、渡された
+  `limit` をそのまま `take`/`slice` に使っていた。現状の唯一の呼び出し元 (`/notifications` 画面)
+  は常に固定値 50 を渡すため実害は無いが、他の一覧系リポジトリと同じ「アダプタが自身の上限を
+  保証する」多層防御に揃えるため、`NOTIFICATION_LIST_MAX_LIMIT`（200。表示用途のため
+  `LOCATION_LIST_LIMIT` 等と同規模）を追加し、Prisma/メモリ両アダプタで `Math.min(limit, ...)`
+  によりクランプするようにした。
+- 回帰テスト: `tests/data/notification-repository.contract.ts`（memory/Prisma 両アダプタで共有する
+  契約テスト）に、`NOTIFICATION_LIST_MAX_LIMIT` を超える `limit` を指定してもクランプされることの
+  回帰テストを追加した。
+
 ### スケジュール感
 
 ```

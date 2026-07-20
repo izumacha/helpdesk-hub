@@ -1,5 +1,5 @@
-// ユーザーリポジトリの契約 (port)、マッパー関数、Prisma 共通型をインポート
-import type { UserRepository } from '@/data/ports/user-repository';
+// ユーザーリポジトリの契約 (port)、一覧系メソッド共通の上限、マッパー関数、Prisma 共通型をインポート
+import { USER_LIST_LIMIT, type UserRepository } from '@/data/ports/user-repository';
 import { toUser, toUserSummary } from './mappers';
 import type { PrismaLike } from './types';
 
@@ -34,34 +34,40 @@ export function makeUserRepo(db: PrismaLike): UserRepository {
       return toUser(row);
     },
 
-    // 当該テナント内の agent または admin を名前順で取得 (担当者候補)
+    // 当該テナント内の agent または admin を名前順で取得 (担当者候補)。
+    // 監査で発見したギャップ対応: USER_LIST_LIMIT で上限を設ける (§8 一覧取得は上限必須)
     async listAgents(tenantId) {
       const rows = await db.user.findMany({
         where: { tenantId, role: { in: ['agent', 'admin'] } }, // テナント + ロールで絞る
         select: { id: true, name: true }, // 必要列のみ
         orderBy: { name: 'asc' }, // 名前昇順
+        take: USER_LIST_LIMIT, // 上限 (Enterprise はスタッフ数無制限のため全件走査を防ぐ)
       });
       // 各行を UserSummary に変換
       return rows.map(toUserSummary);
     },
 
     // 当該テナント内の全ユーザー (ロール問わず) を名前順で取得 (フォローアップ 2026-07-14:
-    // CSV インポートの「起票者」列名解決用。起票者は依頼者もなり得るため listAgents では絞り込めない)
+    // CSV インポートの「起票者」列名解決用。起票者は依頼者もなり得るため listAgents では絞り込めない)。
+    // 監査で発見したギャップ対応: USER_LIST_LIMIT で上限を設ける
     async listByTenant(tenantId) {
       const rows = await db.user.findMany({
         where: { tenantId }, // テナントのみで絞る (ロール不問)
         select: { id: true, name: true }, // 必要列のみ
         orderBy: { name: 'asc' }, // 名前昇順
+        take: USER_LIST_LIMIT, // 上限
       });
       // 各行を UserSummary に変換
       return rows.map(toUserSummary);
     },
 
-    // 当該テナント内の agent または admin の ID だけを取得 (通知一斉送信用)
+    // 当該テナント内の agent または admin の ID だけを取得 (通知一斉送信用)。
+    // 監査で発見したギャップ対応: USER_LIST_LIMIT で上限を設ける
     async listAgentIds(tenantId) {
       const rows = await db.user.findMany({
         where: { tenantId, role: { in: ['agent', 'admin'] } }, // テナント + ロールで絞る
         select: { id: true }, // id だけ
+        take: USER_LIST_LIMIT, // 上限
       });
       // id の配列に変換して返す
       return rows.map((r) => r.id);
@@ -79,21 +85,25 @@ export function makeUserRepo(db: PrismaLike): UserRepository {
       return rows.map(toUserSummary);
     },
 
-    // 当該テナント内の agent / admin の id + email を一括取得 (一斉メール送信用。N+1 回避)
+    // 当該テナント内の agent / admin の id + email を一括取得 (一斉メール送信用。N+1 回避)。
+    // 監査で発見したギャップ対応: USER_LIST_LIMIT で上限を設ける
     async listAgentEmails(tenantId) {
       const rows = await db.user.findMany({
         where: { tenantId, role: { in: ['agent', 'admin'] } }, // テナント + ロールで絞る
         select: { id: true, email: true }, // 必要列のみ
+        take: USER_LIST_LIMIT, // 上限
       });
       // { id, email } の配列をそのまま返す (追加の変換は不要)
       return rows;
     },
 
-    // §7.2 Free trial 終了リマインダー等、課金関連の通知先として admin のみの id + email を取得
+    // §7.2 Free trial 終了リマインダー等、課金関連の通知先として admin のみの id + email を取得。
+    // 監査で発見したギャップ対応: USER_LIST_LIMIT で上限を設ける
     async listAdminEmails(tenantId) {
       const rows = await db.user.findMany({
         where: { tenantId, role: 'admin' }, // テナント + admin のみで絞る (agent は含まない)
         select: { id: true, email: true }, // 必要列のみ
+        take: USER_LIST_LIMIT, // 上限
       });
       // { id, email } の配列をそのまま返す (追加の変換は不要)
       return rows;

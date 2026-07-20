@@ -29,6 +29,14 @@ export const SIGNUP_RATE_LIMIT_MAX = 5;
 // テナント/ユーザー単位ではなくエンドポイント全体で発行数を頭打ちにする (§9 公開エンドポイント保護)
 export const SIGNUP_REQUEST_GLOBAL_RATE_LIMIT = { limit: 20, windowMs: 60_000 } as const;
 
+// 監査で発見したギャップ対応 (2026-07-20): 上記は「発行 (requestSignup)」側のみを守っており、
+// 「完了 (completeSignup)」側には全体レート制限が一切なかった。completeSignup は公開
+// (未認証) アクションかつ Serializable トランザクションでテナント + 初代管理者を作成する
+// 重い処理のため、accept-invitation.ts の INVITE_ACCEPT_GLOBAL_RATE_LIMIT と同じ設計
+// (固定キーでエンドポイント全体を頭打ちにする) を適用する。値も同じ 1 分 30 件に揃える
+// (テナント作成という同種の重さの操作であり、防御水準を割る理由がないため)
+export const SIGNUP_COMPLETE_GLOBAL_RATE_LIMIT = { limit: 30, windowMs: 60_000 } as const;
+
 // 指定した baseUrl と生トークンから、サインアップ完了ページの URL を組み立てる
 // 例: buildSignupCompleteUrl('http://localhost:3000', 'xxx') -> 'http://localhost:3000/signup/complete?token=xxx'
 export function buildSignupCompleteUrl(baseUrl: string, rawToken: string): string {

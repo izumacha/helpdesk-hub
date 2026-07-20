@@ -1,7 +1,8 @@
-// 通知リポジトリの契約 (port)、マッパー、Prisma 共通型をインポート
-import type {
-  NotificationListItem,
-  NotificationRepository,
+// 通知リポジトリの契約 (port)・上限クランプ定数、マッパー、Prisma 共通型をインポート
+import {
+  NOTIFICATION_LIST_MAX_LIMIT,
+  type NotificationListItem,
+  type NotificationRepository,
 } from '@/data/ports/notification-repository';
 import { toNotification } from './mappers';
 import type { PrismaLike } from './types';
@@ -44,12 +45,14 @@ export function makeNotificationRepo(db: PrismaLike): NotificationRepository {
       return db.notification.count({ where: { tenantId, userId, read: false } });
     },
 
-    // 指定ユーザーの通知を新しい順に limit 件取得 (関連チケット付き、tenantId スコープ)
+    // 指定ユーザーの通知を新しい順に limit 件取得 (関連チケット付き、tenantId スコープ)。
+    // 監査で発見したギャップ対応: 呼び出し側の limit をそのまま信頼せず、
+    // NOTIFICATION_LIST_MAX_LIMIT を超えないようクランプする (§8 一覧取得は必ず上限を持たせる)
     async list(userId, { limit }, tenantId) {
       const rows = await db.notification.findMany({
         where: { tenantId, userId }, // テナント + ユーザーで絞る
         orderBy: { createdAt: 'desc' }, // 新しい順
-        take: limit, // 件数上限
+        take: Math.min(limit, NOTIFICATION_LIST_MAX_LIMIT), // 件数上限 (呼び出し側の指定値をクランプ)
         include: { ticket: { select: { id: true, title: true } } }, // 関連チケットを JOIN
       });
       // NotificationListItem 形式に整形して返す

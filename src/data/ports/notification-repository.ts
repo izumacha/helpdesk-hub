@@ -1,6 +1,16 @@
 // ドメイン型 (通知本体/種別) をインポート
 import type { Notification, NotificationType } from '@/domain/types';
 
+// 監査で発見したギャップ対応 (2026-07-20): 他の一覧系リポジトリ (FaqRepository /
+// LocationRepository / CategoryRepository / UserRepository) はいずれもアダプタ自身が
+// 呼び出し側の limit をクランプするため、呼び出し元が誤って大きな値を渡してもクエリ自体は
+// 有界のままになる。NotificationRepository.list だけは limit を無条件に信頼しており
+// (現状は唯一の呼び出し元 `/notifications` が常に 50 を渡すため実害はないが)、
+// このリポジトリだけが「アダプタが自身の上限を保証する」という規約から外れていた。
+// 表示用の一覧 (件数無制限の一括処理用途は無い) なので、他の表示用上限
+// (LOCATION_LIST_LIMIT/CATEGORY_LIST_LIMIT = 200) と同じ規模のクランプ値を設ける
+export const NOTIFICATION_LIST_MAX_LIMIT = 200;
+
 // 通知を作成するときに渡す入力値
 export interface CreateNotificationInput {
   userId: string; // 受信者 ID
@@ -27,10 +37,6 @@ export interface NotificationRepository {
   // ticketId 無し (チケット非関連の通知) はこの検証をスキップする。
   create(input: CreateNotificationInput): Promise<Notification>;
   countUnread(userId: string, tenantId: string): Promise<number>; // 未読件数を取得
-  list(
-    userId: string,
-    opts: { limit: number },
-    tenantId: string,
-  ): Promise<NotificationListItem[]>; // 一覧取得
+  list(userId: string, opts: { limit: number }, tenantId: string): Promise<NotificationListItem[]>; // 一覧取得
   markAllRead(userId: string, tenantId: string): Promise<void>; // 全通知を既読にする (ユーザー + テナントスコープ)
 }

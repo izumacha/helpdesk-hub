@@ -7,9 +7,12 @@
 // 現在のセッション取得
 import { auth } from '@/lib/auth';
 
-// テナント管理者ゲートの検証結果 (userId は §4.2 監査ログ記録で「誰が」を残すために使う)
+// テナント管理者ゲートの検証結果 (userId は §4.2 監査ログ記録で「誰が」を残すために使う。
+// email は Stripe Checkout の customer_email フォールバック等、呼び出し元がセッションの
+// メールアドレスを追加で必要とするケース向け。auth() で取得済みの session.user から
+// そのまま返すだけなので、呼び出し元が別途 auth() を呼び直す必要はない)
 export type TenantAdminGate =
-  | { ok: true; tenantId: string; userId: string }
+  | { ok: true; tenantId: string; userId: string; email: string | null | undefined }
   | { ok: false; error: string };
 
 // 「ログイン済み・admin・自テナント」をまとめて検証する。プランは問わない
@@ -24,6 +27,12 @@ export async function assertTenantAdmin(): Promise<TenantAdminGate> {
   if (session.user.role !== 'admin') {
     return { ok: false, error: 'この操作は管理者のみ実行できます' };
   }
-  // セッション由来の tenantId / userId を返す (クロステナント操作防止・監査ログの操作者記録に使う)
-  return { ok: true, tenantId: session.user.tenantId, userId: session.user.id };
+  // セッション由来の tenantId / userId / email を返す (クロステナント操作防止・監査ログの
+  // 操作者記録・Stripe 等の呼び出し元向け情報に使う)
+  return {
+    ok: true,
+    tenantId: session.user.tenantId,
+    userId: session.user.id,
+    email: session.user.email,
+  };
 }

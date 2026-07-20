@@ -113,15 +113,41 @@ export async function updateSsoConfig(
     };
   }
 
+  // 監査で発見したギャップ対応: このフォームは常に現在値を全項目 defaultValue で事前入力して
+  // 丸ごと再送信する構成のため、読み取り時点の値を expected として渡し、書き込み直前にも
+  // 現在値が変わっていないことを保証する CAS にする (update-line-config.ts と同じ設計)。
+  // これが無いと、他の管理者が IdP 証明書をローテーションした直後にこのリクエストが割り込むと、
+  // 古い証明書のまま上書きしてローテーションを黙って巻き戻してしまう。
+  const existing = await repos.ssoConfigs.findByTenant(tenantId);
+
   try {
     // SSO 設定を upsert する (tenantId スコープで他テナントに影響しない)
-    await repos.ssoConfigs.upsert({
+    const updated = await repos.ssoConfigs.upsert({
       tenantId,
       enabled,
       idpEntityId,
       idpSsoUrl,
       idpX509Cert: cert,
+      // 既存設定がある場合のみ expected を渡す (新規作成時は比較対象が無いため無条件で作成する)
+      ...(existing
+        ? {
+            expected: {
+              enabled: existing.enabled,
+              idpEntityId: existing.idpEntityId,
+              idpSsoUrl: existing.idpSsoUrl,
+              idpX509Cert: existing.idpX509Cert,
+            },
+          }
+        : {}),
     });
+    if (!updated) {
+      // 競合時もフォームの表示を最新化できるよう再レンダリングしておく
+      // (update-line-config.ts と同じ「エラー時に最新状態を取り直す」方針)
+      revalidatePath('/settings');
+      return {
+        error: '他の管理者による変更と競合しました。最新の設定を確認してから再度お試しください。',
+      };
+    }
     // 設定ページのキャッシュを無効化して結果をすぐ反映する
     revalidatePath('/settings');
 

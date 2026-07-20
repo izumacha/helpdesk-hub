@@ -155,8 +155,29 @@ describe.runIf(SHOULD_RUN)('LocationRepository (prisma adapter)', () => {
       name: '新名称',
       description: '新説明',
     });
-    expect(updated.name).toBe('新名称');
-    expect(updated.description).toBe('新説明');
+    // expected 未指定の無条件更新なので null にはならない
+    expect(updated?.name).toBe('新名称');
+    expect(updated?.description).toBe('新説明');
+  });
+
+  // 監査で発見したギャップ対応: expected (CAS) 指定時は、書き込み直前の現在値と一致する
+  // ときだけ更新され、一致しなければ null (競合) を返して上書きしないことを実 DB で確認する
+  it('expectedが現在値と食い違う場合は更新されずnullを返す (実DB)', async () => {
+    const repos = buildPrismaRepos(prisma);
+    const location = await repos.locations.create({
+      tenantId: TENANT_A,
+      name: '現在の名前',
+      description: '現在の説明',
+    });
+    const result = await repos.locations.update(
+      location.id,
+      TENANT_A,
+      { name: '新しい名前', description: '新しい説明' },
+      { name: '食い違う古い名前', description: '現在の説明' },
+    );
+    expect(result).toBeNull();
+    const found = await repos.locations.findById(location.id, TENANT_A);
+    expect(found?.name).toBe('現在の名前');
   });
 
   // 他テナントの拠点 ID を更新しようとするとエラーになる (fail-closed)。
