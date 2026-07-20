@@ -126,11 +126,24 @@ export function makeTenantRepo(store: Store): TenantRepository {
       return true;
     },
 
-    // Phase 4 課金: Stripe の連携情報を一括更新する (Webhook 受信時に呼ぶ)
-    async updateStripeSubscription(id, data) {
-      // 対象テナントを Map から取得 (存在しなければエラー)
+    // Phase 4 課金: Stripe の連携情報を一括更新する (Webhook 受信時に呼ぶ)。
+    // フォローアップ (監査で発見したギャップ 2026-07-20): Prisma アダプタの updateMany 版 CAS と
+    // 同じ契約。eventCreatedAt が渡され、かつ保存済みの stripeEventProcessedAt がそれより新しい
+    // (=今回のイベントの方が古い) ときは更新せず false を返す (Stripe Webhook の配信順序非保証対策)
+    async updateStripeSubscription(id, data, eventCreatedAt) {
+      // 対象テナントを Map から取得 (存在しなければ updateMode/updateNotificationChannels と
+      // 同じく false を返す。Prisma の updateMany が 0 件更新になる場合と同じ扱いに揃える)
       const t = store.tenants.get(id);
-      if (!t) throw new Error('テナントが見つかりません');
+      if (!t) return false;
+      // 順序チェック: 保存済みの直近処理イベント時刻が、今回のイベントより新しければ古いイベントとして無視する
+      if (
+        eventCreatedAt &&
+        t.stripeEventProcessedAt &&
+        t.stripeEventProcessedAt.getTime() > eventCreatedAt.getTime()
+      ) {
+        // 更新せず false を返す (呼び出し側は「古いイベントとしてスキップされた」と解釈する)
+        return false;
+      }
       // 渡されたフィールドだけ差し替える (undefined はスキップ)
       const updated: Tenant = {
         ...t,
@@ -146,10 +159,12 @@ export function makeTenantRepo(store: Store): TenantRepository {
             ? data.stripeSubscriptionStatus
             : t.stripeSubscriptionStatus,
         subscriptionPlan: data.subscriptionPlan ?? t.subscriptionPlan,
+        // eventCreatedAt を渡された場合のみ、直近処理イベント時刻を更新する
+        stripeEventProcessedAt: eventCreatedAt ?? t.stripeEventProcessedAt,
       };
       store.tenants.set(id, updated);
-      // 防御的コピーを返す
-      return { ...updated };
+      // 更新できたことを返す
+      return true;
     },
 
     // §7.2 Free trial 終了リマインダー用: free プランかつトライアル進行中 (trialEndsAt > now)

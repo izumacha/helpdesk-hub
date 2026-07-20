@@ -109,16 +109,20 @@ async function handleStripeEvent(event: Stripe.Event): Promise<void> {
   // unknown を経由することで型安全にキャストする (Stripe の各イベントオブジェクト型は
   // index signature を持たないため直接 Record にはキャストできない)
   const obj = event.data.object as unknown as Record<string, unknown>;
+  // フォローアップ (監査で発見したギャップ 2026-07-20): Stripe イベント自体の発生時刻
+  // (Unix 秒)。配信順序が保証されないため、適用可否の CAS 判定に使う (event.created は
+  // Stripe.Event が必ず持つフィールド)
+  const eventCreatedAt = new Date(event.created * 1000);
 
   // サブスクリプション作成・更新イベント: プランと状態を更新する
   if (type === STRIPE_EVENT_SUBSCRIPTION_CREATED || type === STRIPE_EVENT_SUBSCRIPTION_UPDATED) {
-    await handleSubscriptionUpsert(obj);
+    await handleSubscriptionUpsert(obj, eventCreatedAt);
     return;
   }
 
   // サブスクリプション削除イベント: free プランに降格し、Stripe 連携情報を保持する
   if (type === STRIPE_EVENT_SUBSCRIPTION_DELETED) {
-    await handleSubscriptionDeleted(obj);
+    await handleSubscriptionDeleted(obj, eventCreatedAt);
     return;
   }
 
@@ -136,6 +140,11 @@ async function handleStripeEvent(event: Stripe.Event): Promise<void> {
 // mode の読み取りは呼び出し元からではなく、トランザクション内で tx.tenants.findById により
 // 都度読み直す (呼び出し元の existingTenant はトランザクション開始前に取得したスナップショットで、
 // その後に届いた別の Stripe イベントや管理者操作で mode が変わっていても反映されない古い値になり得るため)。
+//
+// フォローアップ (監査で発見したギャップ 2026-07-20): Stripe は Webhook イベントの配信順序を
+// 保証しない (公式ドキュメント記載。リトライ・ネットワーク遅延で発生順とは異なる順序で届きうる)。
+// eventCreatedAt (今回のイベント自体の発生時刻) を updateStripeSubscription の CAS 判定に渡し、
+// 既により新しいイベントが適用済みなら今回の更新は無視する (古いイベントで新しい状態を巻き戻さない)。
 async function applyPlanChange(
   tenantId: string,
   stripeFields: {
@@ -144,16 +153,24 @@ async function applyPlanChange(
     stripeSubscriptionStatus: string;
     subscriptionPlan: SubscriptionPlan;
   },
+  eventCreatedAt: Date,
 ): Promise<void> {
-  const { shouldResetMode, planChanged } = await uow.run(async (tx) => {
+  const { applied, shouldResetMode, planChanged } = await uow.run(async (tx) => {
     // トランザクション内で最新のテナント状態を読み直す (呼び出し元のスナップショットに頼らない)
     const tenant = await tx.tenants.findById(tenantId);
     // 呼び出し元で存在確認済みだが、念のためここでも安全側 (何もしない) に倒す
-    if (!tenant) return { shouldResetMode: false, planChanged: false };
+    if (!tenant) return { applied: false, shouldResetMode: false, planChanged: false };
     // /code-review ultra 指摘対応 (2026-07-13): 監査ログに残すため、更新前のプランを保持しておく
     const previousPlan = tenant.subscriptionPlan;
-    // Stripe 連携情報とプランを反映する
-    await tx.tenants.updateStripeSubscription(tenantId, stripeFields);
+    // Stripe 連携情報とプランを反映する (CAS: 保存済みの直近処理イベントより古ければ 0 件更新で false)
+    const applied = await tx.tenants.updateStripeSubscription(
+      tenantId,
+      stripeFields,
+      eventCreatedAt,
+    );
+    // 古いイベントとして無視された場合、mode リセット・監査ログ記録も行わない
+    // (このイベントの subscriptionPlan は既に上書きされた古い情報のため判断材料にしない)
+    if (!applied) return { applied: false, shouldResetMode: false, planChanged: false };
     // 現在 Pro モードで運用中かつ、新プランが Pro モードを許可しないときだけモードを戻す
     const shouldReset = tenant.mode === 'pro' && !isProModeAllowed(stripeFields.subscriptionPlan);
     if (shouldReset) {
@@ -161,10 +178,21 @@ async function applyPlanChange(
       await tx.tenants.updateMode(tenantId, 'lite');
     }
     return {
+      applied: true,
       shouldResetMode: shouldReset,
       planChanged: previousPlan !== stripeFields.subscriptionPlan,
     };
   });
+
+  // 古いイベントとして無視された場合はログに残して終了する (Stripe には 200 を返し再送させない。
+  // 呼び出し元の POST ハンドラは常に 200 系で応答するため、ここで throw せず正常終了する)
+  if (!applied) {
+    console.warn(
+      `[stripe-webhook] テナント ${tenantId}: より新しい Stripe イベントが適用済みのため、` +
+        `このイベント (event.created=${eventCreatedAt.toISOString()}) は無視しました`,
+    );
+    return;
+  }
 
   // §4.3 フォローアップ (2026-07-10): モードが強制的に戻された場合は監査ログにも記録する。
   // §4.3 で tenant_mode_update アクションを追加した際は管理者による手動切替 (update-tenant-mode.ts)
@@ -203,6 +231,7 @@ async function applyPlanChange(
 // サブスクリプション作成・更新を処理する: テナントのプランと状態を最新に保つ
 async function handleSubscriptionUpsert(
   subscriptionObject: Record<string, unknown>,
+  eventCreatedAt: Date, // このイベント自体の発生時刻 (配信順序が保証されないための CAS 判定に使う)
 ): Promise<void> {
   // Stripe のサブスクリプションオブジェクトから必要なフィールドを取り出す
   const subscriptionId = subscriptionObject['id'] as string | undefined;
@@ -251,17 +280,22 @@ async function handleSubscriptionUpsert(
   const nextPlan = existingTenant.subscriptionPlan === 'enterprise' ? 'enterprise' : plan;
 
   // テナントのサブスク情報を更新する (ダウングレードなら Pro モードも同時に強制解除する)
-  await applyPlanChange(tenantId, {
-    stripeCustomerId: customerId,
-    stripeSubscriptionId: subscriptionId,
-    stripeSubscriptionStatus: status,
-    subscriptionPlan: nextPlan,
-  });
+  await applyPlanChange(
+    tenantId,
+    {
+      stripeCustomerId: customerId,
+      stripeSubscriptionId: subscriptionId,
+      stripeSubscriptionStatus: status,
+      subscriptionPlan: nextPlan,
+    },
+    eventCreatedAt,
+  );
 }
 
 // サブスクリプション削除を処理する: free プランに降格してキャンセル状態を記録する
 async function handleSubscriptionDeleted(
   subscriptionObject: Record<string, unknown>,
+  eventCreatedAt: Date, // このイベント自体の発生時刻 (配信順序が保証されないための CAS 判定に使う)
 ): Promise<void> {
   // サブスクリプション ID と status を取得する
   const subscriptionId = subscriptionObject['id'] as string | undefined;
@@ -295,10 +329,14 @@ async function handleSubscriptionDeleted(
 
   // サブスクリプション削除後は (Enterprise を除き) free に降格し、canceled 状態を記録する
   // (free は Pro モード対象外なので Pro モードも同時に強制解除される)
-  await applyPlanChange(tenantId, {
-    stripeCustomerId: customerId,
-    stripeSubscriptionId: subscriptionId,
-    stripeSubscriptionStatus: 'canceled', // Stripe の deleted イベントは canceled 扱いにする
-    subscriptionPlan: nextPlan, // Enterprise 以外は free に降格
-  });
+  await applyPlanChange(
+    tenantId,
+    {
+      stripeCustomerId: customerId,
+      stripeSubscriptionId: subscriptionId,
+      stripeSubscriptionStatus: 'canceled', // Stripe の deleted イベントは canceled 扱いにする
+      subscriptionPlan: nextPlan, // Enterprise 以外は free に降格
+    },
+    eventCreatedAt,
+  );
 }

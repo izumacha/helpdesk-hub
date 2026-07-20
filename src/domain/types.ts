@@ -164,6 +164,11 @@ export interface Tenant {
   // 既存フィクスチャ・呼び出しを壊さないよう任意 (optional) とし、アダプタは常に null か値で埋める
   // (User.lineUserId と同じパターン)
   trialReminderLastSentDaysBefore?: number | null;
+  // Stripe Webhook の配信順序保証がないことへの対策 (2026-07-20 フォローアップ)。直近に適用した
+  // イベントの発生時刻 (event.created)。未処理なら null。既存フィクスチャ・呼び出しを壊さない
+  // よう任意 (optional) とし、アダプタは常に null か値で埋める (trialReminderLastSentDaysBefore
+  // と同じパターン)
+  stripeEventProcessedAt?: Date | null;
   createdAt: Date; // 作成日時
 }
 
