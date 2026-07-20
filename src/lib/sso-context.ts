@@ -56,8 +56,8 @@ export async function assertSsoConfigAdmin(): Promise<SsoAdminGate> {
   if (!isSsoAllowed(tenant.subscriptionPlan)) {
     return { ok: false, error: 'SSO は Enterprise プランでのみ利用できます。' };
   }
-  // すべて満たしたので tenantId / userId を返す
-  return { ok: true, tenantId: gate.tenantId, userId: gate.userId };
+  // すべて満たしたので共通プリミティブの結果 (tenantId/userId/email) をそのまま返す
+  return gate;
 }
 
 // SSO 設定の削除専用ゲート: 「ログイン済み・admin・自テナント」のみを検証し、プランチェックは
