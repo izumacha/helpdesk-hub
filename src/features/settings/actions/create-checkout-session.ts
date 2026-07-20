@@ -5,11 +5,10 @@
 // Stripe の支払いページへリダイレクトさせる URL を返す。
 // docs/smb-dx-pivot-plan.md §6「マネタイズ・販売戦略」
 
-// セッション取得 (customer_email のフォールバックに session.user.email が必要なため、
-// ゲート通過後も引き続き利用する)
-import { auth } from '@/lib/auth';
 // 「ログイン済み・admin・自テナント」を検証する共有ゲート (create-location.ts 等と同じ
-// 非throw系アクションで共有する。§6 DRY: 個別に複製していた認証+ロールブロックを集約)
+// 非throw系アクションで共有する。§6 DRY: 個別に複製していた認証+ロールブロックを集約)。
+// customer_email のフォールバックに使う email もこのゲートの戻り値から取得する
+// (auth() を呼び直さず、ゲートが既に読んだ session.user をそのまま使う)
 import { assertTenantAdmin } from '@/lib/tenant-admin-gate';
 // テナントリポジトリ
 import { repos } from '@/data';
@@ -40,10 +39,6 @@ export async function createCheckoutSession(
   if (!gate.ok) return { error: gate.error };
   // 検証済みの tenantId (セッション由来)
   const tenantId = gate.tenantId;
-  // customer_email のフォールバックに使うメールアドレスを取得する (Auth.js v5 の auth() は
-  // React の cache() でリクエスト単位にメモ化されるため、assertTenantAdmin() 内の呼び出しと
-  // 合わせて二重に session を取得し直すコストは発生しない)
-  const session = await auth();
 
   // Free プランへのアップグレードはチェックアウト不要 (Webhook のキャンセル処理が担当)
   if (targetPlan === 'free') {
@@ -113,7 +108,7 @@ export async function createCheckoutSession(
       // customer と customer_email は同時に指定できないため、排他的に渡す
       ...(tenant.stripeCustomerId
         ? { customer: tenant.stripeCustomerId } // 既存 Customer に紐づける
-        : { customer_email: session?.user?.email ?? undefined }), // 新規 Customer のメール事前入力
+        : { customer_email: gate.email ?? undefined }), // 新規 Customer のメール事前入力
       // Webhook でテナントを特定するためにメタデータを埋め込む
       // Stripe のメタデータは文字列のキーバリューペアのみ使用可
       subscription_data: {
