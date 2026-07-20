@@ -16,10 +16,12 @@
 
 // JSON レスポンスヘルパー
 import { NextResponse } from 'next/server';
-// 共有シークレットの定数時間比較に使う (Node ランタイム前提のルート)
-import { timingSafeEqual } from 'node:crypto';
 // ページキャッシュ無効化 (スレッド継続でコメント追記したチケット詳細を再描画させる)
 import { revalidatePath } from 'next/cache';
+// 監査で発見したギャップ対応: 共有シークレットの定数時間比較は LINE Webhook / 内部 cron
+// エンドポイント (trial-reminders / sla-reminders) と同じ共通ヘルパーを使う (§6 DRY。
+// このルートだけ timingSafeEqual を直接使った自前実装が残っていた)
+import { constantTimeStringEqual } from '@/lib/timing-safe-compare';
 // データ層 (テナント / ユーザー / チケットのリポジトリ束 + トランザクション境界)
 import { repos, uow } from '@/data';
 // Webhook 再送に対する冪等起票の共通ヘルパー (LINE/メールで共有)。フォローアップ (2026-07-13):
@@ -103,17 +105,6 @@ class BodyTooLargeError extends Error {
     // (RateLimitError が this.name を設定しているのと同じ理由 - src/lib/rate-limit.ts:37 参照)
     this.name = 'BodyTooLargeError';
   }
-}
-
-// 2 つのシークレット文字列を定数時間で比較する (タイミング攻撃対策)。
-// 長さが違う場合は早期 false (情報量は長さのみで実用上問題なし)。
-function secretsMatch(provided: string, expected: string): boolean {
-  // バイト列化して長さ比較 (長さが違えば timingSafeEqual が例外を投げるため先に弾く)
-  const a = Buffer.from(provided);
-  const b = Buffer.from(expected);
-  if (a.length !== b.length) return false;
-  // 同じ長さなら定数時間比較する
-  return timingSafeEqual(a, b);
 }
 
 // リクエストから提示されたシークレットを取り出す。
@@ -381,7 +372,7 @@ export async function POST(req: Request) {
 
   // 提示されたシークレットを取り出して定数時間比較する (ヘッダのみ受け付ける)
   const provided = readProvidedSecret(req);
-  if (!provided || !secretsMatch(provided, expectedSecret)) {
+  if (!provided || !constantTimeStringEqual(provided, expectedSecret)) {
     // 不一致は 401 (なりすまし POST を拒否)
     return NextResponse.json({ error: '認証に失敗しました' }, { status: 401 });
   }

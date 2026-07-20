@@ -12,8 +12,11 @@
 
 // Vitest のテスト DSL (describe=グループ, it=ケース, beforeEach=前処理, expect=検証)
 import { describe, expect, it, beforeEach } from 'vitest';
-// 検証対象である通知リポジトリの契約 (port) 型
-import type { NotificationRepository } from '@/data/ports/notification-repository';
+// 検証対象である通知リポジトリの契約 (port) 型・上限クランプ定数
+import {
+  NOTIFICATION_LIST_MAX_LIMIT,
+  type NotificationRepository,
+} from '@/data/ports/notification-repository';
 
 // 契約テストが利用する文脈 (アダプタ別に差し替え可能)
 export interface NotificationContractContext {
@@ -112,6 +115,30 @@ export function runNotificationRepositoryContract(
 
       // テナント B には userA の通知が存在しないので、A 側の通知は未読のまま残る
       expect(await ctx.repo.countUnread(userAId, tenantA)).toBe(1);
+    });
+
+    // 監査で発見したギャップ対応: 呼び出し側が NOTIFICATION_LIST_MAX_LIMIT を超える limit を
+    // 渡しても、アダプタ自身が上限でクランプすること (§8 一覧取得は必ず上限を持たせる。
+    // 他の一覧系リポジトリと同じくアダプタが自身の上限を保証する規約に揃える)
+    it('list clamps the caller-provided limit to NOTIFICATION_LIST_MAX_LIMIT', async () => {
+      // テナント A とそのユーザーを用意する
+      const { tenantA, userAId } = await ctx.seedTwoTenants();
+      // 上限を超える件数の通知を作成する
+      for (let i = 0; i < NOTIFICATION_LIST_MAX_LIMIT + 3; i += 1) {
+        await ctx.repo.create({
+          userId: userAId,
+          type: 'assigned',
+          message: `通知${i}`,
+          tenantId: tenantA,
+        });
+      }
+      // 上限を大きく超える limit を指定しても、NOTIFICATION_LIST_MAX_LIMIT 件までに切り詰められる
+      const listed = await ctx.repo.list(
+        userAId,
+        { limit: NOTIFICATION_LIST_MAX_LIMIT + 1000 },
+        tenantA,
+      );
+      expect(listed).toHaveLength(NOTIFICATION_LIST_MAX_LIMIT);
     });
   });
 }
