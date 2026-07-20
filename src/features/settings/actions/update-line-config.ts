@@ -86,13 +86,36 @@ export async function updateLineConfig(
   }
 
   try {
-    // LINE 連携設定を upsert する (tenantId スコープで他テナントに影響しない)
-    await repos.lineConfigs.upsert({
+    // LINE 連携設定を upsert する (tenantId スコープで他テナントに影響しない)。
+    // フォローアップ (監査で発見したギャップ): channelSecret/channelAccessToken が空欄の
+    // ときは上で読み取った existing の値を引き継ぐ (書き込み専用フィールドの仕様)。
+    // 既存設定がある場合はその読み取り時点の値を expected として渡し、書き込み直前にも
+    // 現在値が変わっていないことを保証する CAS にする。これが無いと、他の管理者が
+    // シークレットをローテーションした直後にこのリクエストが割り込むと、古い値のまま
+    // 上書きしてローテーションを黙って巻き戻してしまう (update-notification-channels.ts の
+    // updateNotificationChannels と同じ TOCTOU)。新規作成時 (existing が null) は
+    // 比較対象の既存値が無いため expected を渡さず、従来どおり無条件で作成する。
+    const updated = await repos.lineConfigs.upsert({
       tenantId,
       channelSecret,
       channelAccessToken,
       botUserId,
+      ...(existing
+        ? {
+            expected: {
+              channelSecret: existing.channelSecret,
+              channelAccessToken: existing.channelAccessToken,
+              botUserId: existing.botUserId,
+            },
+          }
+        : {}),
     });
+    if (!updated) {
+      // 競合時もフォームの表示を最新化できるよう再レンダリングしておく
+      // (update-notification-channels.ts と同じ「エラー時に最新状態を取り直す」方針)
+      revalidatePath('/settings');
+      return { error: '他の管理者による変更と競合しました。最新の設定を確認してから再度お試しください。' };
+    }
     // 設定ページのキャッシュを無効化して結果をすぐ反映する
     revalidatePath('/settings');
 

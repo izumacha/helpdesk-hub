@@ -199,4 +199,45 @@ describe('updateLineConfig', () => {
     expect(result.error).toEqual(expect.any(String));
     expect(result.success).toBeUndefined();
   });
+
+  // フォローアップ (監査で発見したギャップ): 読み取り (existing) →検証→無条件書き込みの
+  // check-then-act (TOCTOU) だった。空欄送信で「既存値を維持」する仕様のため、他の管理者が
+  // 並行してシークレットをローテーションした直後にこのリクエストが割り込むと、古い値のまま
+  // 上書きしてローテーションを黙って巻き戻してしまう。CAS 化により 0 件更新 (競合) を検知し、
+  // 後勝ちで上書きしないことを確認する (update-notification-channels.test.ts と同じ手法)
+  it('他の管理者による並行更新と競合すると保存されず、その値を上書きしない', async () => {
+    seedTenant('pro');
+    const { updateLineConfig } = await import('@/features/settings/actions/update-line-config');
+    // 1 回目: 通常どおり全項目を入力して作成 (これが「読み取り時点」の値になる)
+    await updateLineConfig(
+      {},
+      makeForm({
+        channelSecret: 'original-secret',
+        channelAccessToken: 'original-token',
+        botUserId: BOT_USER_ID_A,
+      }),
+    );
+    const stale = await repos.lineConfigs.findByTenant(TENANT_ID);
+    if (!stale) throw new Error('seed missing line config');
+    // 並行更新を模す: 先に別の管理者がシークレットをローテーションしたことにする
+    await repos.lineConfigs.upsert({
+      tenantId: TENANT_ID,
+      channelSecret: 'rotated-by-concurrent-admin',
+      channelAccessToken: 'rotated-by-concurrent-admin-token',
+      botUserId: BOT_USER_ID_A,
+    });
+    // findByTenant だけが古いスナップショット (ローテーション前) を返す状況を作る (TOCTOU の再現)
+    vi.spyOn(repos.lineConfigs, 'findByTenant').mockResolvedValueOnce(stale);
+    // このリクエストは botUserId だけ変更し、シークレット/トークンは空欄 (=既存値維持) のまま送信する
+    const result = await updateLineConfig({}, makeForm({ botUserId: BOT_USER_ID_B }));
+    expect(result.error).toBe(
+      '他の管理者による変更と競合しました。最新の設定を確認してから再度お試しください。',
+    );
+    expect(result.success).toBeUndefined();
+    // 並行更新 (ローテーション後) の値が上書きされずに残っている
+    const saved = await repos.lineConfigs.findByTenant(TENANT_ID);
+    expect(saved?.channelSecret).toBe('rotated-by-concurrent-admin');
+    expect(saved?.channelAccessToken).toBe('rotated-by-concurrent-admin-token');
+    expect(saved?.botUserId).toBe(BOT_USER_ID_A);
+  });
 });

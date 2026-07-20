@@ -47,9 +47,9 @@ describe('LineConfigRepository (memory)', () => {
   it('upsert で新規作成し findByTenant / findByBotUserId で取得できる', async () => {
     const botUserId = 'Ubbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
     const created = await repos.lineConfigs.upsert(sampleInput(TENANT_A, botUserId));
-    // 作成結果が入力どおりであること
-    expect(created.tenantId).toBe(TENANT_A);
-    expect(created.botUserId).toBe(botUserId);
+    // 作成結果が入力どおりであること (expected 未指定の無条件 upsert なので null にはならない)
+    expect(created?.tenantId).toBe(TENANT_A);
+    expect(created?.botUserId).toBe(botUserId);
     // tenantId からも botUserId からも同じ設定を取得できる
     const byTenant = await repos.lineConfigs.findByTenant(TENANT_A);
     expect(byTenant?.channelSecret).toBe(`secret-${TENANT_A}`);
@@ -68,10 +68,10 @@ describe('LineConfigRepository (memory)', () => {
       ...sampleInput(TENANT_A, botUserId2),
       channelSecret: 'new-secret',
     });
-    // ID は維持され (同一レコードの更新)、値だけ変わる
-    expect(second.id).toBe(first.id);
-    expect(second.botUserId).toBe(botUserId2);
-    expect(second.channelSecret).toBe('new-secret');
+    // ID は維持され (同一レコードの更新)、値だけ変わる (どちらも expected 未指定の無条件 upsert)
+    expect(second?.id).toBe(first?.id);
+    expect(second?.botUserId).toBe(botUserId2);
+    expect(second?.channelSecret).toBe('new-secret');
     // 旧 botUserId ではもう引けない
     expect(await repos.lineConfigs.findByBotUserId(botUserId1)).toBeNull();
   });
