@@ -60,9 +60,28 @@ export async function updateLocation(
     return { error: '拠点名は100文字以内で入力してください' };
   }
 
+  // 監査で発見したギャップ対応: この編集フォームは常に現在値を全項目 defaultValue で
+  // 事前入力して丸ごと再送信する構成のため、読み取り時点の値を expected として渡し、
+  // 書き込み直前にも現在値が変わっていないことを保証する CAS にする
+  // (update-line-config.ts / update-sso-config.ts と同じ設計)。
+  const existing = await repos.locations.findById(locationId, tenantId);
+
   try {
     // tenantId をスコープに含めて更新 (他テナントの拠点を変更できないよう保護)
-    await repos.locations.update(locationId, tenantId, { name, description });
+    const updated = await repos.locations.update(
+      locationId,
+      tenantId,
+      { name, description },
+      existing ? { name: existing.name, description: existing.description } : undefined,
+    );
+    if (!updated) {
+      // 競合時もフォームの表示を最新化できるよう再レンダリングしておく
+      // (update-line-config.ts と同じ「エラー時に最新状態を取り直す」方針)
+      revalidatePath('/settings');
+      return {
+        error: '他の管理者による変更と競合しました。最新の設定を確認してから再度お試しください。',
+      };
+    }
     // 設定ページのキャッシュを無効化して更新結果がすぐ反映されるようにする
     revalidatePath('/settings');
 

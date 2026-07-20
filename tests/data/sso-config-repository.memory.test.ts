@@ -17,7 +17,10 @@ const TENANT_B = 'tenant-b';
 let repos: Repos;
 
 // SSO 設定の入力サンプルを作るヘルパー
-function sampleInput(tenantId: string, overrides: Partial<{ enabled: boolean; idpEntityId: string }> = {}) {
+function sampleInput(
+  tenantId: string,
+  overrides: Partial<{ enabled: boolean; idpEntityId: string }> = {},
+) {
   return {
     tenantId, // 所属テナント
     enabled: overrides.enabled ?? true, // 既定は有効
@@ -43,10 +46,10 @@ describe('SsoConfigRepository (memory)', () => {
   it('upsert で新規作成し findByTenant で取得できる', async () => {
     // 新規作成する
     const created = await repos.ssoConfigs.upsert(sampleInput(TENANT_A));
-    // 作成結果が入力どおりであること
-    expect(created.tenantId).toBe(TENANT_A);
-    expect(created.enabled).toBe(true);
-    expect(created.idpEntityId).toBe(`https://idp.example.com/${TENANT_A}`);
+    // 作成結果が入力どおりであること (expected 未指定の無条件 upsert なので null にはならない)
+    expect(created?.tenantId).toBe(TENANT_A);
+    expect(created?.enabled).toBe(true);
+    expect(created?.idpEntityId).toBe(`https://idp.example.com/${TENANT_A}`);
     // 取得しても同じ内容であること
     const found = await repos.ssoConfigs.findByTenant(TENANT_A);
     expect(found?.idpSsoUrl).toBe('https://idp.example.com/sso');
@@ -60,10 +63,10 @@ describe('SsoConfigRepository (memory)', () => {
     const second = await repos.ssoConfigs.upsert(
       sampleInput(TENANT_A, { enabled: false, idpEntityId: 'https://new-idp.example.com' }),
     );
-    // ID は維持され (同一レコードの更新)、値だけ変わる
-    expect(second.id).toBe(first.id);
-    expect(second.enabled).toBe(false);
-    expect(second.idpEntityId).toBe('https://new-idp.example.com');
+    // ID は維持され (同一レコードの更新)、値だけ変わる (どちらも expected 未指定の無条件 upsert)
+    expect(second?.id).toBe(first?.id);
+    expect(second?.enabled).toBe(false);
+    expect(second?.idpEntityId).toBe('https://new-idp.example.com');
     // 取得結果も更新後の値
     const found = await repos.ssoConfigs.findByTenant(TENANT_A);
     expect(found?.enabled).toBe(false);
@@ -76,6 +79,49 @@ describe('SsoConfigRepository (memory)', () => {
     await repos.ssoConfigs.delete(TENANT_A);
     // 削除後は null
     expect(await repos.ssoConfigs.findByTenant(TENANT_A)).toBeNull();
+  });
+
+  // 監査で発見したギャップ対応: expected (CAS) 省略時は従来どおり無条件更新、
+  // expected 指定時は読み取り時点の値と一致するときだけ更新することを検証する
+  // (LineConfigRepository.upsert の同名テストと同じ設計)
+  it('expectedが現在値と一致しない場合は更新せずnullを返す', async () => {
+    // 現在値を作成する
+    const current = await repos.ssoConfigs.upsert(sampleInput(TENANT_A, { enabled: true }));
+    // 誤った (古い) expected を渡して更新を試みる
+    const result = await repos.ssoConfigs.upsert({
+      ...sampleInput(TENANT_A, { enabled: false }),
+      expected: {
+        enabled: false, // 実際の現在値 (true) と食い違う誤った期待値
+        idpEntityId: current!.idpEntityId,
+        idpSsoUrl: current!.idpSsoUrl,
+        idpX509Cert: current!.idpX509Cert,
+      },
+    });
+    // 競合とみなされ null を返す
+    expect(result).toBeNull();
+    // 実際の値は上書きされていない
+    const found = await repos.ssoConfigs.findByTenant(TENANT_A);
+    expect(found?.enabled).toBe(true);
+  });
+
+  // expected が現在値と一致すれば更新される
+  it('expectedが現在値と一致すれば更新できる', async () => {
+    // 現在値を作成する
+    const current = await repos.ssoConfigs.upsert(sampleInput(TENANT_A, { enabled: true }));
+    // 正しい expected (現在値そのもの) を渡して更新する
+    const result = await repos.ssoConfigs.upsert({
+      ...sampleInput(TENANT_A, { enabled: false }),
+      expected: {
+        enabled: current!.enabled,
+        idpEntityId: current!.idpEntityId,
+        idpSsoUrl: current!.idpSsoUrl,
+        idpX509Cert: current!.idpX509Cert,
+      },
+    });
+    // 更新後の値が返る
+    expect(result?.enabled).toBe(false);
+    const found = await repos.ssoConfigs.findByTenant(TENANT_A);
+    expect(found?.enabled).toBe(false);
   });
 
   // クロステナント分離: テナント A の設定はテナント B から見えない

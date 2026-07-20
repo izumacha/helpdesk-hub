@@ -54,12 +54,21 @@ export function makeLocationRepo(store: Store): LocationRepository {
     },
 
     // 拠点名・補足説明を更新する
-    async update(id, tenantId, data) {
+    async update(id, tenantId, data, expected) {
       // 対象拠点を取得してテナントスコープを確認する
       const existing = store.locations.get(id);
       if (!existing || existing.tenantId !== tenantId) {
         // 他テナントの拠点や存在しない拠点への更新は Prisma と同様にエラー
         throw new Error(`Location ${id} not found in tenant ${tenantId}`);
+      }
+      // CAS: expected が渡されていれば、現在値がそれと一致するときだけ更新する
+      // (Prisma アダプタの updateMany 版 CAS と同じ契約。§9 fail-closed で後勝ち上書きを防ぐ)
+      if (
+        expected &&
+        (existing.name !== expected.name || existing.description !== expected.description)
+      ) {
+        // 読み取り後に他の管理者が編集していた (競合) ため null を返し、上書きしない
+        return null;
       }
       // 既存オブジェクトに差分を上書きする
       const updated: Location = {

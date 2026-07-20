@@ -1484,6 +1484,52 @@ complete-signup.ts`）だけは対象から漏れていた。`requestSignup`・`
 - 回帰テスト: `tests/features/dashboard-links.test.ts` に `buildTicketListHref` の
   境界値（拠点未選択・選択中・`tab=` クエリでも同様に付け足されること）を追加した。
 
+#### 4.23 フォローアップ（2026-07-20 #2）: SSO 設定更新の TOCTOU・UserRepository 一覧の上限漏れ・拠点更新の TOCTOU
+
+コードベース監査（既存フォローアップ群と同じ「済マーク済みの機能を実装から再点検する」観点）で
+発見した 3 件のギャップの修正。
+
+- **`updateSsoConfig` に TOCTOU が残っていた**: §4.19/§4.20 で `updateNotificationChannels` /
+  `update-line-config.ts` に導入してきた CAS (compare-and-swap) パターンが、同じ「読み取り→
+  検証→無条件書き込み」構成を持つ `updateSsoConfig`（`src/features/settings/actions/
+  update-sso-config.ts`）には一度も適用されていなかった。SSO 設定フォームは LINE 連携設定と
+  異なり「空欄なら維持」という緩衝が無く、IdP EntityID/SSO URL/証明書の全項目を毎回
+  `defaultValue` で事前入力して丸ごと再送信する構成のため、他の管理者が IdP 証明書を
+  ローテーションした直後にこのリクエストが割り込むと、認証の信頼アンカーである証明書が
+  古い値のまま黙って上書きされてしまう（LINE 連携設定より実害の大きい変種）。
+  `SsoConfigRepository.upsert` に `expected`（読み取り時点の 4 フィールド値）を追加し、
+  指定時のみ原子的な条件付き更新（0 件なら競合として `null`）にした
+  （Prisma/メモリ両アダプタ対応）。`updateSsoConfig` は事前に `findByTenant` した
+  スナップショットを `expected` としてそのまま渡し、競合時は他の設定アクションと同じ
+  「他の管理者による変更と競合しました」を返す。
+- **`UserRepository` の一覧系メソッドに上限が無かった**: §4.11/§4.12/§4.19 で
+  「一覧取得は必ず上限を持たせる」（§8）を `FaqRepository` / `TicketRepository` の
+  コメント・履歴 / `LocationRepository` / `CategoryRepository` に適用してきたが、
+  `listAgents` / `listByTenant` / `listAgentIds` / `listAgentEmails` / `listAdminEmails`
+  だけは上限が無いまま残っていた。`USER_LIMIT.enterprise = Infinity`（`src/lib/
+  plan-guard.ts`）により Enterprise プランはスタッフ数上限が無いため、大規模テナントでは
+  理論上ではなく実際に無制限件数を返しうる（担当者プルダウン・CSV インポートの名前解決・
+  エスカレーション一斉メール・メール/LINE 取り込みの自動割当など、高頻度に呼ばれる経路が
+  対象）。拠点/カテゴリと異なりこのリポジトリには表示用ページング画面が無く、全呼び出し元が
+  「テナント内の対象者全員」を必要とするため、表示用/網羅用の二段構成ではなく単一の上限
+  `USER_LIST_LIMIT`（`src/data/ports/user-repository.ts`。網羅用途の規模である
+  `LOCATION_LIST_MATCHING_LIMIT` 等と同じ 10,000 に揃える）を追加し、Prisma アダプタは
+  `take`、メモリアダプタは `slice` で切り詰める。
+- **`updateLocation` にも同種の TOCTOU が残っていた**: 拠点編集フォームも SSO 設定と同じく
+  現在値を全項目事前入力して丸ごと再送信する構成のため、同じ穴が `LocationRepository.update`
+  にもあった。他の管理者の並行編集を上書きしうる実害は SSO ほど大きくない（表示名・補足説明の
+  巻き戻りのみ）が、同一クラスの欠陥の 2 件目として合わせて修正する。`update` に
+  `expected?: { name, description }` を追加し、指定時のみ CAS 経路（Prisma は
+  `updateMany` + 読み直し、メモリは値比較）にした。既存の「存在しない/他テナントの拠点」判定
+  (`findFirst` → 例外) は競合検知とは独立に維持し、CAS の 0 件更新だけを競合 (`null`) として
+  区別する。
+- 回帰テスト: `tests/features/update-sso-config.test.ts` / `tests/data/
+  sso-config-repository.{memory,contract.prisma}.test.ts`・`tests/data/user-repository.
+  memory.test.ts`（`USER_LIST_LIMIT` 超過時の切り詰め）・`tests/features/
+  update-location.test.ts` / `tests/data/location-repository.{memory,contract.prisma}
+  .test.ts` に、それぞれ CAS の競合再現（`findByTenant`/`findById` だけ古いスナップショットを
+  返すよう一時的にモックする、§4.13 以来の手法）と上限切り詰めの回帰テストを追加した。
+
 ### スケジュール感
 
 ```

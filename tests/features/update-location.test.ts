@@ -131,6 +131,35 @@ describe('updateLocation', () => {
     expect(result.error).toBe('拠点名は必須です');
   });
 
+  // フォローアップ (監査で発見したギャップ): この編集フォームは常に現在値を全項目
+  // defaultValue で事前入力して丸ごと再送信する構成のため、読み取り (existing) →検証→
+  // 無条件書き込みの check-then-act (TOCTOU) だった。他の管理者が並行して拠点名を
+  // 変更した直後にこのリクエストが割り込むと、古い値のまま上書きして変更を黙って
+  // 巻き戻してしまう。CAS 化により 0 件更新 (競合) を検知し、後勝ちで上書きしないことを
+  // 確認する (update-line-config.test.ts と同じ手法)
+  it('他の管理者による並行更新と競合すると保存されず、その値を上書きしない', async () => {
+    const location = await repos.locations.create({
+      tenantId: TENANT_ID,
+      name: '元の名前',
+      description: '元の説明',
+    });
+    const stale = await repos.locations.findById(location.id, TENANT_ID);
+    if (!stale) throw new Error('seed missing location');
+    // 並行更新を模す: 先に別の管理者が名前を変更したことにする
+    await repos.locations.update(location.id, TENANT_ID, { name: '並行更新後の名前' });
+    // findById だけが古いスナップショット (変更前) を返す状況を作る (TOCTOU の再現)
+    vi.spyOn(repos.locations, 'findById').mockResolvedValueOnce(stale);
+    const { updateLocation } = await import('@/features/settings/actions/update-location');
+    const result = await updateLocation(location.id, makeForm('このリクエストの新名称'));
+    expect(result.error).toBe(
+      '他の管理者による変更と競合しました。最新の設定を確認してから再度お試しください。',
+    );
+    expect(result.success).toBeUndefined();
+    // 並行更新後の値が上書きされずに残っている
+    const saved = await repos.locations.findById(location.id, TENANT_ID);
+    expect(saved?.name).toBe('並行更新後の名前');
+  });
+
   // レート制限: 60秒あたり10回を超える連打は拒否される
   it('60秒あたり10回を超える連打は拒否される', async () => {
     const location = await repos.locations.create({

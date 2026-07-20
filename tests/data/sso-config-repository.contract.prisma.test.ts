@@ -61,7 +61,7 @@ describe.runIf(SHOULD_RUN)('SsoConfigRepository (prisma adapter)', () => {
   it('upsert で作成し findByTenant で取得できる', async () => {
     const repos = buildPrismaRepos(prisma);
     const created = await repos.ssoConfigs.upsert(input(TENANT_A));
-    expect(created.tenantId).toBe(TENANT_A);
+    expect(created?.tenantId).toBe(TENANT_A);
     const found = await repos.ssoConfigs.findByTenant(TENANT_A);
     expect(found?.idpEntityId).toBe(`https://idp.example.com/${TENANT_A}`);
   });
@@ -72,8 +72,28 @@ describe.runIf(SHOULD_RUN)('SsoConfigRepository (prisma adapter)', () => {
     const first = await repos.ssoConfigs.upsert(input(TENANT_A, true));
     const second = await repos.ssoConfigs.upsert(input(TENANT_A, false));
     // 同一レコードの更新なので ID は不変、値だけ変わる
-    expect(second.id).toBe(first.id);
-    expect(second.enabled).toBe(false);
+    expect(second?.id).toBe(first?.id);
+    expect(second?.enabled).toBe(false);
+  });
+
+  // 監査で発見したギャップ対応: expected (CAS) 指定時は、書き込み直前の現在値と一致する
+  // ときだけ更新され、一致しなければ null (競合) を返して上書きしないことを実 DB で確認する
+  it('expectedが現在値と食い違う場合は更新されずnullを返す (実DB)', async () => {
+    const repos = buildPrismaRepos(prisma);
+    const current = await repos.ssoConfigs.upsert(input(TENANT_A, true));
+    if (!current) throw new Error('seed missing sso config');
+    const result = await repos.ssoConfigs.upsert({
+      ...input(TENANT_A, false),
+      expected: {
+        enabled: false, // 実際の現在値 (true) と食い違う誤った期待値
+        idpEntityId: current.idpEntityId,
+        idpSsoUrl: current.idpSsoUrl,
+        idpX509Cert: current.idpX509Cert,
+      },
+    });
+    expect(result).toBeNull();
+    const found = await repos.ssoConfigs.findByTenant(TENANT_A);
+    expect(found?.enabled).toBe(true);
   });
 
   // クロステナント分離: A の設定は B から取得・削除できない
