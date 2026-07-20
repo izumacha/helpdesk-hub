@@ -5,8 +5,12 @@
 // Stripe の支払いページへリダイレクトさせる URL を返す。
 // docs/smb-dx-pivot-plan.md §6「マネタイズ・販売戦略」
 
-// セッション取得
+// セッション取得 (customer_email のフォールバックに session.user.email が必要なため、
+// ゲート通過後も引き続き利用する)
 import { auth } from '@/lib/auth';
+// 「ログイン済み・admin・自テナント」を検証する共有ゲート (create-location.ts 等と同じ
+// 非throw系アクションで共有する。§6 DRY: 個別に複製していた認証+ロールブロックを集約)
+import { assertTenantAdmin } from '@/lib/tenant-admin-gate';
 // テナントリポジトリ
 import { repos } from '@/data';
 // Stripe クライアントと Price ID マッピング
@@ -30,18 +34,16 @@ interface CreateCheckoutResult {
 export async function createCheckoutSession(
   targetPlan: SubscriptionPlan,
 ): Promise<CreateCheckoutResult> {
-  // セッション取得と認証チェック
-  const session = await auth();
-  // 未ログインまたは tenantId 不在は拒否
-  if (!session?.user?.id || !session.user.tenantId) {
-    return { error: '認証が必要です' };
-  }
-  // 管理者のみが課金プランを変更できる
-  if (session.user.role !== 'admin') {
-    return { error: 'この操作は管理者のみ実行できます' };
-  }
+  // 共有ゲートで「ログイン済み・admin・自テナント」をまとめて検証する
+  const gate = await assertTenantAdmin();
+  // ゲート不通過ならその理由をそのまま返す
+  if (!gate.ok) return { error: gate.error };
   // 検証済みの tenantId (セッション由来)
-  const tenantId = session.user.tenantId;
+  const tenantId = gate.tenantId;
+  // customer_email のフォールバックに使うメールアドレスを取得する (Auth.js v5 の auth() は
+  // React の cache() でリクエスト単位にメモ化されるため、assertTenantAdmin() 内の呼び出しと
+  // 合わせて二重に session を取得し直すコストは発生しない)
+  const session = await auth();
 
   // Free プランへのアップグレードはチェックアウト不要 (Webhook のキャンセル処理が担当)
   if (targetPlan === 'free') {
@@ -75,7 +77,7 @@ export async function createCheckoutSession(
   }
 
   // テナント情報を取得して既存の Stripe Customer ID を確認する
-  const tenant = await repos.tenants.findById(session.user.tenantId);
+  const tenant = await repos.tenants.findById(tenantId);
   if (!tenant) {
     return { error: 'テナント情報の取得に失敗しました' };
   }
@@ -111,12 +113,12 @@ export async function createCheckoutSession(
       // customer と customer_email は同時に指定できないため、排他的に渡す
       ...(tenant.stripeCustomerId
         ? { customer: tenant.stripeCustomerId } // 既存 Customer に紐づける
-        : { customer_email: session.user.email ?? undefined }), // 新規 Customer のメール事前入力
+        : { customer_email: session?.user?.email ?? undefined }), // 新規 Customer のメール事前入力
       // Webhook でテナントを特定するためにメタデータを埋め込む
       // Stripe のメタデータは文字列のキーバリューペアのみ使用可
       subscription_data: {
         metadata: {
-          tenantId: session.user.tenantId, // Webhook でテナントを特定するためのキー
+          tenantId, // Webhook でテナントを特定するためのキー
         },
       },
       // §8 リスク対策「IT導入補助金の審査要件 (インボイス対応)」。日本の適格請求書等保存方式

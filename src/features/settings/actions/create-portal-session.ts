@@ -5,8 +5,9 @@
 // Stripe の顧客ポータル (請求書確認・プラン変更・解約) へリダイレクトする URL を返す。
 // docs/smb-dx-pivot-plan.md §6「マネタイズ・販売戦略」
 
-// セッション取得
-import { auth } from '@/lib/auth';
+// 「ログイン済み・admin・自テナント」を検証する共有ゲート (create-location.ts 等と同じ
+// 非throw系アクションで共有する。§6 DRY: 個別に複製していた認証+ロールブロックを集約)
+import { assertTenantAdmin } from '@/lib/tenant-admin-gate';
 // テナントリポジトリ
 import { repos } from '@/data';
 // Stripe クライアント
@@ -24,19 +25,15 @@ interface CreatePortalResult {
 
 // Stripe Customer Portal セッションを作成して管理ページ URL を返す
 export async function createPortalSession(): Promise<CreatePortalResult> {
-  // セッション取得と認証チェック
-  const session = await auth();
-  // 未ログインまたは tenantId 不在は拒否
-  if (!session?.user?.id || !session.user.tenantId) {
-    return { error: '認証が必要です' };
-  }
-  // 管理者のみが課金ポータルにアクセスできる
-  if (session.user.role !== 'admin') {
-    return { error: 'この操作は管理者のみ実行できます' };
-  }
+  // 共有ゲートで「ログイン済み・admin・自テナント」をまとめて検証する
+  const gate = await assertTenantAdmin();
+  // ゲート不通過ならその理由をそのまま返す
+  if (!gate.ok) return { error: gate.error };
+  // 検証済みの tenantId (セッション由来)
+  const tenantId = gate.tenantId;
 
   // テナントの Stripe Customer ID を取得する
-  const tenant = await repos.tenants.findById(session.user.tenantId);
+  const tenant = await repos.tenants.findById(tenantId);
   if (!tenant?.stripeCustomerId) {
     // Stripe Customer ID がない場合はポータルを開けない (有料プランに未登録)
     return { error: '課金情報が見つかりません。まず有料プランにご登録ください。' };
@@ -46,7 +43,7 @@ export async function createPortalSession(): Promise<CreatePortalResult> {
   // (60 秒あたり 10 回まで、テナント単位。create-checkout-session.ts と同じ上限・キー粒度の
   // 方針)。Stripe Customer ID 未登録などバリデーション段階で弾かれるリクエストは Stripe API を
   // 一切呼ばないため、ここより前ではクォータを消費させない
-  const rateLimitError = checkRateLimit(`stripe-portal-session:${session.user.tenantId}`, {
+  const rateLimitError = checkRateLimit(`stripe-portal-session:${tenantId}`, {
     limit: 10,
     windowMs: 60_000,
   });
