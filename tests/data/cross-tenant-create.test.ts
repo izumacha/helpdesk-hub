@@ -1,6 +1,7 @@
 // クロステナント作成拒否の単体テスト (issue #123)。
-// コメント / 添付の create Adapter が「親チケットのテナント一致」を fail-closed で
+// コメント / 添付 / 通知の create Adapter が「親チケットのテナント一致」を fail-closed で
 // 検証することを確認する。呼び出し側の tenant チェック漏れに対する多層防御の最終段。
+// (通知は ticketId が任意のため、指定されたときだけ検証しチケット非関連の通知は素通しする)
 
 // Vitest の DSL とフック
 import { beforeEach, describe, expect, it } from 'vitest';
@@ -115,6 +116,69 @@ describe('cross-tenant create guards (#123)', () => {
         ticketId: 'no-such-ticket',
         authorId: USER_A,
         body: '宛先なし',
+        tenantId: TENANT_A,
+      }),
+    ).rejects.toThrow(/チケットが見つかりません/);
+  });
+
+  // ticketId 無し (チケット非関連) の通知はテナント検証をスキップして作成できる
+  it('allows creating a notification without a ticketId', async () => {
+    // テナント A のシードを済ませる (チケットは使わない)
+    await seed();
+    // ticketId を指定せずに通知を作成 → 成功する
+    const notification = await repos.notifications.create({
+      userId: USER_A,
+      type: 'assigned',
+      message: 'チケット非関連の通知',
+      tenantId: TENANT_A,
+    });
+    // 関連チケットは null のまま保存されること
+    expect(notification.ticketId).toBeNull();
+  });
+
+  // 同テナントのチケットに紐づく通知は作成できる
+  it('allows creating a notification linked to a same-tenant ticket', async () => {
+    // テナント A のチケットを用意する
+    const ticketId = await seed();
+    // 同じテナント A 指定でチケット紐づき通知を作成 → 成功する
+    const notification = await repos.notifications.create({
+      userId: USER_A,
+      type: 'commented',
+      message: 'コメントが追加されました',
+      ticketId,
+      tenantId: TENANT_A,
+    });
+    // 作成された通知が対象チケットに紐づくこと
+    expect(notification.ticketId).toBe(ticketId);
+  });
+
+  // 別テナント指定のチケット紐づき通知は拒否される
+  it('rejects creating a notification linked to a ticket of another tenant', async () => {
+    // テナント A のチケットを用意する
+    const ticketId = await seed();
+    // テナント B を名乗ってテナント A のチケットに紐づく通知を作成 → 拒否される
+    await expect(
+      repos.notifications.create({
+        userId: USER_A,
+        type: 'commented',
+        message: '侵入',
+        ticketId,
+        tenantId: TENANT_B,
+      }),
+    ).rejects.toThrow(/チケットが見つかりません/);
+  });
+
+  // 存在しないチケット ID に紐づく通知作成も拒否される
+  it('rejects creating a notification linked to a non-existent ticket', async () => {
+    // テナント A を用意する (チケットは存在しない ID を指定)
+    await seed();
+    // 実在しないチケット ID に紐づく通知を作成 → 拒否される
+    await expect(
+      repos.notifications.create({
+        userId: USER_A,
+        type: 'commented',
+        message: '宛先なし',
+        ticketId: 'no-such-ticket',
         tenantId: TENANT_A,
       }),
     ).rejects.toThrow(/チケットが見つかりません/);

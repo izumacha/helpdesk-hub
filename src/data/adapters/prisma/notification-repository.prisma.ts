@@ -12,6 +12,21 @@ export function makeNotificationRepo(db: PrismaLike): NotificationRepository {
   return {
     // 通知を 1 件作成してドメイン型に変換して返す
     async create(input) {
+      // 関連チケットが指定されている場合のみ、そのチケットが指定テナントに属することを検証する。
+      // コメント Adapter (issue #123) と同じ fail-closed パターン: 呼び出し側が tenant スコープの
+      // 取得を忘れても、他テナントのチケットに紐づく通知は作れないよう Adapter 側で拒否する。
+      // (ticketId が無いチケット非関連の通知はこの検証をスキップする)
+      if (input.ticketId) {
+        // 親チケットをテナントスコープ付きで検索する
+        const parent = await db.ticket.findFirst({
+          where: { id: input.ticketId, tenantId: input.tenantId }, // チケット ID + テナントの AND 一致
+          select: { id: true }, // 存在確認だけなので id のみ取得
+        });
+        // 親チケットが無い (= 別テナント or 不在) なら作成を拒否する
+        if (!parent) {
+          throw new Error('チケットが見つかりません');
+        }
+      }
       const row = await db.notification.create({
         data: {
           userId: input.userId, // 受信者
