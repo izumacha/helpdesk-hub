@@ -61,7 +61,8 @@ describe.runIf(SHOULD_RUN)('LineConfigRepository (prisma adapter)', () => {
     const repos = buildPrismaRepos(prisma);
     const botUserId = 'Ubbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
     const created = await repos.lineConfigs.upsert(input(TENANT_A, botUserId));
-    expect(created.tenantId).toBe(TENANT_A);
+    // expected を渡していない (無条件 upsert) 呼び出しなので null にはならない
+    expect(created?.tenantId).toBe(TENANT_A);
     const byTenant = await repos.lineConfigs.findByTenant(TENANT_A);
     expect(byTenant?.channelSecret).toBe(`secret-${TENANT_A}`);
     const byBotUserId = await repos.lineConfigs.findByBotUserId(botUserId);
@@ -77,9 +78,9 @@ describe.runIf(SHOULD_RUN)('LineConfigRepository (prisma adapter)', () => {
     const second = await repos.lineConfigs.upsert(
       input(TENANT_A, 'Ucccccccccccccccccccccccccccccccc'),
     );
-    // 同一レコードの更新なので ID は不変、値だけ変わる
-    expect(second.id).toBe(first.id);
-    expect(second.botUserId).toBe('Ucccccccccccccccccccccccccccccccc');
+    // 同一レコードの更新なので ID は不変、値だけ変わる (どちらも expected 未指定の無条件 upsert)
+    expect(second?.id).toBe(first?.id);
+    expect(second?.botUserId).toBe('Ucccccccccccccccccccccccccccccccc');
   });
 
   // 他テナントが既に使用している botUserId への upsert は一意制約違反でエラーになる
