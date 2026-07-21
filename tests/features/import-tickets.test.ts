@@ -77,9 +77,35 @@ vi.mock('next/cache', () => ({
   revalidatePath: vi.fn(),
 }));
 
-// SSE ブロードキャストを捕捉モックに置換 (broadcastMock で呼び出し回数・引数を検証する)
+// SSE ブロードキャストを捕捉モックに置換 (broadcastMock で呼び出し回数・引数を検証する)。
+// notifyUsersBatch は §6 DRY で notify.ts へ抽出された共有ヘルパー (フォローアップ 2026-07-21)。
+// モジュール全体を差し替えるため、実装の骨子 (通知書き込み → broadcastMock 呼び出し) だけを
+// ここで再現し、既存テストの「通知が実際に作成されること」「broadcastMock が呼ばれること」の
+// 検証をそのまま活かす
 vi.mock('@/features/notifications/notify', () => ({
   broadcastUnreadCountToMany: broadcastMock,
+  notifyUsersBatch: async (
+    recipientIds: string[],
+    tenantId: string,
+    type: string,
+    messageFor: (id: string) => string,
+  ) => {
+    if (recipientIds.length === 0) return;
+    // 呼び出し時点 (beforeEach 実行後) の repos を参照する。@/data のモック (下記) と同じく
+    // 遅延参照にすることでテストごとの createMemoryContext() の差し替えに追従する
+    await Promise.all(
+      recipientIds.map((userId) =>
+        repos.notifications.create({
+          userId,
+          type: type as never,
+          message: messageFor(userId),
+          ticketId: null,
+          tenantId,
+        }),
+      ),
+    );
+    await broadcastMock(recipientIds, tenantId);
+  },
 }));
 
 // テナント・ユーザーを投入する共通シード

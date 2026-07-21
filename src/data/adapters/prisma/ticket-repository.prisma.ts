@@ -11,6 +11,7 @@ import {
   type TicketRepository,
   TICKET_DETAIL_COMMENTS_LIMIT,
   TICKET_DETAIL_HISTORY_LIMIT,
+  resolveTicketListLimit,
 } from '@/data/ports/ticket-repository';
 // Prisma 行 → ドメイン型のマッパー関数群
 import {
@@ -165,7 +166,7 @@ export function makeTicketRepo(db: PrismaLike): TicketRepository {
         where: buildWhere(filter, tenantId), // tenantId を必ず注入
         orderBy: { createdAt: sort?.direction ?? 'desc' }, // 既定は降順
         skip: page.skip, // オフセット
-        take: page.take, // ページサイズ
+        take: resolveTicketListLimit(page.take), // ページサイズ (§8 一覧取得は必ず上限を持たせる。呼び出し元の指定値をさらにクランプ)
         include: REFS_INCLUDE, // 関連情報を同梱
       });
       // 取得行を TicketWithRefs に変換

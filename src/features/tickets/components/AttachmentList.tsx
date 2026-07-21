@@ -30,12 +30,14 @@ export function AttachmentList({ attachments, heading }: Props) {
       <ul className="grid grid-cols-2 gap-2 sm:grid-cols-4">
         {attachments.map((a) => (
           <li key={a.id} className="overflow-hidden rounded-md border border-gray-200">
-            {/* クリックで原寸を開けるよう <a> でラップする (target=_blank で別タブ) */}
+            {/* クリックで原寸を開けるよう <a> でラップする (target=_blank で別タブ)。
+                §7 a11y: 別タブで開く外部リンクには rel="noopener noreferrer" を付ける
+                (dashboard/page.tsx・help/getting-started/page.tsx と同じ規約に揃える) */}
             <a
               href={`/api/attachments/${a.id}`}
               target="_blank"
-              rel="noreferrer"
-              className="block focus:outline-none focus:ring-2 focus:ring-teal-500"
+              rel="noopener noreferrer"
+              className="block focus:ring-2 focus:ring-teal-500 focus:outline-none"
             >
               {/* 画像本体 (img タグで img/* MIME をブラウザに任せて描画) */}
               {/* Next/Image は外部 URL や認証付き API との相性が悪いため通常の <img> を使う */}

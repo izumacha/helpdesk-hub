@@ -15,6 +15,8 @@ import { revalidateTag } from 'next/cache';
 import { repos } from '@/data';
 // SSE の送信関数
 import { broadcast } from '@/lib/sse-subscribers';
+// 通知種別の型 (バッチ通知は呼び出し元が種別を指定する)
+import type { NotificationType } from '@/domain/types';
 
 // 指定ユーザー × テナントの未読件数を再計算して配信する
 // 通知は必ずテナント単位なので、count 取得時も同じ tenantId スコープで集計する
@@ -76,7 +78,10 @@ export async function notifyAgentsOfNewTicket(params: {
   const failedCount = targets.length - succeededIds.length;
   if (failedCount > 0) {
     // 失敗件数だけログに残す (チケット起票自体は完了済みのため処理は継続する)
-    console.warn(`${logPrefix} ${failedCount} notification(s) failed to create for new ticket`, ticketId);
+    console.warn(
+      `${logPrefix} ${failedCount} notification(s) failed to create for new ticket`,
+      ticketId,
+    );
   }
   // 未読カウントを SSE で即時配信して通知ベルに反映させる (成功分のみ)
   if (succeededIds.length > 0) {
@@ -84,5 +89,53 @@ export async function notifyAgentsOfNewTicket(params: {
       // SSE 配信失敗はバッジ更新が遅れるだけ。ログのみ残して続行する
       console.warn(`${logPrefix} failed to broadcast unread count`, err);
     });
+  }
+}
+
+// 単一チケットに紐づかない (または対象が複数件をまとめた) バッチ通知を対象ユーザー群へ送る
+// ベストエフォート・ヘルパー。
+// §6 DRY: 元々 CSV インポート (import-tickets.ts) に private ヘルパーとして実装されていたが、
+// フォローアップ (2026-07-21) の隔離メール通知 (quarantine.ts) が同じ「単一チケットに紐づかない
+// バッチ通知」を必要としたため、2 系統目の重複が生じる前にここへ抽出して共有する。
+export async function notifyUsersBatch(
+  recipientIds: string[], // 通知対象ユーザー ID 一覧 (呼び出し元で自己除外済み)
+  tenantId: string, // テナントスコープ
+  type: NotificationType, // 通知種別 (例: 'imported' | 'assigned' | 'quarantined')
+  messageFor: (recipientId: string) => string, // 受信者ごとの通知文言を組み立てる関数
+  logPrefix: string, // ログの先頭に付ける識別子 (例: '[importTickets] 担当割当通知')
+): Promise<void> {
+  // 対象が居なければ何もしない (早期リターン)
+  if (recipientIds.length === 0) return;
+  // 各ユーザーへの通知を並列で DB に書き込む。Promise.allSettled を使い、1 件の書き込み失敗が
+  // 他ユーザーへの通知配信や SSE broadcast をブロックしないようにする
+  const results = await Promise.allSettled(
+    recipientIds.map((userId) =>
+      repos.notifications.create({
+        userId,
+        type,
+        message: messageFor(userId),
+        ticketId: null, // バッチ通知は単一チケットに紐づかないため null
+        tenantId,
+      }),
+    ),
+  );
+  // 失敗した通知件数と、ユーザーごとの失敗理由をサーバーログに記録する
+  // (呼び出し元の本来の処理の成否には影響しない。CLAUDE.md §6: エラーを握り潰さない)
+  const failedCount = results.filter((r) => r.status === 'rejected').length;
+  if (failedCount > 0) {
+    console.warn(`${logPrefix} ${failedCount} 件の通知書き込みに失敗しました`);
+    results.forEach((r, i) => {
+      if (r.status === 'rejected') {
+        console.warn(`${logPrefix} ユーザー ${recipientIds[i]} への通知書き込みに失敗:`, r.reason);
+      }
+    });
+  }
+  // 未読件数を SSE で即時配信して通知ベルに反映させる。
+  // broadcast は通知 DB 書き込みより後に行う必要があるため、上の Promise.allSettled を待ってから実行する。
+  try {
+    await broadcastUnreadCountToMany(recipientIds, tenantId);
+  } catch (err) {
+    // ここで例外が発生しても呼び出し元の本来の処理は完了済みなので、警告ログに留める
+    console.warn(`${logPrefix} SSE broadcast に失敗しました:`, err);
   }
 }

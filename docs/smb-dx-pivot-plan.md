@@ -1558,6 +1558,66 @@ complete-signup.ts`）だけは対象から漏れていた。`requestSignup`・`
   契約テスト）に、`NOTIFICATION_LIST_MAX_LIMIT` を超える `limit` を指定してもクランプされることの
   回帰テストを追加した。
 
+#### 4.25 フォローアップ（2026-07-21）: カテゴリに追加・変更・削除の手段が無かった
+
+監査で発見したギャップ: カテゴリ（`Category`）は Location（拠点）と同じ「テナント全体の設定」だが、
+`CategoryRepository` には `list`/`findById`/`create`（Phase 3 業種テンプレ初期投入専用）しか無く、
+`update`/`delete` の Server Action・設定画面 UI が一つも存在しなかった。構造的に同一の Location が
+§4.1 系フォローアップで CAS 付き CRUD・監査ログまで整備されたのとは対照的に、カテゴリはテナント作成
+時点の業種テンプレで決まった内容から一度も変更できず、誤ったテンプレ選択やカテゴリの追加ニーズ
+（§1 の「町工場の事務員」ペルソナのように業務が変化する SMB）に対応できなかった。
+
+- `CategoryRepository`（`src/data/ports/category-repository.ts`）に `update`/`delete` を追加し、
+  Prisma/メモリ両アダプタで実装した。`create` は元々 Phase 3 業種テンプレ初期投入専用の upsert
+  （insert or ignore）だったが、admin による新規作成と契約を共有するため LocationRepository と
+  同じ「重複は一意制約違反として呼び出し側に伝える」plain create に統一し、業種テンプレ側
+  （`tenant-provisioning.ts`）の冪等性は呼び出し側で一意制約違反を捕捉する形に移した。
+- `create/update/delete-category.ts`（`src/features/settings/actions/`）を Location と同じ設計
+  （`assertTenantAdmin` ゲート・テナント単位のレート制限共有・`updateCategory` の CAS・
+  `recordSettingsAudit` への記録）で追加した。`SettingsAuditAction` に
+  `category_create`/`category_update`/`category_delete` を追加した。
+- `CategoriesSection.tsx`（`LocationsSection.tsx` と同型の一覧+追加フォーム+インライン編集/削除）
+  を `/settings` に追加した。カテゴリは Pro モード専用の概念（`TicketForm.tsx` の `isLite` 分岐・
+  `POST /api/tickets` の `effectiveCategoryId` 参照）のため、Lite テナントには表示しない。
+- 回帰テスト: `tests/data/category-repository.{memory,contract.prisma}.test.ts` に update/delete
+  のテナント分離・CAS 競合・カスケード（削除時に紐づくチケットの `categoryId` が `SetNull`）を追加。
+  `tests/features/{create,update,delete}-category.test.ts` を新設した。
+
+#### 4.26 フォローアップ（2026-07-21 #2）: 隔離メール発生を admin に知らせる通知が無かった
+
+監査で発見したギャップ: 隔離済み受信メール（`QuarantinedEmail`）は §3.2 で永続化・admin 向け一覧
+画面（`/quarantine`）まで実装したが、隔離が発生したこと自体を admin に知らせるアプリ内通知が無く、
+成功して起票された `imported` 通知（§3.5）だけが届く非対称な状態だった。admin が `/quarantine` を
+定期的に見に行かない限り、未登録メンバーからの問い合わせ取りこぼしやスパム混入に気づけなかった。
+
+- `NotificationType` に `quarantined` を追加し、`Tenant` に `quarantineNotifiedAt`（直近通知時刻）
+  を追加した。短時間に大量の隔離が発生しても admin への通知フラッド（自己 DoS）にならないよう、
+  テナントあたり 24 時間に 1 回だけ通知する。`TenantRepository.updateQuarantineNotifiedAt(id, at,
+  intervalMs)` を read-then-write ではなく単一の `updateMany`（`updateMode` 等と同じ CAS パターン）
+  にし、間隔経過前の行だけを条件に含めることで、同時に複数の隔離が発生しても重複送信のレースを防ぐ。
+- `src/lib/quarantine.ts::recordQuarantineSafe` が記録成功後にこのゲートを通し、通知先を
+  `listAdminEmails`（`/quarantine` 画面自体が admin 専用のため admin のみ）に絞って送る。
+  §6 DRY: CSV インポート（`import-tickets.ts`）に private ヘルパーとして実装されていた
+  「単一チケットに紐づかないバッチ通知」処理（`notifyImportBatch`）を `notifyUsersBatch`
+  として `src/features/notifications/notify.ts` へ抽出し、両方で共有する。
+- 回帰テスト: `tests/quarantine.test.ts` を新設し、通知の作成・admin 限定・スロットリング・
+  記録/通知失敗時の fail-safe を検証。`tests/data/tenant-repository.{memory,contract.prisma}
+  .test.ts` に `updateQuarantineNotifiedAt` の CAS 契約テストを追加した。
+
+#### 4.27 フォローアップ（2026-07-21 #3）: TicketRepository.list の多層防御クランプ漏れ・添付リンクの rel 不整合
+
+監査で発見したギャップ（2 件、いずれも現状は実害の無い多層防御の穴）:
+
+- `FaqRepository`/`LocationRepository`/`CategoryRepository`/`UserRepository`/
+  `NotificationRepository` は §4.11/§4.19/§4.23/§4.24 でアダプタ層の limit クランプ（呼び出し元を
+  信頼しつつ上限を保証する多層防御）を備えたが、最も中心的で高頻度アクセスな `TicketRepository`
+  だけ `list`/`count` の `page.take` がクランプされないまま残っていた。`TICKET_LIST_MAX_LIMIT`
+  （`GET /api/tickets/export` の `MAX_EXPORT_ROWS` と同規模）と `resolveTicketListLimit` を追加し、
+  Prisma/メモリ両アダプタで `page.take` をクランプするようにした。
+- `AttachmentList.tsx` の `target="_blank"` リンクだけ `rel="noreferrer"` で、他の外部リンク
+  （`dashboard/page.tsx`・`help/getting-started/page.tsx`）は §7 a11y 規約どおり
+  `rel="noopener noreferrer"` だった。同じ規約を一貫して適用するよう揃えた。
+
 ### スケジュール感
 
 ```

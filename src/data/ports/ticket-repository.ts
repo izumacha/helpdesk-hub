@@ -15,6 +15,23 @@ import type { AttachmentSummary } from '@/domain/attachment-summary';
 import type { SlaReminderCandidate } from '@/lib/sla-reminder';
 import type { Page, Sort, TextFilter } from './filters';
 
+// フォローアップ (2026-07-21): 監査で発見したギャップ。FaqRepository / LocationRepository /
+// CategoryRepository / UserRepository / NotificationRepository はいずれもアダプタ層で
+// 呼び出し元の limit をクランプする多層防御 (§8 一覧取得は必ず上限を持たせる) を既に備えているが、
+// 最も中心的で高頻度アクセスなリポジトリである TicketRepository.list/count の take だけが
+// 呼び出し元の Page.take をそのまま素通ししていた。現状の呼び出し元 (tickets/page.tsx の
+// PAGE_SIZE=20、CSV エクスポートの MAX_EXPORT_ROWS=10,000) は安全な定数のみを渡しているため
+// 実害はないが、他リポジトリと同じ「呼び出し元は信頼しつつアダプタでも上限を保証する」
+// 多層防御に揃える。エクスポート用途 (現状の最大の正当な呼び出し値) と同じ規模に上限を設定する
+export const TICKET_LIST_MAX_LIMIT = 10_000;
+
+// 呼び出し元が指定した take を TICKET_LIST_MAX_LIMIT 以下にクランプする。
+// Page.take は必須項目 (未指定を許さない) のため、他リポジトリの resolveXListLimit と異なり
+// 「未指定時の既定値」は持たない (呼び出し元は必ず具体的なページサイズを渡す契約のまま)
+export function resolveTicketListLimit(take: number): number {
+  return Math.min(take, TICKET_LIST_MAX_LIMIT);
+}
+
 // チケット一覧の絞り込み条件
 export interface TicketListFilter {
   creatorId?: string; // 起票者で絞る (依頼者ロールはこれを必ず付与)

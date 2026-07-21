@@ -101,4 +101,13 @@ export interface TenantRepository {
     channel: OutboundChannelKey,
     failure: { message: string; at: Date } | null,
   ): Promise<Tenant>;
+  // フォローアップ (2026-07-21): 隔離メール発生を admin に知らせる通知 (NotificationType.quarantined)
+  // の送信間隔を空けるための原子的なゲート。「quarantineNotifiedAt が null、または
+  // at - intervalMs より前 (=間隔を空けて十分に時間が経っている)」ときだけ quarantineNotifiedAt を
+  // at に更新して true を返す (このリクエストが通知を送る権利を得た)。それ以外 (直近に別の
+  // リクエストが既に更新済み) は false を返し、呼び出し側は通知を送らない。
+  // 読み取り→判定→書き込みの check-then-act ではなく単一の原子的な updateMany (updateMode 等と
+  // 同じ CAS パターン) にすることで、短時間に大量の隔離が発生しても重複送信のレースを防ぐ。
+  // id はセッション/内部呼び出し由来の tenantId のみを渡すこと
+  updateQuarantineNotifiedAt(id: string, at: Date, intervalMs: number): Promise<boolean>;
 }

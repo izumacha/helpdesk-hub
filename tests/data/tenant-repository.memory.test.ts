@@ -284,7 +284,12 @@ describe('TenantRepository.updateNotificationChannels (memory)', () => {
     const updated = await repos.tenants.updateNotificationChannels(
       TENANT_A,
       { slackWebhookUrl: 'https://hooks.slack.com/services/CCC' },
-      { slackWebhookUrl: null, teamsWebhookUrl: null, chatworkApiToken: null, chatworkRoomId: null },
+      {
+        slackWebhookUrl: null,
+        teamsWebhookUrl: null,
+        chatworkApiToken: null,
+        chatworkRoomId: null,
+      },
     );
     expect(updated).toBe(true);
     const reloaded = await repos.tenants.findById(TENANT_A);
@@ -301,7 +306,12 @@ describe('TenantRepository.updateNotificationChannels (memory)', () => {
     const updated = await repos.tenants.updateNotificationChannels(
       TENANT_A,
       { slackWebhookUrl: 'https://hooks.slack.com/services/STALE-WRITE' },
-      { slackWebhookUrl: null, teamsWebhookUrl: null, chatworkApiToken: null, chatworkRoomId: null },
+      {
+        slackWebhookUrl: null,
+        teamsWebhookUrl: null,
+        chatworkApiToken: null,
+        chatworkRoomId: null,
+      },
     );
     expect(updated).toBe(false);
     // 並行更新の値が上書きされずに残っている
@@ -467,5 +477,66 @@ describe('TenantRepository.recordOutboundChannelResult (memory)', () => {
         at: new Date(),
       }),
     ).rejects.toThrow();
+  });
+});
+
+// フォローアップ (2026-07-21): 隔離メール通知の送信間隔を空ける原子的ゲート
+// updateQuarantineNotifiedAt の単体テスト。
+describe('TenantRepository.updateQuarantineNotifiedAt (memory)', () => {
+  beforeEach(() => {
+    const ctx = createMemoryContext();
+    store = ctx.store;
+    repos = ctx.repos;
+    seed();
+  });
+
+  const INTERVAL_MS = 24 * 60 * 60 * 1000;
+
+  // 未送信 (quarantineNotifiedAt が null) なら true を返し、値が書き込まれる
+  it('未送信なら通知の権利を得てtrueを返す', async () => {
+    const now = new Date();
+    const result = await repos.tenants.updateQuarantineNotifiedAt(TENANT_A, now, INTERVAL_MS);
+    expect(result).toBe(true);
+    const tenant = await repos.tenants.findById(TENANT_A);
+    expect(tenant?.quarantineNotifiedAt).toEqual(now);
+  });
+
+  // 間隔内の再呼び出しは false を返し、値も上書きされない
+  it('間隔内の再呼び出しはfalseを返す', async () => {
+    const first = new Date();
+    await repos.tenants.updateQuarantineNotifiedAt(TENANT_A, first, INTERVAL_MS);
+    const second = new Date(first.getTime() + 1000); // 1秒後 (間隔未経過)
+    const result = await repos.tenants.updateQuarantineNotifiedAt(TENANT_A, second, INTERVAL_MS);
+    expect(result).toBe(false);
+    const tenant = await repos.tenants.findById(TENANT_A);
+    expect(tenant?.quarantineNotifiedAt).toEqual(first); // 上書きされていない
+  });
+
+  // 間隔経過後の呼び出しは true を返し、値が更新される
+  it('間隔経過後の呼び出しはtrueを返す', async () => {
+    const first = new Date();
+    await repos.tenants.updateQuarantineNotifiedAt(TENANT_A, first, INTERVAL_MS);
+    const second = new Date(first.getTime() + INTERVAL_MS + 1000); // 間隔+1秒後
+    const result = await repos.tenants.updateQuarantineNotifiedAt(TENANT_A, second, INTERVAL_MS);
+    expect(result).toBe(true);
+    const tenant = await repos.tenants.findById(TENANT_A);
+    expect(tenant?.quarantineNotifiedAt).toEqual(second);
+  });
+
+  // 分離: あるテナントの更新が他テナントに波及しない
+  it('他テナントには影響しない', async () => {
+    await repos.tenants.updateQuarantineNotifiedAt(TENANT_A, new Date(), INTERVAL_MS);
+    const tenantB = await repos.tenants.findById(TENANT_B);
+    expect(tenantB?.quarantineNotifiedAt ?? null).toBeNull();
+  });
+
+  // 異常系: 存在しないテナント ID は false を返す (Prisma の updateMany 0 件と同じ扱い)
+  it('存在しないテナントIDはfalseを返す', async () => {
+    const result = await repos.tenants.updateQuarantineNotifiedAt(
+      'no-such-tenant',
+      new Date(),
+      INTERVAL_MS,
+    );
+    expect(result).toBe(false);
   });
 });

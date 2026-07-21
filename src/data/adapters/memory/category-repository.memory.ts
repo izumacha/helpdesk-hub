@@ -23,16 +23,16 @@ export function makeCategoryRepo(store: Store): CategoryRepository {
       if (!c || c.tenantId !== tenantId) return null;
       return { id: c.id, name: c.name };
     },
-    // カテゴリを 1 件作成 (または既存を返す) する冪等な操作 (Phase 3 業種テンプレ初期投入用)。
-    // Prisma アダプタと同様に upsert 相当の動作にする (リトライ安全性・テスト挙動の一致)。
+    // カテゴリを 1 件新規作成する。同テナント内の重複名は Prisma の一意制約違反相当のエラーを
+    // throw する (LocationRepository.create と同じ契約に統一。フォローアップ 2026-07-21)
     async create(input) {
-      // 同テナント + 同名のカテゴリが既にストア内にあれば、そのまま返す (insert or ignore 相当)
-      const existing = [...store.categories.values()].find(
+      // 同テナント + 同名のカテゴリが既にストア内にあればエラー (DB の @@unique 制約相当)
+      const duplicate = [...store.categories.values()].find(
         (c) => c.tenantId === input.tenantId && c.name === input.name,
       );
-      // 既存が見つかった場合は新規作成せず既存行の概要を返す
-      if (existing) return { id: existing.id, name: existing.name };
-      // 見つからない場合は新規作成する
+      if (duplicate) {
+        throw new Error(`Category name "${input.name}" already exists in tenant ${input.tenantId}`);
+      }
       // ストアのカウンタを使って一意 ID を生成する ('cat' プレフィックス)
       const id = nextId(store, 'cat');
       // 新しいカテゴリ行をインメモリストアの CategoryRow 型に合わせて組み立てる
@@ -46,6 +46,49 @@ export function makeCategoryRepo(store: Store): CategoryRepository {
       store.categories.set(id, row);
       // port 契約の CategorySummary 型 (id / name のみ) で返す
       return { id: row.id, name: row.name };
+    },
+
+    // カテゴリ名を更新する (LocationRepository.update と同じ CAS 契約)
+    async update(id, tenantId, data, expected) {
+      // 対象カテゴリを取得してテナントスコープを確認する
+      const existing = store.categories.get(id);
+      if (!existing || existing.tenantId !== tenantId) {
+        // 他テナントのカテゴリや存在しないカテゴリへの更新は Prisma と同様にエラー
+        throw new Error(`Category ${id} not found in tenant ${tenantId}`);
+      }
+      // CAS: expected が渡されていれば、現在値がそれと一致するときだけ更新する
+      if (expected && existing.name !== expected.name) {
+        // 読み取り後に他の管理者が編集していた (競合) ため null を返し、上書きしない
+        return null;
+      }
+      // リネーム先が同テナントの別カテゴリと衝突しないか確認する (Prisma の一意制約と同じ挙動)
+      const duplicate = [...store.categories.values()].find(
+        (c) => c.tenantId === tenantId && c.name === data.name && c.id !== id,
+      );
+      if (duplicate) {
+        throw new Error(`Category name "${data.name}" already exists in tenant ${tenantId}`);
+      }
+      // 既存オブジェクトに差分を上書きする
+      const updated = { ...existing, name: data.name };
+      // ストアに上書き保存する
+      store.categories.set(id, updated);
+      return { id: updated.id, name: updated.name };
+    },
+
+    // カテゴリを削除する (紐づくチケットの categoryId は null に戻す)
+    async delete(id, tenantId) {
+      // テナントスコープを確認してから削除する
+      const existing = store.categories.get(id);
+      // 他テナントや存在しないカテゴリへの削除は no-op (DB の deleteMany と同じ動作)
+      if (!existing || existing.tenantId !== tenantId) return;
+      // ストアからカテゴリを削除する
+      store.categories.delete(id);
+      // このカテゴリに紐づくチケットの categoryId を null に戻す (ON DELETE SetNull 相当)
+      for (const ticket of store.tickets.values()) {
+        if (ticket.categoryId === id) {
+          store.tickets.set(ticket.id, { ...ticket, categoryId: null });
+        }
+      }
     },
   };
 }

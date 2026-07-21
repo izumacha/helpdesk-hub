@@ -25,6 +25,8 @@ import { findIndustryTemplate } from '@/lib/industry-templates';
 import { calculateFirstResponseDueAt, calculateResolutionDueAt } from '@/lib/sla';
 // 新規起票時の初期ステータスを mode から決める共通ルール (サンプルチケットと揃える)
 import { initialStatusForMode } from '@/domain/ticket-status';
+// Prisma の一意制約違反 (P2002) 判定の共通ヘルパー (§6 DRY: create-location.ts 等と同じヘルパーを再利用)
+import { isUniqueConstraintError } from '@/lib/prisma-errors';
 
 // サンプルチケットの定義 (Phase 3 オンボーディング)。
 // 新規テナントに操作感を掴ませるために自動投入する 2 件のチケット。
@@ -102,8 +104,18 @@ export async function provisionTenantWithAdmin(
       // Promise.all で並列クエリを投げると "Transaction already closed" になる場合がある。
       // for...of + await で直列実行して安全性を保つ (カテゴリ・FAQ は数件なので性能上問題なし)
       for (const name of template.categories) {
-        // カテゴリを 1 件ずつトランザクション内で作成する
-        await tx.categories.create({ name, tenantId: tenant.id });
+        // カテゴリを 1 件ずつトランザクション内で作成する。
+        // フォローアップ (2026-07-21): CategoryRepository.create は admin による新規作成
+        // (createCategory) と契約を統一するため upsert から plain create (重複時は throw) に
+        // 変更した。業種テンプレのカテゴリ名がテンプレート定義内で重複することは想定していないが、
+        // 元々の upsert はネットワーク障害・再送によるリトライ時の冪等性 (2 回実行されても
+        // エラーにしない) を狙った設計だったため、その安全網をここで維持する
+        // (isUniqueConstraintError で判定し、既に存在するなら no-op として無視する)
+        try {
+          await tx.categories.create({ name, tenantId: tenant.id });
+        } catch (err) {
+          if (!isUniqueConstraintError(err)) throw err;
+        }
       }
 
       // 「よくある質問」は FaqCandidate.ticketId が必須 (1 チケット 1 候補) のため、

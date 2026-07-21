@@ -31,6 +31,23 @@ export interface CategoryRepository {
   list(tenantId: string, opts?: { limit?: number }): Promise<CategorySummary[]>;
   // ID 指定で 1 件取得 (他テナントの ID なら null を返す)
   findById(id: string, tenantId: string): Promise<CategorySummary | null>;
-  // カテゴリを 1 件新規作成して返す (Phase 3 業種テンプレ初期投入用)
+  // カテゴリを 1 件新規作成する (name はテナント内一意)。
+  // フォローアップ (2026-07-21): 以前は Phase 3 業種テンプレ初期投入からのみ呼ばれる前提で
+  // upsert (insert or ignore) の冪等な契約だったが、admin による新規作成 (createCategory) が
+  // 同じメソッドを共有すると「既に存在する名前を指定してもエラーにならず既存行を静かに返す」
+  // という LocationRepository.create と食い違う挙動になってしまう。LocationRepository と同じ
+  // 「重複は一意制約違反として呼び出し側に伝える」契約に統一し、業種テンプレ側の冪等性が
+  // 必要な呼び出し元 (tenant-provisioning.ts) は一意制約違反を no-op として捕捉する
   create(input: { name: string; tenantId: string }): Promise<CategorySummary>;
+  // カテゴリ名を更新する (tenantId スコープで他テナントの ID は not-found エラー)。
+  // expected 指定時のみ CAS (LocationRepository.update と同じ契約。null は「見つからない」ではなく
+  // CAS 競合を意味する。not found は従来どおり例外)
+  update(
+    id: string,
+    tenantId: string,
+    data: { name: string },
+    expected?: { name: string },
+  ): Promise<CategorySummary | null>;
+  // カテゴリを削除する。紐づくチケットの categoryId は DB の ON DELETE SetNull で null になる
+  delete(id: string, tenantId: string): Promise<void>;
 }
