@@ -31,8 +31,10 @@ export function makeCategoryRepo(db: PrismaLike): CategoryRepository {
     },
     // カテゴリを 1 件新規作成する。name はテナント内一意 (@@unique([tenantId, name])) —
     // 重複時は Prisma が P2002 を throw する (LocationRepository.create と同じ契約に統一。
-    // フォローアップ 2026-07-21: 冪等性が必要な呼び出し元 (tenant-provisioning.ts) は
-    // 呼び出し側で一意制約違反を捕捉して no-op 扱いにする)
+    // フォローアップ 2026-07-21: 業種テンプレ初期投入 (tenant-provisioning.ts) は Postgres の
+    // インタラクティブトランザクション内で P2002 を捕捉しても後続の文が壊れてしまうため、
+    // 一意制約違反を捕捉する側ではなく、呼び出し前にテンプレート内の重複名を除いて
+    // 衝突そのものを起こさない設計にしてある)
     async create(input) {
       const row = await db.category.create({
         data: { name: input.name, tenantId: input.tenantId },
