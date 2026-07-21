@@ -18,6 +18,7 @@ import {
   type TicketSlaReminderCandidate,
   TICKET_DETAIL_COMMENTS_LIMIT,
   TICKET_DETAIL_HISTORY_LIMIT,
+  resolveTicketListLimit,
 } from '@/data/ports/ticket-repository';
 // メモリストアと ID 生成ヘルパーをインポート
 import { nextId, type Store } from './store';
@@ -202,8 +203,9 @@ export function makeTicketRepo(store: Store): TicketRepository {
       rows.sort((a, b) =>
         direction === 'asc' ? +a.createdAt - +b.createdAt : +b.createdAt - +a.createdAt,
       );
-      // ページング適用
-      rows = rows.slice(page.skip, page.skip + page.take);
+      // ページング適用 (§8 一覧取得は必ず上限を持たせる。呼び出し元の指定値をさらにクランプ)
+      const take = resolveTicketListLimit(page.take);
+      rows = rows.slice(page.skip, page.skip + take);
       // 各行に関連情報を結合して返す
       return rows.map((t) => attachRefs(t, store));
     },

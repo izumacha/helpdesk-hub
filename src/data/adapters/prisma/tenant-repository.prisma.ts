@@ -43,6 +43,8 @@ function toTenant(row: TenantRow): Tenant {
     // フォローアップ (監査で発見したギャップ 2026-07-20): Stripe Webhook 配信順序 CAS 用の
     // 直近処理イベント時刻 (未処理なら null)
     stripeEventProcessedAt: row.stripeEventProcessedAt,
+    // フォローアップ (2026-07-21): 隔離メール通知の送信間隔を空けるための直近送信時刻 (未送信は null)
+    quarantineNotifiedAt: row.quarantineNotifiedAt,
     createdAt: row.createdAt,
   };
 }
@@ -229,6 +231,29 @@ export function makeTenantRepo(db: PrismaLike): TenantRepository {
       const row = await db.tenant.update({ where: { id }, data });
       // 更新後の行をドメイン型に詰め替えて返す
       return toTenant(row);
+    },
+
+    // フォローアップ (2026-07-21): 隔離メール通知の送信間隔を空けるための原子的なゲート。
+    // quarantineNotifiedAt が null、または (at - intervalMs) より前の行だけを対象に更新する
+    // updateMany (updateMode 等と同じ CAS パターン)。1 件以上更新できた = このリクエストが
+    // 通知を送る権利を得たことを意味する
+    async updateQuarantineNotifiedAt(id, at, intervalMs) {
+      const threshold = new Date(at.getTime() - intervalMs);
+      const result = await db.tenant.updateMany({
+        where: {
+          id,
+          OR: [{ quarantineNotifiedAt: null }, { quarantineNotifiedAt: { lt: threshold } }],
+        },
+        data: { quarantineNotifiedAt: at },
+      });
+      return result.count > 0;
+    },
+
+    // フォローアップ: updateQuarantineNotifiedAt でクレームした後、実際の通知送信が失敗した
+    // ときにクレームを解除する (無条件で null に戻す。次の隔離発生時に再クレームできるように
+    // するだけなので CAS 条件は不要)
+    async clearQuarantineNotifiedAt(id) {
+      await db.tenant.update({ where: { id }, data: { quarantineNotifiedAt: null } });
     },
   };
 }

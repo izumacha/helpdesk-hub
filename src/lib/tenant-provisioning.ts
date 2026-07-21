@@ -101,8 +101,20 @@ export async function provisionTenantWithAdmin(
       // Prisma のインタラクティブトランザクション内では 1 つの接続を直列に使うため
       // Promise.all で並列クエリを投げると "Transaction already closed" になる場合がある。
       // for...of + await で直列実行して安全性を保つ (カテゴリ・FAQ は数件なので性能上問題なし)
+      // フォローアップ (2026-07-21): CategoryRepository.create は admin による新規作成
+      // (createCategory) と契約を統一するため upsert から plain create (重複時は throw) に
+      // 変更した。テンプレート定義内で名前が重複していても DB の一意制約違反を起こさないよう、
+      // ここで先にメモリ上で重複を除いてから作成する (この時点のテナントは直前に作成したばかりで
+      // 既存カテゴリを持たないため、重複の原因はテンプレート定義内の重複だけで済む)。
+      // 一意制約違反を catch する設計は採らない: Prisma のインタラクティブトランザクション
+      // (buildPrismaUow の $transaction) は Postgres 上で 1 つの接続を使い回すため、文の失敗で
+      // トランザクション全体が "aborted" 状態になり、catch で個別のエラーを握り潰しても
+      // 後続の文 (この後の FAQ 作成等) が "current transaction is aborted" で失敗してしまう
+      // (§9 fail-safe: 効かない安全網より、そもそもエラーを起こさない設計を選ぶ)
+      const seenCategoryNames = new Set<string>();
       for (const name of template.categories) {
-        // カテゴリを 1 件ずつトランザクション内で作成する
+        if (seenCategoryNames.has(name)) continue;
+        seenCategoryNames.add(name);
         await tx.categories.create({ name, tenantId: tenant.id });
       }
 

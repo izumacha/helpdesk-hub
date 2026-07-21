@@ -189,6 +189,10 @@ export const SETTINGS_AUDIT_ACTION_LABELS: Record<SettingsAuditAction, string> =
   subscription_plan_update: 'サブスクリプションプランを変更',
   // フォローアップ (2026-07-14 #2)
   tenant_create: 'テナントを作成',
+  // フォローアップ (2026-07-21)
+  category_create: 'カテゴリを作成',
+  category_update: 'カテゴリを更新',
+  category_delete: 'カテゴリを削除',
 };
 
 // 設定変更監査ログで actorId が null (システムによる自動変更) のときに表示する操作者名。
@@ -226,6 +230,7 @@ export const NOTIFICATION_TYPE_LABELS: Record<string, string> = {
   priorityChanged: '優先度変更',
   imported: '一括取り込み', // CSV・メール一括インポートで複数チケットが追加されたことを通知する
   slaDueSoon: 'SLA期限間近', // issue-backlog #20 フォローアップ: 解決期限が警告帯に入ったことの通知
+  quarantined: '隔離メール', // フォローアップ (2026-07-21): 受信メール/LINE メッセージが隔離されたことの通知
 };
 
 // 変更履歴の oldValue / newValue を field 種別に応じて日本語表示に変換する関数

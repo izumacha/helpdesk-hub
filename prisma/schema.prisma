@@ -85,6 +85,12 @@ enum SettingsAuditAction {
   // フォローアップ (2026-07-14 #2): テナント作成 (§4.5 の invitation_issue と同じく、新しい
   // admin 権限を付与する操作。招待より強い権限付与にもかかわらず監査対象から漏れていた)
   tenant_create // テナント + 初代管理者の作成 (運用者による作成 / セルフサーブサインアップ)
+  // フォローアップ (2026-07-21): カテゴリは Location (拠点) と同じ「テナント全体の設定」だが、
+  // 作成 (業種テンプレ初期投入) 以外の CRUD 手段が無く、当然ながら監査対象からも漏れていた。
+  // location_create/update/delete と同じ粒度で追加する
+  category_create // カテゴリの新規作成
+  category_update // カテゴリの更新 (名称変更)
+  category_delete // カテゴリの削除
 }
 
 // FAQ 候補の状態
@@ -103,6 +109,10 @@ enum NotificationType {
   priorityChanged // 優先度変更通知
   imported // CSV・メール一括取り込みによる複数チケット追加通知
   slaDueSoon // issue-backlog #20 フォローアップ: SLA 解決期限が近い (警告帯) ことの通知
+  // フォローアップ (2026-07-21): 隔離済み受信メール (QuarantinedEmail) は §3.2 で永続化・
+  // /quarantine 画面での閲覧まで実装したが、隔離が発生したこと自体を admin に知らせる手段が
+  // 無く、成功して起票された 'imported' 通知だけが届く非対称な状態だった
+  quarantined // 受信メール/LINE メッセージが隔離されたことの通知 (admin 宛、テナントあたり間隔を空けて送る)
 }
 
 // テナント (組織) の動作モード。SMB 向けピボットの Lite/Pro 二層に対応
@@ -221,6 +231,12 @@ model Tenant {
   // 直近に適用した Stripe イベントの発生時刻 (event.created) を保持し、CAS の比較対象にする
   // (未処理なら null。null または保存値以下の event.created のイベントのみ適用する)
   stripeEventProcessedAt DateTime?
+
+  // フォローアップ (2026-07-21): 隔離メール発生を admin に知らせる通知 (NotificationType.quarantined)
+  // の送信間隔を空けるための冪等化フィールド。スパム流入等で短時間に大量の隔離が発生しても
+  // テナントあたり QUARANTINE_NOTIFY_INTERVAL_MS (24時間) に 1 回しか通知しない (trialReminder と
+  // 同種の「通知の連投を防ぐ直近送信時刻」記録。null = まだ一度も通知していない)
+  quarantineNotifiedAt DateTime?
 
   createdAt DateTime @default(now()) // 作成日時
 

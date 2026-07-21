@@ -228,5 +228,27 @@ export function makeTenantRepo(store: Store): TenantRepository {
       // 防御的コピーを返す
       return { ...updated };
     },
+
+    // フォローアップ (2026-07-21): 隔離メール通知の送信間隔を空けるための原子的なゲート
+    // (Prisma アダプタの updateMany 版 CAS と同じ契約)
+    async updateQuarantineNotifiedAt(id, at, intervalMs) {
+      const t = store.tenants.get(id);
+      if (!t) return false;
+      const thresholdMs = at.getTime() - intervalMs;
+      // 直近に他のリクエストが既に更新済み (通知間隔がまだ空いていない) なら権利を得られない
+      if (t.quarantineNotifiedAt && t.quarantineNotifiedAt.getTime() >= thresholdMs) {
+        return false;
+      }
+      store.tenants.set(id, { ...t, quarantineNotifiedAt: at });
+      return true;
+    },
+
+    // フォローアップ: updateQuarantineNotifiedAt でクレームした後、実際の通知送信が失敗した
+    // ときにクレームを解除する (Prisma アダプタと同じ契約)
+    async clearQuarantineNotifiedAt(id) {
+      const t = store.tenants.get(id);
+      if (!t) return;
+      store.tenants.set(id, { ...t, quarantineNotifiedAt: null });
+    },
   };
 }

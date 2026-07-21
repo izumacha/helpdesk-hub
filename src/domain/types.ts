@@ -60,7 +60,12 @@ export type SettingsAuditAction =
   // フォローアップ (2026-07-14 #2): テナント作成は §4.5 の invitation_issue (agent 権限付与) と
   // 同種の「新しい権限を付与する操作」であり、それより強い admin 権限そのものを付与する操作
   // にもかかわらず監査対象から漏れていた
-  | 'tenant_create'; // テナント + 初代管理者の作成 (運用者による作成 / セルフサーブサインアップ)
+  | 'tenant_create' // テナント + 初代管理者の作成 (運用者による作成 / セルフサーブサインアップ)
+  // フォローアップ (2026-07-21): カテゴリは Location (拠点) と同じ「テナント全体の設定」だが、
+  // 作成 (業種テンプレ初期投入) 以外の CRUD 手段が無く、監査対象からも漏れていた
+  | 'category_create' // カテゴリの新規作成
+  | 'category_update' // カテゴリの更新 (名称変更)
+  | 'category_delete'; // カテゴリの削除
 
 // メール/LINE 取り込みが起票せず隔離した理由。
 // prisma/schema.prisma の QuarantineReason enum および src/lib/constants.ts の
@@ -118,7 +123,8 @@ export type NotificationType =
   | 'statusChanged' // ステータス変更通知
   | 'priorityChanged' // 優先度変更通知
   | 'imported' // CSV・メール一括取り込みで複数チケットが追加された通知
-  | 'slaDueSoon'; // issue-backlog #20 フォローアップ: SLA 解決期限が近い (警告帯) ことの通知
+  | 'slaDueSoon' // issue-backlog #20 フォローアップ: SLA 解決期限が近い (警告帯) ことの通知
+  | 'quarantined'; // フォローアップ (2026-07-21): 受信メール/LINE メッセージが隔離されたことの通知
 
 // テナントの動作モード (Lite=SMB 既定 / Pro=現行フル機能)
 export type TenantMode = 'lite' | 'pro';
@@ -169,6 +175,10 @@ export interface Tenant {
   // よう任意 (optional) とし、アダプタは常に null か値で埋める (trialReminderLastSentDaysBefore
   // と同じパターン)
   stripeEventProcessedAt?: Date | null;
+  // フォローアップ (2026-07-21): 隔離メール発生を admin に知らせる通知の送信間隔を空けるための
+  // 直近送信時刻 (未送信なら null)。既存フィクスチャ・呼び出しを壊さないよう任意 (optional) とし、
+  // アダプタは常に null か値で埋める (trialReminderLastSentDaysBefore と同じパターン)
+  quarantineNotifiedAt?: Date | null;
   createdAt: Date; // 作成日時
 }
 

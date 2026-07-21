@@ -21,13 +21,7 @@ import { parseCsvLine, MAX_CSV_BYTES } from '@/lib/csv';
 // パーサ。既存 Excel 台帳を再現するインポートで、元の起票日時を保持できるようにする
 import { parseDateTimeJST } from '@/lib/format-date';
 // 優先度・ステータス・テナントモードのドメイン型
-import type {
-  Priority,
-  TicketStatus,
-  TenantMode,
-  NotificationType,
-  UserSummary,
-} from '@/domain/types';
+import type { Priority, TicketStatus, TenantMode, UserSummary } from '@/domain/types';
 // モードに応じた初期ステータスを返す共通関数（メール取り込み・LINE 取り込みと同一ロジックを共有し DRY を維持する）。
 // getCompletionStatuses は §3.1 フォローアップ (2026-07-10) で追加: インポート時に「状況」列が
 // 完了系ステータスを指定していた場合、resolvedAt をインポート時刻で設定するために使う
@@ -39,8 +33,9 @@ import {
 // §3.1 フォローアップ (2026-07-10): 「状況」列の日本語ラベルから TicketStatus を逆引きする
 // mode-aware ヘルパー (getStatusLabel の逆写像)、およびエラーメッセージ用の有効ラベル一覧取得
 import { resolveStatusFromLabel, getStatusLabelsForMode } from '@/lib/constants';
-// CSV インポート完了後に他エージェントへ未読カウントを即時配信するヘルパー
-import { broadcastUnreadCountToMany } from '@/features/notifications/notify';
+// CSV インポート完了後、対象ユーザー群へバッチ通知 (1 通ずつ) を送るヘルパー (§6 DRY:
+// import-tickets.ts 固有だった実装を quarantine.ts と共有するため notify.ts へ抽出した)
+import { notifyUsersBatch } from '@/features/notifications/notify';
 // Phase 4 課金: 月間チケット上限チェック (Web フォーム・メール/LINE 取り込みと共有)
 import { getMonthlyTicketQuota } from '@/lib/tenant-plan';
 // 拠点・カテゴリの名前解決を網羅的に行うための上限値 (監査で発見したギャップ対応。
@@ -167,55 +162,6 @@ function buildNameToIdMapWithDuplicates(items: UserSummary[]): {
     if (count > 1) duplicateNames.add(name);
   }
   return { byName, duplicateNames };
-}
-
-// CSV インポート完了後、対象ユーザー群へバッチ通知 (1 通ずつ) を送るベストエフォート・ヘルパー。
-// /code-review ultra 指摘対応 (2026-07-13): 「全エージェントへの追加通知 ('imported')」と
-// 「担当者への割当通知 ('assigned')」が、DB 書き込み → 失敗のエージェント別詳細ログ → SSE
-// 未読件数配信、という同型の処理をそれぞれ個別に実装しており 2 箇所目の重複になっていたため、
-// ここに共通化する (§6 DRY)。通知書き込み・SSE 配信の失敗はいずれもチケット作成の成否に
-// 影響させないベストエフォートとして扱う (呼び出し元と同じ方針)。
-async function notifyImportBatch(
-  recipientIds: string[], // 通知対象ユーザー ID 一覧 (呼び出し元で自己除外済み)
-  tenantId: string, // テナントスコープ
-  type: NotificationType, // 通知種別 ('imported' | 'assigned')
-  messageFor: (recipientId: string) => string, // 受信者ごとの通知文言を組み立てる関数
-  logPrefix: string, // ログの先頭に付ける識別子 (例: '[importTickets] 担当割当通知')
-): Promise<void> {
-  // 対象が居なければ何もしない (早期リターン)
-  if (recipientIds.length === 0) return;
-  // 各ユーザーへの通知を並列で DB に書き込む。Promise.allSettled を使い、1 件の書き込み失敗が
-  // 他ユーザーへの通知配信や SSE broadcast をブロックしないようにする
-  const results = await Promise.allSettled(
-    recipientIds.map((userId) =>
-      repos.notifications.create({
-        userId,
-        type,
-        message: messageFor(userId),
-        ticketId: null, // バッチ通知は単一チケットに紐づかないため null
-        tenantId,
-      }),
-    ),
-  );
-  // 失敗した通知件数と、ユーザーごとの失敗理由をサーバーログに記録する
-  // (チケット作成の成否には影響しない。CLAUDE.md §6: エラーを握り潰さない)
-  const failedCount = results.filter((r) => r.status === 'rejected').length;
-  if (failedCount > 0) {
-    console.warn(`${logPrefix} ${failedCount} 件の通知書き込みに失敗しました`);
-    results.forEach((r, i) => {
-      if (r.status === 'rejected') {
-        console.warn(`${logPrefix} ユーザー ${recipientIds[i]} への通知書き込みに失敗:`, r.reason);
-      }
-    });
-  }
-  // 未読件数を SSE で即時配信して通知ベルに反映させる。
-  // broadcast は通知 DB 書き込みより後に行う必要があるため、上の Promise.allSettled を待ってから実行する。
-  // ここで例外が発生してもチケット作成は完了済みなので、ユーザーに失敗として返さず警告ログに留める。
-  try {
-    await broadcastUnreadCountToMany(recipientIds, tenantId);
-  } catch (err) {
-    console.warn(`${logPrefix} SSE broadcast に失敗しました（チケット作成は成功）:`, err);
-  }
 }
 
 // CSV インポートで担当者に割り当てられたエージェントへメールで通知するベストエフォート・ヘルパー。
@@ -954,19 +900,19 @@ export async function importTickets(csvText: string): Promise<ImportTicketsResul
     const assignedAgentIds = [...assignedCounts.keys()].filter((id) => id !== creatorId);
 
     // /code-review ultra 指摘対応 (2026-07-13): 上記 2 種類の通知は互いに独立した宛先・内容の
-    // I/O であり、notifyImportBatch 共通ヘルパーへの抽出と合わせて Promise.all で並行実行する
-    // (§8 パフォーマンス)。フォローアップ (2026-07-13): 監査で発見したギャップの解消。担当割当は
-    // 手動アサインと同じくメールも送る (notifyAssignedAgentsByEmail) ので、これも独立した I/O として
-    // 同じ Promise.all に加える
+    // I/O であり、共有ヘルパー notifyUsersBatch (notify.ts) への抽出と合わせて Promise.all で
+    // 並行実行する (§8 パフォーマンス)。フォローアップ (2026-07-13): 監査で発見したギャップの解消。
+    // 担当割当は手動アサインと同じくメールも送る (notifyAssignedAgentsByEmail) ので、これも
+    // 独立した I/O として同じ Promise.all に加える
     await Promise.all([
-      notifyImportBatch(
+      notifyUsersBatch(
         otherAgentIds,
         tenantId,
         'imported', // CSV 一括インポート通知 (NotificationType.imported)
         () => `${imported} 件のチケットが CSV インポートで追加されました`,
         '[importTickets] 一括追加通知',
       ),
-      notifyImportBatch(
+      notifyUsersBatch(
         assignedAgentIds,
         tenantId,
         'assigned', // 担当割当通知 (NotificationType.assigned)

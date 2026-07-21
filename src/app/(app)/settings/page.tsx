@@ -15,6 +15,8 @@ import { InviteForm } from '@/features/settings/components/InviteForm';
 import { NotificationChannelsForm } from '@/features/settings/components/NotificationChannelsForm';
 // Phase 4 多拠点: 拠点管理セクション (Client Component)
 import { LocationsSection } from '@/features/settings/components/LocationsSection';
+// フォローアップ (2026-07-21): カテゴリ管理セクション (Client Component)
+import { CategoriesSection } from '@/features/settings/components/CategoriesSection';
 // Phase 4 課金: サブスクリプション管理セクション (Client Component)
 import { BillingSection } from '@/features/settings/components/BillingSection';
 // Phase 4 Enterprise: SAML SSO 設定セクション (Client Component)
@@ -46,6 +48,8 @@ import { buildInboundAddress } from '@/lib/inbound-email';
 // 返さない。本ページは拠点の「管理」画面 (LocationsSection) であり全件が前提のため、CSV インポート
 // と同じ網羅的な上限を明示的に渡す (未指定のままだと 201 拠点目以降が管理画面から見えなくなる)
 import { LOCATION_LIST_MATCHING_LIMIT } from '@/data/ports/location-repository';
+// フォローアップ (2026-07-21): カテゴリも同じ理由で管理画面には網羅的な上限を明示的に渡す
+import { CATEGORY_LIST_MATCHING_LIMIT } from '@/data/ports/category-repository';
 
 // /settings : テナント設定ページ (現状は Lite/Pro モードの切替のみ。管理者専用)
 export default async function SettingsPage() {
@@ -64,13 +68,16 @@ export default async function SettingsPage() {
     );
   }
 
-  // Phase 4: テナント情報・拠点一覧・現在のスタッフ人数を並列取得する
-  const [tenant, locations, currentUserCount] = await Promise.all([
+  // Phase 4: テナント情報・拠点一覧・カテゴリ一覧・現在のスタッフ人数を並列取得する
+  const [tenant, locations, categories, currentUserCount] = await Promise.all([
     // テナント情報 (slackWebhookUrl / プラン / Stripe 情報の現在値を取得)。共有キャッシュ経由
     // にすることで、同一リクエスト内の (app)/layout.tsx (mode/plan 解決) と Tenant SELECT を共有する
     getCachedTenant(session.user.tenantId),
     // 拠点一覧 (LocationsSection の初期値として渡す)。管理画面のため網羅的な上限を明示する
     repos.locations.listByTenant(session.user.tenantId, { limit: LOCATION_LIST_MATCHING_LIMIT }),
+    // フォローアップ (2026-07-21): カテゴリ一覧 (CategoriesSection の初期値として渡す)。
+    // 拠点一覧と同じ理由で管理画面向けの網羅的な上限を明示する
+    repos.categories.list(session.user.tenantId, { limit: CATEGORY_LIST_MATCHING_LIMIT }),
     // 現在のスタッフ人数 (agent/admin のみ)。Stripe ダウングレード後にプラン上限を
     // 超えていないかを BillingSection で警告表示するために使う
     repos.users.countByTenant(session.user.tenantId),
@@ -287,6 +294,25 @@ export default async function SettingsPage() {
         {/* 拠点一覧と追加フォーム (初期値をサーバーから渡す) */}
         <LocationsSection locations={locations} />
       </section>
+
+      {/* フォローアップ (2026-07-21): カテゴリ管理カード。カテゴリは Pro モード専用の概念
+          (TicketForm.tsx の isLite 分岐・POST /api/tickets の effectiveCategoryId 参照) のため
+          Pro モードのときのみ表示する (Lite モードでは設定してもチケット起票時に使われない) */}
+      {mode === 'pro' && (
+        <section className="space-y-4 rounded-2xl bg-white p-6 shadow-sm ring-1 ring-slate-100">
+          <div>
+            {/* セクション見出し */}
+            <h2 className="text-base font-semibold text-slate-900">カテゴリ管理</h2>
+            {/* 説明: カテゴリを登録すると問い合わせ票で分類を選べる */}
+            <p className="mt-1 text-sm text-slate-500">
+              問い合わせの分類に使うカテゴリを登録・編集・削除できます。
+              カテゴリを削除しても、紐づく問い合わせのデータは消えずカテゴリ欄が空になります。
+            </p>
+          </div>
+          {/* カテゴリ一覧と追加フォーム (初期値をサーバーから渡す) */}
+          <CategoriesSection categories={categories} />
+        </section>
+      )}
 
       {/* Phase 4 課金: サブスクリプション管理カード */}
       <section className="space-y-4 rounded-2xl bg-white p-6 shadow-sm ring-1 ring-slate-100">

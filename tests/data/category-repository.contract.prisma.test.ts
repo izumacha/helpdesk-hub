@@ -1,7 +1,12 @@
 // カテゴリリポジトリ (Prisma アダプタ) の契約テスト。
 // 監査で発見したギャップ: tests/data/category-repository.memory.test.ts (メモリアダプタ) しか
-// テストが無く、create() の upsert (tenantId_name 複合一意キーによる insert-or-ignore) が
-// 本番 Prisma アダプタで実際に冪等に動くかは未検証だった (CLAUDE.md §11)。
+// テストが無く、create() が本番 Prisma アダプタで実際に一意制約違反を throw するかは未検証だった
+// (CLAUDE.md §11)。
+//
+// フォローアップ (2026-07-21): admin による CRUD (create/update/delete) を追加した際、
+// create() の契約を upsert (冪等) から plain create (重複は throw) に変更したため、
+// 既存の「upsert で冪等」テストを LocationRepository と同じ「重複はエラー」の期待値に更新し、
+// update/delete のテストを追加した。
 //
 // この DB 依存テストは RUN_PRISMA_CONTRACT=1 のときだけ走り、beforeEach で全テーブルを
 // TRUNCATE するため **開発 DB を指さない** こと。
@@ -46,13 +51,14 @@ describe.runIf(SHOULD_RUN)('CategoryRepository (prisma adapter)', () => {
     expect(category.name).toBe('ネットワーク');
   });
 
-  // create: 同テナント + 同名の再作成は upsert で冪等に動く (P2002 にならず既存行を返す)
-  it('同テナント内の同名作成はupsertで冪等に動く', async () => {
+  // create: 同一テナント内の同名カテゴリはエラーになる (一意制約違反。LocationRepository と同じ契約)
+  it('同一テナント内の重複名はエラーになる', async () => {
     const repos = buildPrismaRepos(prisma);
-    const first = await repos.categories.create({ name: 'ハードウェア', tenantId: TENANT_A });
-    const second = await repos.categories.create({ name: 'ハードウェア', tenantId: TENANT_A });
-    expect(second.id).toBe(first.id);
-    // DB 上も 1 件しか無いこと
+    await repos.categories.create({ name: 'ハードウェア', tenantId: TENANT_A });
+    await expect(
+      repos.categories.create({ name: 'ハードウェア', tenantId: TENANT_A }),
+    ).rejects.toThrow();
+    // DB 上も 1 件しか無いこと (失敗した 2 回目は作成されていない)
     const count = await prisma.category.count({ where: { tenantId: TENANT_A } });
     expect(count).toBe(1);
   });
@@ -111,5 +117,77 @@ describe.runIf(SHOULD_RUN)('CategoryRepository (prisma adapter)', () => {
     }
     const result = await repos.categories.list(TENANT_A, { limit: CATEGORY_LIST_MATCHING_LIMIT });
     expect(result).toHaveLength(CATEGORY_LIST_LIMIT + 3);
+  });
+
+  // update: 名前を更新できる (実 DB での無条件更新)
+  it('名前を更新できる', async () => {
+    const repos = buildPrismaRepos(prisma);
+    const category = await repos.categories.create({ name: '旧名称', tenantId: TENANT_A });
+    const updated = await repos.categories.update(category.id, TENANT_A, { name: '新名称' });
+    expect(updated?.name).toBe('新名称');
+  });
+
+  // update: expected (CAS) が現在値と一致しない場合は更新せず null を返す
+  it('expectedが現在値と一致しない場合は更新せずnullを返す', async () => {
+    const repos = buildPrismaRepos(prisma);
+    const category = await repos.categories.create({ name: '現在の名前', tenantId: TENANT_A });
+    const result = await repos.categories.update(
+      category.id,
+      TENANT_A,
+      { name: '新しい名前' },
+      { name: '食い違う古い名前' },
+    );
+    expect(result).toBeNull();
+    const found = await repos.categories.findById(category.id, TENANT_A);
+    expect(found?.name).toBe('現在の名前');
+  });
+
+  // update: 他テナントのカテゴリ ID を更新しようとするとエラーになる (fail-closed)
+  it('他テナントのカテゴリIDを更新しようとするとエラーになる', async () => {
+    const repos = buildPrismaRepos(prisma);
+    const category = await repos.categories.create({ name: 'Aカテゴリ', tenantId: TENANT_A });
+    await expect(
+      repos.categories.update(category.id, TENANT_B, { name: '乗っ取り' }),
+    ).rejects.toThrow();
+  });
+
+  // delete: 削除すると紐づくチケットの categoryId が null になる (ON DELETE SetNull)
+  it('削除すると紐づくチケットのcategoryIdがnullになる', async () => {
+    const repos = buildPrismaRepos(prisma);
+    const category = await repos.categories.create({ name: 'Aカテゴリ', tenantId: TENANT_A });
+    const creator = await prisma.user.create({
+      data: {
+        email: 'creator@example.com',
+        name: '起票者',
+        passwordHash: 'x',
+        role: 'requester',
+        tenantId: TENANT_A,
+      },
+    });
+    const ticket = await prisma.ticket.create({
+      data: {
+        title: 'テストチケット',
+        body: '本文',
+        status: 'Open',
+        priority: 'Medium',
+        creatorId: creator.id,
+        categoryId: category.id,
+        tenantId: TENANT_A,
+      },
+    });
+
+    await repos.categories.delete(category.id, TENANT_A);
+
+    const reloaded = await prisma.ticket.findUniqueOrThrow({ where: { id: ticket.id } });
+    expect(reloaded.categoryId).toBeNull();
+  });
+
+  // delete: 他テナントのカテゴリ ID を削除しようとしても no-op (Prisma の deleteMany と同じ挙動)
+  it('他テナントのカテゴリIDを削除しようとしてもno-opになる', async () => {
+    const repos = buildPrismaRepos(prisma);
+    const category = await repos.categories.create({ name: 'Aカテゴリ', tenantId: TENANT_A });
+    await repos.categories.delete(category.id, TENANT_B);
+    const result = await repos.categories.findById(category.id, TENANT_A);
+    expect(result).not.toBeNull();
   });
 });

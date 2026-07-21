@@ -29,28 +29,60 @@ export function makeCategoryRepo(db: PrismaLike): CategoryRepository {
         select: { id: true, name: true },
       });
     },
-    // カテゴリを 1 件作成 (または既存を返す) する冪等な操作 (Phase 3 業種テンプレ初期投入用)。
-    // plain create ではなく upsert を使う理由:
-    //   テナント作成フロー (create-tenant.ts) では同一の (tenantId, name) が @@unique 制約を持つため、
-    //   ネットワーク障害や再送によるリトライで同じカテゴリを 2 回作成しようとすると P2002 が発生する。
-    //   upsert により「存在しなければ INSERT、既に存在すれば更新なし」の冪等な動作にして、
-    //   リトライに対して安全にする (§8 N+1 回避・§9 fail-safe)。
+    // カテゴリを 1 件新規作成する。name はテナント内一意 (@@unique([tenantId, name])) —
+    // 重複時は Prisma が P2002 を throw する (LocationRepository.create と同じ契約に統一。
+    // フォローアップ 2026-07-21: 業種テンプレ初期投入 (tenant-provisioning.ts) は Postgres の
+    // インタラクティブトランザクション内で P2002 を捕捉しても後続の文が壊れてしまうため、
+    // 一意制約違反を捕捉する側ではなく、呼び出し前にテンプレート内の重複名を除いて
+    // 衝突そのものを起こさない設計にしてある)
     async create(input) {
-      // upsert: where 節で複合一意キー (tenantId + name) を指定して重複を検出する
-      const row = await db.category.upsert({
-        where: {
-          // Prisma が @@unique([tenantId, name]) から自動生成する複合ユニーク識別子
-          tenantId_name: { tenantId: input.tenantId, name: input.name },
-        },
-        // 既存行があっても何も更新しない (insert or ignore 相当)
-        update: {},
-        // 存在しない場合は新規作成する
-        create: { name: input.name, tenantId: input.tenantId },
+      const row = await db.category.create({
+        data: { name: input.name, tenantId: input.tenantId },
         // port 契約の CategorySummary 型に合わせた最小選択
         select: { id: true, name: true },
       });
-      // 作成または取得した行 (id / name) を返す
       return row;
+    },
+
+    // カテゴリ名を更新する (tenantId スコープで他テナントは not-found エラー)
+    async update(id, tenantId, data, expected) {
+      // まず対象カテゴリがこのテナントに属するか findFirst で確認する
+      // (LocationRepository.update と同じ「事前 findFirst でテナント所有を検証してから
+      // id のみで更新する」構成。db.category.update の where は PK のみで tenantId は AND にならない)
+      const existing = await db.category.findFirst({ where: { id, tenantId } });
+      if (!existing) {
+        throw new Error(`Category not found: ${id}`);
+      }
+
+      // expected が渡された場合は CAS (compare-and-swap) 経路 (LocationRepository.update と同じ)
+      if (expected) {
+        const result = await db.category.updateMany({
+          where: { id, tenantId, name: expected.name },
+          data: { name: data.name },
+        });
+        // 0 件更新 = 直前の読み取り後に他の管理者が値を変えていた (競合)
+        if (result.count === 0) return null;
+        const row = await db.category.findFirst({
+          where: { id, tenantId },
+          select: { id: true, name: true },
+        });
+        if (!row) return null;
+        return row;
+      }
+
+      // expected 未指定: 従来どおりの無条件更新
+      const row = await db.category.update({
+        where: { id },
+        data: { name: data.name },
+        select: { id: true, name: true },
+      });
+      return row;
+    },
+
+    // カテゴリを削除する。紐づくチケットの categoryId は ON DELETE SetNull で自動的に null 化される
+    async delete(id, tenantId) {
+      // テナント ID を条件に含めることでクロステナント削除を防ぐ
+      await db.category.deleteMany({ where: { id, tenantId } });
     },
   };
 }
