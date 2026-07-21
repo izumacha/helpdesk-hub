@@ -40,6 +40,11 @@ import { isAgent } from '@/lib/role';
 import type { Ticket, Role } from '@/domain/types';
 // Route Handler 向け共通レート制限ラッパー (ticket-comment 等と同じ 429 契約)
 import { checkRouteRateLimit } from '@/lib/route-rate-limit';
+// 同一オリジン検証ヘルパー (§9 CSRF対策。magic-link/callback と共有する判定ロジック。
+// /code-review ultra 指摘対応 (2026-07-21): Server Action は Next.js の組み込み Origin
+// 検証で保護されるが、このルートは 1MB ボディ上限回避のため意図的に切り出した通常の
+// Route Handler でその保護を受けないため、ここで明示的に検証する)
+import { isSameOriginRequest } from '@/lib/csrf';
 
 // 監査で発見したギャップ: POST /api/tickets/[id]/comments (ticket-comment) や CSV インポート
 // (csv-import) 等、他の全てのチケット関連ミューテーションはレート制限済みだったが、
@@ -60,9 +65,7 @@ async function notifyAgentsOfWebTicket(
     // テナント内のエージェント/管理者一覧を取得する (メール/LINE 取り込みと同じヘルパー)
     const agents = await repos.users.listAgents(tenantId);
     // 通知対象: 起票者自身がエージェントなら本人以外、依頼者からの起票なら全エージェントへ通知する
-    const notifyTargets = isAgent(creatorRole)
-      ? agents.filter((a) => a.id !== creatorId)
-      : agents;
+    const notifyTargets = isAgent(creatorRole) ? agents.filter((a) => a.id !== creatorId) : agents;
     // 通知作成・SSE 配信はメール/LINE 取り込みと共有のヘルパーに委譲する
     await notifyAgentsOfNewTicket({
       tenantId,
@@ -109,6 +112,13 @@ export async function POST(req: Request) {
   const tenantId = session.user.tenantId;
   // 起票者 ID (添付メタの uploaderId にも使う)
   const userId = session.user.id;
+
+  // クロスオリジン CSRF 対策: 攻撃者サイトが被害者のブラウザに送らせたクロスサイト POST は
+  // セッション Cookie が自動付与されるため auth() だけでは弾けない。同一オリジンからの
+  // 送信であることを明示的に検証する (§9)
+  if (!isSameOriginRequest(req)) {
+    return NextResponse.json({ error: 'リクエストの送信元を確認できません' }, { status: 403 });
+  }
 
   // ユーザー単位でチケット作成頻度を制限する (ticket-comment と同じ 429 契約)
   const rateLimitResponse = checkRouteRateLimit(

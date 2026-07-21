@@ -26,8 +26,10 @@ import { getStatusLabel, PRIORITY_LABELS } from '@/lib/constants';
 // フォローアップ (2026-07-15): 優先度変更に追随して SLA 期限 (初回応答/解決) を再計算するための
 // 純粋関数。Web フォーム/CSV インポートの起票時と同じ計算式を共有する (§6 DRY)
 import { calculateFirstResponseDueAt, calculateResolutionDueAt } from '@/lib/sla';
-// 型のみインポート (優先度/ステータス/チケット詳細)
-import type { Priority, TicketStatus, TicketWithRefs } from '@/domain/types';
+// 型のみインポート (優先度/ステータス/チケット詳細/テナント mode)。
+// /code-review ultra 指摘対応: TenantMode だけ3箇所で `import('@/domain/types').TenantMode`
+// とインライン記法が個別に書かれ、他の型と参照経路が分かれていたため、ここに集約する (CLAUDE.md §6 DRY)
+import type { Priority, TicketStatus, TicketWithRefs, TenantMode } from '@/domain/types';
 // レート制限 (連打防止) の共通ヘルパー
 import { enforceRateLimit } from '@/lib/rate-limit';
 // Zod スキーマ (エスカレーション理由の検証用)
@@ -967,7 +969,7 @@ async function notifyRequesterOfStatusChange(args: {
   creatorId: string; // 起票者ユーザー ID (メールアドレス・LINE 連携状況の取得用)
   oldStatus: TicketStatus; // 変更前のステータス (ラベル変換用)
   newStatus: TicketStatus; // 変更後のステータス (ラベル変換用)
-  mode: import('@/domain/types').TenantMode; // テナント mode (ラベル変換で Lite/Pro を切替)
+  mode: TenantMode; // テナント mode (ラベル変換で Lite/Pro を切替)
   tenantId: string; // LINE 連携設定・プランの取得に使うテナントスコープ
 }): Promise<void> {
   const { ticketId, ticketTitle, creatorId, oldStatus, newStatus, mode, tenantId } = args;
@@ -1014,7 +1016,7 @@ async function sendStatusChangedEmailToRequester(args: {
   ticketTitle: string; // チケット件名 (メール本文用)
   oldStatus: TicketStatus; // 変更前のステータス (ラベル変換用)
   newStatus: TicketStatus; // 変更後のステータス (ラベル変換用)
-  mode: import('@/domain/types').TenantMode; // テナント mode (ラベル変換で Lite/Pro を切替)
+  mode: TenantMode; // テナント mode (ラベル変換で Lite/Pro を切替)
 }): Promise<void> {
   const { creator, ticketId, ticketTitle, oldStatus, newStatus, mode } = args;
   // メール未設定なら送りようがないのでスキップ
@@ -1053,7 +1055,7 @@ async function sendStatusChangedLineToRequester(args: {
   ticketTitle: string; // チケット件名 (LINE 本文用)
   oldStatus: TicketStatus; // 変更前のステータス (ラベル変換用)
   newStatus: TicketStatus; // 変更後のステータス (ラベル変換用)
-  mode: import('@/domain/types').TenantMode; // テナント mode (ラベル変換で Lite/Pro を切替)
+  mode: TenantMode; // テナント mode (ラベル変換で Lite/Pro を切替)
   tenantId: string; // LINE 連携設定・プランの取得に使うテナントスコープ
 }): Promise<void> {
   const { creator, ticketId, ticketTitle, oldStatus, newStatus, mode, tenantId } = args;

@@ -104,11 +104,13 @@ async function seedTenant(slackWebhookUrl: string | null) {
   });
 }
 
-// JSON ボディでチケット作成リクエストを組み立てる
+// JSON ボディでチケット作成リクエストを組み立てる。
+// sec-fetch-site: same-origin は isSameOriginRequest (CSRF 対策) を通過させるために付与する
+// (実ブラウザの同一オリジン fetch/フォーム送信を模擬)
 function buildJsonRequest(body: Record<string, unknown>): Request {
   return new Request('http://localhost/api/tickets', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', 'sec-fetch-site': 'same-origin' },
     body: JSON.stringify(body),
   });
 }

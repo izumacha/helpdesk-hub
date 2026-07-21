@@ -97,14 +97,20 @@ function makeFile(name: string, type: string, body: string): File {
   return new File([data], name, { type });
 }
 
-// multipart/form-data リクエストを組み立てて Request 化する
+// multipart/form-data リクエストを組み立てて Request 化する。
+// sec-fetch-site: same-origin は isSameOriginRequest (CSRF 対策) を通過させるために付与する
+// (実ブラウザの同一オリジン fetch/フォーム送信を模擬)
 function buildMultipartRequest(fields: Record<string, string>, files: File[]): Request {
   // FormData を組み立てる
   const form = new FormData();
   for (const [k, v] of Object.entries(fields)) form.append(k, v);
   for (const f of files) form.append('files', f, f.name);
   // Request にして POST する (Node 環境では undici が multipart の境界を自動で組み立てる)
-  return new Request('http://localhost/api/tickets', { method: 'POST', body: form });
+  return new Request('http://localhost/api/tickets', {
+    method: 'POST',
+    body: form,
+    headers: { 'sec-fetch-site': 'same-origin' },
+  });
 }
 
 beforeEach(async () => {
@@ -135,7 +141,7 @@ describe('POST /api/tickets (multipart with attachments)', () => {
     // 大文字化した Content-Type で同じボディを再構築する
     const req = new Request('http://localhost/api/tickets', {
       method: 'POST',
-      headers: { 'content-type': upperType },
+      headers: { 'content-type': upperType, 'sec-fetch-site': 'same-origin' },
       body: bodyBuf,
     });
 
@@ -328,7 +334,7 @@ describe('POST /api/tickets (multipart with attachments)', () => {
     const buildJsonRequest = () =>
       new Request('http://localhost/api/tickets', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', 'sec-fetch-site': 'same-origin' },
         body: JSON.stringify({ title: 't', body: 'b', priority: 'Medium' }),
       });
     let last: Response | undefined;

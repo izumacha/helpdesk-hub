@@ -45,6 +45,10 @@ import {
 import { checkAttachmentQuota } from '@/lib/tenant-plan';
 // Phase 4: Slack/Teams/Chatwork 外部通知のベストエフォート送信共通ヘルパー
 import { notifyOutboundBestEffort } from '@/lib/outbound-notify';
+// 同一オリジン検証ヘルパー (§9 CSRF対策。magic-link/callback・POST /api/tickets と共有する
+// 判定ロジック。このルートも 1MB ボディ上限回避のため意図的に切り出した通常の Route Handler で、
+// Server Action の組み込み Origin 検証を受けないため、ここで明示的に検証する)
+import { isSameOriginRequest } from '@/lib/csrf';
 
 // /api/tickets/[id]/comments の動的セグメント
 type Params = { params: Promise<{ id: string }> };
@@ -75,6 +79,13 @@ export async function POST(req: Request, { params }: Params) {
   const tenantId = session.user.tenantId;
   const authorId = session.user.id;
   const authorIsAgent = isAgent(session.user.role);
+
+  // クロスオリジン CSRF 対策: 攻撃者サイトが被害者のブラウザに送らせたクロスサイト POST は
+  // セッション Cookie が自動付与されるため auth() だけでは弾けない。同一オリジンからの
+  // 送信であることを明示的に検証する (§9)
+  if (!isSameOriginRequest(req)) {
+    return NextResponse.json({ error: 'リクエストの送信元を確認できません' }, { status: 403 });
+  }
 
   // チケット ID を動的セグメントから取り出す
   const { id: ticketId } = await params;

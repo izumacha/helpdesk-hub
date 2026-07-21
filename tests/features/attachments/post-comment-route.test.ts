@@ -167,12 +167,18 @@ function makeFile(name: string, type: string, body: string): File {
   return new File([data], name, { type });
 }
 
-// multipart Request を組み立てるヘルパー (Content-Type は undici が自動付与する)
+// multipart Request を組み立てるヘルパー (Content-Type は undici が自動付与する)。
+// sec-fetch-site: same-origin は isSameOriginRequest (CSRF 対策) を通過させるために付与する
+// (実ブラウザの同一オリジン fetch/フォーム送信を模擬)
 function buildRequest(body: string, files: File[]): Request {
   const form = new FormData();
   form.set('body', body);
   for (const f of files) form.append('files', f, f.name);
-  return new Request('http://localhost/api/tickets/x/comments', { method: 'POST', body: form });
+  return new Request('http://localhost/api/tickets/x/comments', {
+    method: 'POST',
+    body: form,
+    headers: { 'sec-fetch-site': 'same-origin' },
+  });
 }
 
 // 動的セグメント params の Promise を作るヘルパー

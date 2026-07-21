@@ -43,6 +43,9 @@ import { escapeHtml } from '@/lib/html-escape';
 import { MAGIC_LINK_CALLBACK_RATE_LIMIT } from '@/lib/magic-link';
 // Route Handler 向け共通レート制限ラッパー (inbound-email/inbound-line/sso-acs と共有)
 import { checkRouteRateLimit } from '@/lib/route-rate-limit';
+// 同一オリジン検証ヘルパー (POST /api/tickets・POST /api/tickets/[id]/comments と共有。
+// /code-review ultra 指摘対応: 従来ここに個別実装されていたロジックを共通化した)
+import { isSameOriginRequest } from '@/lib/csrf';
 
 // GET ハンドラ: トークンを消費せず HTML 確認ページを返す。
 // メールゲートウェイのプリフェッチ対策として、実際の認証は POST でのみ行う。
@@ -169,47 +172,11 @@ export async function POST(request: Request) {
   // 制限超過なら 429 の NextResponse をそのまま返す (超過なしなら null が返り後続処理を続ける)
   if (limitResponse) return limitResponse;
 
-  // クロスオリジン CSRF 対策: 同一オリジンからのフォーム送信であることを検証する。
-  // 検証戦略:
-  //   1. Sec-Fetch-Site ヘッダ (Chrome 76+ / Firefox 90+): ブラウザが必ず付与し
-  //      JavaScript から偽造できない Fetch Metadata ヘッダ。'same-origin' のみ許可する。
-  //   2. Origin ヘッダ (Sec-Fetch-Site を送らない Safari 等): scheme+host+port を
-  //      正規化して比較する。ブラウザが送信する 'null' 文字列 (file:// 等) は拒否する。
-  //   3. どちらも存在しない場合: fail-closed で拒否する。
-
-  // Sec-Fetch-Site ヘッダは Chrome/Firefox が自動付与する Fetch Metadata ヘッダ
-  const secFetchSite = request.headers.get('sec-fetch-site');
-  // サーバー側の正規オリジン (scheme + host + port) を取り出す
-  const serverOrigin = new URL(request.url).origin;
-
-  if (secFetchSite !== null) {
-    // Sec-Fetch-Site が存在する場合 (Chrome/Firefox): 'same-origin' のみ許可する。
-    // 'cross-site' は別ドメインからの送信 (CSRF 攻撃)、
-    // 'same-site' は同一eTLD+1の別オリジン (許容しない)、
-    // 'none' はダイレクトナビゲーション (form POST には通常現れない) なので拒否する。
-    if (secFetchSite !== 'same-origin') {
-      // クロスオリジン送信 = CSRF の疑い → fail-closed でエラー扱い
-      redirect('/login?error=magic-link-invalid');
-    }
-  } else {
-    // Sec-Fetch-Site がない場合 (Safari 等): Origin ヘッダで同一オリジンを確認する。
-    const origin = request.headers.get('origin');
-    // 'null' 文字列はブラウザが file:// や data: URL 等から送信する特殊な Origin 値。
-    // 同一オリジンとは見なせないため除外する (null チェックとは別に文字列比較が必要)。
-    let requestOrigin: string | null = null;
-    if (origin && origin !== 'null') {
-      try {
-        // URL パースで scheme+host+port を正規化する (末尾スラッシュ等の揺れを吸収)
-        requestOrigin = new URL(origin).origin;
-      } catch {
-        // 不正な URL 文字列の場合は null 扱い → 後段で拒否する (fail-closed)
-        requestOrigin = null;
-      }
-    }
-    if (!requestOrigin || requestOrigin !== serverOrigin) {
-      // Origin 不一致または欠如は CSRF の疑いがあるためエラー扱い (fail-closed)
-      redirect('/login?error=magic-link-invalid');
-    }
+  // クロスオリジン CSRF 対策: 同一オリジンからのフォーム送信であることを検証する
+  // (POST /api/tickets・POST /api/tickets/[id]/comments と共有する判定ロジック)。
+  if (!isSameOriginRequest(request)) {
+    // クロスオリジン送信 = CSRF の疑い → fail-closed でエラー扱い
+    redirect('/login?error=magic-link-invalid');
   }
 
   // フォームの multipart/form-data または application/x-www-form-urlencoded からトークンを取り出す
