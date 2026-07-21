@@ -207,4 +207,46 @@ describe('recordQuarantineSafe', () => {
     expect(records).toHaveLength(1); // 記録自体は成功している
     consoleErrorSpy.mockRestore();
   });
+
+  // フォローアップ (2026-07-21): 通知送信の失敗でクレーム (quarantineNotifiedAt) だけが
+  // 消費され、以後 24 時間誰にも通知が届かなくなる回帰を防ぐテスト。1 回目は送信失敗
+  // (クレームは解除される想定) させ、直後の 2 回目 (間隔を空けない) で通知できることを確認する
+  it('通知の送信が失敗した場合はクレームを解除し、直後の隔離発生でも再度通知を試みる', async () => {
+    const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    vi.spyOn(repos.users, 'listAdminEmails').mockRejectedValueOnce(new Error('DB down'));
+    const { recordQuarantineSafe } = await import('@/lib/quarantine');
+
+    // 1 回目: 通知送信に失敗する
+    await recordQuarantineSafe(
+      {
+        tenantId: TENANT,
+        channel: 'email',
+        reason: 'unknown_sender',
+        senderAddress: 'x@example.com',
+        senderName: null,
+        subject: '件名1',
+      },
+      '[test]',
+    );
+    // クレームが解除され、次回すぐに再度通知を試みられる状態に戻っていること
+    const tenantAfterFailure = await repos.tenants.findById(TENANT);
+    expect(tenantAfterFailure?.quarantineNotifiedAt).toBeNull();
+
+    // 2 回目: 間隔を空けずに発生しても (listAdminEmails は正常に戻っている) 通知が作成される
+    await recordQuarantineSafe(
+      {
+        tenantId: TENANT,
+        channel: 'email',
+        reason: 'unknown_sender',
+        senderAddress: 'x@example.com',
+        senderName: null,
+        subject: '件名2',
+      },
+      '[test]',
+    );
+
+    const notifications = [...store.notifications.values()].filter((n) => n.type === 'quarantined');
+    expect(notifications).toHaveLength(1); // 1 回目は失敗、2 回目で初めて成功
+    consoleErrorSpy.mockRestore();
+  });
 });

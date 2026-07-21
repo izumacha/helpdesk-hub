@@ -242,5 +242,13 @@ export function makeTenantRepo(store: Store): TenantRepository {
       store.tenants.set(id, { ...t, quarantineNotifiedAt: at });
       return true;
     },
+
+    // フォローアップ: updateQuarantineNotifiedAt でクレームした後、実際の通知送信が失敗した
+    // ときにクレームを解除する (Prisma アダプタと同じ契約)
+    async clearQuarantineNotifiedAt(id) {
+      const t = store.tenants.get(id);
+      if (!t) return;
+      store.tenants.set(id, { ...t, quarantineNotifiedAt: null });
+    },
   };
 }

@@ -312,4 +312,24 @@ describe.runIf(SHOULD_RUN)('TenantRepository (prisma adapter)', () => {
     const reloaded = await repos.tenants.findById(tenant.id);
     expect(reloaded?.quarantineNotifiedAt?.getTime()).toBe(first.getTime());
   });
+
+  // フォローアップ (2026-07-21): 通知送信の失敗時にクレームを解除する clearQuarantineNotifiedAt
+  // を実 DB で検証する (src/lib/quarantine.ts が通知失敗時に呼ぶ)
+  it('clearQuarantineNotifiedAtはクレーム済みの状態をnullに戻し再クレームを許可する', async () => {
+    const repos = buildPrismaRepos(prisma);
+    const tenant = await repos.tenants.create({ name: 'A組織' });
+    await repos.tenants.updateQuarantineNotifiedAt(tenant.id, new Date(), QUARANTINE_INTERVAL_MS);
+
+    await repos.tenants.clearQuarantineNotifiedAt(tenant.id);
+
+    const reloaded = await repos.tenants.findById(tenant.id);
+    expect(reloaded?.quarantineNotifiedAt).toBeNull();
+    // 間隔を空けずに再クレームできる
+    const result = await repos.tenants.updateQuarantineNotifiedAt(
+      tenant.id,
+      new Date(),
+      QUARANTINE_INTERVAL_MS,
+    );
+    expect(result).toBe(true);
+  });
 });

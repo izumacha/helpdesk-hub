@@ -110,4 +110,11 @@ export interface TenantRepository {
   // 同じ CAS パターン) にすることで、短時間に大量の隔離が発生しても重複送信のレースを防ぐ。
   // id はセッション/内部呼び出し由来の tenantId のみを渡すこと
   updateQuarantineNotifiedAt(id: string, at: Date, intervalMs: number): Promise<boolean>;
+  // updateQuarantineNotifiedAt で通知の権利を得た後、実際の通知送信 (admin 一覧取得・
+  // notifyUsersBatch) が失敗した場合に呼ぶ「クレーム解除」。quarantineNotifiedAt を
+  // 無条件で null に戻し、次の隔離発生時に再度クレーム・再送できるようにする
+  // (クレームしたまま失敗すると、実際には 1 件も届いていないのに次の隔離発生から
+  // 最大 24 時間、誰にも通知が届かなくなってしまうため。§9 fail-safe)。
+  // id はセッション/内部呼び出し由来の tenantId のみを渡すこと
+  clearQuarantineNotifiedAt(id: string): Promise<void>;
 }

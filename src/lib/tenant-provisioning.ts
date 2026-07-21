@@ -25,8 +25,6 @@ import { findIndustryTemplate } from '@/lib/industry-templates';
 import { calculateFirstResponseDueAt, calculateResolutionDueAt } from '@/lib/sla';
 // 新規起票時の初期ステータスを mode から決める共通ルール (サンプルチケットと揃える)
 import { initialStatusForMode } from '@/domain/ticket-status';
-// Prisma の一意制約違反 (P2002) 判定の共通ヘルパー (§6 DRY: create-location.ts 等と同じヘルパーを再利用)
-import { isUniqueConstraintError } from '@/lib/prisma-errors';
 
 // サンプルチケットの定義 (Phase 3 オンボーディング)。
 // 新規テナントに操作感を掴ませるために自動投入する 2 件のチケット。
@@ -103,19 +101,21 @@ export async function provisionTenantWithAdmin(
       // Prisma のインタラクティブトランザクション内では 1 つの接続を直列に使うため
       // Promise.all で並列クエリを投げると "Transaction already closed" になる場合がある。
       // for...of + await で直列実行して安全性を保つ (カテゴリ・FAQ は数件なので性能上問題なし)
+      // フォローアップ (2026-07-21): CategoryRepository.create は admin による新規作成
+      // (createCategory) と契約を統一するため upsert から plain create (重複時は throw) に
+      // 変更した。テンプレート定義内で名前が重複していても DB の一意制約違反を起こさないよう、
+      // ここで先にメモリ上で重複を除いてから作成する (この時点のテナントは直前に作成したばかりで
+      // 既存カテゴリを持たないため、重複の原因はテンプレート定義内の重複だけで済む)。
+      // 一意制約違反を catch する設計は採らない: Prisma のインタラクティブトランザクション
+      // (buildPrismaUow の $transaction) は Postgres 上で 1 つの接続を使い回すため、文の失敗で
+      // トランザクション全体が "aborted" 状態になり、catch で個別のエラーを握り潰しても
+      // 後続の文 (この後の FAQ 作成等) が "current transaction is aborted" で失敗してしまう
+      // (§9 fail-safe: 効かない安全網より、そもそもエラーを起こさない設計を選ぶ)
+      const seenCategoryNames = new Set<string>();
       for (const name of template.categories) {
-        // カテゴリを 1 件ずつトランザクション内で作成する。
-        // フォローアップ (2026-07-21): CategoryRepository.create は admin による新規作成
-        // (createCategory) と契約を統一するため upsert から plain create (重複時は throw) に
-        // 変更した。業種テンプレのカテゴリ名がテンプレート定義内で重複することは想定していないが、
-        // 元々の upsert はネットワーク障害・再送によるリトライ時の冪等性 (2 回実行されても
-        // エラーにしない) を狙った設計だったため、その安全網をここで維持する
-        // (isUniqueConstraintError で判定し、既に存在するなら no-op として無視する)
-        try {
-          await tx.categories.create({ name, tenantId: tenant.id });
-        } catch (err) {
-          if (!isUniqueConstraintError(err)) throw err;
-        }
+        if (seenCategoryNames.has(name)) continue;
+        seenCategoryNames.add(name);
+        await tx.categories.create({ name, tenantId: tenant.id });
       }
 
       // 「よくある質問」は FaqCandidate.ticketId が必須 (1 チケット 1 候補) のため、

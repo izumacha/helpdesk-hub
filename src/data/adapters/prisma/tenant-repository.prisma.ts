@@ -248,5 +248,12 @@ export function makeTenantRepo(db: PrismaLike): TenantRepository {
       });
       return result.count > 0;
     },
+
+    // フォローアップ: updateQuarantineNotifiedAt でクレームした後、実際の通知送信が失敗した
+    // ときにクレームを解除する (無条件で null に戻す。次の隔離発生時に再クレームできるように
+    // するだけなので CAS 条件は不要)
+    async clearQuarantineNotifiedAt(id) {
+      await db.tenant.update({ where: { id }, data: { quarantineNotifiedAt: null } });
+    },
   };
 }

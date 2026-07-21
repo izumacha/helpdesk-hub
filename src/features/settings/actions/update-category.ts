@@ -7,8 +7,8 @@
 import { repos } from '@/data';
 // 設定ページのキャッシュを無効化するための Next.js キャッシュ関数
 import { revalidatePath } from 'next/cache';
-// 「ログイン済み・admin・自テナント」を検証する共有ゲート (throw せず {ok,error} を返す契約)
-import { assertTenantAdmin } from '@/lib/tenant-admin-gate';
+// 「ログイン済み・admin・自テナント・Pro モード」を検証する共有ゲート (throw せず {ok,error} を返す契約)
+import { assertCategoryManagementAdmin } from '@/lib/category-admin-gate';
 // 連打防止のための共通レート制限ヘルパー
 import { checkRateLimit } from '@/lib/rate-limit';
 // 設定変更監査ログへの記録を共通化するヘルパー
@@ -29,8 +29,8 @@ export async function updateCategory(
   categoryId: string,
   formData: FormData,
 ): Promise<UpdateCategoryResult> {
-  // 共有ゲートで「ログイン済み・admin・自テナント」をまとめて検証する
-  const gate = await assertTenantAdmin();
+  // 共有ゲートで「ログイン済み・admin・自テナント・Pro モード」をまとめて検証する
+  const gate = await assertCategoryManagementAdmin();
   if (!gate.ok) return { error: gate.error };
   const tenantId = gate.tenantId;
 

@@ -3,14 +3,15 @@
 // create-location.test.ts と同じ設計 (フォローアップ 2026-07-21)。
 
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { createMemoryContext } from '@/data/adapters/memory';
+import { createMemoryContext, type Store } from '@/data/adapters/memory';
 import type { Repos } from '@/data/ports/unit-of-work';
 import { __resetRateLimits } from '@/lib/rate-limit';
-import type { Role } from '@/domain/types';
+import type { Role, TenantMode } from '@/domain/types';
 
 const TENANT_ID = 'tenant-1';
 const USER_ID = 'u-admin-1';
 
+let store: Store;
 let repos: Repos;
 let sessionRole: Role = 'admin';
 let sessionTenantId: string | null = TENANT_ID;
@@ -37,13 +38,47 @@ function makeForm(name: string): FormData {
   return fd;
 }
 
+// フォローアップ (2026-07-21): カテゴリ管理は Pro モード専用のため、指定した mode の
+// テナントをシードする (assertCategoryManagementAdmin が参照する)
+function seedTenant(mode: TenantMode) {
+  store.tenants.set(TENANT_ID, {
+    id: TENANT_ID,
+    name: 'テスト組織',
+    mode,
+    industry: null,
+    inboundToken: null,
+    slackWebhookUrl: null,
+    teamsWebhookUrl: null,
+    chatworkApiToken: null,
+    chatworkRoomId: null,
+    subscriptionPlan: 'pro',
+    stripeCustomerId: null,
+    stripeSubscriptionId: null,
+    stripeSubscriptionStatus: null,
+    trialEndsAt: null,
+    createdAt: new Date(),
+  });
+}
+
 describe('createCategory', () => {
   beforeEach(() => {
     const ctx = createMemoryContext();
+    store = ctx.store;
     repos = ctx.repos;
     sessionRole = 'admin';
     sessionTenantId = TENANT_ID;
+    seedTenant('pro');
     __resetRateLimits();
+  });
+
+  // フォローアップ (2026-07-21): カテゴリ管理は Pro モード専用。UI 非表示だけに頼らず
+  // サーバー側でも mode を強制する (§9 セキュリティ)
+  it('Liteモードのテナントは拒否される', async () => {
+    seedTenant('lite');
+    const { createCategory } = await import('@/features/settings/actions/create-category');
+    const result = await createCategory(makeForm('ネットワーク'));
+    expect(result.error).toBe('カテゴリ管理は Pro モードでのみ利用できます。');
+    expect(result.categoryId).toBeUndefined();
   });
 
   // 正常系: カテゴリを作成できる

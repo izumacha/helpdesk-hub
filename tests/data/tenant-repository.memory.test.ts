@@ -540,3 +540,51 @@ describe('TenantRepository.updateQuarantineNotifiedAt (memory)', () => {
     expect(result).toBe(false);
   });
 });
+
+// フォローアップ (2026-07-21): 通知送信の失敗時にクレームを解除する clearQuarantineNotifiedAt の
+// 単体テスト (src/lib/quarantine.ts が通知失敗時に呼ぶ)。
+describe('TenantRepository.clearQuarantineNotifiedAt (memory)', () => {
+  beforeEach(() => {
+    const ctx = createMemoryContext();
+    store = ctx.store;
+    repos = ctx.repos;
+    seed();
+  });
+
+  const INTERVAL_MS = 24 * 60 * 60 * 1000;
+
+  // クレーム済み (quarantineNotifiedAt が設定済み) の状態を無条件で null に戻す
+  it('クレーム済みの状態をnullに戻す', async () => {
+    await repos.tenants.updateQuarantineNotifiedAt(TENANT_A, new Date(), INTERVAL_MS);
+    await repos.tenants.clearQuarantineNotifiedAt(TENANT_A);
+    const tenant = await repos.tenants.findById(TENANT_A);
+    expect(tenant?.quarantineNotifiedAt).toBeNull();
+  });
+
+  // 解除後は間隔を空けずに再クレームできる (updateQuarantineNotifiedAt が再度 true を返す)
+  it('解除後は間隔を空けずに再クレームできる', async () => {
+    await repos.tenants.updateQuarantineNotifiedAt(TENANT_A, new Date(), INTERVAL_MS);
+    await repos.tenants.clearQuarantineNotifiedAt(TENANT_A);
+    const result = await repos.tenants.updateQuarantineNotifiedAt(
+      TENANT_A,
+      new Date(),
+      INTERVAL_MS,
+    );
+    expect(result).toBe(true);
+  });
+
+  // 分離: あるテナントの解除が他テナントに波及しない
+  it('他テナントには影響しない', async () => {
+    await repos.tenants.updateQuarantineNotifiedAt(TENANT_B, new Date(), INTERVAL_MS);
+    await repos.tenants.clearQuarantineNotifiedAt(TENANT_A);
+    const tenantB = await repos.tenants.findById(TENANT_B);
+    expect(tenantB?.quarantineNotifiedAt).not.toBeNull();
+  });
+
+  // 異常系: 存在しないテナント ID は例外を投げず何もしない (fail-safe)
+  it('存在しないテナントIDでも例外を投げない', async () => {
+    await expect(
+      repos.tenants.clearQuarantineNotifiedAt('no-such-tenant'),
+    ).resolves.toBeUndefined();
+  });
+});

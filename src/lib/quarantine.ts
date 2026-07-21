@@ -62,15 +62,27 @@ async function notifyAdminsOfQuarantineSafe(tenantId: string, logPrefix: string)
     );
     if (!shouldNotify) return;
 
-    // 通知先は admin のみ (§3.2 フォローアップ再訪で /quarantine 画面自体が admin 専用のため)
-    const admins = await repos.users.listAdminEmails(tenantId);
-    await notifyUsersBatch(
-      admins.map((a) => a.id),
-      tenantId,
-      'quarantined',
-      () => '確認が必要な隔離メールがあります。「隔離メール」画面をご確認ください。',
-      logPrefix,
-    );
+    try {
+      // 通知先は admin のみ (§3.2 フォローアップ再訪で /quarantine 画面自体が admin 専用のため)
+      const admins = await repos.users.listAdminEmails(tenantId);
+      await notifyUsersBatch(
+        admins.map((a) => a.id),
+        tenantId,
+        'quarantined',
+        () => '確認が必要な隔離メールがあります。「隔離メール」画面をご確認ください。',
+        logPrefix,
+      );
+    } catch (err) {
+      // 通知の権利は既にクレーム済み (updateQuarantineNotifiedAt が true を返した) だが、
+      // 実際の送信 (admin 一覧取得 or notifyUsersBatch) に失敗した。クレームしたまま放置すると
+      // 1 件も届いていないのに次の隔離発生から最大 24 時間、誰にも通知が届かなくなってしまう
+      // (trial-reminders/route.ts が「送信成功後にのみ冪等化フラグを更新する」のと同じ問題意識。
+      // ただしこちらは同時多発する隔離イベント間の二重送信レースを防ぐため、送信前に原子的な
+      // クレームを取る設計を維持しつつ、失敗時だけクレームを解除して次回の再送を可能にする)。
+      // 解除自体が失敗しても外側の catch に落ちてログに残るだけなので、呼び出し元には影響しない
+      await repos.tenants.clearQuarantineNotifiedAt(tenantId);
+      throw err;
+    }
   } catch (err) {
     // 通知の失敗は隔離記録自体の成否に影響させず、ログに残すだけに留める
     console.error(`${logPrefix} 隔離通知の送信に失敗しました`, err);
