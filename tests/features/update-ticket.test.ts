@@ -1036,8 +1036,10 @@ describe('updateTicketLocation (provider-agnostic)', () => {
 
 // エスカレーションアクションの仕様
 describe('escalateTicket (provider-agnostic)', () => {
-  // 状態を Escalated にし、履歴を残し、全エージェントに通知が届くこと
-  it('marks escalated, records history, and notifies every agent', async () => {
+  // 状態を Escalated にし、履歴を残し、操作者以外の全エージェントに通知が届くこと
+  // (フォローアップ 2026-07-22: 操作者本人は自分の操作を知っているため、メール経路と同様に
+  //  アプリ内通知・SSE 配信からも除外する)
+  it('marks escalated, records history, and notifies every agent except the actor', async () => {
     const { ticketId } = await seed();
     // Open 状態からエスカレーション (遷移表で許可されている)
     await repos.tickets.updateStatus(ticketId, { from: 'New', to: 'Open' }, null, TENANT);
@@ -1051,10 +1053,10 @@ describe('escalateTicket (provider-agnostic)', () => {
     expect(t?.escalationReason).toBe('対応困難');
     expect(t?.escalatedAt).toBeInstanceOf(Date);
 
-    // 通知は 2 エージェント全員に届く
+    // 通知は操作者 (u-agt-1) を除いた u-agt-2 の 1 件だけ届く (自己通知はしない)
     const notifications = [...store.notifications.values()];
-    expect(notifications).toHaveLength(2);
-    expect(new Set(notifications.map((n) => n.userId))).toEqual(new Set(['u-agt-1', 'u-agt-2']));
+    expect(notifications).toHaveLength(1);
+    expect(notifications[0].userId).toBe('u-agt-2');
     for (const n of notifications) {
       expect(n.type).toBe('escalated');
       expect(n.ticketId).toBe(ticketId);
@@ -1180,9 +1182,10 @@ describe('updateTicketStatus メール通知 (メンバー改善 #3 回帰)', ()
     expect(sentEmails).toHaveLength(1);
     expect(sentEmails[0].to).toBe('u-agt-2@example.com');
     expect(sentEmails[0].subject).toContain('エスカレーション');
-    // 担当者には escalated のアプリ内通知が届く (全 2 エージェント)
+    // アプリ内通知もメールと同様に操作者本人を除外し、他の担当者 (u-agt-2) にのみ届く
     const notifications = [...store.notifications.values()];
-    expect(notifications).toHaveLength(2);
+    expect(notifications).toHaveLength(1);
+    expect(notifications[0].userId).toBe('u-agt-2');
     expect(notifications.every((n) => n.type === 'escalated')).toBe(true);
   });
 });
