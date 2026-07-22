@@ -825,7 +825,7 @@ export async function escalateTicket(ticketId: string, reason: string) {
   const trimmedReason = parsedReason.data;
 
   // 先にチケット本体とテナント mode を並列取得 (Lite ガード判定に必要な最小集合)
-  // 通知用 agentIds は Pro 経路確定後に取得することで Lite 早期 throw 時の無駄な DB アクセスを回避する
+  // 通知対象エージェント一覧は Pro 経路確定後に取得することで Lite 早期 throw 時の無駄な DB アクセスを回避する
   const [ticket, mode] = await Promise.all([
     repos.tickets.findById(ticketId, tenantId),
     getCurrentTenantMode(tenantId),
@@ -848,7 +848,12 @@ export async function escalateTicket(ticketId: string, reason: string) {
   // ここから先は Pro 経路確定。通知対象の全エージェント (id + email) をテナントスコープで取得。
   // email も併せて取るのは、後段のエスカレーションメール一斉送信で N+1 (id ごとの findById) を避けるため。
   const agents = await repos.users.listAgentEmails(tenantId);
-  const agentIds = agents.map((a) => a.id);
+  // 操作者本人 (エスカレーションを実行したエージェント) は自分の操作を知っているため除外する。
+  // 従来はメール経路だけが除外し、アプリ内通知と SSE 配信は操作者にも届く不整合があった。
+  // 除外済みリストを 1 つだけ作り、アプリ内通知・SSE 配信・メールの 3 経路で使い回す (CLAUDE.md §6 DRY)
+  const recipients = agents.filter((a) => a.id !== session.user.id);
+  // アプリ内通知の作成と SSE 配信で使う受信者 ID の一覧
+  const recipientIds = recipients.map((a) => a.id);
 
   // エスカレーション発生時刻
   const now = new Date();
@@ -877,9 +882,9 @@ export async function escalateTicket(ticketId: string, reason: string) {
       oldValue: ticket.status,
       newValue: 'Escalated',
     });
-    // 全エージェントに「エスカレーションされました」通知を作成
+    // 操作者以外の全エージェントに「エスカレーションされました」通知を作成
     await Promise.all(
-      agentIds.map((id) =>
+      recipientIds.map((id) =>
         r.notifications.create({
           userId: id,
           type: 'escalated',
@@ -892,8 +897,8 @@ export async function escalateTicket(ticketId: string, reason: string) {
     );
   });
 
-  // 全エージェントへ未読件数を一斉配信 (テナントを伝搬)
-  await broadcastUnreadCountToMany(agentIds, tenantId);
+  // 操作者以外のエージェントへ未読件数を一斉配信 (テナントを伝搬)
+  await broadcastUnreadCountToMany(recipientIds, tenantId);
 
   // Phase 2「メール通知テンプレートの整備」+ Phase 4「Slack/Teams/Chatwork 外部通知」:
   // エスカレーションを操作者以外の全エージェントへメールで知らせつつ、外部チャネルにも通知する。
@@ -922,8 +927,7 @@ export async function escalateTicket(ticketId: string, reason: string) {
       // (2 箇所目の重複。CLAUDE.md §6 DRY)
       (async () => {
         try {
-          // 操作者本人 (エスカレーションを実行したエージェント) は自分の操作を知っているため除く
-          const recipients = agents.filter((a) => a.id !== session.user.id);
+          // 宛先は上で作成済みの除外済みリスト (recipients) を使い回す。
           // 全員へ同じ文面を送るため render 関数は引数 (宛先) を無視してよい
           await sendBatchEmail(
             recipients,
