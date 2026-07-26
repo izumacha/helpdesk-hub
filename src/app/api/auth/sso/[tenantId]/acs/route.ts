@@ -27,6 +27,8 @@ import { loadEnabledSsoContext } from '@/lib/sso-context';
 import { createSamlInstance, validateSamlResponse } from '@/lib/saml';
 // マジックリンクのワンタイムトークン生成・ハッシュ (セッション発行に再利用)
 import { generateMagicLinkToken, hashMagicLinkToken } from '@/lib/magic-link';
+// 認証イベント監査の書き込み入口 (否認防止。fail-open で ACS フローを止めない)
+import { recordAuthAudit } from '@/lib/auth-audit';
 // HTML 属性への安全な埋め込み用エスケープ (確認ページのトークン埋め込みに使う)
 import { escapeHtml } from '@/lib/html-escape';
 // Route Handler 向け共通レート制限ラッパー (inbound-email/inbound-line と共有)
@@ -142,6 +144,18 @@ export async function POST(req: Request, { params }: Params) {
     );
     return errorRedirect('sso-invalid');
   }
+
+  // 認証イベント監査 (否認防止): 署名検証・テナント内ユーザー照合・リプレイチェックを
+  // すべて通過したアサーションの「受理」をここで記録する。この後のセッション発行の成否は
+  // マジックリンクコールバック側で sso_login_success として別途記録される。
+  // recordAuthAudit は fail-open: アサーションは直前に焼却済みなので、監査失敗で throw すると
+  // 正当なログインが未処理 500 で失敗したままアサーションだけ消費されてしまう (auth-audit.ts 参照)
+  await recordAuthAudit({
+    event: 'sso_assertion_accepted',
+    email: user.email,
+    userId: user.id,
+    tenantId,
+  });
 
   // セッション発行: ワンタイムトークンを 1 件発行してマジックリンクのコールバックへ渡す
   // 生トークンは URL でのみ運び、DB には SHA-256 ハッシュを保存する (マジックリンクと同方式)

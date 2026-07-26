@@ -4,10 +4,10 @@ import NextAuth from 'next-auth';
 import Credentials from 'next-auth/providers/credentials';
 // データ層の Composition Root 経由でユーザー取得 (Prisma 直叩きを避ける)
 import { repos } from '@/data';
-// マジックリンクのトークンハッシュ計算 (生トークン -> DB 検索キー)
-import { hashMagicLinkToken } from '@/lib/magic-link';
 // パスワード認証ロジック (スロットル + ダミー bcrypt 比較込み)。単体テスト可能なよう分離 (issue #119)
 import { passwordAuthorize } from '@/lib/password-authorize';
+// マジックリンク認証ロジック (ワンタイムトークン消費 + 認証イベント監査込み)。同じく単体テスト可能なよう分離
+import { magicLinkAuthorize } from '@/lib/magic-link-authorize';
 // ロール (権限) 型
 import type { Role } from '@/domain/types';
 
@@ -70,31 +70,9 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
       credentials: {
         token: { label: 'Token', type: 'text' }, // 1 入力フィールドのみ: ワンタイムトークン
       },
-      // トークン検証: 「未消費 + 失効前 + 存在」を 1 度の DB 更新で確定させて消費する
-      async authorize(credentials) {
-        // トークンが渡されていなければ失敗
-        if (!credentials?.token) return null;
-        // 受け取った生トークンを SHA-256 でハッシュして DB 検索キーに変換 (Web Crypto は async)
-        const tokenHash = await hashMagicLinkToken(credentials.token as string);
-        // 原子的に消費 (未消費 & 失効前なら自身が成功し他は null)。検索 + 検証 + 消費を 1 操作で行う
-        const consumed = await repos.magicLinks.consumeValidToken({ tokenHash, now: new Date() });
-        // 消費に失敗 (消費済み / 失効済み / 不在) ならログイン拒否
-        if (!consumed) return null;
-
-        // トークン作成時に保存されていた email から既存ユーザーを引く
-        const user = await repos.users.findByEmail(consumed.email);
-        // ユーザーが消えていれば失敗 (孤児トークン)
-        if (!user) return null;
-
-        // セッションに乗せるユーザー情報を返す (パスワード経路と同じ shape)
-        return {
-          id: user.id,
-          email: user.email,
-          name: user.name,
-          role: user.role,
-          tenantId: user.tenantId,
-        };
-      },
+      // 実際の認証ロジックは magic-link-authorize.ts に分離 (トークン消費 + 監査記録込み)。
+      // 単体テストから直接 magicLinkAuthorize を検証できるようにするため (password-authorize と同じ流儀)
+      authorize: magicLinkAuthorize,
     }),
   ],
   // JWT / セッションに独自情報を乗せるためのコールバック群

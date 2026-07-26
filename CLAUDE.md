@@ -81,6 +81,7 @@ Phase 0 でマルチテナント基盤を入れた際に `prisma/migrations/` �
 - `src/lib/auth.ts` が JWT/session に `id` / `role` / `tenantId` を載せる（型拡張は `src/types/next-auth.d.ts`）。
 - Server Action は自前で RBAC を強制する（middleware はルーティングのみ）。`src/features/tickets/actions/update-ticket.ts` の `const session = await auth(); assertAgentRole(session); ...` パターンを再利用し、UI 非表示に頼らない。
 - 一覧/詳細クエリの RBAC は `!isAgent(role)` のとき `where.creatorId = session.user.id` を足す（`src/app/(app)/tickets/page.tsx`）。
+- **認証イベントの監査（否認防止）**: 認証イベントは `AuthAuditLog` に記録される。書き込みは必ず `recordAuthAudit`（`src/lib/auth-audit.ts`。email 切り詰め・失敗イベントの書き込み上限・fail-open を集約）経由で行い、`repos.authAudit` を直接呼ばない。記録箇所は `src/lib/password-authorize.ts`（パスワード成功/失敗）・`src/lib/magic-link-authorize.ts`（magic_link / sso ログイン成功）・SSO ACS ルート（sso_assertion_accepted）。**失敗イベントを記録するのは現状パスワード経路のみ**（マジックリンクの無効トークン試行・SAML 検証失敗/リプレイ検知は console.warn のみで `AuthAuditLog` には残らない）。`AuthAuditLog` / `SettingsAuditLog` / `TicketHistory` は DB トリガで**追記専用**（UPDATE は例外なく拒否、DELETE は `SET LOCAL helpdesk.allow_audit_delete = 'on'` を明示したトランザクション内のみ許可。`prisma/migrations/20260726000100_add_audit_log_immutability`）。E2E の後始末でテナントを消すときは `e2e/cleanup.ts` の `deleteTenantsForCleanup()` を使う。認証経路を追加・変更するときは監査記録の漏れがないか確認する。next-auth は v5 beta 固定 — 安定版への移行は `docs/next-auth-v5-migration.md` の計画に従う。
 
 ### マルチテナント（進行中 / Phase 0）
 
@@ -125,10 +126,10 @@ Phase 0 でマルチテナント基盤を入れた際に `prisma/migrations/` �
   ```bash
   docker compose up -d db
   docker compose exec db psql -U postgres -c "CREATE DATABASE helpdesk_hub_contract;"  # 初回のみ
-  DATABASE_URL=postgresql://postgres:postgres@localhost:5432/helpdesk_hub_contract npx prisma db push --skip-generate
+  DATABASE_URL=postgresql://postgres:postgres@localhost:5432/helpdesk_hub_contract npx prisma migrate deploy
   DATABASE_URL=postgresql://postgres:postgres@localhost:5432/helpdesk_hub_contract RUN_PRISMA_CONTRACT=1 npm run test:contract
   ```
-  CI は毎ジョブ新規の PostgreSQL サービスコンテナで `helpdesk_hub` を使い、専用ジョブ `prisma-contract` が同手順を実行する。`test:contract` は `--no-file-parallelism` で直列実行（共有 DB の TRUNCATE 競合回避）。新しい Prisma 契約テストは `*.contract.prisma.test.ts` 命名に揃える。
+  CI は毎ジョブ新規の PostgreSQL サービスコンテナで `helpdesk_hub` を使い、専用ジョブ `prisma-contract` が同手順を実行する（スキーマ同期は `db push` ではなく `migrate deploy`。監査ログの追記専用トリガもマイグレーション由来で作成され、契約テストがトリガの挙動も検証する）。`test:contract` は `--no-file-parallelism` で直列実行（共有 DB の TRUNCATE 競合回避）。新しい Prisma 契約テストは `*.contract.prisma.test.ts` 命名に揃える。
 - Playwright は chromium のみ、`fullyParallel: true`、retries は CI のみ。セレクタは日本語コピーに対する正規表現（`/ログイン/i` 等）で揃える。
 
 ### 規約の補足

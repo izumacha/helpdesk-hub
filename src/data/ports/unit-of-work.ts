@@ -1,5 +1,6 @@
 // 各リポジトリの契約 (port) を束ねて 1 セットとして扱うための型定義
 import type { AttachmentRepository } from './attachment-repository';
+import type { AuthAuditLogRepository } from './auth-audit-log-repository';
 import type { CategoryRepository } from './category-repository';
 import type { EmailThreadRepository } from './email-thread-repository';
 import type { FaqRepository } from './faq-repository';
@@ -43,6 +44,7 @@ export interface Repos {
   samlAssertions: SamlAssertionRepository; // Phase 4 Enterprise SSO フォローアップ: アサーションのリプレイ防止記録
   lineConfigs: LineConfigRepository; // Phase 2 フォローアップ: テナント単位の LINE 連携設定
   settingsAudit: SettingsAuditLogRepository; // §4.2 フォローアップ: 設定変更監査ログ
+  authAudit: AuthAuditLogRepository; // 否認防止 (課題棚卸し 2026-07-26): 認証イベント監査ログ
   quarantinedEmails: QuarantinedEmailRepository; // §3.2 フォローアップ: 隔離した受信メールの記録
 }
 

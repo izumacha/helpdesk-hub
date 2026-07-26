@@ -1,0 +1,44 @@
+# Dependabot 設定: 依存関係の既知脆弱性・更新を毎週チェックして PR を作成する
+# (CLAUDE.md §9「依存（サプライチェーン）を管理する」に基づく)
+version: 2
+updates:
+  # package.json / package-lock.json の npm 依存 (Next.js / Prisma / next-auth 等)
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    commit-message:
+      # コミット規約 type(scope) に合わせる (§12)
+      prefix: "chore(deps)"
+    groups:
+      # minor / patch 更新は 1 本の PR にまとめてレビュー負荷を下げる (major は個別 PR)
+      npm-minor-and-patch:
+        update-types: ["minor", "patch"]
+
+  # Dockerfile のベースイメージ (node 等)
+  - package-ecosystem: "docker"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    commit-message:
+      # コミット規約 type(scope) に合わせる (§12)
+      prefix: "chore(docker)"
+
+  # docker-compose.yml のサービスイメージ (postgres:16-alpine)。docker エコシステムは
+  # Dockerfile しか走査しないため、compose ファイルは専用エコシステムで別途監視する
+  - package-ecosystem: "docker-compose"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    commit-message:
+      # コミット規約 type(scope) に合わせる (§12)
+      prefix: "chore(docker)"
+
+  # .github/workflows/ で使う GitHub Actions (ci / backup / sla-reminders / trial-reminders)
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    commit-message:
+      # コミット規約 type(scope) に合わせる (§12)
+      prefix: "chore(ci)"

@@ -87,8 +87,11 @@ jobs:
       - name: Generate Prisma client
         run: npm run db:generate
 
-      - name: Sync database schema
-        run: npx prisma db push --skip-generate
+      - name: Apply database migrations
+        # db push ではなく migrate deploy を使う: マイグレーション SQL に含まれる
+        # 監査ログの追記専用トリガ (20260726000100) も CI の DB に作成し、
+        # 契約テスト/E2E を本番同等のスキーマで走らせるため
+        run: npx prisma migrate deploy
 
       - name: Prisma adapter contract tests
         run: npm run test:contract
@@ -139,8 +142,11 @@ jobs:
       - name: Generate Prisma client
         run: npm run db:generate
 
-      - name: Sync database schema
-        run: npx prisma db push --skip-generate
+      - name: Apply database migrations
+        # db push ではなく migrate deploy を使う: マイグレーション SQL に含まれる
+        # 監査ログの追記専用トリガ (20260726000100) も CI の DB に作成し、
+        # 契約テスト/E2E を本番同等のスキーマで走らせるため
+        run: npx prisma migrate deploy
 
       - name: Seed database
         run: npm run db:seed

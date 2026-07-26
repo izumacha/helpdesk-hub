@@ -3,6 +3,7 @@ import { Prisma, type PrismaClient } from '@/generated/prisma';
 import type { Repos, UnitOfWork } from '@/data/ports/unit-of-work';
 // 各エンティティ用の Prisma リポジトリ生成関数を取り込む
 import { makeAttachmentRepo } from './attachment-repository.prisma';
+import { makeAuthAuditLogRepo } from './auth-audit-log-repository.prisma';
 import { makeCategoryRepo } from './category-repository.prisma';
 import { makeEmailThreadRepo } from './email-thread-repository.prisma';
 import { makeFaqRepo } from './faq-repository.prisma';
@@ -53,6 +54,7 @@ export function buildPrismaRepos(db: PrismaLike): Repos {
     samlAssertions: makeSamlAssertionRepo(db), // Phase 4 Enterprise SSO フォローアップ: リプレイ防止記録
     lineConfigs: makeLineConfigRepo(db), // Phase 2 フォローアップ: テナント単位の LINE 連携設定
     settingsAudit: makeSettingsAuditLogRepo(db), // §4.2 フォローアップ: 設定変更監査ログ
+    authAudit: makeAuthAuditLogRepo(db), // 否認防止: 認証イベント監査ログ
     quarantinedEmails: makeQuarantinedEmailRepo(db), // §3.2 フォローアップ: 隔離した受信メールの記録
   };
 }

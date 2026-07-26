@@ -5,6 +5,8 @@ import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 // E2E 後始末で作成テナント/ユーザーを消すため Prisma Client を使う
 import { PrismaClient } from '../src/generated/prisma';
+// 監査ログ追記専用トリガに対応したテナント後始末ヘルパー
+import { deleteTenantsForCleanup } from './cleanup';
 
 // DB 直接操作用 Prisma Client (後始末専用)
 const prisma = new PrismaClient();
@@ -52,8 +54,9 @@ const FOUNDER_EMAIL = `e2e-founder-${Date.now()}@example.com`;
 test.afterAll(async () => {
   const user = await prisma.user.findUnique({ where: { email: FOUNDER_EMAIL } });
   if (user) {
-    // テナントを削除すると User は onDelete: Cascade で連鎖削除される
-    await prisma.tenant.deleteMany({ where: { id: user.tenantId } });
+    // 監査ログが追記専用 (DB トリガ) のため、専用ヘルパーで監査行ごとテナントを削除する
+    // (User は Tenant からの onDelete: Cascade で連鎖削除される)
+    await deleteTenantsForCleanup(prisma, [user.tenantId]);
   }
   await prisma.$disconnect();
 });
@@ -132,10 +135,10 @@ test.describe('セルフサーブサインアップ', () => {
     await expect(p2.getByText(/このリンクは無効/)).toBeVisible();
     await ctx2.close();
 
-    // 後始末
+    // 後始末 (監査ログが追記専用のため専用ヘルパーで監査行ごと削除する)
     const user = await prisma.user.findUnique({ where: { email: onceEmail } });
     if (user) {
-      await prisma.tenant.deleteMany({ where: { id: user.tenantId } });
+      await deleteTenantsForCleanup(prisma, [user.tenantId]);
     }
   });
 

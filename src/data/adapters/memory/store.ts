@@ -1,5 +1,6 @@
 // ドメイン型をインポート (メモリストア内に保持するデータ型)
 import type {
+  AuthAuditLog,
   FaqCandidate,
   Invitation,
   Location,
@@ -81,6 +82,7 @@ export interface Store {
   ssoConfigs: Map<string, TenantSsoConfig>; // Phase 4 Enterprise: テナント単位の SAML SSO 設定
   lineConfigs: Map<string, TenantLineConfig>; // Phase 2 フォローアップ: テナント単位の LINE 連携設定
   settingsAuditLogs: Map<string, SettingsAuditLog>; // §4.2 フォローアップ: 設定変更監査ログ
+  authAuditLogs: Map<string, AuthAuditLog>; // 否認防止 (課題棚卸し 2026-07-26): 認証イベント監査ログ
   quarantinedEmails: Map<string, QuarantinedEmail>; // §3.2 フォローアップ: 隔離した受信メールの記録
   idSeq: { value: number }; // 連番生成用のカウンタ (オブジェクトに包んで参照共有)
 }
@@ -109,6 +111,7 @@ export function createEmptyStore(): Store {
     ssoConfigs: new Map(), // Phase 4 Enterprise: SAML SSO 設定
     lineConfigs: new Map(), // Phase 2 フォローアップ: テナント単位の LINE 連携設定
     settingsAuditLogs: new Map(), // §4.2 フォローアップ: 設定変更監査ログ
+    authAuditLogs: new Map(), // 否認防止: 認証イベント監査ログ
     quarantinedEmails: new Map(), // §3.2 フォローアップ: 隔離した受信メールの記録
     idSeq: { value: 0 },
   };
@@ -138,6 +141,7 @@ export function cloneStore(src: Store): Store {
     ssoConfigs: new Map(src.ssoConfigs), // Phase 4 Enterprise: SAML SSO 設定
     lineConfigs: new Map(src.lineConfigs), // Phase 2 フォローアップ: テナント単位の LINE 連携設定
     settingsAuditLogs: new Map(src.settingsAuditLogs), // §4.2 フォローアップ: 設定変更監査ログ
+    authAuditLogs: new Map(src.authAuditLogs), // 否認防止: 認証イベント監査ログ
     quarantinedEmails: new Map(src.quarantinedEmails), // §3.2 フォローアップ: 隔離した受信メールの記録
     idSeq: { value: src.idSeq.value },
   };
@@ -166,6 +170,7 @@ export function overwriteStore(dst: Store, src: Store): void {
   dst.ssoConfigs = new Map(src.ssoConfigs); // Phase 4 Enterprise: SAML SSO 設定
   dst.lineConfigs = new Map(src.lineConfigs); // Phase 2 フォローアップ: テナント単位の LINE 連携設定
   dst.settingsAuditLogs = new Map(src.settingsAuditLogs); // §4.2 フォローアップ: 設定変更監査ログ
+  dst.authAuditLogs = new Map(src.authAuditLogs); // 否認防止: 認証イベント監査ログ
   dst.quarantinedEmails = new Map(src.quarantinedEmails); // §3.2 フォローアップ: 隔離した受信メールの記録
   // 連番も元に戻す
   dst.idSeq.value = src.idSeq.value;
