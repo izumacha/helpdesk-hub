@@ -2,6 +2,8 @@
 import { test, expect, Page } from '@playwright/test';
 // E2E 後始末で作成テナント/ユーザーを消すため Prisma Client を使う
 import { PrismaClient } from '../src/generated/prisma';
+// 監査ログ追記専用トリガに対応したテナント後始末ヘルパー
+import { deleteTenantsForCleanup } from './cleanup';
 
 // DB 直接操作用 Prisma Client (後始末専用)
 const prisma = new PrismaClient();
@@ -28,7 +30,16 @@ test.afterAll(async () => {
   // Phase 3 のサンプルチケットを含む配下データがまとめて連鎖削除される。
   // (先に User を消すと、サンプルチケットが creatorId でその User を参照しており、
   //  Ticket_creatorId_fkey 制約に違反して削除に失敗するため、必ずテナント削除を先に行う)
-  await prisma.tenant.deleteMany({ where: { name: NEW_TENANT_NAME } });
+  // 監査ログ (SettingsAuditLog 等) が追記専用 (DB トリガ) のため、対象テナントの ID を
+  // 引いてから専用ヘルパーで監査行ごと削除する
+  const tenants = await prisma.tenant.findMany({
+    where: { name: NEW_TENANT_NAME },
+    select: { id: true },
+  });
+  await deleteTenantsForCleanup(
+    prisma,
+    tenants.map((t) => t.id),
+  );
   // 念のための後始末: テナント作成が途中で失敗して孤立した管理者ユーザーが残っていれば消す
   await prisma.user.deleteMany({ where: { email: NEW_ADMIN_EMAIL } });
   // Prisma 接続を閉じる
