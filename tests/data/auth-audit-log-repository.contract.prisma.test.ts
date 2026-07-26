@@ -4,9 +4,8 @@
 //
 // この DB 依存テストは RUN_PRISMA_CONTRACT=1 のときだけ走り、beforeEach でテーブルを
 // TRUNCATE するため **開発 DB を指さない** こと (CLAUDE.md §テスト)。
-// 注意: 契約テスト用 DB は `prisma db push` でスキーマ同期されるため、マイグレーション
-// 20260726000100_add_audit_log_immutability の追記専用トリガ (UPDATE/DELETE 禁止) は
-// この DB には存在しない。トリガ自体の検証は migrate deploy 済み環境の責務とする。
+// 追記専用トリガ (20260726000100) 自体の検証は audit-log-immutability.contract.prisma.test.ts
+// が担う (契約テスト DB は `prisma migrate deploy` で構築するためトリガも存在する)。
 
 import { describe, beforeAll, afterAll, beforeEach, expect, it } from 'vitest';
 import { PrismaClient } from '@/generated/prisma';

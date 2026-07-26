@@ -28,9 +28,10 @@
 --  * アプリに Ticket / Tenant の物理削除機能は存在しないため、FK の ON DELETE CASCADE 経由で
 --    このトリガに到達する経路は現状無い。将来テナント削除機能を追加する場合は、この break-glass
 --    経路を使うか「監査ログを残したまま論理削除する」設計にすること。
---  * CI の contract / e2e ジョブは `prisma db push` でスキーマ同期するため本トリガは作成されない
---    (db push はマイグレーション SQL を実行しない)。トリガの実機検証は migrate deploy 済みの
---    環境で行う。
+--  * CI の contract / e2e ジョブは `prisma migrate deploy` でスキーマ同期するため本トリガも
+--    CI の DB に作成され、契約テスト (tests/data/audit-log-immutability.contract.prisma.test.ts)
+--    が拒否/break-glass の挙動を実 DB で検証する。`db push` はマイグレーション SQL を実行しない
+--    ためトリガが作られないことに注意 (契約テスト DB の構築手順は CLAUDE.md §テスト参照)。
 
 -- 監査ログ行の変更・削除を拒否する共通トリガ関数
 CREATE OR REPLACE FUNCTION forbid_audit_row_mutation() RETURNS trigger AS $$
@@ -59,7 +60,12 @@ BEGIN
     -- 条件を満たさない DELETE は拒否する (メッセージに解除条件を含め、意図的な運用操作を妨げない)
     RAISE EXCEPTION 'audit log table "%" is append-only: DELETE requires both SET LOCAL helpdesk.allow_audit_delete = ''on'' (inside a transaction) and superuser or helpdesk_audit_admin membership', TG_TABLE_NAME;
 END;
-$$ LANGUAGE plpgsql;
+-- search_path を pg_catalog に固定する (/security-review 指摘対応):
+-- 固定しないと、任意 SQL 実行を得た攻撃者が自分の書き込めるスキーマに偽の pg_roles /
+-- pg_has_role を作って search_path を差し替え、上の権限判定をシャドウして DELETE を
+-- 通せてしまう。関数実行中だけ search_path を pg_catalog (+一時スキーマ) に固定して
+-- 本物のカタログだけを参照させる
+$$ LANGUAGE plpgsql SET search_path = pg_catalog, pg_temp;
 
 -- SettingsAuditLog (設定変更監査ログ) を追記専用化
 CREATE TRIGGER settings_audit_log_immutable
