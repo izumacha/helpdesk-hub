@@ -857,6 +857,77 @@ export function runTicketRepositoryContract(
       expect(await ctx.repos.tickets.count({ overdue: { now } }, TENANT_ID)).toBe(1);
     });
 
+    // 回帰テスト: overdue フィルタが status / statusIn の明示指定を上書きしないこと
+    // (かつて Prisma アダプタで overdue が where.status を丸ごと上書きし、
+    // `/tickets?status=Open&tab=overdue` のステータス絞り込みが黙って消えるバグがあった)
+    it('list with status filter combined with overdue keeps both conditions (AND)', async () => {
+      const { requester, categoryId } = await ctx.seedBasicFixture();
+      // 基準時刻を未来側に設定 (作成済みチケットの期限を相対的に過去にする)
+      const now = new Date('2030-06-01T00:00:00Z');
+      const yesterday = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+
+      // 期限超過 + Open のチケット → status=Open との組み合わせでヒット対象
+      const overdueOpen = await ctx.repos.tickets.create({
+        title: 'overdue-open',
+        body: 'b',
+        priority: 'High',
+        creatorId: requester.id,
+        categoryId,
+        tenantId: TENANT_ID,
+        resolutionDueAt: yesterday,
+      });
+      // New → Open に遷移させる
+      await ctx.repos.tickets.updateStatus(
+        overdueOpen.id,
+        { from: 'New', to: 'Open' },
+        null,
+        TENANT_ID,
+      );
+      // 期限超過だが InProgress のチケット → status=Open 指定時は除外されるべき
+      const overdueInProgress = await ctx.repos.tickets.create({
+        title: 'overdue-in-progress',
+        body: 'b',
+        priority: 'High',
+        creatorId: requester.id,
+        categoryId,
+        tenantId: TENANT_ID,
+        resolutionDueAt: yesterday,
+      });
+      // New → Open → InProgress に遷移させる
+      await ctx.repos.tickets.updateStatus(
+        overdueInProgress.id,
+        { from: 'New', to: 'Open' },
+        null,
+        TENANT_ID,
+      );
+      await ctx.repos.tickets.updateStatus(
+        overdueInProgress.id,
+        { from: 'Open', to: 'InProgress' },
+        null,
+        TENANT_ID,
+      );
+
+      // status=Open + overdue の組み合わせでは Open の期限超過チケットだけが返る
+      const result = await ctx.repos.tickets.list({
+        filter: { status: 'Open', overdue: { now } },
+        page: { skip: 0, take: 50 },
+        tenantId: TENANT_ID,
+      });
+      expect(result.map((t) => t.id)).toEqual([overdueOpen.id]);
+      // count も list と同じ件数になる (buildWhere を共有しているため一貫する)
+      expect(await ctx.repos.tickets.count({ status: 'Open', overdue: { now } }, TENANT_ID)).toBe(
+        1,
+      );
+
+      // statusIn=[Open] + overdue の組み合わせでも同様に絞り込みが維持される
+      const resultIn = await ctx.repos.tickets.list({
+        filter: { statusIn: ['Open'], overdue: { now } },
+        page: { skip: 0, take: 50 },
+        tenantId: TENANT_ID,
+      });
+      expect(resultIn.map((t) => t.id)).toEqual([overdueOpen.id]);
+    });
+
     // フォローアップ (2026-07-15 #2): check-then-act 競合 (TOCTOU) の防止。§1.4 で
     // FaqRepository.updateStatus に導入した「期待する現在状態 (from) が一致するときだけ
     // 更新し、一致しなければ false を返す」契約を TicketRepository.updateStatus/markEscalated

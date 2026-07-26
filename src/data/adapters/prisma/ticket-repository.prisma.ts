@@ -52,7 +52,10 @@ function buildWhere(f: TicketListFilter, tenantId: string): Prisma.TicketWhereIn
   if (f.overdue) {
     where.resolutionDueAt = { lt: f.overdue.now };
     where.resolvedAt = null;
-    where.status = { notIn: ['Resolved', 'Closed'] };
+    // status の除外条件は AND 句に積む (where.status へ直接代入すると、上で設定済みの
+    // status / statusIn の絞り込みを上書きして「明示したステータス指定が消える」バグになる。
+    // メモリアダプタの matchesFilter と同じく両条件を AND で同時に満たす挙動に揃える)
+    where.AND = [{ status: { notIn: ['Resolved', 'Closed'] } }];
   }
   // テキスト検索: title または body に contains を OR 条件で適用
   if (f.text) {
