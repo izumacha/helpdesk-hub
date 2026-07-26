@@ -3,7 +3,7 @@ services:
   # PostgreSQL データベースサービス
   db:
     # 軽量な Alpine ベースの Postgres 16 公式イメージ
-    image: postgres:16-alpine
+    image: postgres:18-alpine
     # コンテナが落ちたら自動再起動 (ただし手動 stop は除く)
     restart: unless-stopped
     # 初期化に使う環境変数 (DB 名/ユーザー/パスワード)
