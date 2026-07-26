@@ -25,6 +25,8 @@ import { compare, hashSync } from 'bcryptjs';
 import type { User } from 'next-auth';
 // データ層の Composition Root 経由でユーザー取得 (Prisma 直叩きを避ける)
 import { repos } from '@/data';
+// 認証イベント監査の書き込み入口 (否認防止。email 切り詰め・失敗上限・fail-open を集約)
+import { recordAuthAudit } from '@/lib/auth-audit';
 // ログイン失敗のスロットル (ブルートフォース / クレデンシャルスタッフィング対策)
 import {
   clearLoginFailures,
@@ -105,6 +107,14 @@ export async function passwordAuthorize(
     recordLoginFailure(emailKey);
     // IP が分かっていれば IP 側にも失敗を記録する
     if (ipKey !== null) recordLoginFailure(ipKey);
+    // 認証イベント監査 (否認防止): ユーザー不在 / パスワード未設定による失敗を記録する。
+    // ユーザーが特定できないケースでは userId/tenantId は null で残す (不在メールへの試行も証跡にする)
+    await recordAuthAudit({
+      event: 'password_login_failure',
+      email,
+      userId: user?.id ?? null,
+      tenantId: user?.tenantId ?? null,
+    });
     // 認証失敗
     return null;
   }
@@ -117,6 +127,13 @@ export async function passwordAuthorize(
     recordLoginFailure(emailKey);
     // IP が分かっていれば IP 側にも記録する
     if (ipKey !== null) recordLoginFailure(ipKey);
+    // 認証イベント監査 (否認防止): パスワード不一致による失敗を対象ユーザー付きで記録する
+    await recordAuthAudit({
+      event: 'password_login_failure',
+      email,
+      userId: user.id,
+      tenantId: user.tenantId,
+    });
     // 認証失敗
     return null;
   }
@@ -125,6 +142,18 @@ export async function passwordAuthorize(
   clearLoginFailures(emailKey);
   // IP が分かっていれば IP 側の失敗カウントもリセットする
   if (ipKey !== null) clearLoginFailures(ipKey);
+
+  // 認証イベント監査 (否認防止): パスワードログインの成功を記録する。
+  // なおロックアウト中の短絡拒否 (isLoginBlocked) は意図的に記録しない: あの経路は
+  // 「DB を触らずに即拒否する」ことで大量試行の負荷を吸収する設計であり、攻撃中に
+  // 1 試行 = 1 監査行を書くと DB 書き込みが増幅されてしまう。ロックアウトに至った
+  // 失敗自体は上の password_login_failure (上限までの各試行) として記録済み
+  await recordAuthAudit({
+    event: 'password_login_success',
+    email,
+    userId: user.id,
+    tenantId: user.tenantId,
+  });
 
   // 認証成功: セッションに乗せるユーザー情報を返す
   return {

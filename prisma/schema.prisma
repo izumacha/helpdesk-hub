@@ -162,6 +162,18 @@ enum QuarantineChannel {
   line
 }
 
+// 認証イベント監査ログ (AuthAuditLog) の対象イベント種別。
+// 課題棚卸し (2026-07-26) の否認防止ギャップ対応: 「誰がいつどの方法で認証したか / 失敗したか」を
+// 後から追跡できるようにするための種別。値を追加したら src/domain/types.ts の AuthAuditEvent も
+// 必ず同期する (SettingsAuditAction と同じ複数箇所同期の規約)
+enum AuthAuditEvent {
+  password_login_success // パスワードログイン成功
+  password_login_failure // パスワードログイン失敗 (ユーザー不在・パスワード未設定・パスワード不一致)
+  magic_link_login_success // マジックリンク (メール内ワンタイム URL) によるログイン成功
+  sso_login_success // SSO (SAML) 経由のセッション発行成功 (ssoHandoff トークン消費)
+  sso_assertion_accepted // SAML アサーションの検証・受理 (ACS でのリプレイチェック通過)
+}
+
 // ─────────────────────────────────────────────
 // Tenant (組織/テナント。SaaS 化のためのデータ境界)
 // ─────────────────────────────────────────────
@@ -621,6 +633,32 @@ model SettingsAuditLog {
   actor  User?  @relation(fields: [actorId], references: [id]) // 操作者 (null ならシステム操作)
 
   @@index([tenantId, createdAt]) // 監査ログ一覧 (テナントスコープ・新しい順) の検索用
+}
+
+// ─────────────────────────────────────────────
+// AuthAuditLog (認証イベント監査ログ / 否認防止)
+// ─────────────────────────────────────────────
+// 課題棚卸し (2026-07-26): ログイン成功/失敗・SSO アサーション受理がどこにも記録されておらず、
+// インシデント調査時に「誰がいつ認証したか」を追えなかったギャップを埋める。
+//
+// SettingsAuditLog と分ける理由:
+//   - 失敗イベントは存在しないメールアドレスに対しても記録するため tenantId を必須にできない
+//   - ログインは設定変更よりはるかに高頻度で、設定監査の一覧 UI に混ぜると視認性を損なう
+//
+// User / Tenant への FK リレーションを意図的に持たない: 監査証跡は親レコードの削除カスケードで
+// 消えてはならない (否認防止)。ID は参照値としてそのまま保持する。
+// 本テーブルは DB 側トリガで UPDATE/DELETE を禁止した追記専用 (append-only) テーブル
+// (prisma/migrations/20260726000100_add_audit_log_immutability 参照)。
+model AuthAuditLog {
+  id        String         @id @default(cuid()) // 主キー
+  event     AuthAuditEvent // 認証イベントの種別
+  email     String // 試行対象のメールアドレス (小文字正規化済み。不在ユーザーへの失敗も記録する)
+  userId    String? // 対応するユーザー ID (ユーザー不在の失敗時は null。FK にはしない)
+  tenantId  String? // 所属テナント ID (ユーザー不在の失敗時は null。FK にはしない)
+  createdAt DateTime       @default(now()) // 記録日時
+
+  @@index([tenantId, createdAt]) // テナント単位の時系列参照用
+  @@index([email, createdAt]) // 特定メールアドレスへの試行履歴の調査用
 }
 
 // ─────────────────────────────────────────────

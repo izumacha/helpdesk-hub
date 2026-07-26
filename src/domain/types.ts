@@ -295,6 +295,27 @@ export interface TicketHistory {
   createdAt: Date; // 変更日時
 }
 
+// 認証イベント監査ログの対象イベント種別 (否認防止)。
+// prisma/schema.prisma の AuthAuditEvent enum と常に同期すること (2 箇所同期)
+export type AuthAuditEvent =
+  | 'password_login_success' // パスワードログイン成功
+  | 'password_login_failure' // パスワードログイン失敗 (ユーザー不在・パスワード未設定・パスワード不一致)
+  | 'magic_link_login_success' // マジックリンク (メール内ワンタイム URL) によるログイン成功
+  | 'sso_login_success' // SSO (SAML) 経由のセッション発行成功 (ssoHandoff トークン消費)
+  | 'sso_assertion_accepted'; // SAML アサーションの検証・受理 (ACS でのリプレイチェック通過)
+
+// 認証イベント監査ログ 1 件分 (否認防止)。
+// userId / tenantId はユーザー不在の失敗イベントでは null。FK ではなく参照値として保持する
+// (親レコードの削除カスケードで監査証跡が消えないようにするため。schema.prisma のコメント参照)
+export interface AuthAuditLog {
+  id: string; // 監査ログ ID
+  event: AuthAuditEvent; // 認証イベントの種別
+  email: string; // 試行対象のメールアドレス (小文字正規化済み)
+  userId: string | null; // 対応するユーザー ID (不在なら null)
+  tenantId: string | null; // 所属テナント ID (不在なら null)
+  createdAt: Date; // 記録日時
+}
+
 // 設定変更 (SSO/LINE 連携/通知チャネル) の監査ログ 1 件分。
 // TicketHistory と異なり oldValue/newValue は持たない (秘匿情報を含む設定値のため記録しない)
 export interface SettingsAuditLog {

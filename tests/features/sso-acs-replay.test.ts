@@ -208,10 +208,23 @@ describe.skipIf(!hasOpenssl)('POST /api/auth/sso/[tenantId]/acs のリプレイ�
     const firstBody = await first.text();
     expect(firstBody).toContain('SSO ログインの確認');
 
+    // 認証イベント監査 (否認防止): 受理されたアサーションが sso_assertion_accepted として
+    // 対象ユーザーの識別子付きで AuthAuditLog に記録されている
+    const rows = [...store.authAuditLogs.values()];
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      event: 'sso_assertion_accepted',
+      email: USER_EMAIL,
+      userId: 'user-1',
+      tenantId: TENANT_ID,
+    });
+
     // 2 回目: 全く同じ SAMLResponse (同一アサーション ID) を再送するとリプレイとして拒否される
     const second = await postAcs(samlResponse);
     expect(second.status).toBe(303);
     expect(second.headers.get('location')).toContain('error=sso-invalid');
+    // リプレイ拒否では「受理」に至らないため監査行は増えない
+    expect(store.authAuditLogs.size).toBe(1);
   });
 
   it('異なるアサーションであればそれぞれ独立して受理される', async () => {

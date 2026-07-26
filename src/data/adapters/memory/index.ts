@@ -2,6 +2,7 @@
 import type { Repos, UnitOfWork } from '@/data/ports/unit-of-work';
 // 各エンティティ用のメモリリポジトリ生成関数を取り込む
 import { makeAttachmentRepo } from './attachment-repository.memory';
+import { makeAuthAuditLogRepo } from './auth-audit-log-repository.memory';
 import { makeCategoryRepo } from './category-repository.memory';
 import { makeEmailThreadRepo } from './email-thread-repository.memory';
 import { makeFaqRepo } from './faq-repository.memory';
@@ -52,6 +53,7 @@ export function buildMemoryRepos(store: Store): Repos {
     samlAssertions: makeSamlAssertionRepo(store), // Phase 4 Enterprise SSO フォローアップ: リプレイ防止記録
     lineConfigs: makeLineConfigRepo(store), // Phase 2 フォローアップ: テナント単位の LINE 連携設定
     settingsAudit: makeSettingsAuditLogRepo(store), // §4.2 フォローアップ: 設定変更監査ログ
+    authAudit: makeAuthAuditLogRepo(store), // 否認防止: 認証イベント監査ログ
     quarantinedEmails: makeQuarantinedEmailRepo(store), // §3.2 フォローアップ: 隔離した受信メールの記録
   };
 }

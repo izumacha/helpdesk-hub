@@ -3,11 +3,15 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 // vi.mock のファクトリはファイル先頭へ巻き上げられるため、参照する mock 関数は
 // vi.hoisted で同様に巻き上げて「初期化前参照」エラーを避ける。
-const { findByEmail } = vi.hoisted(() => ({ findByEmail: vi.fn() }));
+const { findByEmail, recordAuthAudit } = vi.hoisted(() => ({
+  findByEmail: vi.fn(),
+  recordAuthAudit: vi.fn(),
+}));
 
-// データ層をモック: passwordAuthorize が使うのは repos.users.findByEmail のみ
+// データ層をモック: passwordAuthorize が使うのは repos.users.findByEmail と
+// repos.authAudit.record (認証イベント監査 / 否認防止) のみ
 vi.mock('@/data', () => ({
-  repos: { users: { findByEmail } },
+  repos: { users: { findByEmail }, authAudit: { record: recordAuthAudit } },
 }));
 
 // bcryptjs をモック: compare は「正しいパスワード」のときだけ true を返す。
@@ -21,6 +25,8 @@ vi.mock('bcryptjs', () => ({
 import { passwordAuthorize } from '@/lib/password-authorize';
 // 失敗カウントをテスト間でリセットするためのヘルパー
 import { __resetLoginThrottle } from '@/lib/login-throttle';
+// 監査ログの失敗イベント書き込み上限をテスト間でリセットするためのヘルパー
+import { __resetAuthAuditThrottle } from '@/lib/auth-audit';
 // 呼び出し回数を検証するためモック化済みの compare を取得
 import { compare } from 'bcryptjs';
 
@@ -42,8 +48,12 @@ describe('passwordAuthorize (#119)', () => {
   beforeEach(() => {
     // スロットルの内部状態をクリア (テスト間の独立性を保つ)
     __resetLoginThrottle();
+    // 監査ログの失敗イベント書き込み上限もクリアする (テスト間の独立性を保つ)
+    __resetAuthAuditThrottle();
     // findByEmail の実装と履歴を消す (各テストで個別に mockResolvedValue する)
     findByEmail.mockReset();
+    // 認証イベント監査の記録モックも履歴を消す (各テストで呼び出し内容を検証する)
+    recordAuthAudit.mockReset();
     // compare は実装を保持したまま呼び出し履歴だけクリアする
     vi.mocked(compare).mockClear();
   });
@@ -186,5 +196,72 @@ describe('passwordAuthorize (#119)', () => {
     await passwordAuthorize({ email: 'spray-final@example.com', password: 'wrong' }, req);
     // DB 呼び出しが増えていない (IP キーで短絡)
     expect(findByEmail.mock.calls.length).toBe(calls);
+  });
+
+  // 認証イベント監査 (否認防止): ログイン成功は password_login_success として記録される
+  it('records password_login_success with the user identity on success', async () => {
+    // ユーザーは存在する
+    findByEmail.mockResolvedValue(USER);
+    // 正しいパスワードで認証する
+    await passwordAuthorize(
+      { email: 'user@example.com', password: 'correct-password' },
+      undefined,
+    );
+    // 成功イベントが対象ユーザーの識別子付きで記録されている
+    expect(recordAuthAudit).toHaveBeenCalledWith({
+      event: 'password_login_success',
+      email: 'user@example.com',
+      userId: 'u1',
+      tenantId: 't1',
+    });
+  });
+
+  // 認証イベント監査: パスワード不一致の失敗は対象ユーザー付きで記録される
+  it('records password_login_failure with the user identity on a wrong password', async () => {
+    // ユーザーは存在する
+    findByEmail.mockResolvedValue(USER);
+    // 誤ったパスワードで認証する
+    await passwordAuthorize({ email: 'user@example.com', password: 'wrong' }, undefined);
+    // 失敗イベントが対象ユーザーの識別子付きで記録されている
+    expect(recordAuthAudit).toHaveBeenCalledWith({
+      event: 'password_login_failure',
+      email: 'user@example.com',
+      userId: 'u1',
+      tenantId: 't1',
+    });
+  });
+
+  // 認証イベント監査: 不在メールへの失敗も userId/tenantId = null で記録される
+  it('records password_login_failure with null identity for an unknown email', async () => {
+    // ユーザーが見つからない状態にする
+    findByEmail.mockResolvedValue(null);
+    // 大文字混じりの不在メールで認証を試みる
+    await passwordAuthorize({ email: 'Ghost@Example.com', password: 'whatever' }, undefined);
+    // メールは小文字正規化された値で、識別子は null のまま記録されている
+    expect(recordAuthAudit).toHaveBeenCalledWith({
+      event: 'password_login_failure',
+      email: 'ghost@example.com',
+      userId: null,
+      tenantId: null,
+    });
+  });
+
+  // 認証イベント監査: ロックアウト中の短絡拒否は記録しない (DB 書き込み増幅の防止。実装コメント参照)
+  it('does not record an audit event while locked out', async () => {
+    // ユーザーは存在する
+    findByEmail.mockResolvedValue(USER);
+    // 5 回失敗してロックアウトさせる (この 5 回はそれぞれ failure が記録される)
+    for (let i = 0; i < 5; i += 1) {
+      await passwordAuthorize({ email: 'user@example.com', password: 'wrong' }, undefined);
+    }
+    // ここまでの監査記録の呼び出し回数を控える
+    const callsAfterFive = recordAuthAudit.mock.calls.length;
+    // ロックアウト中の 6 回目は短絡拒否され、監査行も増えない
+    await passwordAuthorize(
+      { email: 'user@example.com', password: 'correct-password' },
+      undefined,
+    );
+    // 監査記録の回数が変わっていない (短絡経路では書かない設計の証明)
+    expect(recordAuthAudit.mock.calls.length).toBe(callsAfterFive);
   });
 });
