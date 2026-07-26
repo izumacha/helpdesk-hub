@@ -1,5 +1,5 @@
 # ベースイメージ: 軽量な Alpine Linux 上の Node.js 20
-FROM node:20-alpine AS base
+FROM node:26-alpine AS base
 # 作業ディレクトリ (以降のコマンドのカレント)
 WORKDIR /app
 
