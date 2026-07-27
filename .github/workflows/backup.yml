@@ -31,7 +31,7 @@ jobs:
     name: pg_dump backup
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # PostgreSQL クライアント (pg_dump) を入れる。GitHub の ubuntu-latest には
       # postgresql-client-16 を明示導入して pg_dump のバージョン差異を避ける。

@@ -18,7 +18,7 @@ jobs:
     name: Shellcheck (backup scripts)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # scripts/ 配下の Bash スクリプト (バックアップ等) を静的解析する。
       # ubuntu-latest には shellcheck がプリインストールされている。
@@ -29,7 +29,7 @@ jobs:
     name: Lint / Typecheck / Unit tests
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: actions/setup-node@v7
         with:
@@ -74,7 +74,7 @@ jobs:
       # 通常の `npm run test` (lint ジョブ) では未設定なので skip され、DB 非依存の境界を保つ。
       RUN_PRISMA_CONTRACT: '1'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: actions/setup-node@v7
         with:
@@ -129,7 +129,7 @@ jobs:
       EMAIL_DRIVER: console
       EMAIL_ALLOW_CONSOLE_IN_PROD: 'true'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: actions/setup-node@v7
         with:
