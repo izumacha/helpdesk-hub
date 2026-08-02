@@ -30,7 +30,7 @@
     "@node-saml/node-saml": "^5.1.0",
     "@prisma/client": "^5.22.0",
     "bcryptjs": "^3.0.3",
-    "next": "^15.5.15",
+    "next": "^16.2.12",
     "next-auth": "^5.0.0-beta.30",
     "nodemailer": "^7.0.13",
     "react": "^19.2.8",
