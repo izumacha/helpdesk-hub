@@ -27,8 +27,9 @@ import { loadEnabledSsoContext } from '@/lib/sso-context';
 import { createSamlInstance, validateSamlResponse } from '@/lib/saml';
 // マジックリンクのワンタイムトークン生成・ハッシュ (セッション発行に再利用)
 import { generateMagicLinkToken, hashMagicLinkToken } from '@/lib/magic-link';
-// 認証イベント監査の書き込み入口 (否認防止。fail-open で ACS フローを止めない)
-import { recordAuthAudit } from '@/lib/auth-audit';
+// 認証イベント監査の書き込み入口 (否認防止。fail-open で ACS フローを止めない)。
+// AUTH_AUDIT_UNKNOWN_EMAIL は本人のメールを特定できない失敗経路で使う代替値
+import { recordAuthAudit, AUTH_AUDIT_UNKNOWN_EMAIL } from '@/lib/auth-audit';
 // HTML 属性への安全な埋め込み用エスケープ (確認ページのトークン埋め込みに使う)
 import { escapeHtml } from '@/lib/html-escape';
 // Route Handler 向け共通レート制限ラッパー (inbound-email/inbound-line と共有)
@@ -117,6 +118,17 @@ export async function POST(req: Request, { params }: Params) {
   } catch (err) {
     // 検証失敗は内部詳細を返さずログイン画面へ戻す (なりすまし/設定ミスを区別せず拒否)
     console.error('[sso-acs] アサーション検証に失敗しました:', err);
+    // 認証イベント監査 (否認防止): 検証を通らなかったアサーションでの試行を記録する。
+    // 検証に失敗した以上アサーションの主張 (メール等) は信用できないため email は
+    // AUTH_AUDIT_UNKNOWN_EMAIL で残し、確かなテナント (URL から解決し SSO 有効と確認済み) だけを残す。
+    // console.error はプロセス再起動やログローテーションで失われるが、監査行は追記専用テーブルに
+    // 残るため「どのテナントの ACS へ不正なアサーションが飛んだか」を後から追える
+    await recordAuthAudit({
+      event: 'sso_assertion_rejected',
+      email: AUTH_AUDIT_UNKNOWN_EMAIL,
+      userId: null,
+      tenantId,
+    });
     return errorRedirect('sso-invalid');
   }
 
@@ -126,6 +138,17 @@ export async function POST(req: Request, { params }: Params) {
   if (!user || user.tenantId !== tenantId) {
     // 監査用に警告ログを残す (メールアドレスはログに残さず件数のみ気付ける程度に留める)
     console.warn('[sso-acs] SSO 本人に対応するテナント内ユーザーが見つかりません。');
+    // 認証イベント監査 (否認防止): 署名検証を通った本人が、このテナントに登録されていない
+    // (未招待、または別テナントのユーザー) ため拒否したことを記録する。
+    // ここでの email は署名検証済みのアサーション由来なので実メールを残してよい。
+    // userId は「このテナントのユーザーとして認めていない」ため、別テナントに同メールの
+    // ユーザーが居る場合でも意図的に null にする (クロステナントの取り違えを監査に残さない)
+    await recordAuthAudit({
+      event: 'sso_user_not_found',
+      email,
+      userId: null,
+      tenantId,
+    });
     return errorRedirect('sso-no-user');
   }
 
@@ -142,6 +165,15 @@ export async function POST(req: Request, { params }: Params) {
     console.warn(
       '[sso-acs] 同一 SAML アサーションの再利用を検知しました (リプレイ防止により拒否)。',
     );
+    // 認証イベント監査 (否認防止): リプレイ検知は「正当な署名付きアサーションが誰かに
+    // 再送された」という最も調査価値の高い失敗なので、本人・テナントまで特定して残す
+    // (ここまで到達している = 署名検証もテナント内ユーザー照合も通過済み)
+    await recordAuthAudit({
+      event: 'sso_assertion_replayed',
+      email: user.email,
+      userId: user.id,
+      tenantId,
+    });
     return errorRedirect('sso-invalid');
   }
 

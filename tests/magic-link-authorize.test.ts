@@ -26,6 +26,8 @@ vi.mock('@/data', () => ({
 import { magicLinkAuthorize } from '@/lib/magic-link-authorize';
 // 生トークン→DB 検索キーのハッシュ計算 (モックした consumeValidToken の引数検証に使う)
 import { hashMagicLinkToken } from '@/lib/magic-link';
+// 本人を特定できない失敗経路で記録される代替メール (期待値の直書きを避ける)
+import { AUTH_AUDIT_UNKNOWN_EMAIL } from '@/lib/auth-audit';
 
 // テストで使う既存ユーザー
 const USER = {
@@ -79,19 +81,43 @@ describe('magicLinkAuthorize', () => {
     );
   });
 
-  // 消費失敗 (消費済み / 失効 / 不在) は null を返し、監査行は書かないこと
-  it('returns null and records nothing when the token cannot be consumed', async () => {
+  // 消費失敗 (消費済み / 失効 / 不在) は null を返し、失敗イベントを監査に残すこと。
+  // この時点では DB に該当行が無く対象メールを特定できないため email は代替値になる
+  it('returns null and records a failure with an unknown email when the token cannot be consumed', async () => {
     consumeValidToken.mockResolvedValue(null);
     expect(await magicLinkAuthorize({ token: 'raw-token' })).toBeNull();
-    expect(recordAuthAudit).not.toHaveBeenCalled();
+    // 失敗イベントが「特定不能な試行」として記録されている
+    expect(recordAuthAudit).toHaveBeenCalledWith({
+      event: 'magic_link_login_failure',
+      email: AUTH_AUDIT_UNKNOWN_EMAIL,
+      userId: null,
+      tenantId: null,
+    });
   });
 
-  // ユーザーが消えていれば null (孤児トークン)。監査行も書かない
-  it('returns null for an orphaned token whose user no longer exists', async () => {
+  // ユーザーが消えていれば null (孤児トークン)。トークン行から分かる実メールで失敗を記録する
+  it('returns null and records a failure for an orphaned token whose user no longer exists', async () => {
     consumeValidToken.mockResolvedValue(consumedToken('login'));
     findByEmail.mockResolvedValue(null);
     expect(await magicLinkAuthorize({ token: 'raw-token' })).toBeNull();
-    expect(recordAuthAudit).not.toHaveBeenCalled();
+    // 対象メールはトークン行から判明しているのでそのまま記録される (userId/tenantId は不明)
+    expect(recordAuthAudit).toHaveBeenCalledWith({
+      event: 'magic_link_login_failure',
+      email: USER.email,
+      userId: null,
+      tenantId: null,
+    });
+  });
+
+  // SSO 引き渡しトークンの孤児ケースも同じ失敗イベントで記録すること
+  // (失敗の原因はユーザー消失で経路によらず同一のため、種別を分けても調査情報が増えない)
+  it('records the same failure event for an orphaned ssoHandoff token', async () => {
+    consumeValidToken.mockResolvedValue(consumedToken('ssoHandoff'));
+    findByEmail.mockResolvedValue(null);
+    expect(await magicLinkAuthorize({ token: 'raw-token' })).toBeNull();
+    expect(recordAuthAudit).toHaveBeenCalledWith(
+      expect.objectContaining({ event: 'magic_link_login_failure', email: USER.email }),
+    );
   });
 
   // 通常のマジックリンク (purpose='login') の成功は magic_link_login_success として記録される

@@ -12,6 +12,9 @@
  *    上限が無いと追記専用テーブルに行を無制限に積める (ストレージ枯渇 DoS)。窓内の失敗
  *    記録数に上限を設け、超過分は console.warn だけ残して DB 書き込みをスキップする
  *    (成功イベントは実在の資格情報・発行済みトークンが前提で流量が自然に制限されるため対象外)。
+ *    対象イベントは下の `AUTH_AUDIT_FAILURE_EVENTS` が唯一の真実の源で、パスワード経路に
+ *    限らずマジックリンク・SAML の失敗も同じ 1 つの予算を共有する (経路ごとに別予算にすると
+ *    経路数だけ上限が積み上がり、上限の意味が薄れるため)。
  * 3. **fail-open (可用性優先)**: 監査 INSERT の失敗で認証全体を落とさない。特にマジック
  *    リンク経路は「トークンを原子的に消費した後」に記録するため、ここで throw すると
  *    ワンタイムトークンが焼失したままログインが失敗し、ユーザーはリンク再発行を強いられる。
@@ -22,14 +25,37 @@
 import { repos } from '@/data';
 // 記録入力の型 (port の契約)
 import type { RecordAuthAuditInput } from '@/data/ports/auth-audit-log-repository';
+// イベント種別の型 (失敗イベント集合の網羅性チェックに使う)
+import type { AuthAuditEvent } from '@/domain/types';
 
 // 監査に記録する email の最大長 (RFC 5321 のメールアドレス上限に合わせる)
 export const AUTH_AUDIT_EMAIL_MAX_LENGTH = 254;
+
+// 「認証を試みて拒否された」ことは分かるが、本人のメールアドレスを特定できない経路で使う
+// 代替値。マジックリンクの無効トークン (DB に行が無いので email が引けない) と SAML の
+// 署名検証失敗 (検証を通っていない主張は信用できない) が該当する。
+// email 列は NOT NULL なので空文字ではなく意味の分かる固定値を入れ、調査時に
+// 「特定不能な試行」として一目で判別できるようにする (実在しえない形なので実メールと衝突しない)。
+export const AUTH_AUDIT_UNKNOWN_EMAIL = '(unknown)';
+
 // 失敗イベントの書き込み上限を数える固定窓の長さ (1 分)
 export const AUTH_AUDIT_FAILURE_WINDOW_MS = 60_000;
 // 1 窓あたりに DB へ書き込む失敗イベントの上限件数。正規利用でこの値に達することは
 // まず無い規模 (全ユーザー合計で毎分 120 失敗) に設定し、攻撃時のみ発動させる
 export const AUTH_AUDIT_FAILURE_MAX_PER_WINDOW = 120;
+
+// 書き込み上限 (モジュール先頭 2.) の対象にする「失敗イベント」の集合 —— この集合が唯一の真実の源。
+// 失敗イベントはいずれも未認証の攻撃者がリクエストを繰り返すだけで発火させられるため、
+// 新しい失敗イベントを増やすときは必ずここへ足す (足し忘れると、その経路だけ上限を
+// すり抜けて追記専用テーブルに無制限に行を積める = ストレージ枯渇 DoS の抜け穴になる)。
+// Set<AuthAuditEvent> と型注釈することで、綴り間違いや廃止した値の残留を typecheck で弾く。
+const AUTH_AUDIT_FAILURE_EVENTS: ReadonlySet<AuthAuditEvent> = new Set<AuthAuditEvent>([
+  'password_login_failure', // パスワード不一致 / ユーザー不在
+  'magic_link_login_failure', // 無効・失効・消費済みトークン / 孤児トークン
+  'sso_assertion_rejected', // SAML の署名・条件検証に失敗
+  'sso_assertion_replayed', // 同一アサーションの再利用を検知
+  'sso_user_not_found', // 検証は通ったがテナント内にユーザーが居ない
+]);
 
 // 現在の固定窓の開始時刻 (ミリ秒)
 let failureWindowStart = 0;
@@ -57,7 +83,7 @@ export async function recordAuthAudit(input: RecordAuthAuditInput): Promise<void
     // 攻撃者制御の超長 email でインデックス上限を踏まないよう切り詰める
     const email = input.email.slice(0, AUTH_AUDIT_EMAIL_MAX_LENGTH);
     // 失敗イベントは書き込み上限の予算を消費できた場合のみ DB へ書く
-    if (input.event === 'password_login_failure' && !consumeFailureBudget(Date.now())) {
+    if (AUTH_AUDIT_FAILURE_EVENTS.has(input.event) && !consumeFailureBudget(Date.now())) {
       // 上限超過: DoS 増幅を避けるため DB には書かず、サーバーログにだけ痕跡を残す
       console.warn(
         '[auth-audit] 失敗イベントの記録が上限に達したためスキップしました (攻撃の可能性)。',

@@ -1,7 +1,7 @@
 // 認証イベント監査の書き込み入口 (src/lib/auth-audit.ts) の単体テスト。
 // email の切り詰め・失敗イベントの書き込み上限・fail-open (記録失敗を認証へ伝播させない) を検証する。
 
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // vi.mock のファクトリはファイル先頭へ巻き上げられるため、参照する mock 関数は
 // vi.hoisted で同様に巻き上げて「初期化前参照」エラーを避ける
@@ -16,15 +16,36 @@ vi.mock('@/data', () => ({
 import {
   AUTH_AUDIT_EMAIL_MAX_LENGTH,
   AUTH_AUDIT_FAILURE_MAX_PER_WINDOW,
+  AUTH_AUDIT_UNKNOWN_EMAIL,
   recordAuthAudit,
   __resetAuthAuditThrottle,
 } from '@/lib/auth-audit';
+// イベント種別の型 (失敗イベント一覧を型付きで並べるために使う)
+import type { AuthAuditEvent } from '@/domain/types';
+
+// 書き込み上限の対象になるべき失敗イベントの一覧。
+// 新しい失敗イベントを追加したときに auth-audit.ts の AUTH_AUDIT_FAILURE_EVENTS へ
+// 足し忘れると、下の it.each が落ちて気付ける (足し忘れ = 上限をすり抜ける DoS の抜け穴)
+const FAILURE_EVENTS: AuthAuditEvent[] = [
+  'password_login_failure',
+  'magic_link_login_failure',
+  'sso_assertion_rejected',
+  'sso_assertion_replayed',
+  'sso_user_not_found',
+];
 
 describe('recordAuthAudit', () => {
   beforeEach(() => {
     // 書き込み上限の内部状態とモック履歴をテストごとにリセットする
     __resetAuthAuditThrottle();
     recordMock.mockReset();
+    // 上限超過時の警告はテスト出力を埋めるだけなので抑制する (呼ばれること自体は検証しない)
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    // spy を元に戻し、他のテストファイルへ影響を残さない
+    vi.restoreAllMocks();
   });
 
   // 通常の入力はそのまま record へ渡ること
@@ -63,12 +84,15 @@ describe('recordAuthAudit', () => {
     expect(recorded.email).toBe(hugeEmail.slice(0, AUTH_AUDIT_EMAIL_MAX_LENGTH));
   });
 
-  // 失敗イベントは 1 窓あたりの上限件数を超えたら DB へ書かないこと (ストレージ枯渇 DoS の防止)
-  it('caps failure-event writes per window', async () => {
-    // 上限 +10 件の失敗イベントを連続で記録する
-    for (let i = 0; i < AUTH_AUDIT_FAILURE_MAX_PER_WINDOW + 10; i += 1) {
+  // 失敗イベントは 1 窓あたりの上限件数を超えたら DB へ書かないこと (ストレージ枯渇 DoS の防止)。
+  // パスワード経路に限らず全種別が同じ上限の対象であること。
+  // マジックリンク・SAML の失敗は未認証の攻撃者がリクエストを繰り返すだけで発火するため、
+  // 1 種別でも上限から漏れると追記専用テーブルに行を無制限に積める抜け穴になる
+  it.each(FAILURE_EVENTS)('caps %s writes per window', async (event) => {
+    // 上限 +5 件の失敗イベントを連続で記録する
+    for (let i = 0; i < AUTH_AUDIT_FAILURE_MAX_PER_WINDOW + 5; i += 1) {
       await recordAuthAudit({
-        event: 'password_login_failure',
+        event,
         email: `spray${i}@example.com`,
         userId: null,
         tenantId: null,
@@ -76,6 +100,29 @@ describe('recordAuthAudit', () => {
     }
     // DB への書き込みは上限件数で頭打ちになっている
     expect(recordMock).toHaveBeenCalledTimes(AUTH_AUDIT_FAILURE_MAX_PER_WINDOW);
+  });
+
+  // 失敗イベントの予算は種別ごとではなく全体で 1 つであること。
+  // 種別ごとに独立した予算にすると、経路数だけ上限が積み上がって上限の意味が薄れる
+  it('shares one failure budget across all failure events', async () => {
+    // パスワード経路の失敗だけで予算を使い切る
+    for (let i = 0; i < AUTH_AUDIT_FAILURE_MAX_PER_WINDOW; i += 1) {
+      await recordAuthAudit({
+        event: 'password_login_failure',
+        email: `spray${i}@example.com`,
+        userId: null,
+        tenantId: null,
+      });
+    }
+    recordMock.mockClear();
+    // 別種別の失敗イベントは、同じ窓の中では追加で書き込まれない
+    await recordAuthAudit({
+      event: 'sso_assertion_rejected',
+      email: AUTH_AUDIT_UNKNOWN_EMAIL,
+      userId: null,
+      tenantId: 't1',
+    });
+    expect(recordMock).not.toHaveBeenCalled();
   });
 
   // 成功イベントは失敗上限の対象外であること (正規ログインの監査を落とさない)

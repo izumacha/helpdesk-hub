@@ -301,8 +301,12 @@ export type AuthAuditEvent =
   | 'password_login_success' // パスワードログイン成功
   | 'password_login_failure' // パスワードログイン失敗 (ユーザー不在・パスワード未設定・パスワード不一致)
   | 'magic_link_login_success' // マジックリンク (メール内ワンタイム URL) によるログイン成功
+  | 'magic_link_login_failure' // マジックリンク失敗 (無効/失効/消費済みトークン・ユーザー消失した孤児トークン)
   | 'sso_login_success' // SSO (SAML) 経由のセッション発行成功 (ssoHandoff トークン消費)
-  | 'sso_assertion_accepted'; // SAML アサーションの検証・受理 (ACS でのリプレイチェック通過)
+  | 'sso_assertion_accepted' // SAML アサーションの検証・受理 (ACS でのリプレイチェック通過)
+  | 'sso_assertion_rejected' // SAML アサーションの検証失敗 (署名不正・Issuer/Audience 不一致・期限切れ)
+  | 'sso_assertion_replayed' // 同一 SAML アサーションの再利用を検知して拒否 (リプレイ攻撃の疑い)
+  | 'sso_user_not_found'; // SAML 検証は通ったが該当テナントに本人のユーザーが存在せず拒否 (JIT 無効)
 
 // 認証イベント監査ログ 1 件分 (否認防止)。
 // userId / tenantId はユーザー不在の失敗イベントでは null。FK ではなく参照値として保持する
