@@ -91,9 +91,12 @@ export async function recordAuthAudit(input: RecordAuthAuditInput): Promise<void
     const email = input.email.slice(0, AUTH_AUDIT_EMAIL_MAX_LENGTH);
     // 失敗イベントは書き込み上限の予算を消費できた場合のみ DB へ書く
     if (AUTH_AUDIT_EVENT_IS_FAILURE[input.event] && !consumeFailureBudget(Date.now())) {
-      // 上限超過: DoS 増幅を避けるため DB には書かず、サーバーログにだけ痕跡を残す
+      // 上限超過: DoS 増幅を避けるため DB には書かず、サーバーログにだけ痕跡を残す。
+      // 予算は全失敗イベントで 1 つを共有するため、種別を書かないと「どの経路が吹いているか」が
+      // 分からず調査できない。イベント種別は enum 値 (外部入力でも PII でもない) なので安全に出せる。
+      // email やトークンは出さない (§9 機密情報・PII をログに漏らさない)
       console.warn(
-        '[auth-audit] 失敗イベントの記録が上限に達したためスキップしました (攻撃の可能性)。',
+        `[auth-audit] 失敗イベントの記録が上限に達したためスキップしました (攻撃の可能性): ${input.event}`,
       );
       return;
     }
