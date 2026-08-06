@@ -15,24 +15,26 @@ vi.mock('@/data', () => ({
 // テスト対象 (モック設定後に import する)
 import {
   AUTH_AUDIT_EMAIL_MAX_LENGTH,
+  AUTH_AUDIT_EVENT_IS_FAILURE,
   AUTH_AUDIT_FAILURE_MAX_PER_WINDOW,
   AUTH_AUDIT_UNKNOWN_EMAIL,
   recordAuthAudit,
   __resetAuthAuditThrottle,
 } from '@/lib/auth-audit';
-// イベント種別の型 (失敗イベント一覧を型付きで並べるために使う)
+// イベント種別の型 (分類表のキーを型付きで扱うために使う)
 import type { AuthAuditEvent } from '@/domain/types';
 
-// 書き込み上限の対象になるべき失敗イベントの一覧。
-// 新しい失敗イベントを追加したときに auth-audit.ts の AUTH_AUDIT_FAILURE_EVENTS へ
-// 足し忘れると、下の it.each が落ちて気付ける (足し忘れ = 上限をすり抜ける DoS の抜け穴)
-const FAILURE_EVENTS: AuthAuditEvent[] = [
-  'password_login_failure',
-  'magic_link_login_failure',
-  'sso_assertion_rejected',
-  'sso_assertion_replayed',
-  'sso_user_not_found',
-];
+// 分類表から失敗イベント / 成功イベントの一覧を導出する。
+// 表を直接引くことで、イベントを追加したら自動的に下の it.each の対象にもなる
+// (表への追加自体は Record の網羅性チェックにより typecheck で強制される)
+const eventsWhere = (isFailure: boolean): AuthAuditEvent[] =>
+  (Object.keys(AUTH_AUDIT_EVENT_IS_FAILURE) as AuthAuditEvent[]).filter(
+    (event) => AUTH_AUDIT_EVENT_IS_FAILURE[event] === isFailure,
+  );
+// 書き込み上限の対象になる失敗イベント
+const FAILURE_EVENTS = eventsWhere(true);
+// 上限の対象外であるべき成功イベント
+const SUCCESS_EVENTS = eventsWhere(false);
 
 describe('recordAuthAudit', () => {
   beforeEach(() => {
@@ -84,6 +86,21 @@ describe('recordAuthAudit', () => {
     expect(recorded.email).toBe(hugeEmail.slice(0, AUTH_AUDIT_EMAIL_MAX_LENGTH));
   });
 
+  // 分類表そのものが正しいこと。上の一覧は表から導出しているため、この表明が無いと
+  // 「失敗イベントを誤って false に分類した」ミスを検出できない (導出テストは素通りする)。
+  // 意図を独立に書き下すことで、分類の取り違えをここで止める
+  it('classifies exactly the failure events as failures', () => {
+    expect([...FAILURE_EVENTS].sort()).toEqual(
+      [
+        'magic_link_login_failure',
+        'password_login_failure',
+        'sso_assertion_rejected',
+        'sso_assertion_replayed',
+        'sso_user_not_found',
+      ].sort(),
+    );
+  });
+
   // 失敗イベントは 1 窓あたりの上限件数を超えたら DB へ書かないこと (ストレージ枯渇 DoS の防止)。
   // パスワード経路に限らず全種別が同じ上限の対象であること。
   // マジックリンク・SAML の失敗は未認証の攻撃者がリクエストを繰り返すだけで発火するため、
@@ -125,8 +142,8 @@ describe('recordAuthAudit', () => {
     expect(recordMock).not.toHaveBeenCalled();
   });
 
-  // 成功イベントは失敗上限の対象外であること (正規ログインの監査を落とさない)
-  it('does not cap success events', async () => {
+  // 成功イベントは失敗上限の対象外であること (攻撃中でも正規ログインの監査を落とさない)
+  it.each(SUCCESS_EVENTS)('does not cap %s', async (event) => {
     // 失敗の予算を使い切る
     for (let i = 0; i < AUTH_AUDIT_FAILURE_MAX_PER_WINDOW; i += 1) {
       await recordAuthAudit({
@@ -138,12 +155,7 @@ describe('recordAuthAudit', () => {
     }
     recordMock.mockClear();
     // 成功イベントは予算枯渇後でも記録される
-    await recordAuthAudit({
-      event: 'password_login_success',
-      email: 'agent@example.com',
-      userId: 'u1',
-      tenantId: 't1',
-    });
+    await recordAuthAudit({ event, email: 'agent@example.com', userId: 'u1', tenantId: 't1' });
     expect(recordMock).toHaveBeenCalledTimes(1);
   });
 

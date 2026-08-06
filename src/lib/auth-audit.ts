@@ -12,7 +12,7 @@
  *    上限が無いと追記専用テーブルに行を無制限に積める (ストレージ枯渇 DoS)。窓内の失敗
  *    記録数に上限を設け、超過分は console.warn だけ残して DB 書き込みをスキップする
  *    (成功イベントは実在の資格情報・発行済みトークンが前提で流量が自然に制限されるため対象外)。
- *    対象イベントは下の `AUTH_AUDIT_FAILURE_EVENTS` が唯一の真実の源で、パスワード経路に
+ *    対象イベントは下の `AUTH_AUDIT_EVENT_IS_FAILURE` が唯一の真実の源で、パスワード経路に
  *    限らずマジックリンク・SAML の失敗も同じ 1 つの予算を共有する (経路ごとに別予算にすると
  *    経路数だけ上限が積み上がり、上限の意味が薄れるため)。
  * 3. **fail-open (可用性優先)**: 監査 INSERT の失敗で認証全体を落とさない。特にマジック
@@ -44,18 +44,25 @@ export const AUTH_AUDIT_FAILURE_WINDOW_MS = 60_000;
 // まず無い規模 (全ユーザー合計で毎分 120 失敗) に設定し、攻撃時のみ発動させる
 export const AUTH_AUDIT_FAILURE_MAX_PER_WINDOW = 120;
 
-// 書き込み上限 (モジュール先頭 2.) の対象にする「失敗イベント」の集合 —— この集合が唯一の真実の源。
-// 失敗イベントはいずれも未認証の攻撃者がリクエストを繰り返すだけで発火させられるため、
-// 新しい失敗イベントを増やすときは必ずここへ足す (足し忘れると、その経路だけ上限を
-// すり抜けて追記専用テーブルに無制限に行を積める = ストレージ枯渇 DoS の抜け穴になる)。
-// Set<AuthAuditEvent> と型注釈することで、綴り間違いや廃止した値の残留を typecheck で弾く。
-const AUTH_AUDIT_FAILURE_EVENTS: ReadonlySet<AuthAuditEvent> = new Set<AuthAuditEvent>([
-  'password_login_failure', // パスワード不一致 / ユーザー不在
-  'magic_link_login_failure', // 無効・失効・消費済みトークン / 孤児トークン
-  'sso_assertion_rejected', // SAML の署名・条件検証に失敗
-  'sso_assertion_replayed', // 同一アサーションの再利用を検知
-  'sso_user_not_found', // 検証は通ったがテナント内にユーザーが居ない
-]);
+// 各イベントが「失敗イベント」か (= 書き込み上限 (モジュール先頭 2.) の対象か) の対応表。
+// この表が唯一の真実の源で、`recordAuthAudit` はここを引いて上限の要否を決める。
+//
+// あえて Set ではなく Record<AuthAuditEvent, boolean> にしている: Set だと綴り間違いは
+// 弾けても「新しいイベントを足したのに分類し忘れる」という最も起こりやすい失敗を検出できず、
+// その経路だけ上限をすり抜けて追記専用テーブルに無制限に行を積める (ストレージ枯渇 DoS の
+// 抜け穴になる)。Record なら AuthAuditEvent に値を追加した時点で「キーが足りない」と
+// typecheck が落ちるため、分類の明示を機械的に強制できる。
+export const AUTH_AUDIT_EVENT_IS_FAILURE: Record<AuthAuditEvent, boolean> = {
+  password_login_success: false, // 実在の資格情報が前提なので流量が自然に制限される
+  password_login_failure: true, // パスワード不一致 / ユーザー不在
+  magic_link_login_success: false, // 発行済みトークンの消費が前提
+  magic_link_login_failure: true, // 無効・失効・消費済みトークン / 孤児トークン
+  sso_login_success: false, // 発行済みハンドオフトークンの消費が前提
+  sso_assertion_accepted: false, // 署名検証を通ったアサーションが前提
+  sso_assertion_rejected: true, // SAML の署名・条件検証に失敗
+  sso_assertion_replayed: true, // 同一アサーションの再利用を検知
+  sso_user_not_found: true, // 検証は通ったがテナント内にユーザーが居ない
+};
 
 // 現在の固定窓の開始時刻 (ミリ秒)
 let failureWindowStart = 0;
@@ -83,7 +90,7 @@ export async function recordAuthAudit(input: RecordAuthAuditInput): Promise<void
     // 攻撃者制御の超長 email でインデックス上限を踏まないよう切り詰める
     const email = input.email.slice(0, AUTH_AUDIT_EMAIL_MAX_LENGTH);
     // 失敗イベントは書き込み上限の予算を消費できた場合のみ DB へ書く
-    if (AUTH_AUDIT_FAILURE_EVENTS.has(input.event) && !consumeFailureBudget(Date.now())) {
+    if (AUTH_AUDIT_EVENT_IS_FAILURE[input.event] && !consumeFailureBudget(Date.now())) {
       // 上限超過: DoS 増幅を避けるため DB には書かず、サーバーログにだけ痕跡を残す
       console.warn(
         '[auth-audit] 失敗イベントの記録が上限に達したためスキップしました (攻撃の可能性)。',
