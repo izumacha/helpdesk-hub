@@ -15,6 +15,11 @@ import type {
   NotificationType as PNotificationType, // 通知種別 enum (生成側)
   TenantMode as PTenantMode, // テナント動作モード enum (生成側)
   SubscriptionPlan as PSubscriptionPlan, // 課金プラン enum (生成側 / Phase 4)
+  SettingsAuditAction as PSettingsAuditAction, // 設定変更監査の操作種別 enum (生成側)
+  AuthAuditEvent as PAuthAuditEvent, // 認証イベント監査の種別 enum (生成側)
+  QuarantineReason as PQuarantineReason, // 取り込み隔離の理由 enum (生成側)
+  QuarantineChannel as PQuarantineChannel, // 隔離記録の発生元チャネル enum (生成側)
+  MagicLinkPurpose as PMagicLinkPurpose, // マジックリンクトークンの用途 enum (生成側)
 } from '@/generated/prisma';
 
 // 正準 (SSOT) であるドメイン型を読み込む (比較用のもう片側)
@@ -27,6 +32,11 @@ import type {
   NotificationType, // 通知種別 (正準)
   TenantMode, // テナント動作モード (正準)
   SubscriptionPlan, // 課金プラン (正準 / Phase 4)
+  SettingsAuditAction, // 設定変更監査の操作種別 (正準)
+  AuthAuditEvent, // 認証イベント監査の種別 (正準)
+  QuarantineReason, // 取り込み隔離の理由 (正準)
+  QuarantineChannel, // 隔離記録の発生元チャネル (正準)
+  MagicLinkPurpose, // マジックリンクトークンの用途 (正準)
 } from '@/domain/types';
 
 // 型 A と型 B が「完全に同じ集合」なら true、少しでもズレれば never になる型ユーティリティ。
@@ -43,6 +53,28 @@ const _faqStatus: Exact<FaqStatus, PFaqStatus> = true; // FAQ 状態が一致し
 const _notificationType: Exact<NotificationType, PNotificationType> = true; // 通知種別が一致しているかを表明
 const _tenantMode: Exact<TenantMode, PTenantMode> = true; // テナントモードが一致しているかを表明
 const _subscriptionPlan: Exact<SubscriptionPlan, PSubscriptionPlan> = true; // 課金プランが一致しているかを表明 (Phase 4)
+// 以下 5 つは「schema と domain/types の 2 箇所同期」を各 enum のコメントで口約束していただけで、
+// この番人ファイルに登録されておらず機械的なドリフト検知が効いていなかったものを追加した。
+// (監査系 enum のズレは、片側だけ増やした値で Prisma の実行時バリデーションが落ちる形で表面化する)
+const _settingsAuditAction: Exact<SettingsAuditAction, PSettingsAuditAction> = true; // 設定変更監査の操作種別が一致しているかを表明
+const _authAuditEvent: Exact<AuthAuditEvent, PAuthAuditEvent> = true; // 認証イベント監査の種別が一致しているかを表明
+const _quarantineReason: Exact<QuarantineReason, PQuarantineReason> = true; // 隔離理由が一致しているかを表明
+const _quarantineChannel: Exact<QuarantineChannel, PQuarantineChannel> = true; // 隔離チャネルが一致しているかを表明
+const _magicLinkPurpose: Exact<MagicLinkPurpose, PMagicLinkPurpose> = true; // マジックリンク用途が一致しているかを表明
 
 // 上で宣言した定数を void で参照し、「未使用変数」の lint 警告を回避する (値としては使わない)。
-void [_role, _status, _priority, _history, _faqStatus, _notificationType, _tenantMode, _subscriptionPlan];
+void [
+  _role,
+  _status,
+  _priority,
+  _history,
+  _faqStatus,
+  _notificationType,
+  _tenantMode,
+  _subscriptionPlan,
+  _settingsAuditAction,
+  _authAuditEvent,
+  _quarantineReason,
+  _quarantineChannel,
+  _magicLinkPurpose,
+];
