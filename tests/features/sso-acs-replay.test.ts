@@ -16,6 +16,8 @@ import { __resetRateLimits } from '@/lib/rate-limit';
 import { createMemoryContext, type Store } from '@/data/adapters/memory';
 import type { Repos } from '@/data/ports/unit-of-work';
 import { buildSpUrls } from '@/lib/saml';
+// 本人を特定できない失敗経路で記録される代替メール (期待値の直書きを避ける)
+import { AUTH_AUDIT_UNKNOWN_EMAIL } from '@/lib/auth-audit';
 
 const BASE_URL = 'http://localhost:3000'; // resolveAppBaseUrl() の test/dev フォールバック値と一致させる
 const TENANT_ID = 'tenant-replay';
@@ -223,8 +225,46 @@ describe.skipIf(!hasOpenssl)('POST /api/auth/sso/[tenantId]/acs のリプレイ�
     const second = await postAcs(samlResponse);
     expect(second.status).toBe(303);
     expect(second.headers.get('location')).toContain('error=sso-invalid');
-    // リプレイ拒否では「受理」に至らないため監査行は増えない
-    expect(store.authAuditLogs.size).toBe(1);
+
+    // 認証イベント監査 (否認防止): リプレイ検知は「正当な署名付きアサーションが再送された」
+    // という調査価値の高い事象なので、拒否した事実も本人・テナント付きで追記される。
+    // console.warn だけではプロセス再起動やログローテーションで痕跡が消えてしまう
+    const afterReplay = [...store.authAuditLogs.values()];
+    expect(afterReplay).toHaveLength(2);
+    expect(afterReplay[1]).toMatchObject({
+      event: 'sso_assertion_replayed',
+      email: USER_EMAIL,
+      userId: 'user-1',
+      tenantId: TENANT_ID,
+    });
+  });
+
+  // 署名検証を通らないアサーションでの試行も監査に残すこと。
+  // 検証に失敗した以上アサーションの主張 (メール等) は信用できないため、確かなテナントだけを残す
+  it('署名が不正なアサーションは sso_assertion_rejected として監査に残す', async () => {
+    // 正当に署名した Response の本文を改竄して署名を無効化する (メールアドレスを差し替える)
+    const tampered = Buffer.from(
+      Buffer.from(makeSignedResponse('_assertion-tampered'), 'base64')
+        .toString('utf8')
+        .replace(USER_EMAIL, 'attacker@example.com'),
+    ).toString('base64');
+
+    // 検証に失敗し、ログイン画面へ sso-invalid で戻される
+    const res = await postAcs(tampered);
+    expect(res.status).toBe(303);
+    expect(res.headers.get('location')).toContain('error=sso-invalid');
+
+    // 監査行は「特定不能な試行」として 1 件だけ記録される (改竄されたメールは記録しない)
+    const rows = [...store.authAuditLogs.values()];
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      event: 'sso_assertion_rejected',
+      email: AUTH_AUDIT_UNKNOWN_EMAIL,
+      userId: null,
+      tenantId: TENANT_ID,
+    });
+    // 改竄されたメールアドレスが監査へ紛れ込んでいないこと (検証前の主張は信用しない)
+    expect(rows[0].email).not.toBe('attacker@example.com');
   });
 
   it('異なるアサーションであればそれぞれ独立して受理される', async () => {
@@ -247,6 +287,18 @@ describe.skipIf(!hasOpenssl)('POST /api/auth/sso/[tenantId]/acs のリプレイ�
     const first = await postAcs(samlResponse);
     expect(first.status).toBe(303);
     expect(first.headers.get('location')).toContain('error=sso-no-user');
+
+    // 認証イベント監査 (否認防止): 署名検証済みの本人がテナントに未登録で拒否された事実を残す。
+    // email は検証を通ったアサーション由来なので実メール、userId は「このテナントのユーザーと
+    // 認めていない」ため null になる
+    const rejected = [...store.authAuditLogs.values()];
+    expect(rejected).toHaveLength(1);
+    expect(rejected[0]).toMatchObject({
+      event: 'sso_user_not_found',
+      email: USER_EMAIL,
+      userId: null,
+      tenantId: TENANT_ID,
+    });
 
     // ユーザーを作成する (管理者が後からアカウントを用意したことを模す)
     store.users.set('user-1', {
