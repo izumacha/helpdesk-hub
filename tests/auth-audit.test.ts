@@ -16,6 +16,7 @@ vi.mock('@/data', () => ({
 import {
   AUTH_AUDIT_EMAIL_MAX_LENGTH,
   AUTH_AUDIT_EVENT_IS_FAILURE,
+  AUTH_AUDIT_FAILURE_MAX_PER_EVENT_WINDOW,
   AUTH_AUDIT_FAILURE_MAX_PER_WINDOW,
   AUTH_AUDIT_UNKNOWN_EMAIL,
   recordAuthAudit,
@@ -102,12 +103,12 @@ describe('recordAuthAudit', () => {
   });
 
   // 失敗イベントは 1 窓あたりの上限件数を超えたら DB へ書かないこと (ストレージ枯渇 DoS の防止)。
-  // パスワード経路に限らず全種別が同じ上限の対象であること。
+  // パスワード経路に限らず全種別が上限の対象であること。
   // マジックリンク・SAML の失敗は未認証の攻撃者がリクエストを繰り返すだけで発火するため、
   // 1 種別でも上限から漏れると追記専用テーブルに行を無制限に積める抜け穴になる
   it.each(FAILURE_EVENTS)('caps %s writes per window', async (event) => {
     // 上限 +5 件の失敗イベントを連続で記録する
-    for (let i = 0; i < AUTH_AUDIT_FAILURE_MAX_PER_WINDOW + 5; i += 1) {
+    for (let i = 0; i < AUTH_AUDIT_FAILURE_MAX_PER_EVENT_WINDOW + 5; i += 1) {
       await recordAuthAudit({
         event,
         email: `spray${i}@example.com`,
@@ -116,42 +117,59 @@ describe('recordAuthAudit', () => {
       });
     }
     // DB への書き込みは上限件数で頭打ちになっている
-    expect(recordMock).toHaveBeenCalledTimes(AUTH_AUDIT_FAILURE_MAX_PER_WINDOW);
+    expect(recordMock).toHaveBeenCalledTimes(AUTH_AUDIT_FAILURE_MAX_PER_EVENT_WINDOW);
   });
 
-  // 失敗イベントの予算は種別ごとではなく全体で 1 つであること。
-  // 種別ごとに独立した予算にすると、経路数だけ上限が積み上がって上限の意味が薄れる
-  it('shares one failure budget across all failure events', async () => {
-    // パスワード経路の失敗だけで予算を使い切る
-    for (let i = 0; i < AUTH_AUDIT_FAILURE_MAX_PER_WINDOW; i += 1) {
+  // 予算はイベント種別ごとに独立していること (監査の目潰し攻撃の防止)。
+  // マジックリンクのコールバックや SSO ACS は未認証で安く叩けるため、予算を全経路で共有すると
+  // そこへゴミを投げるだけでパスワード総当たりの失敗記録を DB から締め出せてしまう。
+  // それでは「console.warn では否認防止の証跡にならない」という本機能の前提が崩れる
+  it.each(FAILURE_EVENTS.filter((event) => event !== 'password_login_failure'))(
+    'does not let %s starve the password failure budget',
+    async (noisyEvent) => {
+      // 未認証で叩ける経路の失敗だけで、その種別の予算を使い切る
+      for (let i = 0; i < AUTH_AUDIT_FAILURE_MAX_PER_EVENT_WINDOW + 5; i += 1) {
+        await recordAuthAudit({
+          event: noisyEvent,
+          email: AUTH_AUDIT_UNKNOWN_EMAIL,
+          userId: null,
+          tenantId: 't1',
+        });
+      }
+      recordMock.mockClear();
+      // 同じ窓の中でも、パスワード経路の失敗は自分の予算で記録され続ける
       await recordAuthAudit({
         event: 'password_login_failure',
-        email: `spray${i}@example.com`,
+        email: 'victim@example.com',
         userId: null,
         tenantId: null,
       });
-    }
-    recordMock.mockClear();
-    // 別種別の失敗イベントは、同じ窓の中では追加で書き込まれない
-    await recordAuthAudit({
-      event: 'sso_assertion_rejected',
-      email: AUTH_AUDIT_UNKNOWN_EMAIL,
-      userId: null,
-      tenantId: 't1',
-    });
-    expect(recordMock).not.toHaveBeenCalled();
+      expect(recordMock).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  // 種別ごとに分けても、全種別を合計した 1 窓あたりの書き込み量は従来の上限を超えないこと。
+  // 分割で「経路数だけ上限が積み上がる」とストレージ枯渇の許容量が勝手に増えてしまう
+  it('keeps the aggregate write budget within the total cap', () => {
+    expect(AUTH_AUDIT_FAILURE_MAX_PER_EVENT_WINDOW * FAILURE_EVENTS.length).toBeLessThanOrEqual(
+      AUTH_AUDIT_FAILURE_MAX_PER_WINDOW,
+    );
+    // 分割が機能する程度の予算が各種別に残っていること (0 件だと失敗記録が一切残らない)
+    expect(AUTH_AUDIT_FAILURE_MAX_PER_EVENT_WINDOW).toBeGreaterThan(0);
   });
 
   // 成功イベントは失敗上限の対象外であること (攻撃中でも正規ログインの監査を落とさない)
   it.each(SUCCESS_EVENTS)('does not cap %s', async (event) => {
-    // 失敗の予算を使い切る
-    for (let i = 0; i < AUTH_AUDIT_FAILURE_MAX_PER_WINDOW; i += 1) {
-      await recordAuthAudit({
-        event: 'password_login_failure',
-        email: `spray${i}@example.com`,
-        userId: null,
-        tenantId: null,
-      });
+    // 全種別の失敗の予算を使い切る (成功イベントがどの失敗経路の枯渇にも影響されないことを見る)
+    for (const failureEvent of FAILURE_EVENTS) {
+      for (let i = 0; i < AUTH_AUDIT_FAILURE_MAX_PER_EVENT_WINDOW; i += 1) {
+        await recordAuthAudit({
+          event: failureEvent,
+          email: `spray${i}@example.com`,
+          userId: null,
+          tenantId: null,
+        });
+      }
     }
     recordMock.mockClear();
     // 成功イベントは予算枯渇後でも記録される

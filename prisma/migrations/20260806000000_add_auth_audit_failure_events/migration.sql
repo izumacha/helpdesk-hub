@@ -6,7 +6,9 @@
 -- 注: PostgreSQL 12 以降は ALTER TYPE ... ADD VALUE をトランザクション内で実行できる
 -- (追加した値を同一トランザクション内で「使う」ことだけが禁止される)。このマイグレーションは
 -- 値を追加するだけで使用しないため、Prisma のトランザクション実行と両立する。
-ALTER TYPE "AuthAuditEvent" ADD VALUE 'magic_link_login_failure';
-ALTER TYPE "AuthAuditEvent" ADD VALUE 'sso_assertion_rejected';
-ALTER TYPE "AuthAuditEvent" ADD VALUE 'sso_assertion_replayed';
-ALTER TYPE "AuthAuditEvent" ADD VALUE 'sso_user_not_found';
+-- IF NOT EXISTS を付けるのは、途中まで適用された状態から再適用しても失敗しないようにするため
+-- (NotificationType 系の既存マイグレーションと同じ流儀)。
+ALTER TYPE "AuthAuditEvent" ADD VALUE IF NOT EXISTS 'magic_link_login_failure';
+ALTER TYPE "AuthAuditEvent" ADD VALUE IF NOT EXISTS 'sso_assertion_rejected';
+ALTER TYPE "AuthAuditEvent" ADD VALUE IF NOT EXISTS 'sso_assertion_replayed';
+ALTER TYPE "AuthAuditEvent" ADD VALUE IF NOT EXISTS 'sso_user_not_found';
