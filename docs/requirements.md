@@ -2,6 +2,8 @@
 
 # Requirements
 
+> 本書は初期開発時の要件定義。**プロダクト方針の正本は [`smb-dx-pivot-plan.md`](./smb-dx-pivot-plan.md)**（SMB 向けピボット計画）であり、本書と計画書が衝突する場合は計画書を優先する（調停ルールは [`version-integration.md`](./version-integration.md)）。ピボットで追加された要件（マルチテナント・Lite/Pro 二層・メール/LINE 取り込み・マジックリンク認証・課金等）は計画書側に定義がある。
+
 ## 1. 概要
 
 - システム名: `helpdesk-hub`
@@ -53,38 +55,48 @@
 
 ## 4. データモデル（主要）
 
-- users
-- tickets
-- ticket_comments
-- ticket_histories
-- categories
-- priorities
-- statuses
-- escalations
-- attachments
-- faq_candidates
-- notifications
+コアドメインの主要モデル（`prisma/schema.prisma` が正本。全 22 モデルの構造は [`er-diagram.md`](./er-diagram.md) を参照）:
 
-### tickets の主要項目
+- `Tenant`（マルチテナント境界・Lite/Pro モード・課金プラン）
+- `User`
+- `Ticket`
+- `TicketComment`
+- `TicketHistory`（変更履歴 = チケット監査ログ）
+- `Category`
+- `Location`（拠点）
+- `Attachment`（添付ファイル）
+- `FaqCandidate`
+- `Notification`
+
+補足（[`version-integration.md`](./version-integration.md) の統合方針どおり）:
+
+- **優先度・ステータスはテーブルではなく enum**（`Priority` / `TicketStatus`）で実装する。
+- **エスカレーションは独立テーブルにせず** `Ticket` 上の `escalatedAt` / `escalationReason` ＋ `TicketHistory`（`field = escalation`）で記録する。
+
+### Ticket の主要項目
 
 - id
 - title
-- description
-- category_id
-- priority
-- status
-- requester_id
-- assignee_id
-- first_response_due_at
-- resolution_due_at
-- escalated_at
-- closed_at
-- created_at
-- updated_at
+- body（本文）
+- status（enum `TicketStatus`）
+- priority（enum `Priority`）
+- creatorId（起票者）
+- assigneeId（担当者・null 可）
+- categoryId（null 可）
+- locationId（拠点・null 可）
+- tenantId（所属テナント・必須）
+- firstResponseDueAt / resolutionDueAt（SLA 期限）
+- firstRespondedAt / resolvedAt（実績）
+- escalatedAt / escalationReason
+- createdAt / updatedAt
 
 ## 5. ステータス遷移
 
-ステータスは 7 種類（`New` / `Open` / `Waiting for User` / `In Progress` / `Escalated` / `Resolved` / `Closed`）。許可される遷移を以下に示す。これ以外の遷移はサーバ側で拒否する。
+テナントの動作モード（`TenantMode`）により使用する遷移表が異なる。いずれもこれ以外の遷移はサーバ側で拒否する。
+
+### Pro モード（7 値）
+
+ステータスは 7 種類（`New` / `Open` / `Waiting for User` / `In Progress` / `Escalated` / `Resolved` / `Closed`）。許可される遷移を以下に示す。
 
 ```mermaid
 stateDiagram-v2
@@ -116,7 +128,24 @@ stateDiagram-v2
     Closed --> [*]
 ```
 
-> 実装上の単一の真実は `src/domain/ticket-status.ts` の `ALLOWED_TRANSITIONS`。`docs/er-diagram.md` および `docs/overview.md` の遷移図も同じ表に基づく。
+### Lite モード（3 値）
+
+Lite テナント（SMB 既定・[`smb-dx-pivot-plan.md`](./smb-dx-pivot-plan.md) §5.2）は `Open`（未対応）/ `InProgress`（対応中）/ `Closed`（完了）の 3 値のみ使う。起票時の初期ステータスも `New` ではなく `Open`。
+
+```mermaid
+stateDiagram-v2
+    [*] --> Open : チケット登録 (Lite は Open 始まり)
+    Open --> InProgress
+    Open --> Closed
+    InProgress --> Open
+    InProgress --> Closed
+    Closed --> Open : 再オープン
+    Closed --> [*]
+```
+
+Lite テナントに Pro 時代の旧データ（`Escalated` / `Resolved` 等）が残っている場合は Pro 表へフォールバックし、Lite の 3 値へ戻す経路を確保する。
+
+> 実装上の単一の真実は `src/domain/ticket-status.ts` の `ALLOWED_TRANSITIONS`（Pro）と `ALLOWED_TRANSITIONS_LITE`（Lite）。`docs/er-diagram.md` および `docs/overview.md` の遷移図も同じ表に基づく。
 
 ## 6. 非機能要件
 

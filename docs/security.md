@@ -74,20 +74,41 @@ flowchart LR
 
 ## 4. 認証・セッション
 
-- Auth.js（Credentials）を使用しています。
+認証経路は 3 つあり、いずれも Auth.js（v5）のセッション（JWT）に合流します。
+
+| 経路 | 実装 | 備考 |
+| --- | --- | --- |
+| パスワード（Credentials） | `src/lib/password-authorize.ts` | bcrypt 検証 |
+| マジックリンク | `src/lib/magic-link-authorize.ts`・`/api/auth/magic-link/callback` | トークンは SHA-256 ハッシュ保存・15 分 TTL・単回使用。サインアップ（`SignupToken`）・招待（`Invitation`）も同方式 |
+| SAML SSO（Enterprise 限定） | `/api/auth/sso/[tenantId]/{login,acs,metadata}`・`src/lib/saml.ts` | 署名・Issuer・Audience・期限を検証し、`SamlAssertionRef` でリプレイを拒否。セッション引き渡しは `MagicLinkToken`（`purpose=ssoHandoff`） |
+
 - `NEXTAUTH_SECRET` は強い値を必ず設定してください（`.env.example` 参照）。
+- **ログイン試行の制限はアプリ内に実装済み**: `src/lib/login-throttle.ts` がメールアドレス＋IP のスライディングウィンドウでパスワードログインの失敗連打をロックアウトします（マジックリンク経路には意図的に適用しない）。SSO エンドポイントには `src/lib/sso-rate-limit.ts` を適用。ただしこれらは**プロセス内 Map** のため §2.1 と同じ水平スケール制約があり、外部公開時の WAF / Bot 対策は引き続き多層防御として推奨します。
 
 推奨（本番）
 
 - HTTPS 終端を必須にし、Cookie の `Secure` を強制。
-- ログイン試行（失敗）回数の制限を、アプリ外（WAF/IdP）で実装する。
 
 ---
 
-## 5. 監査・ログ
+## 5. 監査・ログ（実装済み）
 
-最低限の監査として、以下を検討してください。
+監査ログは 3 テーブルに分かれ、いずれも DB トリガで**追記専用**（UPDATE 拒否・DELETE は明示フラグ付きトランザクションのみ。`prisma/migrations/20260726000100_add_audit_log_immutability`）。
 
-- 重要操作（権限変更、削除、エスカレーション）の監査ログ
-- 認証失敗の記録と通知
-- レート制限（拒否）の件数モニタリング
+- **`TicketHistory`** — チケットの重要操作（ステータス・優先度・担当者・エスカレーション・カテゴリ・拠点の変更）を変更前後の値付きで記録。
+- **`SettingsAuditLog`** — 管理者の設定変更（SSO・LINE・通知チャネル・拠点・カテゴリ・招待発行・プラン変更等）を記録。秘匿情報を含むため**値そのものは記録しない**（誰が・いつ・何をしたか、のみ）。
+- **`AuthAuditLog`** — **全認証経路の成功・失敗を記録**（パスワード / マジックリンク / SAML SSO の 9 イベント種別）。書き込みは必ず `src/lib/auth-audit.ts` の `recordAuthAudit` 経由。失敗イベントにはイベント種別ごとに独立した書き込み上限があり、未認証で安く叩ける経路へのノイズ流入でパスワード失敗の記録が締め出される「監査の目潰し」を防ぐ。
+
+閲覧 UI は `/audit`（admin のみ・Pro/Enterprise プラン限定。表示対象は `TicketHistory` と `SettingsAuditLog`）。CSV エクスポートあり（`/api/audit/export`）。**`AuthAuditLog` の閲覧 UI は現状なく、調査時は DB を直接参照する。**
+
+残る推奨事項:
+
+- レート制限（拒否）の件数モニタリング（現状はログのみ）
+
+---
+
+## 6. 取り込みチャネル・外部 Webhook の認証
+
+- **メール取り込み**（`POST /api/inbound/email`）: テナント特定は宛先アドレスの `inboundToken`。送信元は SPF/DKIM/DMARC を確認し、未登録送信者・認証失敗などは起票せず隔離（`QuarantinedEmail`、`/quarantine` で admin が確認）。
+- **LINE 取り込み**（`POST /api/inbound/line`）: `X-Line-Signature` を各テナントの `channelSecret` で HMAC-SHA256 検証。Webhook 再送は `LineMessageRef` で冪等化。
+- **Stripe Webhook**（`POST /api/webhooks/stripe`）: 署名検証＋`stripeEventProcessedAt` による順序逆転（古いイベントでの巻き戻し）防止。
