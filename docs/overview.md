@@ -4,11 +4,20 @@
 
 このドキュメントは **PM・QA・ステークホルダーなど非エンジニアの方が最初に読む** ことを想定した、HelpDesk Hub の全体像を業務目線でまとめた入口資料です。技術的な詳細は各専門ドキュメントへリンクしています。
 
+> プロダクト方針・ロードマップの**正本（Source of Truth）は [`smb-dx-pivot-plan.md`](./smb-dx-pivot-plan.md)**。本書を含む設計ドキュメントと計画書が食い違う場合は計画書を優先する（調停ルールは [`version-integration.md`](./version-integration.md)）。
+
 ---
 
 ## 1. このプロダクトについて
 
 **HelpDesk Hub** は、社内ヘルプデスク・情シス窓口・アプリケーションサポートを対象とした **チケット（問い合わせ）管理 Web アプリケーション** です。
+
+現在は **DX 未進展の中小企業（SMB）向けの SaaS へピボット中**で、マルチテナント基盤の上に 2 つの動作モードを持ちます（[`smb-dx-pivot-plan.md`](./smb-dx-pivot-plan.md)）。
+
+- **Lite モード**（SMB 既定）— ステータスを「未対応 / 対応中 / 完了」の 3 値に簡素化し、SLA・エスカレーション・FAQ 候補を隠した最小構成
+- **Pro モード** — 本書で説明する 7 ステータス・SLA・エスカレーション等のフル機能
+
+メール・LINE からの問い合わせ取り込み、マジックリンク認証、Stripe による課金プラン（Free / Standard / Pro / Enterprise）にも対応しています。
 
 ### 解決する課題
 
@@ -60,18 +69,29 @@
 - FAQ 候補化（解決済みチケットを FAQ 候補に変換し、公開／却下で管理）
 - 通知（アサイン・エスカレーション・コメント・ステータス変更時、未読バッジをリアルタイム表示）
 
-### 🚧 アピール拡張（一部のみ実装）
+### 🚧 アピール拡張（大半を実装済み）
 
 | 機能 | 状態 | 備考 |
 | --- | --- | --- |
 | ダッシュボード | ✅ 実装済 | ステータス別件数、SLA 超過件数、担当者別ワークロード |
-| 添付ファイル | ⏳ 未実装 | スクリーンショット・ログのアップロード |
-| CSV 出力 | ⏳ 未実装 | チケット一覧のエクスポート |
+| 添付ファイル | ✅ 実装済 | チケット・コメントへの画像添付（10MB 上限・MIME 検証） |
+| CSV 出力 | ✅ 実装済 | チケット一覧・監査ログ・隔離一覧のエクスポート。CSV **取り込み**（`/tickets/import`）もあり |
+| 監査ログ画面 | ✅ 実装済 | `/audit`（admin・Pro/Enterprise 限定）。チケット履歴＋設定変更＋認証イベントを閲覧・CSV 出力 |
+| 管理画面 | 🚧 一部実装 | `/settings` でカテゴリ管理・拠点管理・メンバー招待・SSO/LINE/通知チャネル・課金を提供。SLA 設定画面は未実装（定数運用） |
 | 分析レポート | ⏳ 未実装 | 平均初回応答時間、平均解決時間、再オープン率、エスカレーション率 |
-| 監査ログ画面 | ⏳ 未実装 | 変更履歴は DB に蓄積済み（`TicketHistory`）。閲覧 UI が未着手 |
-| 管理画面 | ⏳ 未実装 | ユーザー管理、カテゴリ管理、SLA 設定 |
 
-最新の進捗・優先度は [`docs/issue-backlog.md`](./issue-backlog.md) を参照してください。
+### ✅ ピボット後に追加された機能（実装済み）
+
+- **マルチテナント**（テナント作成・クロステナント分離・Lite/Pro モード切替）
+- **メール取り込み**（テナント専用アドレスへの転送で起票、In-Reply-To によるスレッド継続、不正メールの隔離）
+- **LINE 公式アカウント連携（β）**（メッセージからの起票・メンバー紐付け・担当者返信の push）
+- **マジックリンク認証・セルフサーブサインアップ・メンバー招待リンク**
+- **SAML SSO**（Enterprise プラン限定）
+- **Stripe 課金**（Free / Standard / Pro / Enterprise、30 日 Free trial）
+- **外部通知チャネル**（Slack / Teams / Chatwork）
+- **多拠点対応**（拠点マスタとチケットの拠点紐付け）
+
+最新の進捗・優先度は [`docs/issue-backlog.md`](./issue-backlog.md) と正本 [`smb-dx-pivot-plan.md`](./smb-dx-pivot-plan.md) を参照してください。
 
 ---
 
@@ -117,15 +137,25 @@
 flowchart TD
     Start([ブラウザアクセス]) --> MW{"middleware<br/>認証チェック"}
     MW -- 未認証 --> Login["/login<br/>ログイン画面"]
-    MW -- 認証済み --> Dashboard["/dashboard<br/>ダッシュボード"]
-    Login -- ログイン成功 --> Dashboard
+    MW -- 認証済み agent/admin --> Dashboard["/dashboard<br/>ダッシュボード"]
+    MW -- 認証済み requester --> TicketList["/tickets<br/>問い合わせ一覧"]
+    Login -- "ログイン成功 (パスワード / マジックリンク / SSO)" --> Dashboard
+
+    Signup["/signup<br/>サインアップ"] -- "テナント作成完了 (メール認証)" --> Dashboard
+    Invite["/invite/:token<br/>招待受諾"] -- 参加完了 --> Dashboard
+    Help["/help<br/>ヘルプセンター"]
 
     Dashboard -- 件数カード クリック --> TicketList
-    Dashboard -- サイドバー --> TicketList["/tickets<br/>問い合わせ一覧"]
+    Dashboard -- サイドバー --> TicketList
     Dashboard -- サイドバー --> FAQ["/faq<br/>FAQ候補一覧"]
     Dashboard -- サイドバー --> Notifications["/notifications<br/>通知一覧"]
+    Dashboard -- サイドバー admin --> Audit["/audit<br/>監査ログ"]
+    Dashboard -- サイドバー admin --> Quarantine["/quarantine<br/>隔離メール/LINE"]
+    Dashboard -- サイドバー admin --> Settings["/settings<br/>テナント設定"]
 
     TicketList -- 新規登録 --> TicketNew["/tickets/new<br/>チケット登録"]
+    TicketList -- "CSV取り込み agent/admin" --> TicketImport["/tickets/import<br/>CSV一括取り込み"]
+    TicketImport -- 取り込み完了 --> TicketList
     TicketList -- 件名クリック --> TicketDetail["/tickets/:id<br/>チケット詳細"]
     TicketList -- フィルタ/検索 --> TicketList
     TicketList -- ページネーション --> TicketList
@@ -135,26 +165,38 @@ flowchart TD
     TicketDetail -- ステータス変更 agent/admin --> TicketDetail
     TicketDetail -- 優先度変更 agent/admin --> TicketDetail
     TicketDetail -- 担当者変更 agent/admin --> TicketDetail
-    TicketDetail -- コメント投稿 --> TicketDetail
+    TicketDetail -- コメント投稿・画像添付 --> TicketDetail
     TicketDetail -- エスカレーション agent/admin --> TicketDetail
     TicketDetail -- FAQ候補登録 agent/admin,Resolved --> TicketDetail
 
     FAQ -- 公開/却下 --> FAQ
     Notifications -- 既読にする --> Notifications
     Notifications -- チケットを見る --> TicketDetail
+
+    Settings -- LINE 連携設定 --> SettingsLine["/settings/line<br/>LINE 連携"]
+    Settings -- テナント新規作成 --> TenantNew["/settings/tenants/new<br/>テナント作成"]
 ```
+
+Web 画面以外にも、メール取り込み・LINE 取り込み（それぞれ Webhook 経由）でチケットが起票されます。取り込めなかった受信は `/quarantine` に隔離され、admin が確認できます。
 
 ### 画面一覧
 
 | パス | 業務目的 | アクセス権限 |
 | --- | --- | --- |
-| `/login` | 社内アカウントでサインイン | 全員（未認証） |
+| `/login` | サインイン（パスワード / マジックリンク。Enterprise は SSO も） | 全員（未認証） |
+| `/signup` | セルフサーブサインアップ（テナント＋初代管理者の作成） | 全員（未認証） |
+| `/invite/:token` | 招待リンクからのメンバー参加 | 全員（未認証・有効なトークン必須） |
+| `/help` | ヘルプセンター（使い方・メール連携ガイド） | 全員（未認証） |
 | `/dashboard` | チーム全体の状況把握、SLA 超過の早期発見 | 全員（認証済み） |
 | `/tickets` | 問い合わせを検索・フィルタして対応すべきものを探す | 全員（requester は自分の起票分のみ） |
 | `/tickets/new` | 新規問い合わせの起票 | 全員（認証済み） |
-| `/tickets/:id` | 個別案件の詳細閲覧・対応・コメントのやり取り | 全員（requester は自分の起票分のみ） |
+| `/tickets/import` | 既存台帳などからの CSV 一括取り込み | agent / admin |
+| `/tickets/:id` | 個別案件の詳細閲覧・対応・コメント・画像添付 | 全員（requester は自分の起票分のみ） |
 | `/faq` | 解決済み案件をナレッジ化、公開／却下を管理 | agent / admin のみ |
 | `/notifications` | 自分宛の通知の確認・既読化 | 全員（認証済み） |
+| `/audit` | 監査ログ（チケット履歴・設定変更・認証イベント）の閲覧と CSV 出力 | admin のみ（Pro / Enterprise 限定） |
+| `/quarantine` | 隔離された受信メール / LINE メッセージの確認 | admin のみ |
+| `/settings` | テナント設定（カテゴリ・拠点・招待・メール取り込み・SSO・通知チャネル・課金） | admin のみ |
 
 詳細は [`screen-flow.md`](./screen-flow.md) を参照。
 
@@ -162,7 +204,9 @@ flowchart TD
 
 ## 6. チケットのライフサイクル
 
-問い合わせは 7 つのステータスを行き来します。
+> 本章は **Pro モード**（7 ステータス）の説明です。**Lite モード**のテナントは「未対応（`Open`）/ 対応中（`InProgress`）/ 完了（`Closed`）」の 3 値のみ使い、起票時の初期ステータスも `New` ではなく `Open` になります（[`er-diagram.md` のステータス遷移](./er-diagram.md#ステータス遷移) 参照）。
+
+Pro モードの問い合わせは 7 つのステータスを行き来します。
 
 | ステータス | 業務的な意味 |
 | --- | --- |
@@ -275,12 +319,10 @@ stateDiagram-v2
 
 ### 未実装の主な機能
 
-- 添付ファイル（スクリーンショット・ログ）
-- CSV 出力
-- 分析レポート画面（履歴データは蓄積済み）
-- 管理画面（ユーザー管理・カテゴリ管理・SLA 設定）
+- 分析レポート画面（平均初回応答時間・平均解決時間・再オープン率など。履歴データは蓄積済み）
+- SLA 設定画面（期限の計算ルールは現状コード内の定数で運用）
 
-優先度は [`docs/issue-backlog.md`](./issue-backlog.md) で管理されています。
+優先度は [`docs/issue-backlog.md`](./issue-backlog.md) と正本 [`smb-dx-pivot-plan.md`](./smb-dx-pivot-plan.md) で管理されています。
 
 ---
 
@@ -288,6 +330,7 @@ stateDiagram-v2
 
 ### PM・ステークホルダー向け
 
+- [`smb-dx-pivot-plan.md`](./smb-dx-pivot-plan.md) — **プロダクト方針・ロードマップの正本**（SMB ピボット計画）
 - [`requirements.md`](./requirements.md) — 要件定義（スコープ、画面一覧、データモデル、ステータス遷移）
 - [`screen-flow.md`](./screen-flow.md) — 画面遷移図とアクセス権限
 - [`issue-backlog.md`](./issue-backlog.md) — 開発バックログと優先度
