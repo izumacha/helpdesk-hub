@@ -38,6 +38,14 @@ flowchart TB
 
 ## 認証フロー
 
+認証経路は 3 つある（詳細は [`security.md`](./security.md) §4）。
+
+1. **パスワードログイン**（Credentials）— 以下のシーケンス図のフロー
+2. **マジックリンク**（パスワードレス）— `/login` のタブからメールのワンタイム URL でログイン。セルフサーブサインアップ（`/signup`）・招待受諾（`/invite/:token`）も同じトークン方式
+3. **SAML SSO**（Enterprise プラン限定）— IdP 検証後、`ssoHandoff` トークン経由でセッション発行
+
+いずれの経路も成功すると Auth.js (v5) の JWT セッション（`id` / `role` / `tenantId` を格納）に合流し、成功・失敗が `AuthAuditLog` に記録される。
+
 ```mermaid
 sequenceDiagram
     actor User as ブラウザ
