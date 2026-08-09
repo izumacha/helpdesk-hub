@@ -224,4 +224,4 @@
   - seed でデモデータ投入
   - README にデモログイン情報を記載
 
-> 本バックログの優先順位と要件整合の判断基準は `docs/version-integration.html` を参照。
+> 本バックログの優先順位と要件整合の判断基準は `docs/version-integration.md` を参照。

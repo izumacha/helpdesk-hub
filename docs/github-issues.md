@@ -1033,10 +1033,10 @@ Closed から直接 In Progress に戻すなどの業務ルール違反を防止
 
 ### タスク
 
-- [ ] `docs/requirements.html` を作成する
-- [ ] `docs/screen-flow.html` を作成する
-- [ ] `docs/architecture.html` を作成する
-- [ ] `docs/er-diagram.html` を作成する
+- [ ] `docs/requirements.md` を作成する
+- [ ] `docs/screen-flow.md` を作成する
+- [ ] `docs/architecture.md` を作成する
+- [ ] `docs/er-diagram.md` を作成する
 - [ ] README から各ドキュメントへリンクする
 
 ### 完了条件

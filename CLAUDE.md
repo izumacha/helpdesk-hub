@@ -18,9 +18,9 @@ HelpDesk Hub — 社内ヘルプデスク向けチケット管理システム。
 
 - 機能追加・改修・リファクタの着手前に `docs/smb-dx-pivot-plan.md` を参照し、対象作業が**どの Phase / どの項目に対応するか**をコミットメッセージまたは PR 本文に明記する。
 - 計画書の方針（Lite/Pro 二層、マルチテナント化、用語簡素化、メール／LINE 取り込み、マジックリンク認証、業種テンプレ 等）に**反する変更を行わない**。逸脱が必要なら先に計画書を PR で更新してから着手する。
-- 従来要件（`docs/requirements.html` 等）と計画書が衝突する場合は**計画書を優先**し、差分は `docs/version-integration.html` の調停ルールで解消する。
+- 従来要件（`docs/requirements.md` 等）と計画書が衝突する場合は**計画書を優先**し、差分は `docs/version-integration.md` の調停ルールで解消する。
 - Phase 順序（Phase 0 → 1 → 2 → 3 → 4）を尊重し、後フェーズ機能を前フェーズに混ぜない。
-- `docs/` は設計成果物（`requirements.html` / `architecture.html` / `er-diagram.html` / `screen-flow.html`、入口は `docs/index.md`）。状態フロー・権限・ER モデルを変える前に参照する。
+- `docs/` は設計成果物（`requirements.md` / `architecture.md` / `er-diagram.md` / `screen-flow.md`、入口は `docs/index.md`）。状態フロー・権限・ER モデルを変える前に参照する。
 
 ## 2. コマンド
 

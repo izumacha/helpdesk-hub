@@ -4,7 +4,7 @@
 
 ## 2026-04-10
 
-`docs/requirements.html` の「5. ステータス遷移」をもとに、チケット状態遷移のドメインロジックを追加しました。
+`docs/requirements.md` の「5. ステータス遷移」をもとに、チケット状態遷移のドメインロジックを追加しました。
 
 - `src/domain/ticket-status.ts`
   - `TicketStatus` の型定義

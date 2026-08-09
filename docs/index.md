@@ -1,10 +1,10 @@
 # HelpDesk Hub ドキュメント
 
-このプロジェクトの設計・運用ドキュメントの目次です。最初に読む場合は [overview](./overview.html) から。
+このプロジェクトの設計・運用ドキュメントの目次です。最初に読む場合は [overview](./overview.md) から。
 
 ## 入口（最初に読む）
 
-- [overview](./overview.html) — PM・非エンジニア向けのプロジェクト全体解説
+- [overview](./overview.md) — PM・非エンジニア向けのプロジェクト全体解説
 
 ## 戦略・プロダクト企画
 
@@ -12,15 +12,15 @@
 
 ## 設計
 
-- [requirements](./requirements.html) — 機能要件・スコープ・ステータス遷移の正本
-- [architecture](./architecture.html) — システム構成、レイヤ分担、データフロー、SSE 通知
-- [er-diagram](./er-diagram.html) — ER 図とテーブル定義
-- [screen-flow](./screen-flow.html) — 画面遷移図
+- [requirements](./requirements.md) — 機能要件・スコープ・ステータス遷移の正本
+- [architecture](./architecture.md) — システム構成、レイヤ分担、データフロー、SSE 通知
+- [er-diagram](./er-diagram.md) — ER 図とテーブル定義
+- [screen-flow](./screen-flow.md) — 画面遷移図
 
 ## 運用・品質
 
-- [security](./security.html) — セキュリティ・堅牢性メモ
-- [version-integration](./version-integration.html) — 差分調停ルール（要件 vs 実装のズレを解決する基準）
+- [security](./security.md) — セキュリティ・堅牢性メモ
+- [version-integration](./version-integration.md) — 差分調停ルール（要件 vs 実装のズレを解決する基準）
 - [implementation-notes](./implementation-notes.md) — 実装上の補足メモ
 
 ## 進捗・レビュー
