@@ -20,9 +20,11 @@
 
 > 備考: 依存関係のインストール制約により、この環境では test 実行は未完了。
 >
-> **【追記 2026-08-09】現行実装との対応**: 上記の名称はその後のリファクタで変更済み。現在の
-> `src/domain/ticket-status.ts` が公開しているのは `ALLOWED_TRANSITIONS`（Pro 遷移表）/
-> `ALLOWED_TRANSITIONS_LITE`（Lite 遷移表）/ `isValidTransition` / `getAllowedTransitions` 等で、
-> `STATUS_TRANSITION_RULES` / `canTransition` / `assertValidTransition` は存在しない。
-> 遷移仕様は [`requirements.md` §5](./requirements.md#5-ステータス遷移)、実装上の単一の真実は
-> `src/domain/ticket-status.ts` を参照。テストは `tests/ticket-status.test.ts` で通過済み。
+> **【追記 2026-08-09】現行実装との対応**: 上記の名称はその後のリファクタで変更済みで、
+> `STATUS_TRANSITION_RULES` / `canTransition` / `InvalidStatusTransitionError` / `assertValidTransition`
+> はいずれも現行ソースに存在しない。現在の `src/domain/ticket-status.ts` は、遷移表を
+> モジュール内部の定数 `ALLOWED_TRANSITIONS`（Pro）/ `ALLOWED_TRANSITIONS_LITE`（Lite）として
+> 定義し（**定数自体は export されない**）、外部へは `isValidTransition` / `getAllowedTransitions`
+> 等の関数のみを公開する。遷移仕様は [`requirements.md` §5](./requirements.md#5-ステータス遷移)、
+> 実装上の単一の真実は `src/domain/ticket-status.ts` を参照。テストは `tests/ticket-status.test.ts`
+> で通過済み。
