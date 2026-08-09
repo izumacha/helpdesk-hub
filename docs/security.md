@@ -99,7 +99,7 @@ flowchart LR
 - **`SettingsAuditLog`** — 管理者の設定変更（SSO・LINE・通知チャネル・拠点・カテゴリ・招待発行・プラン変更等）を記録。秘匿情報を含むため**値そのものは記録しない**（誰が・いつ・何をしたか、のみ）。
 - **`AuthAuditLog`** — **全認証経路の成功・失敗を記録**（パスワード / マジックリンク / SAML SSO の 9 イベント種別）。書き込みは必ず `src/lib/auth-audit.ts` の `recordAuthAudit` 経由。失敗イベントにはイベント種別ごとに独立した書き込み上限があり、未認証で安く叩ける経路へのノイズ流入でパスワード失敗の記録が締め出される「監査の目潰し」を防ぐ。
 
-閲覧 UI は `/audit`（admin のみ・Pro/Enterprise プラン限定）。CSV エクスポートあり（`/api/audit/export`）。
+閲覧 UI は `/audit`（admin のみ・Pro/Enterprise プラン限定。表示対象は `TicketHistory` と `SettingsAuditLog`）。CSV エクスポートあり（`/api/audit/export`）。**`AuthAuditLog` の閲覧 UI は現状なく、調査時は DB を直接参照する。**
 
 残る推奨事項:
 
