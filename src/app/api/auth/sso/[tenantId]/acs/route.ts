@@ -260,14 +260,22 @@ export async function POST(req: Request, { params }: Params) {
   });
 }
 
+// ボディを取り出せなかった理由。ヘルパー側の失敗理由をそのまま引き写す型なので、
+// 理由が増えたら下のログ表のキー不足で typecheck が落ちる (書き漏らしを機械的に防ぐ)
+type AcsBodyRejectReason = Exclude<
+  Awaited<ReturnType<typeof readFormWithinByteLimit>>,
+  { ok: true }
+>['reason'];
+
 // 拒否理由ごとのサーバーログ文言。応答も監査行も理由によらず同じなので、
 // 「サイズ攻撃なのか壊れたクライアントなのか」を後から見分けられる唯一の手がかりがこのログになる。
 // 本文の中身は出さない (§9 PII をログに漏らさない)
-const ACS_BODY_REJECT_LOGS = {
+const ACS_BODY_REJECT_LOGS: Readonly<Record<AcsBodyRejectReason, string>> = {
   'too-large': `リクエストボディが上限 ${SSO_ACS_MAX_BODY_BYTES} バイトを超えました。`,
+  timeout: 'リクエストボディを制限時間内に読み切れませんでした (だらだら送りの疑い)。',
   unreadable: 'リクエストボディの読み取りに失敗しました (接続断など)。',
   unparsable: 'リクエストボディをフォームとして解析できませんでした。',
-} as const;
+};
 
 // ACS のリクエストボディをサイズ上限付きで読み取り FormData にする。
 // 取り出せなければ null を返す (呼び出し元は理由によらず一律で監査 + sso-invalid にする)。

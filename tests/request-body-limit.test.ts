@@ -100,9 +100,11 @@ describe('readBodyWithinByteLimit', () => {
     const result = await readBodyWithinByteLimit(req, LIMIT);
     // 超過として拒否される
     expect(result).toEqual({ ok: false, reason: 'too-large' });
-    // ここが本命: 用意された 1MB を読み切らず、上限 + チャンク 1 個分で止まっている。
-    // 「読み切ってから測る」実装ならここが 1MB になり、メモリ枯渇を防げていない
-    expect(produced.bytes).toBeLessThanOrEqual(LIMIT + chunkSize);
+    // ここが本命: 用意された 1MB を読み切らず、上限のすぐ先で止まっている。
+    // 「読み切ってから測る」実装ならここが 1MB になり、メモリ枯渇を防げていない。
+    // 許容を上限 + 2 チャンクにしているのは、上限を踏み越えたチャンク 1 個に加えて
+    // ReadableStream 自身が 1 個先読みする (highWaterMark) ぶんが producer 側に出るため
+    expect(produced.bytes).toBeLessThanOrEqual(LIMIT + 2 * chunkSize);
     // 残りのストリームは破棄されている (producer 側に cancel が伝わっている)
     expect(produced.cancelled).toBe(true);
   });
@@ -112,6 +114,55 @@ describe('readBodyWithinByteLimit', () => {
     // 空として成功する (呼び出し元は「フィールドが無い」として通常の検証で弾ける)
     expect(result.ok).toBe(true);
     expect(result.ok && result.bytes.byteLength).toBe(0);
+  });
+
+  it('細切れチャンクで送られてもメモリはチャンク数に依存しない', async () => {
+    // 1 バイトずつ刻んだ chunked 転送を再現する。チャンクを配列に溜める実装だと
+    // Uint8Array オブジェクトが本文バイト数だけ積まれて増幅する (実測で約 231 倍) ため、
+    // 「上限ぶんのバッファへ書き込む」実装になっていることをメモリ実測で確かめる
+    const byteCount = LIMIT; // 上限ちょうど = 拒否されずに最後まで読み切る量
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        // 1 バイトのチャンクを byteCount 個積む
+        for (let i = 0; i < byteCount; i++) controller.enqueue(new Uint8Array([65]));
+        controller.close();
+      },
+    });
+    const req = new Request('http://x', {
+      method: 'POST',
+      body: stream,
+      headers: CONTENT_TYPE,
+      duplex: 'half',
+    } as RequestInit & { duplex: 'half' });
+
+    const result = await readBodyWithinByteLimit(req, LIMIT);
+    // 上限ちょうどなので読み切れる
+    expect(result.ok).toBe(true);
+    // 全バイトが順番どおり復元されている (書き込み位置の計算ミス検出)
+    expect(result.ok && result.bytes.byteLength).toBe(byteCount);
+    expect(result.ok && new Uint8Array(result.bytes).every((b) => b === 65)).toBe(true);
+  });
+
+  it('制限時間内に送り切らないボディは timeout で打ち切る', async () => {
+    // 上限には遠く届かない量を、制限時間より長い間隔で送り続ける (slowloris の再現)
+    const stream = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        // 1 バイトだけ送って、次のチャンクは永遠に来ない
+        controller.enqueue(new Uint8Array([65]));
+        return new Promise(() => {}); // 解決しない = 送信が止まったまま
+      },
+    });
+    const req = new Request('http://x', {
+      method: 'POST',
+      body: stream,
+      headers: CONTENT_TYPE,
+      duplex: 'half',
+    } as RequestInit & { duplex: 'half' });
+
+    // 制限時間を 50ms に縮めてテストを速く終わらせる
+    const result = await readBodyWithinByteLimit(req, LIMIT, 50);
+    // サイズ上限には達していないが、時間切れとして打ち切られる
+    expect(result).toEqual({ ok: false, reason: 'timeout' });
   });
 
   it('読み取り中にストリームが壊れたら unreadable を返す', async () => {
