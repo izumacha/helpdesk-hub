@@ -42,8 +42,9 @@ import {
   SSO_RATE_LIMIT_MESSAGE,
   SSO_ACS_MAX_BODY_BYTES,
 } from '@/lib/sso-rate-limit';
-// ボディをストリームで読みつつバイト数上限で打ち切る共通ヘルパー (§9 リクエストサイズの上限)
-import { readBodyWithinByteLimit } from '@/lib/request-body-limit';
+// ボディをストリームで読みつつバイト数上限で打ち切ってからフォームにする共通ヘルパー
+// (§9 リクエストサイズの上限。req.formData() を直接呼ぶとボディ全体がメモリに載る)
+import { readFormWithinByteLimit } from '@/lib/request-body-limit';
 
 // SSO ハンドオフトークンの有効期限 (2 分)。ACS → コールバックの即時引き渡し専用なので短くする
 const SSO_HANDOFF_TTL_MS = 2 * 60 * 1000;
@@ -259,42 +260,26 @@ export async function POST(req: Request, { params }: Params) {
   });
 }
 
+// 拒否理由ごとのサーバーログ文言。応答も監査行も理由によらず同じなので、
+// 「サイズ攻撃なのか壊れたクライアントなのか」を後から見分けられる唯一の手がかりがこのログになる。
+// 本文の中身は出さない (§9 PII をログに漏らさない)
+const ACS_BODY_REJECT_LOGS = {
+  'too-large': `リクエストボディが上限 ${SSO_ACS_MAX_BODY_BYTES} バイトを超えました。`,
+  unreadable: 'リクエストボディの読み取りに失敗しました (接続断など)。',
+  unparsable: 'リクエストボディをフォームとして解析できませんでした。',
+} as const;
+
 // ACS のリクエストボディをサイズ上限付きで読み取り FormData にする。
 // 取り出せなければ null を返す (呼び出し元は理由によらず一律で監査 + sso-invalid にする)。
-// 拒否理由は呼び出し元では区別しないが、運用調査のためここでログに書き分ける。
-//
-// 直接 req.formData() を呼ばないのは、それがボディ全体をメモリに展開してしまうため。
-// readBodyWithinByteLimit がストリームを読みながら上限で打ち切るので、ピークメモリは
-// 「上限 + チャンク 1 個分」に収まる (Content-Length を省いた chunked 転送でも効く)。
+// 理由の区別は呼び出し元では使わないが、運用調査のためここでログに書き分ける。
 async function readAcsForm(req: Request): Promise<FormData | null> {
-  // ボディをバイト数上限つきで読み取る (上限超過・ストリーム断はここで判別される)
-  const body = await readBodyWithinByteLimit(req, SSO_ACS_MAX_BODY_BYTES);
-
-  // 上限超過: 本文は途中で捨てているので中身は出さず、事実だけをログに残す
-  if (!body.ok && body.reason === 'too-large') {
-    console.warn(`[sso-acs] リクエストボディが上限 ${SSO_ACS_MAX_BODY_BYTES} バイトを超えました。`);
-    return null;
-  }
-  // ストリームの読み取り自体に失敗した (接続断など)
-  if (!body.ok) {
-    console.warn('[sso-acs] リクエストボディの読み取りに失敗しました。');
-    return null;
-  }
-
-  try {
-    // サイズ検査済みのバイト列を FormData にパースする。req のボディは読み切って消費済みなので、
-    // 同じバイト列と Content-Type (multipart の boundary を含む) で新しい Request を組み立て直す
-    return await new Request('http://sso-acs.invalid', {
-      method: 'POST',
-      headers: { 'content-type': req.headers.get('content-type') ?? '' },
-      body: body.bytes,
-    }).formData();
-  } catch (err) {
-    // §6「エラーを握り潰さない」: パースの失敗理由をログに残してから呼び出し元へ返す。
-    // 本文そのものは出さない (§9 PII をログに漏らさない)
-    console.warn('[sso-acs] リクエストボディの解析に失敗しました:', err);
-    return null;
-  }
+  // ボディをサイズ上限つきで読み取ってフォームにする (超過・読み取り断・パース失敗を判別して返す)
+  const result = await readFormWithinByteLimit(req, SSO_ACS_MAX_BODY_BYTES);
+  // 取り出せたフォームをそのまま返す
+  if (result.ok) return result.form;
+  // §6「エラーを握り潰さない」: どの理由で拒否したかをログに残してから null を返す
+  console.warn(`[sso-acs] ${ACS_BODY_REJECT_LOGS[result.reason]}`);
+  return null;
 }
 
 // SSO 認証後に表示する「ログイン続行の確認」ページを描画する。

@@ -32,6 +32,20 @@ vi.mock('@/data', () => ({
   },
 }));
 
+// SAML 検証をスパイに差し替える。サイズ上限のテストで「上限を超えた本文は署名検証まで
+// 到達しない (= 手前で打ち切られている)」ことを表明するために必要。
+// これが無いと、上限を撤去してもレスポンスは同じ sso-invalid のままなので
+// テストが素通りしてしまい、回帰を検出できない
+const validateSamlResponseSpy = vi.fn(async () => {
+  // 検証は必ず失敗させる (このファイルは正常系ログインを扱わない)。
+  // 実際の node-saml も不正なアサーションでは例外を投げる
+  throw new Error('テスト用: アサーション検証は常に失敗させる');
+});
+vi.mock('@/lib/saml', () => ({
+  createSamlInstance: vi.fn(() => ({})),
+  validateSamlResponse: validateSamlResponseSpy,
+}));
+
 // loadEnabledSsoContext を「常に SSO 利用可能」に固定する (テナント単位レート制限の検証に必要)
 vi.mock('@/lib/sso-context', () => ({
   loadEnabledSsoContext: vi.fn(async () => ({
@@ -71,6 +85,8 @@ function expectSsoInvalidRedirect(res: Response): void {
 beforeEach(() => {
   __resetRateLimits();
   __resetAuthAuditThrottle();
+  // SAML 検証の呼び出し履歴も毎回まっさらにする (「検証まで到達したか」の表明に使う)
+  validateSamlResponseSpy.mockClear();
   const ctx = createMemoryContext();
   store = ctx.store;
   repos = ctx.repos;
@@ -146,7 +162,7 @@ describe('POST /api/auth/sso/[tenantId]/acs のリクエストサイズ上限', 
 
   // ヘッダの申告だけで上限超過と分かる場合は、本文を読む前に打ち切る。
   // 本文自体は数バイトしかないので、実バイト数の検査だけならすり抜けてしまう。
-  // それでも拒否される = ヘッダの事前検査が効いている、と言い切れる
+  // それでも署名検証まで到達しない = ヘッダの事前検査が効いている、と言い切れる
   it('Content-Lengthヘッダが上限超過なら本文を読む前に拒否する', async () => {
     const res = await postAcs(TENANT_ID, {
       body: 'SAMLResponse=dummy', // 実サイズは上限内
@@ -156,6 +172,9 @@ describe('POST /api/auth/sso/[tenantId]/acs のリクエストサイズ上限', 
       },
     });
     expectSsoInvalidRedirect(res);
+    // 上限で打ち切られたので、CPU コストの高い署名検証には進んでいない。
+    // 上限を撤去するとこの本文は正常にパースされ検証まで進むため、ここで回帰を検出できる
+    expect(validateSamlResponseSpy).not.toHaveBeenCalled();
   });
 
   // chunked 転送は Content-Length を省略できるため、ストリームの累計バイト数でも検査する。
@@ -166,16 +185,21 @@ describe('POST /api/auth/sso/[tenantId]/acs のリクエストサイズ上限', 
       headers: FORM_CONTENT_TYPE,
     });
     expectSsoInvalidRedirect(res);
+    // 上限で打ち切られたので署名検証には進んでいない (上限撤去時に失敗する表明)
+    expect(validateSamlResponseSpy).not.toHaveBeenCalled();
   });
 
   // 境界値: ちょうど上限のボディは「超過」ではないので通す (> と >= の取り違え防止)。
-  // 上限内まで進めば SAMLResponse は非空なので、この先の署名検証で落ちて sso-invalid になる
-  it('ちょうど上限ぴったりのボディは拒否せず通常の検証に進む', async () => {
+  // 上限内まで進めば SAMLResponse は非空なので、この先の署名検証まで到達する
+  it('ちょうど上限ぴったりのボディは拒否せず署名検証まで進む', async () => {
     const res = await postAcs(TENANT_ID, {
       body: bodyOfExactly(SSO_ACS_MAX_BODY_BYTES),
       headers: FORM_CONTENT_TYPE,
     });
+    // 検証まで進んだうえで (テスト用スパイが必ず失敗させるので) sso-invalid になる
     expectSsoInvalidRedirect(res);
+    // ちょうど上限は通すので署名検証に到達している (>= に取り違えるとここで失敗する)
+    expect(validateSamlResponseSpy).toHaveBeenCalledTimes(1);
   });
 
   // サイズ超過も #279 が閉じたギャップ (プローブの形式で監査に写る/写らないが変わる) を
