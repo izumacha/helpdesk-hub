@@ -116,10 +116,12 @@ describe('readBodyWithinByteLimit', () => {
     expect(result.ok && result.bytes.byteLength).toBe(0);
   });
 
-  it('細切れチャンクで送られてもメモリはチャンク数に依存しない', async () => {
-    // 1 バイトずつ刻んだ chunked 転送を再現する。チャンクを配列に溜める実装だと
-    // Uint8Array オブジェクトが本文バイト数だけ積まれて増幅する (実測で約 231 倍) ため、
-    // 「上限ぶんのバッファへ書き込む」実装になっていることをメモリ実測で確かめる
+  // 注: メモリ使用量そのものはここでは表明しない。増幅が観測できる規模 (100 万チャンク級) は
+  // 1 ケースで 1 分以上かかり、観測できる規模まで落とすと通常のヒープ変動に埋もれて
+  // 判定が不安定になるため。チャンク数に依存しないことは実装方針 (チャンクを配列に溜めず、
+  // 伸長バッファへ書き込む) と、モジュール冒頭に記録した実測値で担保する。
+  // このケースが守るのは「多数の細切れチャンクでも書き込み位置がずれず正しく復元できる」こと
+  it('細切れチャンクで送られても本文を正しく復元できる', async () => {
     const byteCount = LIMIT; // 上限ちょうど = 拒否されずに最後まで読み切る量
     const stream = new ReadableStream<Uint8Array>({
       start(controller) {
@@ -138,9 +140,9 @@ describe('readBodyWithinByteLimit', () => {
     const result = await readBodyWithinByteLimit(req, LIMIT);
     // 上限ちょうどなので読み切れる
     expect(result.ok).toBe(true);
-    // 全バイトが順番どおり復元されている (書き込み位置の計算ミス検出)
+    // 全バイトが順番どおり復元されている (伸長時の詰め替え・書き込み位置の計算ミスを検出)
     expect(result.ok && result.bytes.byteLength).toBe(byteCount);
-    expect(result.ok && new Uint8Array(result.bytes).every((b) => b === 65)).toBe(true);
+    expect(result.ok && result.bytes.every((b) => b === 65)).toBe(true);
   });
 
   it('制限時間内に送り切らないボディは timeout で打ち切る', async () => {

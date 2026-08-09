@@ -22,22 +22,32 @@
 //   3. **slowloris (だらだら送り)** → 累計が上限に届かない速度で送り続ければループは終わらず、
 //      ハンドラと接続が保持され続ける。読み取り全体に制限時間を設けて打ち切る。
 //
-// メモリの目安: 1 リクエストあたり「上限ぶんのバッファ」を確保する。読み切った後に実サイズへ
-// 詰め直すため一瞬だけ上限の 2 倍になり、さらに呼び出し元が formData() でパースすると
+// メモリの目安: 保持するのは「実際の本文サイズ」ぶんのバッファで、チャンク数には依存しない
+// (小さく確保して倍々に伸ばすため、上限ぶんを毎回確保することはない)。伸ばす瞬間だけ
+// 新旧のバッファが並ぶので約 1.5 倍、さらに呼び出し元が formData() でパースすると
 // フィールド値のコピーがもう 1 つできる。上限値を決めるときはこの倍率を見込むこと。
+//
+// 関連: `webhook-fetch.ts` の `readBodyCapped` と `line-content.ts` の `readBodyCappedBytes` も
+// 「ストリームを上限つきで読む」同種の処理だが、あちらは外向き fetch の **Response** が対象で
+// 戻り値も用途ごとに違う (文字列 / 画像バイト列)。こちらは受信 **Request** 専用で、
+// Content-Length の事前検査・制限時間・拒否理由の判別を持つ点も異なる。
+// 3 者の統合は本モジュールの利用箇所が増えてから検討する。
 
 // 読み取り全体の既定の制限時間 (slowloris 対策)。正規のクライアントは上限サイズの本文でも
 // 数秒あれば送り切れるため、余裕を見て 10 秒に置く
 export const DEFAULT_BODY_READ_TIMEOUT_MS = 10_000;
 
-// 制限時間切れを他の例外と区別するための番人。文字列やエラーメッセージで判定すると
-// 偶然一致した別の例外を取り違えるため、このモジュール専用の Symbol を使う
-const BODY_READ_TIMEOUT = Symbol('body-read-timeout');
+// 最初に確保するバッファのサイズ。小さな本文 (通常の SAML アサーションは数十 KB) のために
+// 上限ぶんを毎回確保するのは無駄なので、ここから始めて足りなければ倍々に伸ばす
+const INITIAL_BUFFER_BYTES = 16 * 1024;
 
 // バイト列としての読み取り結果。
-// bytes を ArrayBuffer で返すのは、そのまま Response/Request の body に渡せる型 (BodyInit) だから
+// bytes を Uint8Array で返すのは、そのまま Response/Request の body に渡せる型 (BodyInit) で、
+// かつ内部バッファの一部を切り出す際にコピーを作らずに済む (subarray) から
 export type BoundedBodyResult =
-  | { ok: true; bytes: ArrayBuffer } // 上限内で読み切れた
+  // ArrayBuffer 実体に紐づく Uint8Array に限定する (BodyInit として受け付けてもらうため。
+  // 既定の Uint8Array<ArrayBufferLike> は SharedArrayBuffer 由来も含むので body に渡せない)
+  | { ok: true; bytes: Uint8Array<ArrayBuffer> } // 上限内で読み切れた
   | { ok: false; reason: 'too-large' } // 上限超過 (ヘッダ申告 or ストリームの累計)
   | { ok: false; reason: 'timeout' } // 制限時間内に読み切れなかった (だらだら送り)
   | { ok: false; reason: 'unreadable' }; // ストリームの読み取り自体に失敗した (接続断など)
@@ -74,54 +84,68 @@ export async function readBodyWithinByteLimit(
   }
 
   // ボディが無いリクエスト (GET など) は空のバイト列として扱う
-  if (!req.body) return { ok: true, bytes: new ArrayBuffer(0) };
+  if (!req.body) return { ok: true, bytes: new Uint8Array(0) };
 
-  // 上限ぶんのバッファを先に確保し、チャンクをここへ書き込んでいく。
-  // チャンクを配列に溜めないので、1 バイト刻みで送られてもメモリは上限で頭打ちになる
-  const buffer = new ArrayBuffer(maxBytes);
-  // 書き込み用の View
-  const view = new Uint8Array(buffer);
+  // チャンクの書き込み先。足りなくなったら倍々に伸ばし、上限で頭打ちにする。
+  // チャンクを配列に溜めない (溜めると 1 バイト刻みの chunked 転送で Uint8Array
+  // オブジェクトが本文バイト数だけ積まれ、1MB の本文で 229MB を保持してしまう)
+  let buffer: Uint8Array<ArrayBuffer> = new Uint8Array(Math.min(INITIAL_BUFFER_BYTES, maxBytes));
   // ここまでに書き込んだ累計バイト数
   let totalBytes = 0;
   // 上限超過を検知したか (検知したら読み取りをやめる)
   let exceeded = false;
+  // 制限時間切れで打ち切ったか
+  let timedOut = false;
   // ストリームのリーダー (finally で確実に cancel するため try の外で宣言する)
   let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
-  // 制限時間切れを知らせるタイマー (finally で必ず解除する)
+  // 制限時間のタイマー (finally で必ず解除する)
   let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
-
-  // 制限時間を超えたら reject する Promise を 1 つだけ作る。
-  // ループの中で作ると読み取り回数ぶんタイマー/リスナーが積み上がる
-  const timedOut = new Promise<never>((_, reject) => {
-    timeoutHandle = setTimeout(() => reject(BODY_READ_TIMEOUT), timeoutMs);
-  });
-  // race で拾われなかった場合に unhandledRejection にならないよう、先に handled 扱いにする
-  // (ここで catch を足しても race 側は変わらず reject を受け取れる)
-  void timedOut.catch(() => {});
 
   try {
     // ストリームを 1 チャンクずつ読むためのリーダーを取得する
     // (ボディが他所でロック済みなら例外になるため、try の中で呼ぶ)
     reader = req.body.getReader();
+    // タイマーのコールバックから参照するためのローカル束縛 (undefined でないことが確定している)
+    const activeReader = reader;
+    // 制限時間を超えたらリーダーを cancel して読み取りを止める。
+    // 待機中の read() は cancel によって done で解決するので、ループは自然に抜ける。
+    // Promise.race で待つ実装にしてはいけない: 解決しない Promise に対する反応 (PromiseReaction) が
+    // 1 チャンクごとに積み上がり、チャンク数に比例したメモリを保持してしまう
+    // (実測: 1 バイト刻みで 1MB を送ると +566MB。この方式なら +4MB 程度に収まる)
+    timeoutHandle = setTimeout(() => {
+      timedOut = true;
+      void activeReader.cancel().catch(() => {});
+    }, timeoutMs);
+
     // ストリームの終端に達するまで読み続ける
     for (;;) {
-      // 次のチャンクを 1 つ読む。制限時間を超えたら timedOut 側が先に reject する
-      const { done, value } = await Promise.race([reader.read(), timedOut]);
-      // 終端に達したらループを抜ける
+      // 次のチャンクを 1 つ読む
+      const { done, value } = await reader.read();
+      // 終端に達したらループを抜ける (制限時間切れの cancel もここで done になる)
       if (done) break;
-      // 上限を超えるなら、書き込まずに打ち切る (ここがメモリを抑えている要点)
+      // 上限を超えるなら、書き込まずに打ち切る
       if (totalBytes + value.byteLength > maxBytes) {
         exceeded = true;
         break;
       }
-      // 確保済みバッファの続きへ書き込む
-      view.set(value, totalBytes);
+      // バッファが足りなければ倍々で伸ばす (必要量に足りない場合はその量まで一気に伸ばす)
+      if (totalBytes + value.byteLength > buffer.length) {
+        // 次のサイズ: 現在の 2 倍か必要量の大きい方。ただし上限は超えない
+        const nextSize = Math.min(
+          maxBytes,
+          Math.max(buffer.length * 2, totalBytes + value.byteLength),
+        );
+        // 新しいバッファへ既存分を移す
+        const grown = new Uint8Array(nextSize);
+        grown.set(buffer.subarray(0, totalBytes));
+        buffer = grown;
+      }
+      // バッファの続きへ書き込む
+      buffer.set(value, totalBytes);
       // 累計バイト数を進める
       totalBytes += value.byteLength;
     }
-  } catch (err) {
-    // 制限時間切れ (だらだら送り) と、それ以外の読み取り失敗を区別して返す
-    if (err === BODY_READ_TIMEOUT) return { ok: false, reason: 'timeout' };
+  } catch {
     // 途中で切れた接続・壊れたストリームなど。呼び出し元が拒否理由を出し分けられるよう返す
     // (例外を投げ直さないのは、呼び出し元が「拒否」以外の選択肢を持たないため。ログは呼び出し元が出す)
     return { ok: false, reason: 'unreadable' };
@@ -136,12 +160,13 @@ export async function readBodyWithinByteLimit(
     void reader?.cancel().catch(() => {});
   }
 
+  // 制限時間切れ (だらだら送り) は、読めた量に関わらず拒否する
+  if (timedOut) return { ok: false, reason: 'timeout' };
   // 上限超過なら、確保したバッファは捨てて拒否を返す
   if (exceeded) return { ok: false, reason: 'too-large' };
 
-  // 実際に読んだぶんだけに詰め直して返す (確保時は上限サイズなので、そのまま返すと
-  // 本文の後ろにゼロ埋めが付いてしまう)
-  return { ok: true, bytes: buffer.slice(0, totalBytes) };
+  // 実際に読んだぶんだけを切り出して返す (subarray なのでコピーは発生しない)
+  return { ok: true, bytes: buffer.subarray(0, totalBytes) };
 }
 
 /**
