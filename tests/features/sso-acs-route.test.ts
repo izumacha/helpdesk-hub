@@ -13,6 +13,9 @@ import type { Repos } from '@/data/ports/unit-of-work';
 // 監査の失敗イベント書き込み予算をテスト間でリセットする (連打テストの消費を持ち越さない)。
 // AUTH_AUDIT_UNKNOWN_EMAIL は本人を特定できない失敗経路で記録される代替メール (期待値の直書きを避ける)
 import { AUTH_AUDIT_UNKNOWN_EMAIL, __resetAuthAuditThrottle } from '@/lib/auth-audit';
+// ボディサイズ上限はルートと同じ定義を参照する (テストに閾値を直書きすると、
+// 上限を変えたときにテストが境界を突かなくなったことに気付けない §6)
+import { SSO_ACS_MAX_BODY_BYTES } from '@/lib/sso-rate-limit';
 import { expectRateLimitTripsAfter } from './sso-rate-limit-assertions';
 
 const TENANT_ID = 'tenant-1';
@@ -133,45 +136,58 @@ describe('POST /api/auth/sso/[tenantId]/acs のボディ取り出し段階の監
 });
 
 describe('POST /api/auth/sso/[tenantId]/acs のリクエストサイズ上限', () => {
-  // ルート側の上限 (MAX_ACS_BODY_BYTES = 1MB) と同じ値。フォーム形式のまま送ることで
-  // 「サイズ検査がフォームのパースより先に効く」ことも同時に確かめられる
-  const MAX_BYTES = 1024 * 1024;
   // フォーム本文として解釈させるための Content-Type
   const FORM_CONTENT_TYPE = { 'Content-Type': 'application/x-www-form-urlencoded' };
-  // 上限を確実に超える実本文 (Content-Length を明示しない経路の検証に使う)
-  const OVERSIZED_BODY = `SAMLResponse=${'A'.repeat(MAX_BYTES)}`;
+  // ちょうど上限バイトになるフォーム本文を組み立てる (境界値の検証に使う)。
+  // 'SAMLResponse=' の分を差し引いて全体が SSO_ACS_MAX_BODY_BYTES になるよう詰める
+  const FIELD_PREFIX = 'SAMLResponse=';
+  const bodyOfExactly = (totalBytes: number) =>
+    FIELD_PREFIX + 'A'.repeat(totalBytes - FIELD_PREFIX.length);
 
   // ヘッダの申告だけで上限超過と分かる場合は、本文を読む前に打ち切る。
   // 本文自体は数バイトしかないので、実バイト数の検査だけならすり抜けてしまう。
-  // それでも 413 になる = ヘッダの事前検査が効いている、と言い切れる
-  it('Content-Lengthヘッダが上限超過なら本文を読む前に413で拒否する', async () => {
+  // それでも拒否される = ヘッダの事前検査が効いている、と言い切れる
+  it('Content-Lengthヘッダが上限超過なら本文を読む前に拒否する', async () => {
     const res = await postAcs(TENANT_ID, {
       body: 'SAMLResponse=dummy', // 実サイズは上限内
-      headers: { ...FORM_CONTENT_TYPE, 'Content-Length': String(MAX_BYTES + 1) }, // 申告だけ超過
+      headers: {
+        ...FORM_CONTENT_TYPE,
+        'Content-Length': String(SSO_ACS_MAX_BODY_BYTES + 1), // 申告だけ超過
+      },
     });
-    // 413 Payload Too Large を返す (sso-invalid リダイレクトではない)
-    expect(res.status).toBe(413);
-  });
-
-  // chunked 転送は Content-Length を省略できるため、読み込み後の実バイト数でも検査する。
-  // Request は body から Content-Length を自動付与しないので、この経路がそのまま再現できる
-  it('Content-Lengthが無くても実バイト数が上限超過なら413で拒否する', async () => {
-    const res = await postAcs(TENANT_ID, { body: OVERSIZED_BODY, headers: FORM_CONTENT_TYPE });
-    expect(res.status).toBe(413);
-  });
-
-  // サイズ超過は「アサーションを一切提示していない」ため監査には残さない
-  // (失敗イベントの書き込み予算をゴミで消費させないという設計判断の固定)
-  it('サイズ超過の拒否は監査ログに記録しない', async () => {
-    await postAcs(TENANT_ID, { body: OVERSIZED_BODY, headers: FORM_CONTENT_TYPE });
-    // 監査行は 1 件も増えていない
-    expect([...store.authAuditLogs.values()]).toHaveLength(0);
-  });
-
-  // 上限内の本文はサイズ検査を通り、従来どおり SAMLResponse の検証まで進む
-  it('上限内のボディはサイズ検査を通過して通常の検証に進む', async () => {
-    // 上限内だが SAMLResponse が空なので、通常の入力検証で sso-invalid になる
-    const res = await postAcs(TENANT_ID, { body: new URLSearchParams({ SAMLResponse: '' }) });
     expectSsoInvalidRedirect(res);
+  });
+
+  // chunked 転送は Content-Length を省略できるため、ストリームの累計バイト数でも検査する。
+  // Request は body から Content-Length を自動付与しないので、この経路がそのまま再現できる
+  it('Content-Lengthが無くても実バイト数が上限超過なら拒否する', async () => {
+    const res = await postAcs(TENANT_ID, {
+      body: bodyOfExactly(SSO_ACS_MAX_BODY_BYTES + 1),
+      headers: FORM_CONTENT_TYPE,
+    });
+    expectSsoInvalidRedirect(res);
+  });
+
+  // 境界値: ちょうど上限のボディは「超過」ではないので通す (> と >= の取り違え防止)。
+  // 上限内まで進めば SAMLResponse は非空なので、この先の署名検証で落ちて sso-invalid になる
+  it('ちょうど上限ぴったりのボディは拒否せず通常の検証に進む', async () => {
+    const res = await postAcs(TENANT_ID, {
+      body: bodyOfExactly(SSO_ACS_MAX_BODY_BYTES),
+      headers: FORM_CONTENT_TYPE,
+    });
+    expectSsoInvalidRedirect(res);
+  });
+
+  // サイズ超過も #279 が閉じたギャップ (プローブの形式で監査に写る/写らないが変わる) を
+  // 再び開けないよう、他の拒否理由と同じく監査に残す
+  it('サイズ超過の拒否もsso_assertion_rejectedとして監査に記録する', async () => {
+    await postAcs(TENANT_ID, {
+      body: bodyOfExactly(SSO_ACS_MAX_BODY_BYTES + 1),
+      headers: FORM_CONTENT_TYPE,
+    });
+    // 監査行がちょうど 1 件、他の拒否経路と同じ形で残っている
+    expect([...store.authAuditLogs.values()]).toMatchObject([
+      { event: 'sso_assertion_rejected', email: AUTH_AUDIT_UNKNOWN_EMAIL, tenantId: TENANT_ID },
+    ]);
   });
 });
