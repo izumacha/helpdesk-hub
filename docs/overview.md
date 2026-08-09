@@ -204,7 +204,7 @@ Web 画面以外にも、メール取り込み・LINE 取り込み（それぞ�
 
 ## 6. チケットのライフサイクル
 
-> 本章は **Pro モード**（7 ステータス）の説明です。**Lite モード**のテナントは「未対応（`Open`）/ 対応中（`InProgress`）/ 完了（`Closed`）」の 3 値のみ使い、起票時の初期ステータスも `New` ではなく `Open` になります（[`er-diagram.md` のステータス遷移](./er-diagram.md#ステータス遷移) 参照）。
+> 本章は **Pro モード**（7 ステータス）の説明です。**Lite モード**のテナントは「未対応（`Open`）/ 対応中（`InProgress`）/ 完了（`Closed`）」の 3 値のみ使い、起票時の初期ステータスも `New` ではなく `Open` になります（遷移図は [`requirements.md` §5](./requirements.md#5-ステータス遷移) 参照）。
 
 Pro モードの問い合わせは 7 つのステータスを行き来します。
 
@@ -220,37 +220,9 @@ Pro モードの問い合わせは 7 つのステータスを行き来します�
 
 ### 許可されているステータス遷移
 
-```mermaid
-stateDiagram-v2
-    [*] --> New : チケット登録
-    New --> Open
-    New --> WaitingForUser
-    New --> InProgress
-    New --> Resolved
-    New --> Closed
-    Open --> InProgress
-    Open --> WaitingForUser
-    Open --> Escalated
-    Open --> Resolved
-    Open --> Closed
-    WaitingForUser --> Open
-    WaitingForUser --> InProgress
-    WaitingForUser --> Resolved
-    WaitingForUser --> Closed
-    InProgress --> WaitingForUser
-    InProgress --> Escalated
-    InProgress --> Resolved
-    InProgress --> Closed
-    Escalated --> InProgress
-    Escalated --> Resolved
-    Escalated --> Closed
-    Resolved --> Open : 再オープン
-    Resolved --> Closed
-    Closed --> Open : 再オープン
-    Closed --> [*]
-```
+許可される遷移の一覧と遷移図（Pro 7 値 / Lite 3 値）は、状態遷移の正本である [`requirements.md` §5](./requirements.md#5-ステータス遷移) を参照してください（乖離防止のため遷移図はそちらにのみ掲載）。
 
-> 上記以外の遷移は **サーバー側で拒否** されます（例: `New` → `Escalated` は不可）。許可表は `src/domain/ticket-status.ts` が単一の真実とされ、テストで担保されています。
+> 許可表にない遷移は **サーバー側で拒否** されます（例: `New` → `Escalated` は不可）。許可表は `src/domain/ticket-status.ts` が単一の真実とされ、テストで担保されています。
 
 ---
 
@@ -340,7 +312,7 @@ stateDiagram-v2
 - [`../README.md`](../README.md) — セットアップ手順、コマンド一覧
 - [`../CLAUDE.md`](../CLAUDE.md) — 開発規約、ディレクトリ構成の詳細
 - [`architecture.md`](./architecture.md) — 技術アーキテクチャ、認証フロー、SSE 設計
-- [`er-diagram.md`](./er-diagram.md) — ER 図、ステータス遷移図
+- [`er-diagram.md`](./er-diagram.md) — ER 図（全 22 モデル・4 領域）
 - [`security.md`](./security.md) — セキュリティ／堅牢性メモ
 
 ### 履歴・調整資料
