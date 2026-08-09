@@ -44,7 +44,7 @@ import {
 } from '@/lib/sso-rate-limit';
 // ボディをストリームで読みつつバイト数上限で打ち切ってからフォームにする共通ヘルパー
 // (§9 リクエストサイズの上限。req.formData() を直接呼ぶとボディ全体がメモリに載る)
-import { readFormWithinByteLimit } from '@/lib/request-body-limit';
+import { readFormWithinByteLimit, describeBodyRejectReason } from '@/lib/request-body-limit';
 
 // SSO ハンドオフトークンの有効期限 (2 分)。ACS → コールバックの即時引き渡し専用なので短くする
 const SSO_HANDOFF_TTL_MS = 2 * 60 * 1000;
@@ -260,33 +260,17 @@ export async function POST(req: Request, { params }: Params) {
   });
 }
 
-// ボディを取り出せなかった理由。ヘルパー側の失敗理由をそのまま引き写す型なので、
-// 理由が増えたら下のログ表のキー不足で typecheck が落ちる (書き漏らしを機械的に防ぐ)
-type AcsBodyRejectReason = Exclude<
-  Awaited<ReturnType<typeof readFormWithinByteLimit>>,
-  { ok: true }
->['reason'];
-
-// 拒否理由ごとのサーバーログ文言。応答も監査行も理由によらず同じなので、
-// 「サイズ攻撃なのか壊れたクライアントなのか」を後から見分けられる唯一の手がかりがこのログになる。
-// 本文の中身は出さない (§9 PII をログに漏らさない)
-const ACS_BODY_REJECT_LOGS: Readonly<Record<AcsBodyRejectReason, string>> = {
-  'too-large': `リクエストボディが上限 ${SSO_ACS_MAX_BODY_BYTES} バイトを超えました。`,
-  timeout: 'リクエストボディを制限時間内に読み切れませんでした (だらだら送りの疑い)。',
-  unreadable: 'リクエストボディの読み取りに失敗しました (接続断など)。',
-  unparsable: 'リクエストボディをフォームとして解析できませんでした。',
-};
-
 // ACS のリクエストボディをサイズ上限付きで読み取り FormData にする。
 // 取り出せなければ null を返す (呼び出し元は理由によらず一律で監査 + sso-invalid にする)。
-// 理由の区別は呼び出し元では使わないが、運用調査のためここでログに書き分ける。
+// 理由の区別は呼び出し元では使わないが、運用調査のためログには書き分ける
+// (文言は describeBodyRejectReason に集約。採用するルートごとに書き写さないため)。
 async function readAcsForm(req: Request): Promise<FormData | null> {
-  // ボディをサイズ上限つきで読み取ってフォームにする (超過・読み取り断・パース失敗を判別して返す)
+  // ボディをサイズ上限つきで読み取ってフォームにする (超過・時間切れ・断・パース失敗を判別して返す)
   const result = await readFormWithinByteLimit(req, SSO_ACS_MAX_BODY_BYTES);
   // 取り出せたフォームをそのまま返す
   if (result.ok) return result.form;
   // §6「エラーを握り潰さない」: どの理由で拒否したかをログに残してから null を返す
-  console.warn(`[sso-acs] ${ACS_BODY_REJECT_LOGS[result.reason]}`);
+  console.warn(`[sso-acs] ${describeBodyRejectReason(result.reason, SSO_ACS_MAX_BODY_BYTES)}`);
   return null;
 }
 

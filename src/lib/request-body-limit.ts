@@ -57,6 +57,32 @@ export type BoundedFormResult =
   | { ok: true; form: FormData } // 上限内で読み取れてフォームとしてパースできた
   | { ok: false; reason: 'too-large' | 'timeout' | 'unreadable' | 'unparsable' };
 
+// 本文を取り出せなかった理由。呼び出し元がログ文言の型を自前で導出しなくて済むよう公開する
+export type BodyRejectReason = Exclude<BoundedFormResult, { ok: true }>['reason'];
+
+/**
+ * 拒否理由をサーバーログ用の日本語 1 行にする。
+ *
+ * 呼び出し元 (ルート) は理由で処理を分けないが、応答も監査行も理由によらず同じになるため、
+ * 「サイズ攻撃なのか、だらだら送りなのか、壊れたクライアントなのか」を後から見分けられる
+ * 唯一の手がかりがこのログになる。文言をここに集約して、採用するルートごとに書き写さない。
+ * 本文の中身は決して含めない (§9 PII をログに漏らさない)。
+ *
+ * @param reason 読み取りが失敗した理由
+ * @param maxBytes 適用していた上限バイト数 (サイズ超過の文言に載せる)
+ */
+export function describeBodyRejectReason(reason: BodyRejectReason, maxBytes: number): string {
+  // Record にして網羅性を型で強制する (理由を増やしたらキー不足で typecheck が落ちる)
+  const descriptions: Readonly<Record<BodyRejectReason, string>> = {
+    'too-large': `リクエストボディが上限 ${maxBytes} バイトを超えました。`,
+    timeout: 'リクエストボディを制限時間内に読み切れませんでした (だらだら送りの疑い)。',
+    unreadable: 'リクエストボディの読み取りに失敗しました (接続断など)。',
+    unparsable: 'リクエストボディをフォームとして解析できませんでした。',
+  };
+  // 該当する説明を返す
+  return descriptions[reason];
+}
+
 /**
  * リクエストボディを最大 `maxBytes` バイトまで読み取る。
  *
