@@ -93,7 +93,10 @@ export async function POST(req: Request, { params }: Params) {
   // console.error/warn はプロセス再起動やログローテーションで失われるが、監査行は追記専用テーブルに
   // 残るため「どのテナントの ACS へ不正なリクエストが飛んだか」を後から追える。
   // /code-review ultra 指摘対応: 従来は SAMLResponse 欠落・ボディ破損での拒否 (sso-invalid) だけが
-  // 監査に残らず、プローブの形式次第で監査に写る/写らないが変わっていたギャップを解消する
+  // 監査に残らず、プローブの形式次第で監査に写る/写らないが変わっていたギャップを解消する。
+  // なお AuthAuditLog に自由記述列は無い (PII 流入の口を作らないため) ので、監査行だけでは
+  // 「本文が無かった」のか「署名検証に落ちた」のかは区別できない。区別が要る調査では、
+  // 各拒否経路がそれぞれの現場で出すサーバーログと突き合わせる
   const auditRejectedAssertion = () =>
     recordAuthAudit({
       event: 'sso_assertion_rejected',
@@ -102,25 +105,35 @@ export async function POST(req: Request, { params }: Params) {
       tenantId,
     });
 
-  // POST ボディ (application/x-www-form-urlencoded) から SAMLResponse を取り出す
-  let samlResponse: string;
+  // POST ボディ (application/x-www-form-urlencoded) をパースする。
+  // try で囲む範囲は formData() の 1 行だけに絞る: 監査記録や return まで try に入れると、
+  // 「try 内の拒否経路が投げたら catch 側の拒否経路も走って二重記録され得る」構造になり、
+  // 読み手も「どの行の失敗を捕まえたいのか」を追えなくなる
+  let form: FormData;
   try {
-    // フォームデータをパースする
-    const form = await req.formData();
-    // SAMLResponse フィールドを取得する
-    const value = form.get('SAMLResponse');
-    // 文字列でなければ不正な応答として扱う (監査に記録してから拒否する)
-    if (typeof value !== 'string' || value.length === 0) {
-      // 認証イベント監査: SAMLResponse フィールドの欠落・空文字での試行を記録する
-      await auditRejectedAssertion();
-      return errorRedirect('sso-invalid');
-    }
-    samlResponse = value;
-  } catch {
-    // ボディが壊れている場合は不正扱い (監査に記録してから拒否する)
+    // フォームデータをパースする (Content-Type 不一致・本文破損はここで例外になる)
+    form = await req.formData();
+  } catch (err) {
+    // §6「エラーを握り潰さない」: 例外を捨てず理由をログに残してから拒否する。
+    // 本文そのものは出さない (§9 PII をログに漏らさない)
+    console.warn('[sso-acs] リクエストボディの解析に失敗しました:', err);
+    // 認証イベント監査: ボディ破損での試行を記録する
     await auditRejectedAssertion();
     return errorRedirect('sso-invalid');
   }
+
+  // SAMLResponse フィールドを取得する
+  const value = form.get('SAMLResponse');
+  // 文字列でなければ (フィールド欠落・ファイル添付) / 空文字なら不正な応答として扱う
+  if (typeof value !== 'string' || value.length === 0) {
+    // 認証イベント監査: SAMLResponse フィールドの欠落・空文字での試行を記録する。
+    // ここはパース例外ではなく通常の入力検証の分岐なので、監査行だけ残しログは出さない
+    // (未認証で毎分 60 回まで叩ける経路のため、1 リクエスト 1 行のログ出力は避ける)
+    await auditRejectedAssertion();
+    return errorRedirect('sso-invalid');
+  }
+  // ここから先は検証対象の SAMLResponse 文字列が確実にある
+  const samlResponse = value;
 
   // 署名・条件を検証して本人のメールを取り出す
   let email: string;
