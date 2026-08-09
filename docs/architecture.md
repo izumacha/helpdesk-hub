@@ -73,11 +73,17 @@ Server Actions (`'use server'`) を使用。クライアントから直接呼び
 
 ## RBAC
 
-| ロール | チケット閲覧 | チケット更新 | エスカレーション | FAQ管理 |
-| --- | --- | --- | --- | --- |
-| requester | 自分のみ | 不可 | 不可 | 不可 |
-| agent | 全件 | 可 | 可 | 可 |
-| admin | 全件 | 可 | 可 | 可 |
+| ロール | チケット閲覧 | チケット更新 | エスカレーション | FAQ管理 | 監査ログ (`/audit`) | 隔離一覧 (`/quarantine`) | テナント設定 (`/settings`) |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| requester | 自分のみ | 不可 | 不可 | 不可 | 不可 | 不可 | 不可 |
+| agent | 全件 | 可 | 可 | 可 | 不可 | 不可 | 不可 |
+| admin | 全件 | 可 | 可 | 可 | 可※ | 可 | 可 |
+
+※ `/audit` はロールに加えて**課金プランでもゲート**され、Pro / Enterprise プランのテナントのみ利用可能（`src/lib/plan-guard.ts` の `isAuditLogAllowed`）。`/quarantine` には意図的にプランゲートを設けない（Free プランでのプランゲート起因の隔離を admin 自身が確認できる必要があるため）。
+
+- チケット系の権限は `isAgent(role)`（`src/lib/role.ts`）で判定し、agent と admin を同等に扱う。
+- admin 専用画面（`/audit` / `/quarantine` / `/settings`）は例外的に `role === 'admin'` の直接比較でゲートする。
+- 画面ごとのアクセス権限の一覧は [`screen-flow.md`](./screen-flow.md) を参照。
 
 ## リアルタイム通知（SSE）と水平スケール制約
 
