@@ -22,6 +22,8 @@
 - [security](./security.md) — セキュリティ・堅牢性メモ
 - [version-integration](./version-integration.md) — 差分調停ルール（要件 vs 実装のズレを解決する基準）
 - [implementation-notes](./implementation-notes.md) — 実装上の補足メモ
+- [backup](./backup.md) — DB バックアップ・リストア手順（CI の backup ワークフローの正本）
+- [next-auth-v5-migration](./next-auth-v5-migration.md) — next-auth v5 beta → 安定版への移行計画
 
 ## 進捗・レビュー
 
