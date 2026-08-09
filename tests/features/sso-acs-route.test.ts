@@ -39,12 +39,18 @@ vi.mock('@/lib/sso-context', () => ({
   })),
 }));
 
-// リクエストを 1 件送るヘルパー (SAMLResponse は意図的に省略する)
-async function postAcs(tenantId: string): Promise<Response> {
+// リクエストを 1 件送るヘルパー (既定では SAMLResponse フィールドを意図的に省略する)。
+// /code-review ultra 指摘対応: body/headers を上書き可能にし、空文字・破損ボディの
+// テストケースでの Request 構築の重複を排除する (§6 DRY)
+async function postAcs(
+  tenantId: string,
+  init: { body?: BodyInit; headers?: Record<string, string> } = {},
+): Promise<Response> {
   const { POST } = await import('@/app/api/auth/sso/[tenantId]/acs/route');
   const req = new Request(`http://localhost:3000/api/auth/sso/${tenantId}/acs`, {
     method: 'POST',
-    body: new URLSearchParams(), // SAMLResponse フィールドなし
+    body: init.body ?? new URLSearchParams(), // 既定: SAMLResponse フィールドなし
+    ...(init.headers ? { headers: init.headers } : {}),
   });
   return POST(req, { params: Promise.resolve({ tenantId }) });
 }
@@ -104,12 +110,8 @@ describe('POST /api/auth/sso/[tenantId]/acs のボディ取り出し段階の監
 
   // SAMLResponse が空文字の POST も監査に残る
   it('SAMLResponse空文字の拒否をsso_assertion_rejectedとして監査に記録する', async () => {
-    const { POST } = await import('@/app/api/auth/sso/[tenantId]/acs/route');
-    const req = new Request(`http://localhost:3000/api/auth/sso/${TENANT_ID}/acs`, {
-      method: 'POST',
-      body: new URLSearchParams({ SAMLResponse: '' }), // フィールドはあるが空
-    });
-    const res = await POST(req, { params: Promise.resolve({ tenantId: TENANT_ID }) });
+    // フィールドはあるが空のフォームボディで送る
+    const res = await postAcs(TENANT_ID, { body: new URLSearchParams({ SAMLResponse: '' }) });
     expect(res.status).toBe(303);
     expect(res.headers.get('location')).toContain('error=sso-invalid');
     expectSingleRejectedAudit();
@@ -117,13 +119,11 @@ describe('POST /api/auth/sso/[tenantId]/acs のボディ取り出し段階の監
 
   // formData() のパース自体が失敗するボディ (フォームでない Content-Type) も監査に残る
   it('ボディ破損(formDataパース失敗)の拒否をsso_assertion_rejectedとして監査に記録する', async () => {
-    const { POST } = await import('@/app/api/auth/sso/[tenantId]/acs/route');
-    const req = new Request(`http://localhost:3000/api/auth/sso/${TENANT_ID}/acs`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' }, // formData() が throw する Content-Type
+    // formData() が throw する Content-Type と壊れた本文で送る
+    const res = await postAcs(TENANT_ID, {
       body: '{"broken":',
+      headers: { 'Content-Type': 'application/json' },
     });
-    const res = await POST(req, { params: Promise.resolve({ tenantId: TENANT_ID }) });
     expect(res.status).toBe(303);
     expect(res.headers.get('location')).toContain('error=sso-invalid');
     expectSingleRejectedAudit();
