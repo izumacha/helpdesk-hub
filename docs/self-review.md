@@ -6,13 +6,13 @@
 
 - `src/domain/ticket-status.ts`
 - `tests/ticket-status.test.ts`
-- `docs/implementation-notes.html`
+- `docs/implementation-notes.md`
 
 ## 観点と結果
 
 1. 要件整合性
 
-- `docs/requirements.html` のステータス遷移定義（New/Open/In Progress/Waiting for User/Escalated/Resolved/Closed）に一致することを確認。
+- `docs/requirements.md` のステータス遷移定義（New/Open/In Progress/Waiting for User/Escalated/Resolved/Closed）に一致することを確認。
 - `Resolved -> Open` の再オープン遷移を実装済み。
 
 2. 型安全性
@@ -38,7 +38,7 @@
 
 対象変更:
 
-- `docs/github-issues.html`
+- `docs/github-issues.md`
 - `README.md`
 
 ## 観点と結果
@@ -55,11 +55,11 @@
 
 3. ドキュメント整合
 
-- 既存の `docs/issue-backlog.html`（優先度ベース）と併存できるよう、用途を「GitHub Issue 登録用」に限定。
+- 既存の `docs/issue-backlog.md`（優先度ベース）と併存できるよう、用途を「GitHub Issue 登録用」に限定。
 
 ## フォローアップ
 
-- GitHub 側で対象リポジトリに移動後、`docs/github-issues.html` を元に順次 Issue 登録する。
+- GitHub 側で対象リポジトリに移動後、`docs/github-issues.md` を元に順次 Issue 登録する。
 
 ---
 
