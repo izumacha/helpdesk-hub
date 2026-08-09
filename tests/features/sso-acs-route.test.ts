@@ -84,12 +84,8 @@ describe('POST /api/auth/sso/[tenantId]/acs のレート制限', () => {
     await expectRateLimitTripsAfter(() => postAcs(TENANT_ID), 20);
   });
 
-  // レート制限内であれば SAMLResponse 欠落により sso-invalid へリダイレクトされる
-  // (429 ではなく通常のエラーハンドリングが働くことの確認)
-  it('レート制限内ならSAMLResponse欠落で通常どおりsso-invalidにリダイレクトする', async () => {
-    const res = await postAcs(TENANT_ID);
-    expectSsoInvalidRedirect(res);
-  });
+  // 「レート制限内なら 429 ではなく sso-invalid が返る」ケースは、下の監査記録テスト
+  // (SAMLResponse 欠落) が同じリクエストで同じ表明を含んでいるため、ここには重複して置かない
 });
 
 describe('POST /api/auth/sso/[tenantId]/acs のボディ取り出し段階の監査記録', () => {
@@ -108,9 +104,8 @@ describe('POST /api/auth/sso/[tenantId]/acs のボディ取り出し段階の監
     });
   }
 
-  // SAMLResponse フィールドそのものが無い POST も監査に残る。
-  // 送るリクエストはレート制限側の同名ケースと同じだが、あちらは「429 にならないこと」、
-  // こちらは「監査行が残ること」と表明する対象が違うため両方を残している
+  // SAMLResponse フィールドそのものが無い POST も監査に残る
+  // (レート制限内で 429 ではなく sso-invalid が返ることの確認も兼ねる)
   it('SAMLResponse欠落の拒否をsso_assertion_rejectedとして監査に記録する', async () => {
     const res = await postAcs(TENANT_ID);
     expectSsoInvalidRedirect(res);
@@ -134,5 +129,49 @@ describe('POST /api/auth/sso/[tenantId]/acs のボディ取り出し段階の監
     });
     expectSsoInvalidRedirect(res);
     expectSingleRejectedAudit();
+  });
+});
+
+describe('POST /api/auth/sso/[tenantId]/acs のリクエストサイズ上限', () => {
+  // ルート側の上限 (MAX_ACS_BODY_BYTES = 1MB) と同じ値。フォーム形式のまま送ることで
+  // 「サイズ検査がフォームのパースより先に効く」ことも同時に確かめられる
+  const MAX_BYTES = 1024 * 1024;
+  // フォーム本文として解釈させるための Content-Type
+  const FORM_CONTENT_TYPE = { 'Content-Type': 'application/x-www-form-urlencoded' };
+  // 上限を確実に超える実本文 (Content-Length を明示しない経路の検証に使う)
+  const OVERSIZED_BODY = `SAMLResponse=${'A'.repeat(MAX_BYTES)}`;
+
+  // ヘッダの申告だけで上限超過と分かる場合は、本文を読む前に打ち切る。
+  // 本文自体は数バイトしかないので、実バイト数の検査だけならすり抜けてしまう。
+  // それでも 413 になる = ヘッダの事前検査が効いている、と言い切れる
+  it('Content-Lengthヘッダが上限超過なら本文を読む前に413で拒否する', async () => {
+    const res = await postAcs(TENANT_ID, {
+      body: 'SAMLResponse=dummy', // 実サイズは上限内
+      headers: { ...FORM_CONTENT_TYPE, 'Content-Length': String(MAX_BYTES + 1) }, // 申告だけ超過
+    });
+    // 413 Payload Too Large を返す (sso-invalid リダイレクトではない)
+    expect(res.status).toBe(413);
+  });
+
+  // chunked 転送は Content-Length を省略できるため、読み込み後の実バイト数でも検査する。
+  // Request は body から Content-Length を自動付与しないので、この経路がそのまま再現できる
+  it('Content-Lengthが無くても実バイト数が上限超過なら413で拒否する', async () => {
+    const res = await postAcs(TENANT_ID, { body: OVERSIZED_BODY, headers: FORM_CONTENT_TYPE });
+    expect(res.status).toBe(413);
+  });
+
+  // サイズ超過は「アサーションを一切提示していない」ため監査には残さない
+  // (失敗イベントの書き込み予算をゴミで消費させないという設計判断の固定)
+  it('サイズ超過の拒否は監査ログに記録しない', async () => {
+    await postAcs(TENANT_ID, { body: OVERSIZED_BODY, headers: FORM_CONTENT_TYPE });
+    // 監査行は 1 件も増えていない
+    expect([...store.authAuditLogs.values()]).toHaveLength(0);
+  });
+
+  // 上限内の本文はサイズ検査を通り、従来どおり SAMLResponse の検証まで進む
+  it('上限内のボディはサイズ検査を通過して通常の検証に進む', async () => {
+    // 上限内だが SAMLResponse が空なので、通常の入力検証で sso-invalid になる
+    const res = await postAcs(TENANT_ID, { body: new URLSearchParams({ SAMLResponse: '' }) });
+    expectSsoInvalidRedirect(res);
   });
 });

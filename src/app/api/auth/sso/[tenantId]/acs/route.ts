@@ -45,6 +45,13 @@ import {
 // SSO ハンドオフトークンの有効期限 (2 分)。ACS → コールバックの即時引き渡し専用なので短くする
 const SSO_HANDOFF_TTL_MS = 2 * 60 * 1000;
 
+// ACS が受け付けるリクエストボディの最大バイト数 (1MB)。
+// SAML アサーションは署名・証明書込みでも通常数十 KB なので、1MB を超える本文は正当な IdP からは来ない。
+// このエンドポイントは未認証で到達でき、formData() はボディ全体をメモリに載せてからパースするため、
+// 上限が無いと巨大ボディの送り付けでメモリを枯渇させられる (§9 リクエストサイズの上限)。
+// inbound/email・inbound/line が同じ理由で持っている上限と同じ役割で、値だけこの経路の実情に合わせる
+const MAX_ACS_BODY_BYTES = 1024 * 1024;
+
 // 動的セグメント (tenantId) の型
 type Params = { params: Promise<{ tenantId: string }> };
 
@@ -94,9 +101,10 @@ export async function POST(req: Request, { params }: Params) {
   // 残るため「どのテナントの ACS へ不正なリクエストが飛んだか」を後から追える。
   // /code-review ultra 指摘対応: 従来は SAMLResponse 欠落・ボディ破損での拒否 (sso-invalid) だけが
   // 監査に残らず、プローブの形式次第で監査に写る/写らないが変わっていたギャップを解消する。
-  // なお AuthAuditLog に自由記述列は無い (PII 流入の口を作らないため) ので、監査行だけでは
-  // 「本文が無かった」のか「署名検証に落ちた」のかは区別できない。区別が要る調査では、
-  // 各拒否経路がそれぞれの現場で出すサーバーログと突き合わせる
+  // 既知の制約: AuthAuditLog に自由記述列は無い (PII 流入の口を作らないため) ので、監査行だけでは
+  // 「本文が無かった」のか「署名検証に落ちた」のかを区別できない。区別するにはイベント種別を
+  // 分けるしかなく、その場合は失敗イベントの書き込み予算の再分割も伴う (auth-audit.ts 参照)。
+  // サーバーログは経路ごとに出す/出さないが分かれるので、突き合わせ先として当てにはできない
   const auditRejectedAssertion = () =>
     recordAuthAudit({
       event: 'sso_assertion_rejected',
@@ -105,30 +113,29 @@ export async function POST(req: Request, { params }: Params) {
       tenantId,
     });
 
-  // POST ボディ (application/x-www-form-urlencoded) をパースする。
-  // try で囲む範囲は formData() の 1 行だけに絞る: 監査記録や return まで try に入れると、
-  // 「try 内の拒否経路が投げたら catch 側の拒否経路も走って二重記録され得る」構造になり、
-  // 読み手も「どの行の失敗を捕まえたいのか」を追えなくなる
-  let form: FormData;
-  try {
-    // フォームデータをパースする (Content-Type 不一致・本文破損はここで例外になる)
-    form = await req.formData();
-  } catch (err) {
-    // §6「エラーを握り潰さない」: 例外を捨てず理由をログに残してから拒否する。
-    // 本文そのものは出さない (§9 PII をログに漏らさない)
-    console.warn('[sso-acs] リクエストボディの解析に失敗しました:', err);
-    // 認証イベント監査: ボディ破損での試行を記録する
+  // POST ボディ (application/x-www-form-urlencoded) をサイズ上限付きで読み取る (§9)
+  const body = await readAcsFormWithinLimit(req);
+
+  // サイズ超過は 413 で打ち切る。ここは監査に残さない: アサーションを一切提示していないので
+  // 「認証を試みて拒否された」とは呼べず、テナント未解決の sso-unavailable を記録しないのと
+  // 同じ理由で、失敗イベントの書き込み予算をゴミで消費させないため
+  if (body.reason === 'too-large') {
+    return NextResponse.json({ error: 'リクエストが大きすぎます' }, { status: 413 });
+  }
+
+  // 読み込み・パースに失敗した本文は「検証不能なアサーション試行」として監査に残してから拒否する
+  if (body.reason === 'unparsable') {
     await auditRejectedAssertion();
     return errorRedirect('sso-invalid');
   }
 
   // SAMLResponse フィールドを取得する
-  const value = form.get('SAMLResponse');
+  const value = body.form.get('SAMLResponse');
   // 文字列でなければ (フィールド欠落・ファイル添付) / 空文字なら不正な応答として扱う
   if (typeof value !== 'string' || value.length === 0) {
     // 認証イベント監査: SAMLResponse フィールドの欠落・空文字での試行を記録する。
-    // ここはパース例外ではなく通常の入力検証の分岐なので、監査行だけ残しログは出さない
-    // (未認証で毎分 60 回まで叩ける経路のため、1 リクエスト 1 行のログ出力は避ける)
+    // ここは例外ではなく通常の入力検証の分岐なので、握り潰している例外は無くログは足さない
+    // (未認証で毎分 60 回叩ける経路に「1 リクエスト = 1 ログ行」を足さない意図もある)
     await auditRejectedAssertion();
     return errorRedirect('sso-invalid');
   }
@@ -256,6 +263,59 @@ export async function POST(req: Request, { params }: Params) {
       'Content-Security-Policy': "frame-ancestors 'none'",
     },
   });
+}
+
+// ACS のボディ読み取り結果。呼び出し元が「413 で打ち切る (監査に残さない)」と
+// 「sso-invalid で拒否する (監査に残す)」を出し分けられるよう、失敗理由を判別可能な形で返す
+type AcsBodyResult =
+  | { reason: 'ok'; form: FormData } // サイズ上限内でパースできた
+  | { reason: 'too-large' } // サイズ上限超過 (本文は読まない/捨てる)
+  | { reason: 'unparsable' }; // 読み込み・パースに失敗した (Content-Type 不一致・本文破損)
+
+// ACS のリクエストボディをサイズ上限付きで読み取り FormData にする。
+// 未認証で到達できる経路なので、formData() にボディ全体を載せる前に必ずサイズを検査する (§9)。
+// inbound/email・inbound/line と同じ「Content-Length の事前検査 + 読み込み後の実バイト数検査」の
+// 二段構え: Content-Length は chunked 転送で省略できるため、ヘッダの検査だけでは防げない。
+// (3 経路で同型なので将来は共通ヘルパーに寄せる候補だが、超過時に返すレスポンスがルートごとに
+//  違う (413 JSON / 413 JSON / ここ) ため、今は各ルートに置いたままにしている)
+async function readAcsFormWithinLimit(req: Request): Promise<AcsBodyResult> {
+  // Content-Length が上限超過なら本体を読む前に弾く (巨大ボディをそもそもメモリに載せない)。
+  // || '-1' で null (ヘッダ無し) と空文字列の両方を -1 にまとめる。-1 は上限より小さいので
+  // ここは通過し、後段の実バイト数検査に委ねられる
+  const contentLength = Number(req.headers.get('content-length') || '-1');
+  // 数値として読めて上限を超えていれば、この時点で打ち切る
+  if (Number.isFinite(contentLength) && contentLength > MAX_ACS_BODY_BYTES) {
+    // サイズ超過はサーバーログに残す (本文は読んでいないので中身は出ない)
+    console.warn(`[sso-acs] リクエストボディが大きすぎます (header): ${contentLength} bytes`);
+    return { reason: 'too-large' };
+  }
+
+  try {
+    // 先にバイト列として読み切る (formData() に渡す前に実サイズを測るため)
+    const rawBody = await req.arrayBuffer();
+    // 実バイト数が上限超過なら弾く (Content-Length を省略した chunked 転送への防御)
+    if (rawBody.byteLength > MAX_ACS_BODY_BYTES) {
+      // 実測値をログに残す (本文そのものは出さない)
+      console.warn(
+        `[sso-acs] リクエストボディが大きすぎます (actual): ${rawBody.byteLength} bytes`,
+      );
+      return { reason: 'too-large' };
+    }
+    // サイズ検査済みのバイト列を FormData にパースする。req のボディは読み切って消費済みなので、
+    // 同じバイト列と Content-Type (multipart の boundary を含む) で新しい Request を組み立て直す
+    const form = await new Request('http://sso-acs.invalid', {
+      method: 'POST',
+      headers: { 'content-type': req.headers.get('content-type') ?? '' },
+      body: rawBody,
+    }).formData();
+    // パースできたフォームを返す
+    return { reason: 'ok', form };
+  } catch (err) {
+    // §6「エラーを握り潰さない」: 読み込み・パースの失敗理由をログに残してから呼び出し元へ返す。
+    // 本文そのものは出さない (§9 PII をログに漏らさない)
+    console.warn('[sso-acs] リクエストボディの解析に失敗しました:', err);
+    return { reason: 'unparsable' };
+  }
 }
 
 // SSO 認証後に表示する「ログイン続行の確認」ページを描画する。
