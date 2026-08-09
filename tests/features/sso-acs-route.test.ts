@@ -55,6 +55,15 @@ async function postAcs(
   return POST(req, { params: Promise.resolve({ tenantId }) });
 }
 
+// 「レート制限 (429) ではなく通常のエラー処理で sso-invalid へ戻された」ことを表明する共通ヘルパー。
+// この 2 行は 4 箇所のテストで同じなので 1 箇所に集約する (§6 DRY)
+function expectSsoInvalidRedirect(res: Response): void {
+  // 303 See Other でブラウザを GET 遷移させる
+  expect(res.status).toBe(303);
+  // 遷移先はログイン画面で、理由コードは sso-invalid
+  expect(res.headers.get('location')).toContain('error=sso-invalid');
+}
+
 // 各テストの共通初期化: レート制限・監査予算・メモリストアを毎回まっさらにする
 beforeEach(() => {
   __resetRateLimits();
@@ -79,8 +88,7 @@ describe('POST /api/auth/sso/[tenantId]/acs のレート制限', () => {
   // (429 ではなく通常のエラーハンドリングが働くことの確認)
   it('レート制限内ならSAMLResponse欠落で通常どおりsso-invalidにリダイレクトする', async () => {
     const res = await postAcs(TENANT_ID);
-    expect(res.status).toBe(303);
-    expect(res.headers.get('location')).toContain('error=sso-invalid');
+    expectSsoInvalidRedirect(res);
   });
 });
 
@@ -100,11 +108,12 @@ describe('POST /api/auth/sso/[tenantId]/acs のボディ取り出し段階の監
     });
   }
 
-  // SAMLResponse フィールドそのものが無い POST も監査に残る
+  // SAMLResponse フィールドそのものが無い POST も監査に残る。
+  // 送るリクエストはレート制限側の同名ケースと同じだが、あちらは「429 にならないこと」、
+  // こちらは「監査行が残ること」と表明する対象が違うため両方を残している
   it('SAMLResponse欠落の拒否をsso_assertion_rejectedとして監査に記録する', async () => {
     const res = await postAcs(TENANT_ID);
-    expect(res.status).toBe(303);
-    expect(res.headers.get('location')).toContain('error=sso-invalid');
+    expectSsoInvalidRedirect(res);
     expectSingleRejectedAudit();
   });
 
@@ -112,8 +121,7 @@ describe('POST /api/auth/sso/[tenantId]/acs のボディ取り出し段階の監
   it('SAMLResponse空文字の拒否をsso_assertion_rejectedとして監査に記録する', async () => {
     // フィールドはあるが空のフォームボディで送る
     const res = await postAcs(TENANT_ID, { body: new URLSearchParams({ SAMLResponse: '' }) });
-    expect(res.status).toBe(303);
-    expect(res.headers.get('location')).toContain('error=sso-invalid');
+    expectSsoInvalidRedirect(res);
     expectSingleRejectedAudit();
   });
 
@@ -124,8 +132,7 @@ describe('POST /api/auth/sso/[tenantId]/acs のボディ取り出し段階の監
       body: '{"broken":',
       headers: { 'Content-Type': 'application/json' },
     });
-    expect(res.status).toBe(303);
-    expect(res.headers.get('location')).toContain('error=sso-invalid');
+    expectSsoInvalidRedirect(res);
     expectSingleRejectedAudit();
   });
 });
