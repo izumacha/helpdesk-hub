@@ -304,7 +304,7 @@ export type AuthAuditEvent =
   | 'magic_link_login_failure' // マジックリンク失敗 (無効/失効/消費済みトークン・ユーザー消失した孤児トークン)
   | 'sso_login_success' // SSO (SAML) 経由のセッション発行成功 (ssoHandoff トークン消費)
   | 'sso_assertion_accepted' // SAML アサーションの検証・受理 (ACS でのリプレイチェック通過)
-  | 'sso_assertion_rejected' // SAML アサーションの検証失敗 (署名不正・Issuer/Audience 不一致・期限切れ)
+  | 'sso_assertion_rejected' // SAML アサーションの検証失敗 (署名不正・Issuer/Audience 不一致・期限切れ・SAMLResponse 欠落/ボディ破損)
   | 'sso_assertion_replayed' // 同一 SAML アサーションの再利用を検知して拒否 (リプレイ攻撃の疑い)
   | 'sso_user_not_found'; // SAML 検証は通ったが該当テナントに本人のユーザーが存在せず拒否 (JIT 無効)
 

@@ -87,6 +87,21 @@ export async function POST(req: Request, { params }: Params) {
   // テナント単位の制限超過なら 429 をそのまま返す
   if (tenantLimitResponse) return tenantLimitResponse;
 
+  // 認証イベント監査 (否認防止): 検証不能なアサーション試行の記録 (本文欠落・破損・署名検証失敗で共用)。
+  // 検証を通っていない以上アサーションの主張 (メール等) は信用できないため email は
+  // AUTH_AUDIT_UNKNOWN_EMAIL で残し、確かなテナント (URL から解決し SSO 有効と確認済み) だけを残す。
+  // console.error/warn はプロセス再起動やログローテーションで失われるが、監査行は追記専用テーブルに
+  // 残るため「どのテナントの ACS へ不正なリクエストが飛んだか」を後から追える。
+  // /code-review ultra 指摘対応: 従来は SAMLResponse 欠落・ボディ破損での拒否 (sso-invalid) だけが
+  // 監査に残らず、プローブの形式次第で監査に写る/写らないが変わっていたギャップを解消する
+  const auditRejectedAssertion = () =>
+    recordAuthAudit({
+      event: 'sso_assertion_rejected',
+      email: AUTH_AUDIT_UNKNOWN_EMAIL,
+      userId: null,
+      tenantId,
+    });
+
   // POST ボディ (application/x-www-form-urlencoded) から SAMLResponse を取り出す
   let samlResponse: string;
   try {
@@ -94,11 +109,16 @@ export async function POST(req: Request, { params }: Params) {
     const form = await req.formData();
     // SAMLResponse フィールドを取得する
     const value = form.get('SAMLResponse');
-    // 文字列でなければ不正な応答として扱う
-    if (typeof value !== 'string' || value.length === 0) return errorRedirect('sso-invalid');
+    // 文字列でなければ不正な応答として扱う (監査に記録してから拒否する)
+    if (typeof value !== 'string' || value.length === 0) {
+      // 認証イベント監査: SAMLResponse フィールドの欠落・空文字での試行を記録する
+      await auditRejectedAssertion();
+      return errorRedirect('sso-invalid');
+    }
     samlResponse = value;
   } catch {
-    // ボディが壊れている場合は不正扱い
+    // ボディが壊れている場合は不正扱い (監査に記録してから拒否する)
+    await auditRejectedAssertion();
     return errorRedirect('sso-invalid');
   }
 
@@ -118,17 +138,8 @@ export async function POST(req: Request, { params }: Params) {
   } catch (err) {
     // 検証失敗は内部詳細を返さずログイン画面へ戻す (なりすまし/設定ミスを区別せず拒否)
     console.error('[sso-acs] アサーション検証に失敗しました:', err);
-    // 認証イベント監査 (否認防止): 検証を通らなかったアサーションでの試行を記録する。
-    // 検証に失敗した以上アサーションの主張 (メール等) は信用できないため email は
-    // AUTH_AUDIT_UNKNOWN_EMAIL で残し、確かなテナント (URL から解決し SSO 有効と確認済み) だけを残す。
-    // console.error はプロセス再起動やログローテーションで失われるが、監査行は追記専用テーブルに
-    // 残るため「どのテナントの ACS へ不正なアサーションが飛んだか」を後から追える
-    await recordAuthAudit({
-      event: 'sso_assertion_rejected',
-      email: AUTH_AUDIT_UNKNOWN_EMAIL,
-      userId: null,
-      tenantId,
-    });
+    // 認証イベント監査: 検証を通らなかったアサーションでの試行を記録する (詳細は関数定義のコメント参照)
+    await auditRejectedAssertion();
     return errorRedirect('sso-invalid');
   }
 
