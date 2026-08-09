@@ -145,7 +145,7 @@ stateDiagram-v2
 
 Lite テナントに Pro 時代の旧データ（`Escalated` / `Resolved` 等）が残っている場合は Pro 表へフォールバックし、Lite の 3 値へ戻す経路を確保する。
 
-> 実装上の単一の真実は `src/domain/ticket-status.ts` の `ALLOWED_TRANSITIONS`（Pro）と `ALLOWED_TRANSITIONS_LITE`（Lite）。`docs/er-diagram.md` および `docs/overview.md` の遷移図も同じ表に基づく。
+> 実装上の単一の真実は `src/domain/ticket-status.ts` の `ALLOWED_TRANSITIONS`（Pro）と `ALLOWED_TRANSITIONS_LITE`（Lite）。**遷移図は docs 内では本節にのみ掲載**し、`docs/er-diagram.md`・`docs/overview.md` からは本節を参照する（重複掲載による乖離防止）。遷移表を変更するときは `ticket-status.ts`・`tests/ticket-status.test.ts`・本節を同時に更新する。
 
 ## 6. 非機能要件
 
