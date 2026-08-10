@@ -87,7 +87,7 @@ import { recordQuarantineSafe } from '@/lib/quarantine';
 import {
   readTextWithinByteLimit,
   readFormWithinByteLimit,
-  type BodyRejectReason,
+  type BodyRejectFailure,
 } from '@/lib/request-body-limit';
 // 拒否時のログ・ステータス・文言をまとめて組み立てるヘルパー (ルート層の関心事なので別モジュール)
 import { bodyRejectResponse } from '@/lib/body-reject-response';
@@ -146,9 +146,11 @@ interface InboundFields {
 // line / stripe) と同じ「結果を返して呼び出し元が分岐する」形に揃える。
 // (詰め直していた頃は、cause をクラスフィールドとして宣言すると target: ES2022 では super() の
 //  後に undefined で上書きされる、という罠を 1 経路だけ抱えていた)
+// 失敗側はヘルパーの戻り値をそのまま使う (書き写して広げると、cause が付くのは
+// 'unparsable' のときだけ、という対応関係が型から落ちる)
 type InboundReadResult =
   | { ok: true; fields: InboundFields } // 本文を読み取ってフィールドを取り出せた
-  | { ok: false; reason: BodyRejectReason; cause?: unknown }; // 読み取れなかった (理由と原因)
+  | BodyRejectFailure; // 読み取れなかった (理由と、解析失敗なら原因)
 
 // JSON の形式不正 (JSON.parse の失敗・オブジェクトでない) は引き続き例外で投げる。
 // 「本文は受け取れたが中身が不正」は読み取りの失敗とは別の話で、呼び出し元も 400 一本に
@@ -178,7 +180,7 @@ async function readInboundFields(req: Request): Promise<InboundReadResult> {
     // 読み取れなかった理由と (解析失敗なら) その原因をそのまま返す。
     // ステータス・文言・ログは POST 側の共通ヘルパーがまとめて決める (ここで二重にログを出さない)。
     // 'unparsable' のときだけ cause に元の例外が入る (他の理由では undefined)
-    if (!formResult.ok) return { ok: false, reason: formResult.reason, cause: formResult.cause };
+    if (!formResult.ok) return formResult;
     // 上限内で読み取れてパースできたフォーム
     const form = formResult.form;
     // SendGrid は実際の RCPT を envelope (JSON 文字列) に入れるため、あれば優先的に使う
@@ -263,7 +265,7 @@ async function readInboundFields(req: Request): Promise<InboundReadResult> {
     INBOUND_EMAIL_BODY_TOTAL_TIMEOUT_MS,
   );
   // 読み取れなかった理由をそのまま返す (ステータスへの振り分けは POST 側)
-  if (!bodyResult.ok) return { ok: false, reason: bodyResult.reason };
+  if (!bodyResult.ok) return bodyResult;
   // 上限内で読み取れた本文
   const rawText = bodyResult.text;
   // サイズ検査済みの文字列を JSON としてパースする (unknown で受けて次行で型を絞り込む)
@@ -415,7 +417,7 @@ export async function POST(req: Request) {
     read = await readInboundFields(req);
   } catch (err) {
     // 本文は受け取れたが中身が JSON として不正だった場合 (握り潰さずログに残す)
-    console.error('[POST /api/inbound/email] failed to read request body', err);
+    console.error('[POST /api/inbound/email] JSON ボディの解析に失敗しました', err);
     // 形式不正は 400 で返す (外部には詳細を出さない)
     return NextResponse.json({ error: 'リクエストの形式が正しくありません' }, { status: 400 });
   }

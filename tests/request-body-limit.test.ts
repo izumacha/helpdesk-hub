@@ -13,6 +13,8 @@ import {
   DEFAULT_BODY_IDLE_TIMEOUT_MS,
   DEFAULT_BODY_TOTAL_TIMEOUT_MS,
 } from '@/lib/request-body-limit';
+// 経路ごとに上書きしている全体期限 (関係の表明に使う)
+import { INBOUND_EMAIL_BODY_TOTAL_TIMEOUT_MS } from '@/lib/webhook-body-limits';
 
 // テストで使う上限 (小さくして高速に回す)
 const LIMIT = 1024;
@@ -326,6 +328,28 @@ describe('readFormWithinByteLimit', () => {
   // Content-Type を振り分けるため到達しない。**実運用で起こるのは「Content-Type は multipart
   // なのに本文が壊れている」形**なので、そちらでも例外が付いて返ることを別途固定する
   // (この経路が無いと、ルートが握れる cause は実質テストされていないことになる)
+  // §9「機密情報・PII をログに漏らさない」の実測固定。この cause は sso-acs と
+  // マジックリンクのコールバック — **SAML アサーションとログイントークンを本文に持つ経路** —
+  // でサーバーログへ書き出される。現在の undici は本文を例外に載せないが、それはコメントで
+  // 観測を書いているだけでは守れない (パーサ改善で該当パートのヘッダを message に含める
+  // 実装は珍しくない)。将来のランタイム更新で載るようになったらここで落ちる
+  it('解析失敗の例外に本文の中身が入らない (ログへ書き出すため)', async () => {
+    // 本文に見つけやすい印を仕込む (実際は SAMLResponse やトークンが入る位置)
+    const marker = 'SECRET-MARKER-DO-NOT-LOG';
+    const req = new Request('http://x', {
+      method: 'POST',
+      body: `--X\r\nContent-Disposition: form-data; name="SAMLResponse"\r\n\r\n${marker}`,
+      headers: { 'content-type': 'multipart/form-data; boundary=X' },
+    });
+    const result = await readFormWithinByteLimit(req, LIMIT);
+    expect(result.ok).toBe(false);
+    if (!result.ok && result.reason === 'unparsable') {
+      // console.warn(msg, cause) が実際に描画するのは message と stack
+      const rendered = `${String((result.cause as Error).message)}\n${String((result.cause as Error).stack)}`;
+      expect(rendered).not.toContain(marker);
+    }
+  });
+
   it('multipart の本文が壊れていても unparsable と原因の例外を返す', async () => {
     // boundary は宣言しているが、パートのヘッダが途中で切れている本文
     const req = new Request('http://x', {
@@ -445,6 +469,13 @@ describe('既定の制限時間', () => {
   it('全体期限は Node 既定の requestTimeout (300 秒) より短い', () => {
     // 超えるとサーバー側で先に切られ、こちらの打ち切りが一度も効かなくなる
     expect(DEFAULT_BODY_TOTAL_TIMEOUT_MS).toBeLessThan(300_000);
+  });
+
+  // 経路ごとに上書きしている唯一の全体期限も同じ関係を満たす必要がある。
+  // **むしろこちらの方が天井に近い** (240 秒 / 300 秒) ので、緩める変更はここで止める
+  it('メール取り込みの全体期限も無通信の上限と requestTimeout の間に収まる', () => {
+    expect(INBOUND_EMAIL_BODY_TOTAL_TIMEOUT_MS).toBeGreaterThan(DEFAULT_BODY_IDLE_TIMEOUT_MS);
+    expect(INBOUND_EMAIL_BODY_TOTAL_TIMEOUT_MS).toBeLessThan(300_000);
   });
 
   it('無通信の上限は、保持数が伸びすぎない範囲に収まっている', () => {

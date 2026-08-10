@@ -160,6 +160,12 @@ type BoundedFormResult =
 // 本文を取り出せなかった理由。呼び出し元がログ文言の型を自前で導出しなくて済むよう公開する
 export type BodyRejectReason = Exclude<BoundedFormResult, { ok: true }>['reason'];
 
+// 読み取りに失敗したときの結果そのもの。**呼び出し元が自前で書き写さずに済むよう公開する。**
+// 書き写すと `{ reason: BodyRejectReason; cause?: unknown }` のように広げてしまいがちで、
+// 「cause が付くのは unparsable のときだけ」という対応関係が型から落ちる
+// (= timeout に cause を添える実装がコンパイルを通ってしまう)
+export type BodyRejectFailure = Exclude<BoundedFormResult, { ok: true }>;
+
 // 「本文を読むだけ」の経路で起こりうる理由 (フォーム解析をしないので 'unparsable' は生じない)。
 // readTextWithinByteLimit しか使わないルートが、到達しない文言をでっち上げずに済むよう公開する
 export type BodyReadRejectReason = Exclude<BoundedTextResult, { ok: true }>['reason'];
