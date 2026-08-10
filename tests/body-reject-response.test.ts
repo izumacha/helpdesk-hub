@@ -35,14 +35,20 @@ afterEach(() => {
 
 describe('bodyRejectResponse', () => {
   // 同じ 400 に落ちる 3 つの理由が、それぞれ別の文言で返ることを表明する
+  // 失敗結果そのものを渡す形なので、'unparsable' だけは cause を伴う (型がそう要求する)
   it.each([
-    ['too-large', 413, MESSAGES['too-large']],
-    ['timeout', 400, MESSAGES.timeout],
-    ['unreadable', 400, MESSAGES.unreadable],
-    ['unparsable', 400, MESSAGES.unparsable],
-  ] as const)('%s は %i と理由ごとの文言を返す', async (reason, status, message) => {
+    ['too-large', { ok: false, reason: 'too-large' } as const, 413, MESSAGES['too-large']],
+    ['timeout', { ok: false, reason: 'timeout' } as const, 400, MESSAGES.timeout],
+    ['unreadable', { ok: false, reason: 'unreadable' } as const, 400, MESSAGES.unreadable],
+    [
+      'unparsable',
+      { ok: false, reason: 'unparsable', cause: new Error('x') } as const,
+      400,
+      MESSAGES.unparsable,
+    ],
+  ] as const)('%s は %i と理由ごとの文言を返す', async (_name, failure, status, message) => {
     captureWarn();
-    const res = bodyRejectResponse(reason, MAX_BYTES, {
+    const res = bodyRejectResponse(failure, MAX_BYTES, {
       logPrefix: '[test-route]',
       messages: MESSAGES,
     });
@@ -55,7 +61,10 @@ describe('bodyRejectResponse', () => {
   // ログには理由の説明が出て、本文の中身は出ない (§9 PII をログに漏らさない)
   it('拒否理由をログ接頭辞つきで 1 行だけ出す', () => {
     const calls = captureWarn();
-    bodyRejectResponse('too-large', MAX_BYTES, { logPrefix: '[test-route]', messages: MESSAGES });
+    bodyRejectResponse({ ok: false, reason: 'too-large' }, MAX_BYTES, {
+      logPrefix: '[test-route]',
+      messages: MESSAGES,
+    });
     // 1 リクエストにつきログは 1 行だけ (呼び出し元との二重出力を防ぐ)
     expect(calls).toHaveLength(1);
     // 接頭辞と上限バイト数が読める形で出ている
@@ -68,10 +77,9 @@ describe('bodyRejectResponse', () => {
   // 申告サイズを渡したときは、それがログ行に出る (413 の切り分けに使う唯一の数字)
   it('declaredLength を渡すと申告サイズがログ行に出る', () => {
     const calls = captureWarn();
-    bodyRejectResponse('too-large', MAX_BYTES, {
+    bodyRejectResponse({ ok: false, reason: 'too-large', declaredLength: 999_999 }, MAX_BYTES, {
       logPrefix: '[test-route]',
       messages: MESSAGES,
-      declaredLength: 999_999,
     });
     expect(String(calls[0]![0])).toContain('999999');
   });
@@ -79,7 +87,10 @@ describe('bodyRejectResponse', () => {
   // 申告が無い場合は、無いと分かる形で残す (数字をでっち上げない)
   it('declaredLength が無いときは申告が無い旨をログに残す', () => {
     const calls = captureWarn();
-    bodyRejectResponse('too-large', MAX_BYTES, { logPrefix: '[test-route]', messages: MESSAGES });
+    bodyRejectResponse({ ok: false, reason: 'too-large' }, MAX_BYTES, {
+      logPrefix: '[test-route]',
+      messages: MESSAGES,
+    });
     expect(String(calls[0]![0])).toContain('申告は無し');
   });
 
@@ -87,10 +98,9 @@ describe('bodyRejectResponse', () => {
   it('cause を渡すと原因の例外もログに載せる', () => {
     const cause = new Error('boundary が壊れています');
     const calls = captureWarn();
-    bodyRejectResponse('unparsable', MAX_BYTES, {
+    bodyRejectResponse({ ok: false, reason: 'unparsable', cause }, MAX_BYTES, {
       logPrefix: '[test-route]',
       messages: MESSAGES,
-      cause,
     });
     // 説明文と原因の例外が同じ 1 行にまとまって出る
     expect(calls[0]).toHaveLength(2);

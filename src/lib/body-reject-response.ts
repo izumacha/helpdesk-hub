@@ -15,6 +15,7 @@ import {
   logBodyReject,
   type BodyRejectReason,
   type BodyRejectMessages,
+  type BodyRejectFailure,
 } from '@/lib/request-body-limit';
 
 /**
@@ -37,23 +38,19 @@ import {
  * @param options ログの接頭辞・理由ごとの文言・(あれば) 原因の例外
  */
 export function bodyRejectResponse<R extends BodyRejectReason>(
-  reason: R,
+  // **読み取り結果そのものを受け取る** (中身をばらして渡す形にしない理由は logBodyReject 参照)
+  failure: BodyRejectFailure & { reason: R },
   maxBytes: number,
   options: {
     logPrefix: string; // ログ行の先頭に付ける識別子。角括弧まで含めて渡す (例: '[POST /api/inbound/line]')
     messages: BodyRejectMessages<R>; // その経路に起こりうる理由ごとの日本語の文言
-    cause?: unknown; // 原因の例外 (readFormWithinByteLimit の unparsable でのみ渡る)
-    declaredLength?: number; // Content-Length の申告値 (サイズ超過の切り分けに使う)
   },
 ): NextResponse {
-  // 拒否理由と (あれば) 原因の例外をサーバーログへ 1 行で残す (出し方は 5 経路で共通)
-  logBodyReject(options.logPrefix, reason, maxBytes, {
-    cause: options.cause,
-    declaredLength: options.declaredLength,
-  });
+  // 拒否理由と (あれば) 原因の例外・申告サイズをサーバーログへ 1 行で残す (出し方は 5 経路で共通)
+  logBodyReject(options.logPrefix, failure, maxBytes);
   // 理由に対応する文言とステータスで JSON を返す (外部には理由の詳細を出さない)
   return NextResponse.json(
-    { error: options.messages[reason] },
-    { status: bodyRejectStatus(reason) },
+    { error: options.messages[failure.reason] },
+    { status: bodyRejectStatus(failure.reason) },
   );
 }

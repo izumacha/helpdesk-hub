@@ -10,6 +10,7 @@
 
 import { describe, expect, it, vi, afterEach } from 'vitest';
 import { bodyRejectResponse } from '@/lib/body-reject-response';
+import type { BodyRejectFailure, BodyRejectMessages } from '@/lib/request-body-limit';
 import {
   LINE_BODY_REJECT_MESSAGES,
   INBOUND_EMAIL_BODY_REJECT_MESSAGES,
@@ -44,9 +45,16 @@ describe('受信 Webhook の拒否文言', () => {
     vi.spyOn(console, 'warn').mockImplementation(() => {});
     // 表が持つ理由をすべて回す (経路によって 3 つ or 4 つ)
     for (const [reason, message] of Object.entries(messages)) {
-      const res = bodyRejectResponse(reason as keyof typeof messages, 1024, {
+      // 'unparsable' だけは型が cause を要求するので添える (中身は表の検証に影響しない)
+      const failure =
+        reason === 'unparsable'
+          ? ({ ok: false, reason, cause: new Error('x') } as const)
+          : ({ ok: false, reason: reason as 'too-large' | 'timeout' | 'unreadable' } as const);
+      // 3 つの表を 1 つのループで回すため、ここだけ型を広げて渡す。
+      // (本番の呼び出しは表と経路が 1 対 1 なので、型引数で理由の網羅が強制される)
+      const res = bodyRejectResponse(failure as BodyRejectFailure, 1024, {
         logPrefix: `[${name}]`,
-        messages,
+        messages: messages as BodyRejectMessages,
       });
       // 応答本文はその理由に割り当てた文言そのもの
       expect(await res.json()).toEqual({ error: message });

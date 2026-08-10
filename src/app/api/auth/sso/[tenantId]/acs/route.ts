@@ -275,9 +275,10 @@ export async function POST(req: Request, { params }: Params) {
 // (ログの出し方は logBodyReject に集約。採用するルートごとに書き写さないため)。
 async function readAcsForm(req: Request): Promise<FormData | null> {
   // ボディをサイズ上限つきで読み取ってフォームにする (超過・時間切れ・断・パース失敗を判別して返す)
-  // 無通信の許容時間は延ばした方を使う。この経路は再送が無く (打ち切るとユーザーには
-  // ログイン失敗として出る)、読み取りの前にレート制限を通るので延ばしても保持数は増えない
-  // (詳細は STALL_TOLERANT_BODY_IDLE_TIMEOUT_MS の定義コメント)
+  // 無通信の許容時間は延ばした方を使う。この経路は再送が無く、打ち切るとユーザーには
+  // ログイン失敗として出て取り返せない。読み取りの前にレート制限を通るので、延ばした分の
+  // 同時保持数の増加は「その上限 × 許容時間」で頭打ちになる (増えないわけではない。
+  // 見積もりの根拠は STALL_TOLERANT_BODY_IDLE_TIMEOUT_MS の定義コメント)
   const result = await readFormWithinByteLimit(
     req,
     SSO_ACS_MAX_BODY_BYTES,
@@ -287,10 +288,7 @@ async function readAcsForm(req: Request): Promise<FormData | null> {
   if (result.ok) return result.form;
   // §6「エラーを握り潰さない」: どの理由で拒否したかを (解析失敗なら原因の例外も添えて)
   // ログに残してから null を返す
-  logBodyReject('[sso-acs]', result.reason, SSO_ACS_MAX_BODY_BYTES, {
-    cause: result.cause,
-    declaredLength: result.declaredLength,
-  });
+  logBodyReject('[sso-acs]', result, SSO_ACS_MAX_BODY_BYTES);
   return null;
 }
 

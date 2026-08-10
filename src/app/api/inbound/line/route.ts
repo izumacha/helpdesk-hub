@@ -231,10 +231,9 @@ export async function POST(req: Request) {
   if (!bodyResult.ok) {
     // どの理由 (サイズ超過 / だらだら送り / 接続断) で拒否したかはサーバーログにだけ残し、
     // 外部には理由ごとに決めた文言だけを返す。ログ・ステータス・文言の組み立ては共通ヘルパーに委ねる
-    return bodyRejectResponse(bodyResult.reason, LINE_WEBHOOK_MAX_BODY_BYTES, {
+    return bodyRejectResponse(bodyResult, LINE_WEBHOOK_MAX_BODY_BYTES, {
       logPrefix: '[POST /api/inbound/line]',
       messages: LINE_BODY_REJECT_MESSAGES,
-      declaredLength: bodyResult.declaredLength,
     });
   }
   // 上限内で読み取れた本文 (署名検証と JSON.parse の対象になる生テキスト)

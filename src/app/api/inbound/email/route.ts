@@ -171,8 +171,9 @@ async function readInboundFields(req: Request): Promise<InboundReadResult> {
     // 引き継ぐので、以前の「バイト列から Request を組み直して formData() する」形と結果は同じ。
     // 全体期限はこの経路の値へ延ばし (既定 120 秒では 25MB を送り切れない)、無通信の上限も
     // 延ばした方を使う (自分自身の解析でループが止まるので、同時に届いた別のメールが
-    // 巻き添えにならないように)。共有シークレットの照合を通らないとここへ来ないため、
-    // 延ばしてもゲート無しの保持数は増えない
+    // 巻き添えにならないように)。共有シークレットの照合を通らないとここへ来ないので、
+    // 延ばした分を負えるのは鍵を持つ相手だけになる (同時実行数そのものに上限は無く、
+    // それは既知のギャップとして request-body-limit.ts 冒頭に記述してある)
     const formResult = await readFormWithinByteLimit(
       req,
       INBOUND_EMAIL_MAX_BODY_BYTES,
@@ -427,11 +428,9 @@ export async function POST(req: Request) {
   // ログ・ステータス・文言の組み立ては共通ヘルパーに委ね、この経路では文言表と接頭辞だけを決める。
   // 解析失敗の原因 (cause) もそのまま渡してサーバーログに残す (§6 エラーを握り潰さない)
   if (!read.ok) {
-    return bodyRejectResponse(read.reason, INBOUND_EMAIL_MAX_BODY_BYTES, {
+    return bodyRejectResponse(read, INBOUND_EMAIL_MAX_BODY_BYTES, {
       logPrefix: '[POST /api/inbound/email]',
       messages: INBOUND_EMAIL_BODY_REJECT_MESSAGES,
-      cause: read.cause,
-      declaredLength: read.declaredLength,
     });
   }
   // 上限内で読み取れたフィールド

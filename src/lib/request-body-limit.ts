@@ -283,25 +283,23 @@ export function bodyRejectStatus(reason: BodyRejectReason): 413 | 400 {
  * @param logPrefix ログ行の先頭に付ける識別子。**角括弧まで含めて渡す**
  *   (例: '[sso-acs]')。`quarantine.ts` / `settings-audit.ts` の同名引数と同じ約束にしてある
  *   — 片方だけ括弧を足す形にすると、隣の呼び出しを写した実装が `[[sso-acs]]` になる
- * @param reason 読み取りが失敗した理由
+ * @param failure 読み取りに失敗した結果そのもの (理由・原因の例外・申告サイズを持つ)
  * @param maxBytes 適用していた上限バイト数 (サイズ超過の文言に載せる)
- * @param extra 原因の例外 (フォーム解析の失敗時のみ) と Content-Length の申告値
  */
 export function logBodyReject(
   logPrefix: string,
-  reason: BodyRejectReason,
+  // **読み取り結果そのものを受け取る。** 中身 (reason / cause / declaredLength) を呼び出し元で
+  // ばらして渡す形にすると、5 経路すべてが同じ分解を書き写すうえ、cause が unknown なので
+  // declaredLength と取り違えても typecheck を通ってしまう ('unparsable' 以外は cause が
+  // undefined なので、ほぼ全ケースで成立してしまう)。丸ごと渡せばどちらも起きない
+  failure: BodyRejectFailure,
   maxBytes: number,
-  // 末尾 2 つはオプション引数にせずオブジェクトで受ける。位置引数のままだと cause が
-  // unknown なので `(..., declaredLength, cause)` と取り違えても typecheck を通ってしまい
-  // (cause が undefined = 'unparsable' 以外の全ケースで成立する)、ログが静かに壊れる。
-  // 兄弟の bodyRejectResponse も同じ値をオブジェクトで受けており、呼び方も揃う
-  extra: { cause?: unknown; declaredLength?: number } = {},
 ): void {
   // 理由の説明文を組み立てる (本文の中身は含まない。§9 PII をログに漏らさない)
-  const detail = describeBodyRejectReason(reason, maxBytes, extra.declaredLength);
+  const detail = describeBodyRejectReason(failure.reason, maxBytes, failure.declaredLength);
   // 原因の例外があれば同じ行に添える (無いときに undefined を渡すと行末に "undefined" が出る)
-  if (extra.cause === undefined) console.warn(`${logPrefix} ${detail}`);
-  else console.warn(`${logPrefix} ${detail}`, extra.cause);
+  if (failure.cause === undefined) console.warn(`${logPrefix} ${detail}`);
+  else console.warn(`${logPrefix} ${detail}`, failure.cause);
 }
 
 /**

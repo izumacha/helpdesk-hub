@@ -193,7 +193,7 @@ export async function POST(request: Request) {
   // 読み取る (§9)。request.formData() を直接呼ぶとボディ全体がメモリに載るため、
   // Content-Length を省いた chunked 転送で巨大な本文を送り付けられる
   // 無通信の許容時間は延ばした方を使う (SSO ACS と同じ理由。再送が無く、読み取りの前に
-  // レート制限を通る経路なので延ばしても保持数は増えない)
+  // レート制限を通るので、増える同時保持数がその上限で頭打ちになる経路)
   const formResult = await readFormWithinByteLimit(
     request,
     MAGIC_LINK_CALLBACK_MAX_BODY_BYTES,
@@ -203,10 +203,7 @@ export async function POST(request: Request) {
   if (!formResult.ok) {
     // §6「エラーを握り潰さない」: どの理由で拒否したかを (解析失敗なら原因の例外も添えて)
     // ログに残す (本文の中身は出さない §9)
-    logBodyReject('[magic-link-callback]', formResult.reason, MAGIC_LINK_CALLBACK_MAX_BODY_BYTES, {
-      cause: formResult.cause,
-      declaredLength: formResult.declaredLength,
-    });
+    logBodyReject('[magic-link-callback]', formResult, MAGIC_LINK_CALLBACK_MAX_BODY_BYTES);
     // フォームとして解釈できない場合はトークン無しと同じ扱いにする
     redirect('/login?error=magic-link-invalid');
   }
