@@ -75,6 +75,19 @@ describe('readBodyWithinByteLimit', () => {
     expect(result).toEqual({ ok: false, reason: 'too-large' });
   });
 
+  // 境界値: Content-Length の申告が「ちょうど上限」なら超過ではないので通す。
+  // 上の 3 ケースは new Request() が Content-Length を付けないためストリーム側の検査しか
+  // 通っておらず、ヘッダ検査の > を >= に取り違えても誰も落ちない状態だった
+  // (実測: 取り違えても全テストが緑のまま)。実ブラウザ・実 IdP の POST は必ず
+  // Content-Length を付けるので、ここが本番の主経路になる
+  it('Content-Lengthの申告がちょうど上限なら通す（境界値）', async () => {
+    const req = requestWithBody(LIMIT, { 'content-length': String(LIMIT) });
+    const result = await readBodyWithinByteLimit(req, LIMIT);
+    // ちょうどは超過ではないので読み切れる (>= に取り違えるとここで失敗する)
+    expect(result.ok).toBe(true);
+    expect(result.ok && result.bytes.byteLength).toBe(LIMIT);
+  });
+
   it('Content-Lengthの申告が上限超過なら本文を読み進めずに拒否する', async () => {
     // 実本文はいくらでも流せるが、申告だけを上限超過にする
     const chunkSize = 64;
@@ -197,12 +210,38 @@ describe('readBodyWithinByteLimit', () => {
       duplex: 'half',
     } as RequestInit & { duplex: 'half' });
 
-    // 無通信の許容時間 (50ms) < 全体の所要時間 (約 100ms) という条件で読む
-    const result = await readBodyWithinByteLimit(req, LIMIT, 50);
-    // 全体期限で打ち切る実装ならここで timeout になり失敗する
+    // 無通信の許容時間 (50ms) < 全体の所要時間 (約 100ms)、かつ全体期限 (5s) には余裕がある条件で読む
+    const result = await readBodyWithinByteLimit(req, LIMIT, 50, 5_000);
+    // 全体期限「だけ」で打ち切る実装ならここで timeout になり失敗する
     expect(result.ok).toBe(true);
     // 送ったバイトはすべて読み取れている
     expect(result.ok && result.bytes.byteLength).toBe(chunkCount);
+  });
+
+  // 上の裏返し。無通信の許容時間だけでは slowloris を止められない: 攻撃者はその直前に
+  // 1 バイトずつ送るだけでタイマーを永久に張り直せる。張り直さない全体期限が要る
+  it('無通信を挟まず送り続けても、全体期限を超えたら打ち切る', async () => {
+    // チャンク間隔は無通信の許容時間より短いので、無通信タイマーは一度も発火しない
+    const chunkDelayMs = 10;
+    const stream = new ReadableStream<Uint8Array>({
+      async pull(controller) {
+        // ずっと送り続ける (上限バイト数には到底届かない速度)
+        await new Promise((resolve) => setTimeout(resolve, chunkDelayMs));
+        controller.enqueue(new Uint8Array([65]));
+      },
+    });
+    const req = new Request('http://x', {
+      method: 'POST',
+      body: stream,
+      headers: CONTENT_TYPE,
+      duplex: 'half',
+    } as RequestInit & { duplex: 'half' });
+
+    // 無通信の許容時間 (100ms) はチャンク間隔 (10ms) より長いので発火しない。
+    // 全体期限 (80ms) だけが効く条件にする
+    const result = await readBodyWithinByteLimit(req, LIMIT, 100, 80);
+    // 全体期限が無い実装ではこのループが終わらずテストがタイムアウトする
+    expect(result).toEqual({ ok: false, reason: 'timeout' });
   });
 
   it('読み取り中にストリームが壊れたら unreadable を返す', async () => {

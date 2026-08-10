@@ -237,10 +237,14 @@ export async function POST(req: Request) {
   // **既知の限界: Content-Length を省いた chunked 転送はこの検査では防げない。** `req.text()` は
   // 上限に関係なくボディ全体をメモリへ展開してから返すため、ここで測る時点では手遅れで、
   // 手前の Content-Length 事前検査もヘッダが無ければ素通りする
-  // (詳細と実測値は `src/lib/request-body-limit.ts` の冒頭)。塞ぐには同モジュールの
-  // `readBodyWithinByteLimit()` へ寄せる必要があるが、この経路は HMAC 署名検証が
-  // 「受信した生の本文そのもの」に依存しており、読み取り方法の変更が署名検証の回帰に直結する。
-  // 別 PR で署名検証のテストを固めてから移行する
+  // (詳細と実測値は `src/lib/request-body-limit.ts` の冒頭)。
+  // 塞ぐには同モジュールの `readBodyWithinByteLimit()` へ寄せる。技術的な障害は無い
+  // (同関数は受信した生バイト列をそのまま返すので、TextDecoder で復元すれば
+  //  `req.text()` と同一の文字列になり HMAC 検証の入力は変わらない)。
+  // 本 PR で着手しないのは、署名検証を通る経路の読み取り方法を変える以上、
+  // 「移行前後で署名検証の結果が一致する」ことをテストで固めてから入れるべきで、
+  // 同じ形の穴を持つ inbound/email・webhooks/stripe と併せて 1 本の PR にまとめるため。
+  // 追跡: #287
   const rawBodyBytes = Buffer.byteLength(rawBody, 'utf8');
   if (rawBodyBytes > MAX_REQUEST_BODY_BYTES) {
     // 実際の読み取りバイト数が上限超過: 413 で弾く

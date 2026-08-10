@@ -155,9 +155,13 @@ async function readInboundFields(req: Request): Promise<InboundFields> {
     // 関係なくボディ全体をメモリへ展開してから返すため、ここでバイト数を測った時点で
     // すでに展開は済んでいる。Content-Length を省略すれば手前のヘッダ検査もすり抜ける
     // (詳細と実測値は `src/lib/request-body-limit.ts` の冒頭)。
-    // 塞ぐには同モジュールの `readBodyWithinByteLimit()` へ寄せる必要があるが、この経路は
-    // HMAC 署名検証が「受信した生バイト列そのもの」に依存しており、読み取り方法の変更が
-    // 署名検証の回帰に直結する。別 PR で署名検証のテストを固めてから移行する
+    // 塞ぐには同モジュールの `readBodyWithinByteLimit()` へ寄せる。技術的な障害は無い
+    // (同関数は受信した生バイト列をそのまま返し、この経路は既に「バイト列から Request を
+    //  組み直して formData() する」形になっているため、置き換え先はほぼそのまま使える)。
+    // 本 PR で着手しないのは、署名検証を通る経路の読み取り方法を変える以上、
+    // 「移行前後で署名検証の結果が一致する」ことをテストで固めてから入れるべきで、
+    // 同じ形の穴を持つ inbound/line・webhooks/stripe と併せて 1 本の PR にまとめるため。
+    // 追跡: #287
     const rawBuffer = await req.arrayBuffer();
     // バイト列の実サイズが上限を超えていれば専用エラーを投げる (POST ハンドラが 413 にマップする)
     if (rawBuffer.byteLength > MAX_INBOUND_BODY_BYTES) {
