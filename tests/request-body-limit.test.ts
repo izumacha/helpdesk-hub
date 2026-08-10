@@ -5,7 +5,12 @@
 //  Content-Length を省いた chunked 転送でメモリを枯渇させられる穴を見逃す)
 
 import { describe, expect, it } from 'vitest';
-import { readBodyWithinByteLimit, readFormWithinByteLimit } from '@/lib/request-body-limit';
+import {
+  readBodyWithinByteLimit,
+  readFormWithinByteLimit,
+  readTextWithinByteLimit,
+  bodyRejectStatus,
+} from '@/lib/request-body-limit';
 
 // テストで使う上限 (小さくして高速に回す)
 const LIMIT = 1024;
@@ -319,5 +324,42 @@ describe('readFormWithinByteLimit', () => {
     const result = await readFormWithinByteLimit(req, LIMIT);
     // バイト列側の拒否理由が上書きされずに伝わる (unparsable に化けない)
     expect(result).toEqual({ ok: false, reason: 'too-large' });
+  });
+});
+
+describe('readTextWithinByteLimit', () => {
+  // このヘルパーの存在意義は「req.text() と同じ文字列が得られること」なので、
+  // 復号結果そのものを req.text() と突き合わせて表明する
+  // (署名検証を通る経路がこの等価性に依存している。崩れると正規リクエストが全て検証失敗になる)
+  it('req.text() と同じ文字列を返す (マルチバイト文字を含んでも一致する)', async () => {
+    // 日本語 + サロゲートペア (絵文字) を含めて UTF-8 復号の往復を確かめる
+    const text = '日本語のメッセージ🚀';
+    // 同じ本文で 2 つの Request を作り、片方は req.text()、片方はヘルパーで読む
+    const expected = await new Request('http://x', { method: 'POST', body: text }).text();
+    const result = await readTextWithinByteLimit(
+      new Request('http://x', { method: 'POST', body: text }),
+      LIMIT,
+    );
+    // 読み取りに成功する
+    expect(result.ok).toBe(true);
+    // req.text() と 1 文字も違わない
+    if (result.ok) expect(result.text).toBe(expected);
+  });
+
+  it('サイズ超過は復号まで進まず too-large をそのまま返す', async () => {
+    const result = await readTextWithinByteLimit(requestWithBody(LIMIT + 1), LIMIT);
+    // バイト列側の拒否理由が上書きされずに伝わる
+    expect(result).toEqual({ ok: false, reason: 'too-large' });
+  });
+});
+
+describe('bodyRejectStatus', () => {
+  // 拒否理由 → HTTP ステータスの振り分けは複数のルートが依存する共通判断なので、
+  // 全理由を網羅して固定する (理由を増やしたときにここで振り分けを決め忘れない)
+  it('サイズ超過だけ 413、それ以外は 400 に振り分ける', () => {
+    expect(bodyRejectStatus('too-large')).toBe(413);
+    expect(bodyRejectStatus('timeout')).toBe(400);
+    expect(bodyRejectStatus('unreadable')).toBe(400);
+    expect(bodyRejectStatus('unparsable')).toBe(400);
   });
 });

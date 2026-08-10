@@ -98,8 +98,12 @@ import { resolveAppBaseUrl } from '@/lib/app-url';
 // チケット詳細ページの URL 組み立て・受付番号 (短縮 ID) の表記を揃えるヘルパー
 import { buildTicketUrl } from '@/lib/ticket-email';
 import { formatTicketRef } from '@/lib/ticket-ref';
-// リクエストボディをサイズ上限つきで読み取るヘルパーと、拒否理由のログ文言 (#287)
-import { readBodyWithinByteLimit, describeBodyRejectReason } from '@/lib/request-body-limit';
+// リクエストボディをサイズ上限つきで読み取るヘルパーと、拒否理由のログ文言・ステータス変換 (#287)
+import {
+  readTextWithinByteLimit,
+  describeBodyRejectReason,
+  bodyRejectStatus,
+} from '@/lib/request-body-limit';
 // この経路が受け付けるボディの最大バイト数 (route とテストが同じ定義を参照する)
 import { LINE_WEBHOOK_MAX_BODY_BYTES } from '@/lib/webhook-body-limits';
 // このルートは Node ランタイムで動かす (node:crypto / Prisma を使うため Edge では動かない)
@@ -207,7 +211,8 @@ function verifyLineSignature(rawBody: string, signature: string, channelSecret: 
 // POST /api/inbound/line : LINE Webhook を受信してチケットを作成する
 export async function POST(req: Request) {
   // 署名ヘッダの存在を最初に確認する。未認証リクエストにサイズ情報を漏らさないため、
-  // Content-Length チェックより前に行う (存在しなければ 401 を返して終了)。
+  // ボディのサイズ検査 (readTextWithinByteLimit。Content-Length の事前検査を内包する) より
+  // 前に行う (存在しなければ 401 を返して終了)。
   // trim() でプロキシが付加した余分な空白を除去してから比較する
   // (末尾に \n 等が付くと Buffer の長さが変わり定数時間比較が失敗して正規リクエストを弾く)
   const signature = req.headers.get('x-line-signature')?.trim() ?? null;
@@ -216,11 +221,12 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: '署名ヘッダがありません' }, { status: 401 });
   }
 
-  // ボディをサイズ上限つきのストリーム読み取りで取得する (署名検証は JSON.parse 前の生テキストに
-  // 対して行う必要があるため、まずバイト列で受け取る)。
+  // ボディをサイズ上限つきのストリーム読み取りで取得する
+  // (署名検証は JSON.parse 前の生テキストに対して行う必要がある)。
   // Content-Length の申告・実際の累計バイト数の両方を見るので、ヘッダを省いた chunked 転送でも
   // 上限を超えた時点で読み取りが打ち切られる (§9 DoS 対策 / #287)。
-  const bodyResult = await readBodyWithinByteLimit(req, LINE_WEBHOOK_MAX_BODY_BYTES);
+  // 得られる文字列は移行前の `req.text()` と完全に一致する (根拠は readTextWithinByteLimit)
+  const bodyResult = await readTextWithinByteLimit(req, LINE_WEBHOOK_MAX_BODY_BYTES);
   if (!bodyResult.ok) {
     // どの理由 (サイズ超過 / だらだら送り / 接続断) で拒否したかはサーバーログにだけ残す
     console.warn(
@@ -229,16 +235,16 @@ export async function POST(req: Request) {
         LINE_WEBHOOK_MAX_BODY_BYTES,
       )}`,
     );
-    // サイズ超過は従来どおり 413。それ以外 (本文が届き切らなかった) は形式不正として 400 を返す
-    return bodyResult.reason === 'too-large'
-      ? NextResponse.json({ error: 'リクエストが大きすぎます' }, { status: 413 })
-      : NextResponse.json({ error: 'リクエストの形式が正しくありません' }, { status: 400 });
+    // サイズ超過は従来どおり 413、それ以外 (本文が届き切らなかった) は形式不正の 400。
+    // ステータスの振り分けは共通ヘルパーに任せ、文言だけをこの経路の言い回しに合わせる
+    const status = bodyRejectStatus(bodyResult.reason);
+    return NextResponse.json(
+      { error: status === 413 ? 'リクエストが大きすぎます' : 'リクエストの形式が正しくありません' },
+      { status },
+    );
   }
-  // 読み取った生バイト列を UTF-8 の文字列に復号する。
-  // 署名検証 (verifyLineSignature) は文字列を UTF-8 として HMAC にかけるので、この復号を挟んでも
-  // 移行前の `req.text()` と入力は完全に一致する (どちらも同じ UTF-8 復号を通るため、
-  // 不正なバイト列の置換文字への変換まで同じ結果になる)
-  const rawBody = new TextDecoder().decode(bodyResult.bytes);
+  // 上限内で読み取れた本文 (署名検証と JSON.parse の対象になる生テキスト)
+  const rawBody = bodyResult.text;
 
   // ボディを JSON としてパースする。この時点では署名未検証なので中身は一切信用しない。
   // 唯一の目的は「どのチャネル (テナント) 宛かを示す公開識別子 (destination)」を取り出すことだけ。

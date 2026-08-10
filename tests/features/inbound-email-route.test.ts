@@ -1228,9 +1228,37 @@ describe('POST /api/inbound/email のリクエストサイズ上限', () => {
     expect(store.tickets.size).toBe(0);
   });
 
-  // 等価性の確認: 上限内のフォーム本文は、読み取り方法を変えた後も従来どおりパースされて起票される
+  // 等価性の確認 (urlencoded): この経路は multipart と同じ読み取りを通るが、パースの器が
+  // `new Request(...).formData()` から `new Response(...).formData()` へ変わっている。
+  // urlencoded の正常系を通すテストが無いと、両者が将来の Node/undici で食い違ったときに
+  // 「プロバイダからの取り込みが黙って 422 になる」退行を緑のまま見逃す
+  it('上限内の urlencoded 本文は従来どおりパースされて起票する', async () => {
+    const form = new URLSearchParams({
+      to: VALID_EMAIL.to,
+      from: VALID_EMAIL.from,
+      subject: VALID_EMAIL.subject,
+      text: VALID_EMAIL.text,
+    }).toString();
+    const { POST } = await import('@/app/api/inbound/email/route');
+    const res = await POST(
+      new Request('http://localhost/api/inbound/email', {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/x-www-form-urlencoded',
+          'x-inbound-secret': SECRET,
+        },
+        body: form,
+      }),
+    );
+    expect(res.status).toBe(201);
+    expect(store.tickets.size).toBe(1);
+    // 日本語のフィールド値が化けずに取り出せている (復号・パースの往復が壊れていない)
+    expect(Array.from(store.tickets.values())[0].title).toBe(VALID_EMAIL.subject);
+  });
+
+  // 等価性の確認 (multipart): 上限内のフォーム本文は、読み取り方法を変えた後も従来どおり起票される
   // (multipart の boundary 引き継ぎが崩れると、ここでフィールドを取り出せず 422 になる)
-  it('上限内のフォーム本文は従来どおりパースされて起票する', async () => {
+  it('上限内の multipart 本文は従来どおりパースされて起票する', async () => {
     const form = new FormData();
     form.set('to', VALID_EMAIL.to);
     form.set('from', VALID_EMAIL.from);

@@ -28,8 +28,12 @@ import { isProModeAllowed } from '@/lib/plan-guard';
 import type { SubscriptionPlan } from '@/domain/types';
 // §4.3 フォローアップ: 設定変更監査ログへの記録を共通化するヘルパー
 import { recordSettingsAudit } from '@/lib/settings-audit';
-// リクエストボディをサイズ上限つきで読み取るヘルパーと、拒否理由のログ文言 (#287)
-import { readBodyWithinByteLimit, describeBodyRejectReason } from '@/lib/request-body-limit';
+// リクエストボディをサイズ上限つきで読み取るヘルパーと、拒否理由のログ文言・ステータス変換 (#287)
+import {
+  readTextWithinByteLimit,
+  describeBodyRejectReason,
+  bodyRejectStatus,
+} from '@/lib/request-body-limit';
 // この経路が受け付けるボディの最大バイト数 (route とテストが同じ定義を参照する)
 import { STRIPE_WEBHOOK_MAX_BODY_BYTES } from '@/lib/webhook-body-limits';
 
@@ -67,23 +71,23 @@ export async function POST(request: Request): Promise<NextResponse> {
   // raw ボディをサイズ上限つきで読む (Stripe の署名検証は生のリクエストボディを必要とする)。
   // 未認証で到達できる経路なので、`stripe-signature` に適当な値を付けた巨大ボディでメモリを
   // 枯渇させられないよう、署名検証より前に上限で打ち切る (§9 / #287)。
-  const bodyResult = await readBodyWithinByteLimit(request, STRIPE_WEBHOOK_MAX_BODY_BYTES);
+  // 得られる文字列は移行前の `request.text()` と完全に一致する (根拠は readTextWithinByteLimit)
+  const bodyResult = await readTextWithinByteLimit(request, STRIPE_WEBHOOK_MAX_BODY_BYTES);
   if (!bodyResult.ok) {
     // どの理由で拒否したかはサーバーログにだけ残す (§6 エラーを握り潰さない)
     console.warn(
       `[stripe-webhook] ${describeBodyRejectReason(bodyResult.reason, STRIPE_WEBHOOK_MAX_BODY_BYTES)}`,
     );
-    // サイズ超過は 413、それ以外 (だらだら送り・接続断) は従来どおり 400 で返す。
+    // サイズ超過なら 413、それ以外 (だらだら送り・接続断) は従来どおり 400 で返す。
     // どちらも Stripe は再送するが、正規イベントがこの経路で失われるのは異常系なので
     // 「受け取れなかった」ことを 2xx で覆い隠さない (§9 fail-closed)
-    const status = bodyResult.reason === 'too-large' ? 413 : 400;
-    return NextResponse.json({ error: 'リクエストボディの読み取りに失敗しました' }, { status });
+    return NextResponse.json(
+      { error: 'リクエストボディの読み取りに失敗しました' },
+      { status: bodyRejectStatus(bodyResult.reason) },
+    );
   }
-  // 読み取った生バイト列を UTF-8 の文字列に復号する。
-  // 署名検証へ Buffer ではなく文字列を渡すのは、移行前 (`request.text()`) と入力を
-  // 完全に一致させるため — Stripe SDK は文字列を受け取ると内部で UTF-8 の Buffer に戻すので、
-  // 正規イベント (妥当な UTF-8 の JSON) では両者はバイト単位で同一になる
-  const rawBody = new TextDecoder().decode(bodyResult.bytes);
+  // 上限内で読み取れた本文 (署名検証にかける生テキスト)
+  const rawBody = bodyResult.text;
 
   // Stripe クライアントと Webhook Secret を取得する
   let stripeEvent;

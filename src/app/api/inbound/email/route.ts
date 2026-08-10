@@ -83,15 +83,21 @@ import { getMonthlyTicketQuota, checkAttachmentQuota } from '@/lib/tenant-plan';
 import type { QuarantineReason } from '@/domain/types';
 // 隔離記録の書き込み共通ヘルパー (LINE 取り込みと共有。§6 DRY)
 import { recordQuarantineSafe } from '@/lib/quarantine';
-// リクエストボディをサイズ上限つきで読み取るヘルパーと、拒否理由のログ文言 (#287)
+// リクエストボディをサイズ上限つきで読み取るヘルパーと、拒否理由のログ文言・ステータス変換 (#287)
 import {
-  readBodyWithinByteLimit,
+  readTextWithinByteLimit,
   readFormWithinByteLimit,
   describeBodyRejectReason,
+  bodyRejectStatus,
+  DEFAULT_BODY_IDLE_TIMEOUT_MS,
   type BodyRejectReason,
 } from '@/lib/request-body-limit';
-// この経路が受け付けるボディの最大バイト数 (route とテストが同じ定義を参照する)
-import { INBOUND_EMAIL_MAX_BODY_BYTES } from '@/lib/webhook-body-limits';
+// この経路が受け付けるボディの最大バイト数と読み取り全体の制限時間
+// (route とテストが同じ定義を参照する)
+import {
+  INBOUND_EMAIL_MAX_BODY_BYTES,
+  INBOUND_EMAIL_BODY_TOTAL_TIMEOUT_MS,
+} from '@/lib/webhook-body-limits';
 
 // このルートは Node ランタイムで動かす (node:crypto / Prisma を使うため Edge では動かない)
 export const runtime = 'nodejs';
@@ -118,8 +124,9 @@ class BodyTooLargeError extends Error {
 // サイズ超過だけ 413 にしたいので専用エラーにし、それ以外 (だらだら送り・接続断・パース不能) は
 // 汎用 Error = 400 に落とす。文言は describeBodyRejectReason に集約済みのものを使う。
 function bodyRejectToError(reason: BodyRejectReason): Error {
-  // サイズ超過は専用エラー (POST の catch が 413 にマップする)
-  if (reason === 'too-large') return new BodyTooLargeError();
+  // 413 に振り分けられる理由 (サイズ超過) は専用エラーにする。どの理由が 413 かの判断は
+  // 共通ヘルパーに委ねる (この経路で書き写すと、理由が増えたときに振り分けが食い違う)
+  if (bodyRejectStatus(reason) === 413) return new BodyTooLargeError();
   // それ以外は理由付きの汎用 Error (POST の catch が 400 にマップし、文脈付きでログに残す)
   return new Error(describeBodyRejectReason(reason, INBOUND_EMAIL_MAX_BODY_BYTES));
 }
@@ -170,7 +177,14 @@ async function readInboundFields(req: Request): Promise<InboundFields> {
     // 「上限を超えた時点で読み取りを打ち切る」ヘルパーに寄せる (§9 DoS 対策 / #287)。
     // Content-Type (multipart の boundary パラメータを含む) はヘルパーが元のリクエストから
     // 引き継ぐので、以前の「バイト列から Request を組み直して formData() する」形と結果は同じ。
-    const formResult = await readFormWithinByteLimit(req, INBOUND_EMAIL_MAX_BODY_BYTES);
+    // 制限時間は既定 (1MB 想定の 120 秒) では大容量メールを送り切れないため明示的に延ばす
+    // (理由は INBOUND_EMAIL_BODY_TOTAL_TIMEOUT_MS の定義コメント)。無通信の許容時間は既定のまま
+    const formResult = await readFormWithinByteLimit(
+      req,
+      INBOUND_EMAIL_MAX_BODY_BYTES,
+      DEFAULT_BODY_IDLE_TIMEOUT_MS,
+      INBOUND_EMAIL_BODY_TOTAL_TIMEOUT_MS,
+    );
     // 読み取れなかった理由を、POST ハンドラが 413 / 400 に振り分けられる例外へ変換して投げる
     // (warn ログは catch 節で 1 度だけ出すため、ここでは二重に出さない)
     if (!formResult.ok) throw bodyRejectToError(formResult.reason);
@@ -245,12 +259,19 @@ async function readInboundFields(req: Request): Promise<InboundFields> {
   // 許容トレードオフ — JSON パスはシークレット保持者限定のテスト・内部連携用途であり、本番 SendGrid は
   // multipart/form-data を使う。運用では JSON パスを本番プロバイダに開かないこと (§9)。
   // req.json() / req.text() はボディ全体をメモリに乗せてから返すため、上限つきの
-  // ストリーム読み取りでバイト列を取得する (超えた時点で打ち切られる。#287)
-  const bodyResult = await readBodyWithinByteLimit(req, INBOUND_EMAIL_MAX_BODY_BYTES);
+  // ストリーム読み取りで取得する (超えた時点で打ち切られる。#287)。
+  // 得られる文字列は移行前の req.text() と完全に一致する (根拠は readTextWithinByteLimit)。
+  // 制限時間を明示するのは multipart 側と同じ理由 (既定の 120 秒では大容量メールを送り切れない)
+  const bodyResult = await readTextWithinByteLimit(
+    req,
+    INBOUND_EMAIL_MAX_BODY_BYTES,
+    DEFAULT_BODY_IDLE_TIMEOUT_MS,
+    INBOUND_EMAIL_BODY_TOTAL_TIMEOUT_MS,
+  );
   // 読み取れなかった理由を、POST ハンドラが 413 / 400 に振り分けられる例外へ変換して投げる
   if (!bodyResult.ok) throw bodyRejectToError(bodyResult.reason);
-  // 生バイト列を UTF-8 の文字列に復号する (移行前の req.text() と同じ復号なので結果は一致する)
-  const rawText = new TextDecoder().decode(bodyResult.bytes);
+  // 上限内で読み取れた本文
+  const rawText = bodyResult.text;
   // サイズ検査済みの文字列を JSON としてパースする (unknown で受けて次行で型を絞り込む)
   const parsed: unknown = JSON.parse(rawText);
   // プレーンオブジェクト以外 (数値・配列・null 等) なら 400 にマップする (§9 入力検証)。
