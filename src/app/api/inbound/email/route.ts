@@ -87,6 +87,7 @@ import { recordQuarantineSafe } from '@/lib/quarantine';
 import {
   readTextWithinByteLimit,
   readFormWithinByteLimit,
+  STALL_TOLERANT_BODY_IDLE_TIMEOUT_MS,
   type BodyRejectFailure,
 } from '@/lib/request-body-limit';
 // 拒否時のログ・ステータス・文言をまとめて組み立てるヘルパー (ルート層の関心事なので別モジュール)
@@ -168,13 +169,14 @@ async function readInboundFields(req: Request): Promise<InboundReadResult> {
     // 「上限を超えた時点で読み取りを打ち切る」ヘルパーに寄せる (§9 DoS 対策 / #287)。
     // Content-Type (multipart の boundary パラメータを含む) はヘルパーが元のリクエストから
     // 引き継ぐので、以前の「バイト列から Request を組み直して formData() する」形と結果は同じ。
-    // 全体期限だけこの経路の値へ延ばす (既定 120 秒では 25MB を送り切れない。理由は
-    // INBOUND_EMAIL_BODY_TOTAL_TIMEOUT_MS の定義コメント)。無通信の上限に固有の事情は無いので
-    // 共有の既定に任せる
+    // 全体期限はこの経路の値へ延ばし (既定 120 秒では 25MB を送り切れない)、無通信の上限も
+    // 延ばした方を使う (自分自身の解析でループが止まるので、同時に届いた別のメールが
+    // 巻き添えにならないように)。共有シークレットの照合を通らないとここへ来ないため、
+    // 延ばしてもゲート無しの保持数は増えない
     const formResult = await readFormWithinByteLimit(
       req,
       INBOUND_EMAIL_MAX_BODY_BYTES,
-      undefined, // 無通信の上限は共有の既定に任せる (位置引数なので枠だけ空ける)
+      STALL_TOLERANT_BODY_IDLE_TIMEOUT_MS, // 25MB を解析する側でもあるので延ばした方を使う
       INBOUND_EMAIL_BODY_TOTAL_TIMEOUT_MS,
     );
     // 読み取れなかった理由と (解析失敗なら) その原因をそのまま返す。
@@ -261,7 +263,7 @@ async function readInboundFields(req: Request): Promise<InboundReadResult> {
   const bodyResult = await readTextWithinByteLimit(
     req,
     INBOUND_EMAIL_MAX_BODY_BYTES,
-    undefined, // 無通信の上限は共有の既定に任せる (位置引数なので枠だけ空ける)
+    STALL_TOLERANT_BODY_IDLE_TIMEOUT_MS, // 25MB を解析する側でもあるので延ばした方を使う
     INBOUND_EMAIL_BODY_TOTAL_TIMEOUT_MS,
   );
   // 読み取れなかった理由をそのまま返す (ステータスへの振り分けは POST 側)

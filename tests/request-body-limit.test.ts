@@ -12,6 +12,7 @@ import {
   bodyRejectStatus,
   DEFAULT_BODY_IDLE_TIMEOUT_MS,
   DEFAULT_BODY_TOTAL_TIMEOUT_MS,
+  STALL_TOLERANT_BODY_IDLE_TIMEOUT_MS,
 } from '@/lib/request-body-limit';
 // 経路ごとに上書きしている全体期限 (関係の表明に使う)
 import { INBOUND_EMAIL_BODY_TOTAL_TIMEOUT_MS } from '@/lib/webhook-body-limits';
@@ -106,11 +107,24 @@ describe('readBodyWithinByteLimit', () => {
     expect(result).toEqual({ ok: false, reason: 'too-large', declaredLength: LIMIT + 1 });
   });
 
-  // ストリーム側で打ち切った場合は「上限を踏み越えた時点で読むのをやめる」設計上、
-  // 実サイズが分からない。無い値をでっち上げないことを表明する
-  it('ストリームでの打ち切りは申告値を持たない', async () => {
+  // 申告が無いまま実データで超過した場合は、載せる申告値がそもそも無い
+  it('申告が無いまま実データで超過したときは申告値を持たない', async () => {
     const result = await readBodyWithinByteLimit(requestWithBody(LIMIT + 1), LIMIT);
     expect(result).toEqual({ ok: false, reason: 'too-large' });
+  });
+
+  // **過少申告 (申告は上限内なのに実データが超過) こそ切り分けたいケース。**
+  // ここで申告値を落とすと、ログには「申告は無し」と出て、正直な送信者と嘘つきを
+  // 区別できなくなる (手前のヘッダ検査をすり抜けたことが分からない)
+  it('過少申告で手前の検査をすり抜けた場合も申告値を載せて返す', async () => {
+    // 申告は上限内 (100) だが、実データは上限超過
+    const req = new Request('http://x', {
+      method: 'POST',
+      body: 'A'.repeat(LIMIT + 1),
+      headers: { ...CONTENT_TYPE, 'content-length': '100' },
+    });
+    const result = await readBodyWithinByteLimit(req, LIMIT);
+    expect(result).toEqual({ ok: false, reason: 'too-large', declaredLength: 100 });
   });
 
   it('Content-Lengthの申告が上限超過なら本文を読み進めずに拒否する', async () => {
@@ -494,11 +508,17 @@ describe('既定の制限時間', () => {
     expect(INBOUND_EMAIL_BODY_TOTAL_TIMEOUT_MS).toBeLessThan(300_000);
   });
 
+  it('巻き添え回避用の無通信上限は、既定より長く全体期限より短い', () => {
+    // 既定より長くないと「巻き添えを避ける」目的を果たさず、全体期限を超えると意味を持たない
+    expect(STALL_TOLERANT_BODY_IDLE_TIMEOUT_MS).toBeGreaterThan(DEFAULT_BODY_IDLE_TIMEOUT_MS);
+    expect(STALL_TOLERANT_BODY_IDLE_TIMEOUT_MS).toBeLessThan(DEFAULT_BODY_TOTAL_TIMEOUT_MS);
+  });
+
   it('無通信の上限は、保持数が伸びすぎない範囲に収まっている', () => {
     // 長くするほど「ヘッダだけ送る接続」の同時保持数が増える (この経路には同時保持数の
     // 歯止めが無い)。一方で短すぎるとイベントループの停止で正規リクエストを誤って落とす。
     // 現在の判断はその間の 30 秒で、上下どちらへ大きく動かすときは根拠を添えて見直すこと
-    expect(DEFAULT_BODY_IDLE_TIMEOUT_MS).toBeGreaterThanOrEqual(10_000);
-    expect(DEFAULT_BODY_IDLE_TIMEOUT_MS).toBeLessThanOrEqual(60_000);
+    expect(DEFAULT_BODY_IDLE_TIMEOUT_MS).toBeGreaterThanOrEqual(5_000);
+    expect(DEFAULT_BODY_IDLE_TIMEOUT_MS).toBeLessThanOrEqual(30_000);
   });
 });

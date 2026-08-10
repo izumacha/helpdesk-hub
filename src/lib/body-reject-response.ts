@@ -47,7 +47,10 @@ export function bodyRejectResponse<R extends BodyRejectReason>(
   },
 ): NextResponse {
   // 拒否理由と (あれば) 原因の例外をサーバーログへ 1 行で残す (出し方は 5 経路で共通)
-  logBodyReject(options.logPrefix, reason, maxBytes, options.cause, options.declaredLength);
+  logBodyReject(options.logPrefix, reason, maxBytes, {
+    cause: options.cause,
+    declaredLength: options.declaredLength,
+  });
   // 理由に対応する文言とステータスで JSON を返す (外部には理由の詳細を出さない)
   return NextResponse.json(
     { error: options.messages[reason] },

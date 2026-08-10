@@ -44,7 +44,11 @@ import {
 } from '@/lib/sso-rate-limit';
 // ボディをストリームで読みつつバイト数上限で打ち切ってからフォームにする共通ヘルパー
 // (§9 リクエストサイズの上限。req.formData() を直接呼ぶとボディ全体がメモリに載る)
-import { readFormWithinByteLimit, logBodyReject } from '@/lib/request-body-limit';
+import {
+  readFormWithinByteLimit,
+  logBodyReject,
+  STALL_TOLERANT_BODY_IDLE_TIMEOUT_MS,
+} from '@/lib/request-body-limit';
 
 // SSO ハンドオフトークンの有効期限 (2 分)。ACS → コールバックの即時引き渡し専用なので短くする
 const SSO_HANDOFF_TTL_MS = 2 * 60 * 1000;
@@ -271,18 +275,22 @@ export async function POST(req: Request, { params }: Params) {
 // (ログの出し方は logBodyReject に集約。採用するルートごとに書き写さないため)。
 async function readAcsForm(req: Request): Promise<FormData | null> {
   // ボディをサイズ上限つきで読み取ってフォームにする (超過・時間切れ・断・パース失敗を判別して返す)
-  const result = await readFormWithinByteLimit(req, SSO_ACS_MAX_BODY_BYTES);
+  // 無通信の許容時間は延ばした方を使う。この経路は再送が無く (打ち切るとユーザーには
+  // ログイン失敗として出る)、読み取りの前にレート制限を通るので延ばしても保持数は増えない
+  // (詳細は STALL_TOLERANT_BODY_IDLE_TIMEOUT_MS の定義コメント)
+  const result = await readFormWithinByteLimit(
+    req,
+    SSO_ACS_MAX_BODY_BYTES,
+    STALL_TOLERANT_BODY_IDLE_TIMEOUT_MS,
+  );
   // 取り出せたフォームをそのまま返す
   if (result.ok) return result.form;
   // §6「エラーを握り潰さない」: どの理由で拒否したかを (解析失敗なら原因の例外も添えて)
   // ログに残してから null を返す
-  logBodyReject(
-    '[sso-acs]',
-    result.reason,
-    SSO_ACS_MAX_BODY_BYTES,
-    result.cause,
-    result.declaredLength,
-  );
+  logBodyReject('[sso-acs]', result.reason, SSO_ACS_MAX_BODY_BYTES, {
+    cause: result.cause,
+    declaredLength: result.declaredLength,
+  });
   return null;
 }
 

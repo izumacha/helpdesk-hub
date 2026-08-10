@@ -79,29 +79,31 @@
 // ACS の POST はユーザーのブラウザから飛ぶので、回線品質はこちらで選べない。
 // タイマーは 1 チャンクごとに張り直す。
 //
-// **値を 30 秒にしているのは、このタイマーが「相手が送ってこない」と「こちらが詰まっていて
-// 受け取れない」を区別できないため。** 実時間で測るので、メール取り込みが 25MB の multipart を
-// 解析してイベントループを止めている間は、並行して読んでいる**別経路**のリクエストにも
-// 無通信として積算される。10 秒だと、正常に送信中の SSO ACS / マジックリンクのコールバックが
-// 巻き添えで打ち切られうる (この 2 経路は再送が無いので、利用者にはログイン失敗として出る)。
-// 経路ごとに上書きするのではなく既定を上げるのは、詰まりを作る側と被る側が別経路だから。
-// 延ばしても**1 リクエストあたりの**保持時間の上限は変わらない — slowloris を止めているのは
-// 張り直さない全体期限の方で、そちらは据え置いてある。
+// **短くしておくのが既定。** ヘッダだけ送って本文を送らない接続は、この時間ぶん reader と
+// INITIAL_BUFFER_BYTES のバッファとソケットの FD を掴む。同時に生きる本数は「開始レート ×
+// この値」に比例する一方、下の全体期限のコメントにあるとおりレート制限は開始数しか数えず
+// **同時保持数は絞らない**ので、値を延ばした分がそのまま保持数に効く。
 //
-// **引き換えに、同時に保持される接続数は増える。** ヘッダだけ送って本文を 1 バイトも
-// 送らない接続を同じレートで掛けられたとき、定常的に生きている本数は「レート × この値」に
-// 比例するので、10 秒から 30 秒にした分だけ約 3 倍になる (1 本あたり reader と
-// INITIAL_BUFFER_BYTES ぶんのバッファ、ソケットの FD を掴む)。下の全体期限のコメントに
-// あるとおり、レート制限は「開始したリクエスト数」しか数えず**同時保持数は絞らない**ため、
-// ここには歯止めが無い。それでも 30 秒を選んだのは、誤って正規のログインを落とす方が
-// 実害が大きいと判断したから。同時保持数を絞る仕組みを入れたら、この値は縮められる。
+// export しているのはテストが参照するため (§9 に効く値なので、満たすべき関係を固定してある)。
+export const DEFAULT_BODY_IDLE_TIMEOUT_MS = 10_000;
+
+// 無通信の許容時間を延ばした版 (30 秒)。**イベントループの停止に巻き込まれても
+// 落ちてほしくない経路だけ**が明示的に使う。
+//
+// このタイマーは実時間で測るので「相手が送ってこない」と「こちらが詰まっていて受け取れない」を
+// 区別できない。メール取り込みが 25MB の multipart を解析している間はループが止まり、並行して
+// 読んでいる**別経路**のリクエストにも無通信として積算される。既定の 10 秒では、正常に送信中の
+// SSO ACS / マジックリンクのコールバックが巻き添えで打ち切られうる。
+//
+// **既定そのものを延ばさず、使う経路を選ぶ**のが要点: この 2 経路は
+//   - 再送が無い (打ち切られるとユーザーにはログイン失敗として出て、取り返せない)
+//   - ボディを読む前にレート制限を通る (延ばしても、ゲート無しの保持数は増えない)
+// の両方を満たす。LINE 取り込みはどちらも逆 (再送があり、レート制限は読み取りより後ろ) なので
+// 既定のままにする — あちらで延ばすと、ゲートを通らない保持数だけが増える。
 //
 // 根本の対処 (タイマーをイベントループの停止に気付かせる / 同時に走るパースの本数を絞る) は
-// 本モジュール単体では閉じないため別途とする。ここは余裕を揃えただけである点に注意。
-// export しているのはテストが参照するため。ルートは既定に委ねる (引数を渡さない) ので
-// 本番コードからの呼び出し元は無いが、**この 2 つが slowloris 耐性そのもの**なので、
-// 満たすべき関係 (無通信 < 全体期限 < Node の requestTimeout) をテストで固定してある
-export const DEFAULT_BODY_IDLE_TIMEOUT_MS = 30_000;
+// 本モジュール単体では閉じないため別途とする。ここは巻き添えを避けているだけである点に注意。
+export const STALL_TOLERANT_BODY_IDLE_TIMEOUT_MS = 30_000;
 
 // 読み取り開始から完了までに許容する最大時間 (slowloris 対策その 2)。
 //
@@ -129,8 +131,10 @@ type BoundedBodyResult =
   // ArrayBuffer 実体に紐づく Uint8Array に限定する (BodyInit として受け付けてもらうため。
   // 既定の Uint8Array<ArrayBufferLike> は SharedArrayBuffer 由来も含むので body に渡せない)
   | { ok: true; bytes: Uint8Array<ArrayBuffer> } // 上限内で読み切れた
-  // 上限超過 (ヘッダ申告 or ストリームの累計)。申告が読めていた場合だけ declaredLength が付く
-  // (ストリーム側で打ち切ったときは、上限で読むのをやめる設計上そもそも実サイズが分からない)
+  // 上限超過 (ヘッダ申告 or ストリームの累計)。**申告が読めていれば、どちらで打ち切っても
+  // declaredLength を載せる。** 申告より実データが大きい (過少申告で手前の検査をすり抜けた)
+  // ケースこそ切り分けたい対象なので、ストリーム側で止めたときも申告値は捨てない
+  // (実サイズの方は、上限で読むのをやめる設計上そもそも分からない)
   | { ok: false; reason: 'too-large'; declaredLength?: number }
   // 以下 2 つに declaredLength は付かないが、キーは生やしておく (呼び出し元が reason で
   // 絞り込まずにそのままログへ渡せるようにするため。cause と同じ理由)
@@ -256,21 +260,23 @@ export function bodyRejectStatus(reason: BodyRejectReason): 413 | 400 {
  *   — 片方だけ括弧を足す形にすると、隣の呼び出しを写した実装が `[[sso-acs]]` になる
  * @param reason 読み取りが失敗した理由
  * @param maxBytes 適用していた上限バイト数 (サイズ超過の文言に載せる)
- * @param cause 原因の例外 (フォーム解析に失敗したときだけ入る)
- * @param declaredLength Content-Length の申告値 (読めていれば。サイズ超過の切り分けに使う)
+ * @param extra 原因の例外 (フォーム解析の失敗時のみ) と Content-Length の申告値
  */
 export function logBodyReject(
   logPrefix: string,
   reason: BodyRejectReason,
   maxBytes: number,
-  cause?: unknown,
-  declaredLength?: number,
+  // 末尾 2 つはオプション引数にせずオブジェクトで受ける。位置引数のままだと cause が
+  // unknown なので `(..., declaredLength, cause)` と取り違えても typecheck を通ってしまい
+  // (cause が undefined = 'unparsable' 以外の全ケースで成立する)、ログが静かに壊れる。
+  // 兄弟の bodyRejectResponse も同じ値をオブジェクトで受けており、呼び方も揃う
+  extra: { cause?: unknown; declaredLength?: number } = {},
 ): void {
   // 理由の説明文を組み立てる (本文の中身は含まない。§9 PII をログに漏らさない)
-  const detail = describeBodyRejectReason(reason, maxBytes, declaredLength);
+  const detail = describeBodyRejectReason(reason, maxBytes, extra.declaredLength);
   // 原因の例外があれば同じ行に添える (無いときに undefined を渡すと行末に "undefined" が出る)
-  if (cause === undefined) console.warn(`${logPrefix} ${detail}`);
-  else console.warn(`${logPrefix} ${detail}`, cause);
+  if (extra.cause === undefined) console.warn(`${logPrefix} ${detail}`);
+  else console.warn(`${logPrefix} ${detail}`, extra.cause);
 }
 
 /**
@@ -408,8 +414,14 @@ export async function readBodyWithinByteLimit(
 
   // 時間切れでの打ち切り (だらだら送り) は、読めた量に関わらず拒否する
   if (timedOut) return { ok: false, reason: 'timeout' };
-  // 上限超過なら、確保したバッファは捨てて拒否を返す
-  if (exceeded) return { ok: false, reason: 'too-large' };
+  // 上限超過なら、確保したバッファは捨てて拒否を返す。
+  // 申告が読めていたならここでも載せる — ここへ来たということは「申告は上限内なのに実データが
+  // 上限を超えた」= 過少申告なので、正直な送信者と区別するための一番の手がかりになる
+  if (exceeded) {
+    return Number.isFinite(declaredLength) && declaredLength >= 0
+      ? { ok: false, reason: 'too-large', declaredLength }
+      : { ok: false, reason: 'too-large' };
+  }
 
   // 実際に読んだぶんだけを切り出して返す (subarray なのでコピーは発生しない)
   return { ok: true, bytes: buffer.subarray(0, totalBytes) };
