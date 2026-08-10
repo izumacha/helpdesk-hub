@@ -43,8 +43,7 @@
 // Content-Length の事前検査・制限時間・拒否理由の判別を持つ点も異なる。
 // 3 者の統合は本モジュールの利用箇所が増えてから検討する。
 //
-// 採用状況: **middleware のセッション認証を素通りする POST 経路のうち、リクエストボディを読む
-// 5 経路すべてが本モジュール経由** (#287 で完了)。
+// 採用状況: **自前でボディを読む 5 経路が本モジュール経由** (#287 で完了)。
 //   `auth/sso/[tenantId]/acs` / `auth/magic-link/callback` (PR #286)
 //   `inbound/line` / `inbound/email` / `webhooks/stripe` (#287。いずれも署名・共有シークレット
 //   検証を通る経路のため、移行前後で検証結果が一致することを各ルートのテストで固めてある)
@@ -52,10 +51,14 @@
 // `magic-link.ts`)、後 3 経路は `webhook-body-limits.ts`。いずれも route とテストが
 // 同じ定義を参照する (片方だけ値を変えたら気付けるようにするため)。
 //
-// 素通りする POST 経路は上記 5 つで全部ではない (`src/middleware.ts` の `INTERNAL_CRON_ROUTES` =
-// `api/internal/trial-reminders` / `api/internal/sla-reminders` も素通りする)。これらが
-// 本モジュールを使っていないのは「対象外だから」ではなく **ボディを一切読まないから** で、
-// 読むようになった時点でここへ寄せる対象になる。
+// **middleware のセッション認証を素通りする POST 経路はこの 5 つで全部ではない。** 残りは
+// `src/middleware.ts` を正本として次の 2 種類で、本モジュールの対象外である理由が違う:
+//   - `INTERNAL_CRON_ROUTES` (`api/internal/trial-reminders` / `api/internal/sla-reminders`)
+//     … **ボディを一切読まない**ので上限を掛ける対象が無い。読むようになった時点で対象になる。
+//   - `api/auth/[...nextauth]` (middleware の `isApiAuth` が `/api/auth` 配下を丸ごと通す)
+//     … **next-auth のハンドラが内部でボディを読む**ため、こちらから読み方を差し替えられない。
+//     つまりここは上限が掛かっていない既知のギャップで、塞ぐなら next-auth の外側
+//     (リバースプロキシ or middleware での事前検査) が必要になる。
 // **新しく未認証 POST 経路を足すときは、ここへ寄せて上限を必ず設けること。**
 
 // チャンクが 1 つも届かないまま許容する最大時間 (slowloris 対策その 1)。
@@ -132,10 +135,14 @@ export type BodyRejectReason = Exclude<BoundedFormResult, { ok: true }>['reason'
  * 唯一の手がかりがこのログになる。文言をここに集約して、採用するルートごとに書き写さない。
  * 本文の中身は決して含めない (§9 PII をログに漏らさない)。
  *
+ * export しないのは、全ルートが logBodyReject 経由になり外部から名指しで呼ぶ必要が
+ * 無くなったため (§6 デッドコードを残さない)。公開したままにすると logBodyReject を
+ * 迂回して各ルートが console.warn を書き直す余地を残してしまう。
+ *
  * @param reason 読み取りが失敗した理由
  * @param maxBytes 適用していた上限バイト数 (サイズ超過の文言に載せる)
  */
-export function describeBodyRejectReason(reason: BodyRejectReason, maxBytes: number): string {
+function describeBodyRejectReason(reason: BodyRejectReason, maxBytes: number): string {
   // Record にして網羅性を型で強制する (理由を増やしたらキー不足で typecheck が落ちる)
   const descriptions: Readonly<Record<BodyRejectReason, string>> = {
     'too-large': `リクエストボディが上限 ${maxBytes} バイトを超えました。`,

@@ -261,9 +261,7 @@ function normalizeVerdict(raw: string | null | undefined): AuthVerdict {
 
 // 標準の Authentication-Results ヘッダから spf= / dkim= / dmarc= の各メソッド結果を取り出す。
 // 単純な正規表現 (ネストした量指定子なし) + 長さクランプで ReDoS を避ける (§9)。
-function parseAuthenticationResults(
-  rawHeader: string | null | undefined,
-): Partial<InboundAuthResults> {
+function parseAuthenticationResults(rawHeader: string | null | undefined): Partial<InboundAuthResults> {
   // 空ヘッダなら何も取れない
   if (!rawHeader) return {};
   // 走査長をクランプしてから解析する

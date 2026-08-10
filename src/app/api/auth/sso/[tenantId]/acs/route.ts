@@ -268,7 +268,7 @@ export async function POST(req: Request, { params }: Params) {
 // ACS のリクエストボディをサイズ上限付きで読み取り FormData にする。
 // 取り出せなければ null を返す (呼び出し元は理由によらず一律で監査 + sso-invalid にする)。
 // 理由の区別は呼び出し元では使わないが、運用調査のためログには書き分ける
-// (文言は describeBodyRejectReason に集約。採用するルートごとに書き写さないため)。
+// (ログの出し方は logBodyReject に集約。採用するルートごとに書き写さないため)。
 async function readAcsForm(req: Request): Promise<FormData | null> {
   // ボディをサイズ上限つきで読み取ってフォームにする (超過・時間切れ・断・パース失敗を判別して返す)
   const result = await readFormWithinByteLimit(req, SSO_ACS_MAX_BODY_BYTES);
