@@ -7,10 +7,11 @@ HelpDesk Hub は、社内問い合わせの対応漏れ・属人化・SLA遅延�
 
 主な特徴:
 
-- requester / agent / admin のロール別権限管理
+- マルチテナント SaaS（Lite / Pro の 2 モード）と requester / agent / admin のロール別権限管理
 - チケット登録、検索、担当者アサイン、コメント、履歴管理
-- SLA期限・期限超過の可視化
-- FAQ候補化によるナレッジ蓄積
+- メール転送・LINE からの問い合わせ自動起票
+- SLA期限・期限超過の可視化、FAQ候補化によるナレッジ蓄積
+- マジックリンク / SAML SSO 認証、監査ログ、Stripe 課金（Free〜Enterprise）
 - Vitest / Playwright / GitHub Actions による品質担保
 
 <p align="center">
@@ -56,15 +57,15 @@ HelpDesk Hub は、**問い合わせを「チケット」として一元化し�
 | チケット         | 登録・一覧・詳細・キーワード検索・多条件フィルタ・ページネーション・画像添付・CSV 入出力         |
 | 取り込み         | メール転送からの自動起票（スレッド継続・不正メール隔離）、LINE 公式アカウント連携（β）           |
 | ワークフロー     | ステータス遷移管理、優先度・担当者アサイン、コメント、変更履歴                                   |
-| SLA              | 解決期限設定・期限間近/超過バッジ表示                                                            |
+| SLA              | 初回応答期限・解決期限の自動計算（優先度別）、期限間近/超過バッジ表示                            |
 | エスカレーション | 二次対応へのエスカレーション（理由・日時記録、履歴残存）                                         |
 | ダッシュボード   | ステータス別件数、SLA超過件数、担当者別ワークロード                                              |
 | FAQ候補          | 解決済み問い合わせのFAQ変換（公開/却下管理）                                                     |
-| 通知             | アサイン・エスカレーション時の自動通知、未読バッジ、外部チャネル連携（Slack / Teams / Chatwork） |
+| 通知             | アサイン・エスカレーション・コメント・ステータス変更時の自動通知、未読バッジ、外部チャネル連携（Slack / Teams / Chatwork） |
 | 監査ログ         | チケット履歴・設定変更・認証イベントの閲覧と CSV 出力（admin・Pro/Enterprise 限定）              |
 | 課金             | Stripe による課金プラン（Free / Standard / Pro / Enterprise、30 日 Free trial）                  |
 
-各機能の実装状況の詳細は [`docs/overview.md` §3](docs/overview.md) を、プロダクト方針は正本 [`docs/smb-dx-pivot-plan.md`](docs/smb-dx-pivot-plan.md) を参照してください。
+各機能の実装状況の詳細は [`docs/overview.md` §3](docs/overview.md#3-主要機能マップ) を、プロダクト方針は正本 [`docs/smb-dx-pivot-plan.md`](docs/smb-dx-pivot-plan.md) を参照してください。
 
 ## 技術スタック
 
