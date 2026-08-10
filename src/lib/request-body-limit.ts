@@ -26,9 +26,13 @@
 //
 // メモリの目安: 保持するのは「実際の本文サイズ」ぶんのバッファ 1 本で、チャンク数には依存しない。
 // 上限ぶんを先に確保することはせず、INITIAL_BUFFER_BYTES から始めて足りなければ倍々に伸ばす
-// (通常の SAML アサーションは数十 KB なので、毎回 1MB を確保するのは無駄なため)。伸ばす瞬間だけ
-// 新旧のバッファが並ぶので約 1.5 倍、さらに呼び出し元が formData() でパースすると
-// フィールド値のコピーがもう 1 つできる。上限値を決めるときはこの倍率を見込むこと。
+// (通常の SAML アサーションは数十 KB なので、毎回 1MB を確保するのは無駄なため)。
+// **上限値を決めるときは、本文サイズの約 3.5 倍を見込むこと。** 内訳:
+//   - バッファを伸ばす瞬間だけ新旧が並ぶ … 最大 1.5 倍
+//   - readFormWithinByteLimit の `new Response(bytes)` … もう 1 倍
+//     (Response はバイト列を参照せずコピーする。確認方法: 元の Uint8Array を Response 生成後に
+//      書き換えてから arrayBuffer() を読むと、書き換え前の値が返る)
+//   - formData() が作るフィールド値のコピー … もう 1 倍
 //
 // 関連: `webhook-fetch.ts` の `readBodyCapped` と `line-content.ts` の `readBodyCappedBytes` も
 // 「ストリームを上限つきで読む」同種の処理だが、あちらは外向き fetch の **Response** が対象で
@@ -36,11 +40,14 @@
 // Content-Length の事前検査・制限時間・拒否理由の判別を持つ点も異なる。
 // 3 者の統合は本モジュールの利用箇所が増えてから検討する。
 //
-// 採用状況 (未認証で到達できる POST 経路):
-//   済: `auth/sso/[tenantId]/acs` / `auth/magic-link/callback`
-//   未: `inbound/line` / `inbound/email` (読み込み後のバイト数検査のみ = chunked に無防備)、
-//       `webhooks/stripe` (サイズ検査そのものが無い)。いずれも署名検証を通る経路なので、
-//       移行前後で検証結果が一致することをテストで固めてから 3 経路まとめて対応する。追跡: #287
+// 採用状況 (未認証で到達できる POST 経路): **全 5 経路が本モジュール経由** (#287 で完了)。
+//   `auth/sso/[tenantId]/acs` / `auth/magic-link/callback` (PR #286)
+//   `inbound/line` / `inbound/email` / `webhooks/stripe` (#287。いずれも署名・共有シークレット
+//   検証を通る経路のため、移行前後で検証結果が一致することを各ルートのテストで固めてある)
+// 上限値の置き場: 前 2 経路はその経路の他の共有定数と同居 (`sso-rate-limit.ts` /
+// `magic-link.ts`)、後 3 経路は `webhook-body-limits.ts`。いずれも route とテストが
+// 同じ定義を参照する (片方だけ値を変えたら気付けるようにするため)。
+// **新しく未認証 POST 経路を足すときは、ここへ寄せて上限を必ず設けること。**
 
 // チャンクが 1 つも届かないまま許容する最大時間 (slowloris 対策その 1)。
 //
@@ -81,6 +88,11 @@ type BoundedBodyResult =
   | { ok: false; reason: 'timeout' } // 無通信が続いて打ち切った (だらだら送り)
   | { ok: false; reason: 'unreadable' }; // ストリームの読み取り自体に失敗した (接続断など)
 
+// 文字列としての読み取り結果 (バイト列の結果の bytes を text に置き換えたもの)
+type BoundedTextResult =
+  | { ok: true; text: string } // 上限内で読み切れて UTF-8 として復号できた
+  | { ok: false; reason: 'too-large' | 'timeout' | 'unreadable' };
+
 // フォームとしての読み取り結果 (バイト列の結果に「パースできなかった」を足したもの)
 type BoundedFormResult =
   | { ok: true; form: FormData } // 上限内で読み取れてフォームとしてパースできた
@@ -110,6 +122,20 @@ export function describeBodyRejectReason(reason: BodyRejectReason, maxBytes: num
   };
   // 該当する説明を返す
   return descriptions[reason];
+}
+
+/**
+ * 拒否理由を HTTP ステータスへ振り分ける。
+ *
+ * 「サイズ超過は 413、それ以外 (だらだら送り・接続断・パース不能) は 400」という同じ判断が、
+ * 本モジュールを採用する各ルートに繰り返し必要になるため、理由の定義と同じ場所に置いて
+ * 書き写しを防ぐ (§6 DRY)。理由を増やしたときの振り分け漏れもここだけ見れば済む。
+ *
+ * @param reason 読み取りが失敗した理由
+ */
+export function bodyRejectStatus(reason: BodyRejectReason): 413 | 400 {
+  // 上限超過だけが「大きすぎる」= 413。残りは本文を受け取れなかったので形式不正扱いの 400
+  return reason === 'too-large' ? 413 : 400;
 }
 
 /**
@@ -252,6 +278,48 @@ export async function readBodyWithinByteLimit(
 
   // 実際に読んだぶんだけを切り出して返す (subarray なのでコピーは発生しない)
   return { ok: true, bytes: buffer.subarray(0, totalBytes) };
+}
+
+// 復号器はステートレスなので 1 つを使い回す (リクエストごとに生成しない)
+const UTF8_DECODER = new TextDecoder();
+
+/**
+ * リクエストボディをバイト数上限つきで読み取り、UTF-8 の文字列として返す。
+ *
+ * **実運用で起こりうる本文については `req.text()` と結果が一致する。** どちらも同じ WHATWG の
+ * UTF-8 復号を通るため、先頭 BOM の除去も、不正なバイト列が置換文字 (U+FFFD) になる挙動も
+ * 同じ結果になる (BOM 無し / BOM 1 つ / 不正バイト列を含む本文で一致することを確認済み)。
+ * この等価性は署名検証 (LINE の HMAC / Stripe の constructEvent) を通る経路で決定的に重要
+ * ——復号が 1 箇所でも崩れると正規のリクエストが軒並み署名不一致で拒否される——ため、
+ * 呼び出し元がそれぞれ TextDecoder を書くのではなく、根拠ごとここに 1 つだけ置く (§6 DRY)。
+ *
+ * **唯一の差異: BOM が 2 つ以上連続する本文。** undici の `req.text()` は BOM を自前で 1 つ
+ * 剥がしてから TextDecoder に渡すため二重に剥がれ、こちらは 1 つだけ剥がす。実在の送信者が
+ * こんな本文を送ることはなく、かつ**どちらの結果でも署名は不一致になる**ので、検証が緩む方向
+ * (署名鍵を持たない相手の偽造が通る方向) の差ではない。この挙動は
+ * `tests/request-body-limit.test.ts` で固定してある。
+ *
+ * 署名検証に使うなら、本関数ではなく `readBodyWithinByteLimit` の生バイト列を直接
+ * HMAC にかける方が理屈の上ではより厳密 (復号を挟まないぶん、不正な UTF-8 でも送信者が
+ * 署名したバイト列そのものを検証できる)。現在は移行前の `req.text()` との等価性を優先している。
+ *
+ * @param req 読み取り対象のリクエスト
+ * @param maxBytes 許容する最大バイト数
+ * @param idleTimeoutMs 次のチャンクを待つ最大時間 (既定 DEFAULT_BODY_IDLE_TIMEOUT_MS)
+ * @param totalTimeoutMs 読み取り全体の最大時間 (既定 DEFAULT_BODY_TOTAL_TIMEOUT_MS)
+ */
+export async function readTextWithinByteLimit(
+  req: Request,
+  maxBytes: number,
+  idleTimeoutMs: number = DEFAULT_BODY_IDLE_TIMEOUT_MS,
+  totalTimeoutMs: number = DEFAULT_BODY_TOTAL_TIMEOUT_MS,
+): Promise<BoundedTextResult> {
+  // まずバイト列として上限つきで読む (超過・時間切れ・読み取り失敗はここで判別される)
+  const body = await readBodyWithinByteLimit(req, maxBytes, idleTimeoutMs, totalTimeoutMs);
+  // 読めなかった理由はそのまま呼び出し元へ渡す
+  if (!body.ok) return body;
+  // 読み取れたバイト列を UTF-8 の文字列に復号して返す
+  return { ok: true, text: UTF8_DECODER.decode(body.bytes) };
 }
 
 /**

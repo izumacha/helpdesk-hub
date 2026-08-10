@@ -11,6 +11,8 @@ import { createMemoryContext, type Store } from '@/data/adapters/memory';
 import type { Repos, UnitOfWork } from '@/data/ports/unit-of-work';
 // システムアクター (actorId=null) の表示名。ハードコードせず一元管理定数と突き合わせる
 import { SETTINGS_AUDIT_SYSTEM_ACTOR_NAME } from '@/lib/constants';
+// ボディサイズの上限。ルートと同じ定義を参照する (#287。片方だけ値を変えたら気付けるように)
+import { STRIPE_WEBHOOK_MAX_BODY_BYTES } from '@/lib/webhook-body-limits';
 
 const TENANT = 'default-tenant';
 
@@ -31,15 +33,18 @@ vi.mock('@/data', () => ({
 
 // Stripe SDK 呼び出し (署名検証・Price ID→プラン判定) をモックする。
 // vi.hoisted で先に用意することで、vi.mock のファクトリから参照できるようにする (巻き上げ順序対策)。
-// planForNextCall でテストごとに「今回のイベントで判定させたいプラン」を差し替える
-const { planForNextCall } = vi.hoisted(() => ({
+// planForNextCall でテストごとに「今回のイベントで判定させたいプラン」を差し替える。
+// constructEventSpy は #287 の移行 (req.text() → readBodyWithinByteLimit + TextDecoder) で
+// 「署名検証へ渡る生ボディ」が変わっていないことを検証するために呼び出しを記録する
+const { planForNextCall, constructEventSpy } = vi.hoisted(() => ({
   planForNextCall: { current: 'pro' as 'free' | 'standard' | 'pro' },
+  constructEventSpy: vi.fn((rawBody: string) => JSON.parse(rawBody) as unknown),
 }));
 vi.mock('@/lib/stripe', () => ({
   // 署名検証はモックし、リクエストボディの JSON をそのまま Stripe イベントとして扱う
   getStripeClient: () => ({
     webhooks: {
-      constructEvent: (rawBody: string) => JSON.parse(rawBody),
+      constructEvent: constructEventSpy,
     },
   }),
   getStripeWebhookSecret: () => 'whsec_test',
@@ -94,6 +99,8 @@ describe('POST /api/webhooks/stripe', () => {
     repos = ctx.repos;
     uow = ctx.uow;
     planForNextCall.current = 'pro';
+    // 呼び出し記録をテストごとに初期化する (mockClear は実装を残したまま履歴だけ消す)
+    constructEventSpy.mockClear();
   });
 
   // 解約 (customer.subscription.deleted) で Pro → Free に降格すると、Pro モードも強制的に lite へ戻る
@@ -311,6 +318,46 @@ describe('POST /api/webhooks/stripe', () => {
     expect(tenant.stripeEventProcessedAt?.getTime()).toBe(newEventCreatedAtSec * 1000);
   });
 
+  // #287: ボディの読み取りを readBodyWithinByteLimit に寄せても、署名検証へ渡る文字列が
+  // 移行前 (request.text()) と 1 バイトも変わらないことを固定する。
+  // 読み取り方法の変更は署名検証の回帰に直結する (デコードや切り詰めが 1 箇所でも挟まると
+  // 正規の Stripe イベントが全て検証失敗になり、課金状態の反映が丸ごと止まる) ため、
+  // マルチバイト文字を含む本文で「受信した本文そのもの」が渡ることを表明する
+  it('署名検証には受信した本文がそのまま渡る (マルチバイト文字を含んでも一致する)', async () => {
+    seedTenant('lite', 'free');
+    // 日本語 + 絵文字 (サロゲートペア) を含めて、UTF-8 の復号・再エンコードが挟まっても
+    // 壊れないことを確かめる (壊れると実運用では HMAC 不一致 = 全イベント拒否になる)
+    const body = JSON.stringify({
+      created: Math.floor(Date.now() / 1000),
+      type: 'customer.subscription.updated',
+      data: {
+        object: {
+          id: 'sub_1',
+          customer: 'cus_1',
+          status: 'active',
+          items: { data: [{ price: { id: 'price_pro' } }] },
+          // Stripe の metadata は任意の文字列を持てるので、多バイト文字の混入は現実にあり得る
+          metadata: { tenantId: TENANT, memo: '日本語のメモ🚀' },
+        },
+      },
+    });
+    const { POST } = await import('@/app/api/webhooks/stripe/route');
+    const res = await POST(
+      new Request('http://localhost/api/webhooks/stripe', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'stripe-signature': 'sig' },
+        body,
+      }),
+    );
+    // イベントとして処理されている (= 復元した本文が JSON として壊れていない)
+    expect(res.status).toBe(200);
+    // 署名検証へ渡った第 1 引数が、送信した本文と完全一致する (これが崩れると HMAC が不一致になる)
+    expect(constructEventSpy).toHaveBeenCalledTimes(1);
+    expect(constructEventSpy.mock.calls[0]![0]).toBe(body);
+    // 署名検証の先まで進み、プラン反映まで到達している
+    expect(store.tenants.get(TENANT)!.subscriptionPlan).toBe('pro');
+  });
+
   // 署名ヘッダが無いリクエストは 400 で拒否する (なりすまし対策)
   it('stripe-signature ヘッダが無ければ 400 を返す', async () => {
     const { POST } = await import('@/app/api/webhooks/stripe/route');
@@ -321,5 +368,91 @@ describe('POST /api/webhooks/stripe', () => {
     });
     const res = await POST(req);
     expect(res.status).toBe(400);
+  });
+});
+
+// #287: この経路は以前サイズ検査そのものが無く、未認証で到達できるうえに署名検証より前に
+// ボディ全体がメモリへ展開されていた。上限が実際に効いていることを、
+// 「署名検証 (constructEvent) まで到達したか」で表明する
+// (上限を撤去すると本文がそのまま検証へ渡って 200 になり、これらのテストが落ちる)。
+describe('POST /api/webhooks/stripe のリクエストサイズ上限', () => {
+  // ちょうど指定バイト数になる Stripe イベント JSON を組み立てる。
+  // metadata の padding フィールドで長さを詰める (詰める文字は ASCII なので 1 文字 = 1 バイト)。
+  // 長さは必ず UTF-8 のバイト数で測る (土台に非 ASCII が混ざったときに境界値がずれないように)
+  function eventBodyOfExactly(totalBytes: number): string {
+    // まず padding 無しで組み立てて、目標との差分を padding の長さにする
+    const build = (padding: string) =>
+      JSON.stringify({
+        created: 1_700_000_000,
+        type: 'customer.subscription.updated',
+        data: {
+          object: {
+            id: 'sub_1',
+            customer: 'cus_1',
+            status: 'active',
+            items: { data: [{ price: { id: 'price_pro' } }] },
+            metadata: { tenantId: TENANT, padding },
+          },
+        },
+      });
+    // 目標バイト数から「padding が空のときのバイト数」を引いた分だけ詰める
+    return build('A'.repeat(totalBytes - Buffer.byteLength(build(''), 'utf8')));
+  }
+
+  // 上限つきの POST を実行する共通処理 (Content-Length を明示したい場合はヘッダで渡す)
+  async function postStripe(body: string, headers: Record<string, string> = {}) {
+    const { POST } = await import('@/app/api/webhooks/stripe/route');
+    return POST(
+      new Request('http://localhost/api/webhooks/stripe', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'stripe-signature': 'sig', ...headers },
+        body,
+      }),
+    );
+  }
+
+  beforeEach(() => {
+    // この describe だけを -t で絞って実行しても成立するよう、依存の初期化はここでも行う
+    // (他の describe の beforeEach が動いた副作用に相乗りしない)
+    const ctx = createMemoryContext();
+    store = ctx.store;
+    repos = ctx.repos;
+    uow = ctx.uow;
+    planForNextCall.current = 'pro';
+    constructEventSpy.mockClear();
+    seedTenant('lite', 'free');
+  });
+
+  // ヘッダの申告だけで上限超過と分かる場合は、本文を読まずに打ち切る。
+  // 本文自体は上限内なので、実バイト数の検査だけならすり抜けてしまう
+  it('Content-Length ヘッダが上限超過なら本文を読まずに 413 で拒否する', async () => {
+    const res = await postStripe(eventBodyOfExactly(1024), {
+      'content-length': String(STRIPE_WEBHOOK_MAX_BODY_BYTES + 1), // 申告だけ超過
+    });
+    expect(res.status).toBe(413);
+    // 署名検証まで進んでいない (上限を撤去するとここまで届いてしまう)
+    expect(constructEventSpy).not.toHaveBeenCalled();
+    // プラン反映も起きていない
+    expect(store.tenants.get(TENANT)!.subscriptionPlan).toBe('free');
+  });
+
+  // chunked 転送は Content-Length を省略できるため、ストリームの累計バイト数でも検査する。
+  // Request は body 文字列から Content-Length を自動付与しないので、この経路がそのまま再現できる
+  it('Content-Length が無くても実バイト数が上限超過なら 413 で拒否する', async () => {
+    const res = await postStripe(eventBodyOfExactly(STRIPE_WEBHOOK_MAX_BODY_BYTES + 1));
+    expect(res.status).toBe(413);
+    // 上限で読み取りを打ち切ったので署名検証には進んでいない
+    expect(constructEventSpy).not.toHaveBeenCalled();
+    expect(store.tenants.get(TENANT)!.subscriptionPlan).toBe('free');
+  });
+
+  // 境界値: ちょうど上限のボディは「超過」ではないので通す (> と >= の取り違え防止)
+  it('ちょうど上限ぴったりのボディは拒否せず署名検証まで進む', async () => {
+    const res = await postStripe(eventBodyOfExactly(STRIPE_WEBHOOK_MAX_BODY_BYTES));
+    expect(res.status).toBe(200);
+    // 上限ちょうどは通すので署名検証に到達している (>= に取り違えるとここで失敗する)
+    expect(constructEventSpy).toHaveBeenCalledTimes(1);
+    // 本文が途中で切れていないことも確認する (切り詰めが起きると JSON が壊れて 400 になる)
+    expect(store.tenants.get(TENANT)!.subscriptionPlan).toBe('pro');
   });
 });
