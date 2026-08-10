@@ -417,7 +417,7 @@ export async function POST(req: Request) {
     read = await readInboundFields(req);
   } catch (err) {
     // 本文は受け取れたが中身が JSON として不正だった場合 (握り潰さずログに残す)
-    console.error('[POST /api/inbound/email] JSON ボディの解析に失敗しました', err);
+    console.error('[POST /api/inbound/email] 受信ボディの解釈に失敗しました', err);
     // 形式不正は 400 で返す (外部には詳細を出さない)
     return NextResponse.json({ error: 'リクエストの形式が正しくありません' }, { status: 400 });
   }
@@ -429,6 +429,7 @@ export async function POST(req: Request) {
       logPrefix: '[POST /api/inbound/email]',
       messages: INBOUND_EMAIL_BODY_REJECT_MESSAGES,
       cause: read.cause,
+      declaredLength: read.declaredLength,
     });
   }
   // 上限内で読み取れたフィールド

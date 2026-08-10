@@ -276,7 +276,13 @@ async function readAcsForm(req: Request): Promise<FormData | null> {
   if (result.ok) return result.form;
   // §6「エラーを握り潰さない」: どの理由で拒否したかを (解析失敗なら原因の例外も添えて)
   // ログに残してから null を返す
-  logBodyReject('[sso-acs]', result.reason, SSO_ACS_MAX_BODY_BYTES, result.cause);
+  logBodyReject(
+    '[sso-acs]',
+    result.reason,
+    SSO_ACS_MAX_BODY_BYTES,
+    result.cause,
+    result.declaredLength,
+  );
   return null;
 }
 

@@ -65,6 +65,24 @@ describe('bodyRejectResponse', () => {
     expect(calls[0]).toHaveLength(1);
   });
 
+  // 申告サイズを渡したときは、それがログ行に出る (413 の切り分けに使う唯一の数字)
+  it('declaredLength を渡すと申告サイズがログ行に出る', () => {
+    const calls = captureWarn();
+    bodyRejectResponse('too-large', MAX_BYTES, {
+      logPrefix: '[test-route]',
+      messages: MESSAGES,
+      declaredLength: 999_999,
+    });
+    expect(String(calls[0]![0])).toContain('999999');
+  });
+
+  // 申告が無い場合は、無いと分かる形で残す (数字をでっち上げない)
+  it('declaredLength が無いときは申告が無い旨をログに残す', () => {
+    const calls = captureWarn();
+    bodyRejectResponse('too-large', MAX_BYTES, { logPrefix: '[test-route]', messages: MESSAGES });
+    expect(String(calls[0]![0])).toContain('申告は無し');
+  });
+
   // 解析失敗の原因を渡したときは、それもログに載せる (原因が分かるのはこの例外だけ)
   it('cause を渡すと原因の例外もログに載せる', () => {
     const cause = new Error('boundary が壊れています');

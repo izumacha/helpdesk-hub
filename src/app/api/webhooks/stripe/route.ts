@@ -79,6 +79,7 @@ export async function POST(request: Request): Promise<NextResponse> {
     return bodyRejectResponse(bodyResult.reason, STRIPE_WEBHOOK_MAX_BODY_BYTES, {
       logPrefix: '[stripe-webhook]',
       messages: STRIPE_BODY_REJECT_MESSAGES,
+      declaredLength: bodyResult.declaredLength,
     });
   }
   // 上限内で読み取れた本文 (署名検証にかける生テキスト)

@@ -198,6 +198,7 @@ export async function POST(request: Request) {
       formResult.reason,
       MAGIC_LINK_CALLBACK_MAX_BODY_BYTES,
       formResult.cause,
+      formResult.declaredLength,
     );
     // フォームとして解釈できない場合はトークン無しと同じ扱いにする
     redirect('/login?error=magic-link-invalid');

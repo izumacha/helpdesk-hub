@@ -222,24 +222,6 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: '署名ヘッダがありません' }, { status: 401 });
   }
 
-  // 固定キーの全体レート制限を、**ボディを読む前に**適用する。
-  // キーが固定なので署名検証前でも安全に使える (destination のような攻撃者が変えられる値を
-  // キーにするとバケットを無限に作られる。詳細は定数の定義コメント参照)。
-  //
-  // 読み取りより前に置くのが要点: 読み取りは無通信を許容する時間 (既定 30 秒) のあいだ
-  // reader とバッファとソケットを保持するため、ここが後ろにあると「署名ヘッダを付けて本文を
-  // 送らない」接続を掛けられた分だけ保持数が伸びる (レート制限は同時保持数を絞らないので、
-  // 手前に置いて開始レート自体を抑えるのが唯一の歯止めになる)。
-  // 本文を読む 5 経路のうち、読み取りより前に置ける歯止めが無かったのはここだけだった。
-  // (メール取り込みのテナント別レート制限も読み取りより後ろだが、あちらはテナントを本文から
-  //  引くので構造上前に出せない。代わりに共有シークレットの照合が読み取りの手前にある)
-  const unauthLimitResponse = checkRouteRateLimit(
-    'inbound-line:unauthenticated',
-    LINE_UNAUTHENTICATED_RATE_LIMIT,
-    '取り込みが混み合っています',
-  );
-  if (unauthLimitResponse) return unauthLimitResponse;
-
   // ボディをサイズ上限つきのストリーム読み取りで取得する
   // (署名検証は JSON.parse 前の生テキストに対して行う必要がある)。
   // Content-Length の申告・実際の累計バイト数の両方を見るので、ヘッダを省いた chunked 転送でも
@@ -252,6 +234,7 @@ export async function POST(req: Request) {
     return bodyRejectResponse(bodyResult.reason, LINE_WEBHOOK_MAX_BODY_BYTES, {
       logPrefix: '[POST /api/inbound/line]',
       messages: LINE_BODY_REJECT_MESSAGES,
+      declaredLength: bodyResult.declaredLength,
     });
   }
   // 上限内で読み取れた本文 (署名検証と JSON.parse の対象になる生テキスト)
@@ -294,6 +277,23 @@ export async function POST(req: Request) {
   if (!LINE_USER_ID_PATTERN.test(destination)) {
     return NextResponse.json({ error: '署名の検証に失敗しました' }, { status: 401 });
   }
+
+  // 固定キーの全体レート制限を適用する (DB 参照より前に置き、destination を変え続ける
+  // ことでのレート制限回避・DB 負荷増大を防ぐ。詳細は定数の定義コメント参照)。
+  //
+  // **読み取りより後ろに置いたままにしているのは意図的。** 前へ出すと、JSON として壊れた
+  // 本文や destination の形式不正で 400 になるだけの雑音まで、全テナント共有のこのバケットを
+  // 消費するようになる。600/分を雑音で使い切られると正規の Webhook が 429 になり、LINE が
+  // 再送を諦めた時点でメッセージが失われる (取りこぼしは復旧できない)。
+  // 引き換えに、読み取り中の同時保持数 (無通信の許容時間ぶん reader とバッファを掴む) は
+  // ここでは絞れないままになる。両立させるには「開始レート」ではなく「同時保持数」を
+  // 数える仕組みが要るので、そちらを入れるまでは取りこぼしを避ける側に倒す。
+  const unauthLimitResponse = checkRouteRateLimit(
+    'inbound-line:unauthenticated',
+    LINE_UNAUTHENTICATED_RATE_LIMIT,
+    '取り込みが混み合っています',
+  );
+  if (unauthLimitResponse) return unauthLimitResponse;
 
   // destination からテナントの LINE 連携設定 (チャネルシークレット等) を引く。
   // 未登録チャネルは「どのテナントの鍵で検証すべきか」が分からないため、この時点で拒否する

@@ -97,6 +97,22 @@ describe('readBodyWithinByteLimit', () => {
     expect(result.ok && result.bytes.byteLength).toBe(LIMIT);
   });
 
+  // 申告値をログに残せるよう、拒否結果に載せて返す。上限値だけでは全部の 413 行が同じ文言に
+  // なり、「正規の送信者が上限を少し超えている」と「桁違いのサイズで探られている」を
+  // 運用者が区別できない
+  it('ヘッダ申告での拒否は申告値を結果に載せて返す', async () => {
+    const req = requestWithBody(1, { 'content-length': String(LIMIT + 1) });
+    const result = await readBodyWithinByteLimit(req, LIMIT);
+    expect(result).toEqual({ ok: false, reason: 'too-large', declaredLength: LIMIT + 1 });
+  });
+
+  // ストリーム側で打ち切った場合は「上限を踏み越えた時点で読むのをやめる」設計上、
+  // 実サイズが分からない。無い値をでっち上げないことを表明する
+  it('ストリームでの打ち切りは申告値を持たない', async () => {
+    const result = await readBodyWithinByteLimit(requestWithBody(LIMIT + 1), LIMIT);
+    expect(result).toEqual({ ok: false, reason: 'too-large' });
+  });
+
   it('Content-Lengthの申告が上限超過なら本文を読み進めずに拒否する', async () => {
     // 実本文はいくらでも流せるが、申告だけを上限超過にする
     const chunkSize = 64;
@@ -104,8 +120,8 @@ describe('readBodyWithinByteLimit', () => {
     // 申告値を上書きする (Headers は生成後も変更できる)
     req.headers.set('content-length', String(LIMIT + 1));
     const result = await readBodyWithinByteLimit(req, LIMIT);
-    // 申告だけで拒否される
-    expect(result).toEqual({ ok: false, reason: 'too-large' });
+    // 申告だけで拒否される (申告値はログの切り分け用にそのまま載せて返す)
+    expect(result).toEqual({ ok: false, reason: 'too-large', declaredLength: LIMIT + 1 });
     // ヘルパーはストリームを 1 度も read していない。
     // ここが 0 ではなく最大 1 チャンクなのは ReadableStream 自身の先読み (highWaterMark)
     // によるもので、ヘルパーがボディを読み進めた結果ではない

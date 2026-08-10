@@ -129,14 +129,18 @@ type BoundedBodyResult =
   // ArrayBuffer 実体に紐づく Uint8Array に限定する (BodyInit として受け付けてもらうため。
   // 既定の Uint8Array<ArrayBufferLike> は SharedArrayBuffer 由来も含むので body に渡せない)
   | { ok: true; bytes: Uint8Array<ArrayBuffer> } // 上限内で読み切れた
-  | { ok: false; reason: 'too-large' } // 上限超過 (ヘッダ申告 or ストリームの累計)
-  | { ok: false; reason: 'timeout' } // 無通信が続いて打ち切った (だらだら送り)
-  | { ok: false; reason: 'unreadable' }; // ストリームの読み取り自体に失敗した (接続断など)
+  // 上限超過 (ヘッダ申告 or ストリームの累計)。申告が読めていた場合だけ declaredLength が付く
+  // (ストリーム側で打ち切ったときは、上限で読むのをやめる設計上そもそも実サイズが分からない)
+  | { ok: false; reason: 'too-large'; declaredLength?: number }
+  // 以下 2 つに declaredLength は付かないが、キーは生やしておく (呼び出し元が reason で
+  // 絞り込まずにそのままログへ渡せるようにするため。cause と同じ理由)
+  | { ok: false; reason: 'timeout'; declaredLength?: undefined } // 無通信が続いて打ち切った
+  | { ok: false; reason: 'unreadable'; declaredLength?: undefined }; // 読み取り自体に失敗した
 
 // 文字列としての読み取り結果 (バイト列の結果の bytes を text に置き換えたもの)
 type BoundedTextResult =
   | { ok: true; text: string } // 上限内で読み切れて UTF-8 として復号できた
-  | { ok: false; reason: 'too-large' | 'timeout' | 'unreadable' };
+  | Exclude<BoundedBodyResult, { ok: true }>;
 
 // フォームとしての読み取り結果 (バイト列の結果に「パースできなかった」を足したもの)
 type BoundedFormResult =
@@ -144,7 +148,7 @@ type BoundedFormResult =
   // 本文を読み切れなかった。cause は常に undefined だが**キー自体は生やしておく**:
   // こうしておくと呼び出し元が reason で絞り込まずに `result.cause` をそのままログへ渡せる
   // (絞り込みの三項演算子を採用ルートごとに書き写さずに済む。§6 DRY)
-  | { ok: false; reason: 'too-large' | 'timeout' | 'unreadable'; cause?: undefined }
+  | (Exclude<BoundedBodyResult, { ok: true }> & { cause?: undefined })
   // フォームとして解析できなかった。**元の例外を捨てずに添えて返す** (§6 エラーを握り潰さない)。
   //
   // ただし今の undici から得られる情報は限られる (Node v22 で実測): multipart の失敗は
@@ -155,7 +159,7 @@ type BoundedFormResult =
   // (b) 上流が将来詳細を載せたらそのまま活きる、(c) 握り潰した実装だと後から足す動機が
   // 生まれない、の 3 点による。**この 1 行以上の切り分けを期待して上限値やパーサを
   // 設計しないこと。**
-  | { ok: false; reason: 'unparsable'; cause: unknown };
+  | { ok: false; reason: 'unparsable'; cause: unknown; declaredLength?: undefined };
 
 // 本文を取り出せなかった理由。呼び出し元がログ文言の型を自前で導出しなくて済むよう公開する
 export type BodyRejectReason = Exclude<BoundedFormResult, { ok: true }>['reason'];
@@ -199,10 +203,23 @@ export type BodyRejectMessages<R extends BodyRejectReason = BodyRejectReason> = 
  * @param reason 読み取りが失敗した理由
  * @param maxBytes 適用していた上限バイト数 (サイズ超過の文言に載せる)
  */
-function describeBodyRejectReason(reason: BodyRejectReason, maxBytes: number): string {
+function describeBodyRejectReason(
+  reason: BodyRejectReason,
+  maxBytes: number,
+  declaredLength?: number,
+): string {
+  // 申告サイズが読めていれば載せる。**上限値だけでは全部の行が同じ文言になり、
+  // 「正規の送信者が上限より少し大きいものを送り続けている (上限の見直しどき)」と
+  // 「桁違いのサイズで探られている」を運用者が区別できない** (上限はソースを見れば分かる値)。
+  // ストリーム側で打ち切った場合は、設計上「上限を踏み越えた時点で読むのをやめる」ので
+  // 実サイズは分からない。その場合は申告が無かった旨だけを残す
+  const declared =
+    declaredLength !== undefined && declaredLength >= 0
+      ? `Content-Length の申告は ${declaredLength} バイト`
+      : 'Content-Length の申告は無し (実サイズは上限で打ち切ったため不明)';
   // Record にして網羅性を型で強制する (理由を増やしたらキー不足で typecheck が落ちる)
   const descriptions: Readonly<Record<BodyRejectReason, string>> = {
-    'too-large': `リクエストボディが上限 ${maxBytes} バイトを超えました。`,
+    'too-large': `リクエストボディが上限 ${maxBytes} バイトを超えました (${declared})。`,
     timeout: 'リクエストボディの送信が途中で止まりました (だらだら送りの疑い)。',
     unreadable: 'リクエストボディの読み取りに失敗しました (接続断など)。',
     unparsable: 'リクエストボディをフォームとして解析できませんでした。',
@@ -240,15 +257,17 @@ export function bodyRejectStatus(reason: BodyRejectReason): 413 | 400 {
  * @param reason 読み取りが失敗した理由
  * @param maxBytes 適用していた上限バイト数 (サイズ超過の文言に載せる)
  * @param cause 原因の例外 (フォーム解析に失敗したときだけ入る)
+ * @param declaredLength Content-Length の申告値 (読めていれば。サイズ超過の切り分けに使う)
  */
 export function logBodyReject(
   logPrefix: string,
   reason: BodyRejectReason,
   maxBytes: number,
   cause?: unknown,
+  declaredLength?: number,
 ): void {
   // 理由の説明文を組み立てる (本文の中身は含まない。§9 PII をログに漏らさない)
-  const detail = describeBodyRejectReason(reason, maxBytes);
+  const detail = describeBodyRejectReason(reason, maxBytes, declaredLength);
   // 原因の例外があれば同じ行に添える (無いときに undefined を渡すと行末に "undefined" が出る)
   if (cause === undefined) console.warn(`${logPrefix} ${detail}`);
   else console.warn(`${logPrefix} ${detail}`, cause);
@@ -284,7 +303,7 @@ export async function readBodyWithinByteLimit(
   const declaredLength = Number(req.headers.get('content-length') || '-1');
   // 数値として読めて上限を超えているなら、本文を読まずにここで打ち切る (一番安い拒否)
   if (Number.isFinite(declaredLength) && declaredLength > maxBytes) {
-    return { ok: false, reason: 'too-large' };
+    return { ok: false, reason: 'too-large', declaredLength };
   }
 
   // ボディが無いリクエスト (GET など) は空のバイト列として扱う
