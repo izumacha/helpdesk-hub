@@ -21,7 +21,7 @@ import { STALL_TOLERANT_BODY_IDLE_TIMEOUT_MS } from '@/lib/request-body-limit';
 
 // 読み取りヘルパーを「本物のまま呼び出し引数だけ記録する」形に差し替える。
 // 上限・制限時間はこのルートが**引数で明示的に渡してはじめて効く**もので、渡し忘れると
-// 既定値 (無通信 30 秒 / 全体 120 秒) に黙って戻る。挙動は既定値でもそれらしく
+// 既定値 (無通信 10 秒 / 全体 120 秒) に黙って戻る。挙動は既定値でもそれらしく
 // 動いてしまい全テストが緑のままなので、引数そのものを表明できるようにしておく
 const { readFormSpy, readTextSpy } = vi.hoisted(() => ({
   readFormSpy: vi.fn(),

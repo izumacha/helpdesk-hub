@@ -518,11 +518,20 @@ describe('既定の制限時間', () => {
     expect(STALL_TOLERANT_BODY_IDLE_TIMEOUT_MS).toBeLessThan(DEFAULT_BODY_TOTAL_TIMEOUT_MS);
   });
 
+  // **実際に保持時間を決めているのはこちら** (3 経路が明示的に使う)。全体期限より短いだけでは
+  // 119 秒まで伸ばせてしまうので、保持数が跳ねない範囲の上限も掛ける。
+  // 延ばせば保持数は「読み取り前のゲートの上限 × この値」に比例して増える
+  it('巻き添え回避用の無通信上限も、保持数が伸びすぎない範囲に収まっている', () => {
+    expect(STALL_TOLERANT_BODY_IDLE_TIMEOUT_MS).toBeLessThanOrEqual(60_000);
+  });
+
   it('無通信の上限は、保持数が伸びすぎない範囲に収まっている', () => {
     // 長くするほど「ヘッダだけ送る接続」の同時保持数が増える (この経路には同時保持数の
     // 歯止めが無い)。一方で短すぎるとイベントループの停止で正規リクエストを誤って落とす。
     // 現在の判断はその間の 30 秒で、上下どちらへ大きく動かすときは根拠を添えて見直すこと
+    // 既定は「読み取り前にゲートが無い経路」にも当たるので、延長版より厳しく縛る
+    // (30 秒まで許すと、撤回した『既定ごと 30 秒へ』の変更が素通りしてしまう)
     expect(DEFAULT_BODY_IDLE_TIMEOUT_MS).toBeGreaterThanOrEqual(5_000);
-    expect(DEFAULT_BODY_IDLE_TIMEOUT_MS).toBeLessThanOrEqual(30_000);
+    expect(DEFAULT_BODY_IDLE_TIMEOUT_MS).toBeLessThanOrEqual(15_000);
   });
 });
