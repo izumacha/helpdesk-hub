@@ -5,7 +5,7 @@
 //  Content-Length を省いた chunked 転送でメモリを枯渇させられる穴を見逃す)
 
 import { describe, expect, it } from 'vitest';
-import { readBodyWithinByteLimit } from '@/lib/request-body-limit';
+import { readBodyWithinByteLimit, readFormWithinByteLimit } from '@/lib/request-body-limit';
 
 // テストで使う上限 (小さくして高速に回す)
 const LIMIT = 1024;
@@ -161,10 +161,48 @@ describe('readBodyWithinByteLimit', () => {
       duplex: 'half',
     } as RequestInit & { duplex: 'half' });
 
-    // 制限時間を 50ms に縮めてテストを速く終わらせる
+    // 無通信の許容時間を 50ms に縮めてテストを速く終わらせる
     const result = await readBodyWithinByteLimit(req, LIMIT, 50);
-    // サイズ上限には達していないが、時間切れとして打ち切られる
+    // サイズ上限には達していないが、次のチャンクが来ないので打ち切られる
     expect(result).toEqual({ ok: false, reason: 'timeout' });
+  });
+
+  // 上のケースの裏返し。制限が「全体の所要時間」だと、細い上り回線から時間をかけて
+  // 送ってくる正規の利用者 (SSO は利用者のブラウザから POST される) まで巻き添えで
+  // 落ちてしまう。無通信時間で測っているからこそ、遅くても送り続けていれば通る
+  it('無通信の許容時間より長くかかっても、送り続けていれば読み切れる', async () => {
+    // 1 チャンクあたりの待ち時間 (無通信の許容時間より十分に短い)
+    const chunkDelayMs = 20;
+    // 送るチャンク数。全体では chunkDelayMs * 5 = 100ms かかり、許容時間 50ms を上回る
+    const chunkCount = 5;
+    // 送信済みチャンク数
+    let sent = 0;
+    const stream = new ReadableStream<Uint8Array>({
+      async pull(controller) {
+        // 予定数を送り終えたらストリームを閉じる
+        if (sent >= chunkCount) {
+          controller.close();
+          return;
+        }
+        // 少し待ってから 1 バイト送る (遅いが止まってはいない回線の再現)
+        await new Promise((resolve) => setTimeout(resolve, chunkDelayMs));
+        controller.enqueue(new Uint8Array([65]));
+        sent++;
+      },
+    });
+    const req = new Request('http://x', {
+      method: 'POST',
+      body: stream,
+      headers: CONTENT_TYPE,
+      duplex: 'half',
+    } as RequestInit & { duplex: 'half' });
+
+    // 無通信の許容時間 (50ms) < 全体の所要時間 (約 100ms) という条件で読む
+    const result = await readBodyWithinByteLimit(req, LIMIT, 50);
+    // 全体期限で打ち切る実装ならここで timeout になり失敗する
+    expect(result.ok).toBe(true);
+    // 送ったバイトはすべて読み取れている
+    expect(result.ok && result.bytes.byteLength).toBe(chunkCount);
   });
 
   it('読み取り中にストリームが壊れたら unreadable を返す', async () => {
@@ -184,5 +222,63 @@ describe('readBodyWithinByteLimit', () => {
     const result = await readBodyWithinByteLimit(req, LIMIT);
     // 例外を投げず、読み取り不能として返す (呼び出し元が拒否を選べる)
     expect(result).toEqual({ ok: false, reason: 'unreadable' });
+  });
+});
+
+// フォーム化まで含めた層のテスト。バイト列側 (上記) と分けているのは、こちらの関心事が
+// 「サイズ検査を通したバイト列を、元の Content-Type のまま正しくパースし直せるか」だから
+describe('readFormWithinByteLimit', () => {
+  it('urlencoded のフォームをフィールドとして取り出せる', async () => {
+    const req = new Request('http://x', {
+      method: 'POST',
+      body: new URLSearchParams({ SAMLResponse: 'abc', RelayState: '/tickets' }),
+    });
+    const result = await readFormWithinByteLimit(req, LIMIT);
+    // パースに成功する
+    expect(result.ok).toBe(true);
+    // 各フィールドが元の値のまま取り出せる
+    expect(result.ok && result.form.get('SAMLResponse')).toBe('abc');
+    expect(result.ok && result.form.get('RelayState')).toBe('/tickets');
+  });
+
+  // multipart は Content-Type の boundary パラメータが無いとパースできない。
+  // ヘルパーが元リクエストの Content-Type をそのまま引き継いでいることを固定する
+  // (引き継ぎを落とすと本番の IdP が multipart で POST してきたときだけ壊れ、
+  //  urlencoded しか送らないテストでは気付けない)
+  it('multipart の boundary を引き継いでパースできる', async () => {
+    // FormData を渡すと boundary 付きの Content-Type が自動で組み立てられる
+    const form = new FormData();
+    form.set('SAMLResponse', 'multipart-value');
+    const req = new Request('http://x', { method: 'POST', body: form });
+    // 前提確認: boundary 付きの multipart として送られている
+    expect(req.headers.get('content-type')).toContain('multipart/form-data; boundary=');
+
+    const result = await readFormWithinByteLimit(req, LIMIT);
+    // boundary が引き継がれていればパースできる (落とすと unparsable になる)
+    expect(result.ok).toBe(true);
+    expect(result.ok && result.form.get('SAMLResponse')).toBe('multipart-value');
+  });
+
+  it('フォームとして解釈できない本文は unparsable で拒否する', async () => {
+    // Content-Type が JSON なのでフォームとしてはパースできない
+    const req = new Request('http://x', {
+      method: 'POST',
+      body: '{"broken":',
+      headers: { 'content-type': 'application/json' },
+    });
+    const result = await readFormWithinByteLimit(req, LIMIT);
+    // 例外を投げず、パース不能として返す
+    expect(result).toEqual({ ok: false, reason: 'unparsable' });
+  });
+
+  it('サイズ超過はパースまで進まず too-large をそのまま返す', async () => {
+    const req = new Request('http://x', {
+      method: 'POST',
+      body: 'A'.repeat(LIMIT + 1),
+      headers: CONTENT_TYPE,
+    });
+    const result = await readFormWithinByteLimit(req, LIMIT);
+    // バイト列側の拒否理由が上書きされずに伝わる (unparsable に化けない)
+    expect(result).toEqual({ ok: false, reason: 'too-large' });
   });
 });

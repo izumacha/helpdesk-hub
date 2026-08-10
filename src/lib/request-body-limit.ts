@@ -17,13 +17,14 @@
 //   2. **細切れチャンクによる増幅** → 読み取ったチャンクを配列に溜める実装だと、1 バイトずつ
 //      刻んだ chunked 転送で「本文は上限内なのに Uint8Array オブジェクトが本文バイト数だけ
 //      積まれる」増幅が起きる (実測: 上限 1MB ちょうどの本文で約 231MB のヒープを確保でき、
-//      ワイヤ上はわずか約 6MB で足りる)。そのため**上限ぶんのバッファを最初に確保して
-//      そこへ書き込む**形にし、メモリ使用量をチャンク数から独立させる。
-//   3. **slowloris (だらだら送り)** → 累計が上限に届かない速度で送り続ければループは終わらず、
-//      ハンドラと接続が保持され続ける。読み取り全体に制限時間を設けて打ち切る。
+//      ワイヤ上はわずか約 6MB で足りる)。そのため**1 本の連続したバッファへ書き込む**形にし、
+//      メモリ使用量をチャンク数から独立させる (確保の仕方は下の「メモリの目安」を参照)。
+//   3. **slowloris (だらだら送り)** → 何も送らずに接続だけ保持されるとループは終わらず、
+//      ハンドラと接続が保持され続ける。チャンクが届かない時間に上限を設けて打ち切る。
 //
-// メモリの目安: 保持するのは「実際の本文サイズ」ぶんのバッファで、チャンク数には依存しない
-// (小さく確保して倍々に伸ばすため、上限ぶんを毎回確保することはない)。伸ばす瞬間だけ
+// メモリの目安: 保持するのは「実際の本文サイズ」ぶんのバッファ 1 本で、チャンク数には依存しない。
+// 上限ぶんを先に確保することはせず、INITIAL_BUFFER_BYTES から始めて足りなければ倍々に伸ばす
+// (通常の SAML アサーションは数十 KB なので、毎回 1MB を確保するのは無駄なため)。伸ばす瞬間だけ
 // 新旧のバッファが並ぶので約 1.5 倍、さらに呼び出し元が formData() でパースすると
 // フィールド値のコピーがもう 1 つできる。上限値を決めるときはこの倍率を見込むこと。
 //
@@ -33,9 +34,15 @@
 // Content-Length の事前検査・制限時間・拒否理由の判別を持つ点も異なる。
 // 3 者の統合は本モジュールの利用箇所が増えてから検討する。
 
-// 読み取り全体の既定の制限時間 (slowloris 対策)。正規のクライアントは上限サイズの本文でも
-// 数秒あれば送り切れるため、余裕を見て 10 秒に置く
-export const DEFAULT_BODY_READ_TIMEOUT_MS = 10_000;
+// チャンクが 1 つも届かないまま許容する最大時間 (slowloris 対策)。
+//
+// **読み取り全体の期限ではなく「無通信が続いた時間」の上限である点が重要。** 全体に期限を
+// 置くと、上限サイズぎりぎりの本文を細い上り回線から送っている正規の利用者まで打ち切って
+// しまう (例: 80KB のアサーションを 64kbps のモバイル回線から送ると 10 秒を超える)。ACS の
+// POST はユーザーのブラウザから飛ぶので、回線品質はこちらで選べない。
+// 一方 slowloris は「送らずに接続だけ保持する」攻撃なので、無通信時間で測れば
+// 遅い正規クライアントを巻き添えにせず攻撃だけを落とせる (タイマーは 1 チャンクごとに再設定)。
+export const DEFAULT_BODY_IDLE_TIMEOUT_MS = 10_000;
 
 // 最初に確保するバッファのサイズ。小さな本文 (通常の SAML アサーションは数十 KB) のために
 // 上限ぶんを毎回確保するのは無駄なので、ここから始めて足りなければ倍々に伸ばす
@@ -43,17 +50,19 @@ const INITIAL_BUFFER_BYTES = 16 * 1024;
 
 // バイト列としての読み取り結果。
 // bytes を Uint8Array で返すのは、そのまま Response/Request の body に渡せる型 (BodyInit) で、
-// かつ内部バッファの一部を切り出す際にコピーを作らずに済む (subarray) から
-export type BoundedBodyResult =
+// かつ内部バッファの一部を切り出す際にコピーを作らずに済む (subarray) から。
+// export しないのは呼び出し元が戻り値を型注釈せずに使えるため (§6 デッドコードを残さない)。
+// 外部から名指しで必要になった時点で export に変える
+type BoundedBodyResult =
   // ArrayBuffer 実体に紐づく Uint8Array に限定する (BodyInit として受け付けてもらうため。
   // 既定の Uint8Array<ArrayBufferLike> は SharedArrayBuffer 由来も含むので body に渡せない)
   | { ok: true; bytes: Uint8Array<ArrayBuffer> } // 上限内で読み切れた
   | { ok: false; reason: 'too-large' } // 上限超過 (ヘッダ申告 or ストリームの累計)
-  | { ok: false; reason: 'timeout' } // 制限時間内に読み切れなかった (だらだら送り)
+  | { ok: false; reason: 'timeout' } // 無通信が続いて打ち切った (だらだら送り)
   | { ok: false; reason: 'unreadable' }; // ストリームの読み取り自体に失敗した (接続断など)
 
 // フォームとしての読み取り結果 (バイト列の結果に「パースできなかった」を足したもの)
-export type BoundedFormResult =
+type BoundedFormResult =
   | { ok: true; form: FormData } // 上限内で読み取れてフォームとしてパースできた
   | { ok: false; reason: 'too-large' | 'timeout' | 'unreadable' | 'unparsable' };
 
@@ -75,7 +84,7 @@ export function describeBodyRejectReason(reason: BodyRejectReason, maxBytes: num
   // Record にして網羅性を型で強制する (理由を増やしたらキー不足で typecheck が落ちる)
   const descriptions: Readonly<Record<BodyRejectReason, string>> = {
     'too-large': `リクエストボディが上限 ${maxBytes} バイトを超えました。`,
-    timeout: 'リクエストボディを制限時間内に読み切れませんでした (だらだら送りの疑い)。',
+    timeout: 'リクエストボディの送信が途中で止まりました (だらだら送りの疑い)。',
     unreadable: 'リクエストボディの読み取りに失敗しました (接続断など)。',
     unparsable: 'リクエストボディをフォームとして解析できませんでした。',
   };
@@ -89,16 +98,18 @@ export function describeBodyRejectReason(reason: BodyRejectReason, maxBytes: num
  * 三段構え:
  *   1. Content-Length の申告が上限超過なら、本文を一切読み進めずに打ち切る。
  *   2. 申告が無い/過少申告でも、ストリームの累計バイト数が上限を超えた時点で打ち切る。
- *   3. 全体が `timeoutMs` を超えたら打ち切る (上限に届かない速度で送り続ける攻撃への対策)。
+ *   3. 次のチャンクが `idleTimeoutMs` 待っても届かなければ打ち切る (送らずに接続だけ
+ *      保持する攻撃への対策)。**全体の所要時間は制限しない** ので、細い上り回線から
+ *      時間をかけて送ってくる正規のクライアントは通る。
  *
  * @param req 読み取り対象のリクエスト (ボディは呼び出し後に消費済みになる)
  * @param maxBytes 許容する最大バイト数 (この値ちょうどまでは許可し、超えた分を拒否する)
- * @param timeoutMs 読み取り全体の制限時間 (既定 DEFAULT_BODY_READ_TIMEOUT_MS)
+ * @param idleTimeoutMs 次のチャンクを待つ最大時間 (既定 DEFAULT_BODY_IDLE_TIMEOUT_MS)
  */
 export async function readBodyWithinByteLimit(
   req: Request,
   maxBytes: number,
-  timeoutMs: number = DEFAULT_BODY_READ_TIMEOUT_MS,
+  idleTimeoutMs: number = DEFAULT_BODY_IDLE_TIMEOUT_MS,
 ): Promise<BoundedBodyResult> {
   // Content-Length の申告値を読む。|| '-1' で null (ヘッダ無し) と空文字列の両方を -1 にまとめる
   // (?? は null/undefined しか補填せず空文字列を拾えないため || を使う)。
@@ -120,12 +131,12 @@ export async function readBodyWithinByteLimit(
   let totalBytes = 0;
   // 上限超過を検知したか (検知したら読み取りをやめる)
   let exceeded = false;
-  // 制限時間切れで打ち切ったか
+  // 無通信が続いて打ち切ったか
   let timedOut = false;
   // ストリームのリーダー (finally で確実に cancel するため try の外で宣言する)
   let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
-  // 制限時間のタイマー (finally で必ず解除する)
-  let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+  // 無通信を検知するタイマー (finally で必ず解除する)
+  let idleTimeoutHandle: ReturnType<typeof setTimeout> | undefined;
 
   try {
     // ストリームを 1 チャンクずつ読むためのリーダーを取得する
@@ -133,21 +144,32 @@ export async function readBodyWithinByteLimit(
     reader = req.body.getReader();
     // タイマーのコールバックから参照するためのローカル束縛 (undefined でないことが確定している)
     const activeReader = reader;
-    // 制限時間を超えたらリーダーを cancel して読み取りを止める。
-    // 待機中の read() は cancel によって done で解決するので、ループは自然に抜ける。
+    // 次のチャンクを待つタイマーを張り直す。届かないまま時間切れになったらリーダーを
+    // cancel して読み取りを止める。待機中の read() は cancel によって done で解決するので、
+    // ループは自然に抜ける。
     // Promise.race で待つ実装にしてはいけない: 解決しない Promise に対する反応 (PromiseReaction) が
     // 1 チャンクごとに積み上がり、チャンク数に比例したメモリを保持してしまう
     // (実測: 1 バイト刻みで 1MB を送ると +566MB。この方式なら +4MB 程度に収まる)
-    timeoutHandle = setTimeout(() => {
-      timedOut = true;
-      void activeReader.cancel().catch(() => {});
-    }, timeoutMs);
+    const armIdleTimeout = () => {
+      // 前のチャンク用に張ったタイマーを解除してから張り直す (タイマーは常に 1 本だけ)
+      clearTimeout(idleTimeoutHandle);
+      idleTimeoutHandle = setTimeout(() => {
+        timedOut = true;
+        void activeReader.cancel().catch(() => {});
+      }, idleTimeoutMs);
+    };
+    // 最初のチャンクを待つぶんのタイマーを張る
+    armIdleTimeout();
 
     // ストリームの終端に達するまで読み続ける
     for (;;) {
       // 次のチャンクを 1 つ読む
       const { done, value } = await reader.read();
-      // 終端に達したらループを抜ける (制限時間切れの cancel もここで done になる)
+      // チャンクが届いた (or 終端に達した) ので、無通信の計測をここから数え直す。
+      // これにより「遅いが送り続けている」正規クライアントは何秒かかっても通り、
+      // 「送るのをやめた」接続だけが次の待機で時間切れになる
+      armIdleTimeout();
+      // 終端に達したらループを抜ける (時間切れの cancel もここで done になる)
       if (done) break;
       // 上限を超えるなら、書き込まずに打ち切る
       if (totalBytes + value.byteLength > maxBytes) {
@@ -177,7 +199,7 @@ export async function readBodyWithinByteLimit(
     return { ok: false, reason: 'unreadable' };
   } finally {
     // タイマーを解除する (放置するとプロセスが無駄に起き続ける)
-    clearTimeout(timeoutHandle);
+    clearTimeout(idleTimeoutHandle);
     // 残りのストリームを破棄する (読み続けてメモリを積まない)。
     // cancel() は「既にエラー状態のストリーム」に対しては reject するため、必ず握って捨てる:
     // ここで reject を伝播させると、上限超過で打ち切った判定が unreadable に化けてしまい、
@@ -186,7 +208,7 @@ export async function readBodyWithinByteLimit(
     void reader?.cancel().catch(() => {});
   }
 
-  // 制限時間切れ (だらだら送り) は、読めた量に関わらず拒否する
+  // 無通信での打ち切り (だらだら送り) は、読めた量に関わらず拒否する
   if (timedOut) return { ok: false, reason: 'timeout' };
   // 上限超過なら、確保したバッファは捨てて拒否を返す
   if (exceeded) return { ok: false, reason: 'too-large' };
@@ -204,15 +226,15 @@ export async function readBodyWithinByteLimit(
  *
  * @param req 読み取り対象のリクエスト
  * @param maxBytes 許容する最大バイト数
- * @param timeoutMs 読み取り全体の制限時間 (既定 DEFAULT_BODY_READ_TIMEOUT_MS)
+ * @param idleTimeoutMs 次のチャンクを待つ最大時間 (既定 DEFAULT_BODY_IDLE_TIMEOUT_MS)
  */
 export async function readFormWithinByteLimit(
   req: Request,
   maxBytes: number,
-  timeoutMs: number = DEFAULT_BODY_READ_TIMEOUT_MS,
+  idleTimeoutMs: number = DEFAULT_BODY_IDLE_TIMEOUT_MS,
 ): Promise<BoundedFormResult> {
   // まずバイト列として上限つきで読む (超過・時間切れ・読み取り失敗はここで判別される)
-  const body = await readBodyWithinByteLimit(req, maxBytes, timeoutMs);
+  const body = await readBodyWithinByteLimit(req, maxBytes, idleTimeoutMs);
   // 読めなかった理由はそのまま呼び出し元へ渡す
   if (!body.ok) return body;
 

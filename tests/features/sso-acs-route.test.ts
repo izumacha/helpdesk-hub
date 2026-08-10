@@ -81,6 +81,25 @@ function expectSsoInvalidRedirect(res: Response): void {
   expect(res.headers.get('location')).toContain('error=sso-invalid');
 }
 
+// 記録された監査行が「検証不能なアサーション試行」として正しい形かを表明する共通ヘルパー。
+// 拒否理由 (本文欠落・空文字・パース失敗・サイズ超過) が違っても監査行の形は同じなので、
+// describe をまたいで 1 箇所から使う。とくに userId: null の表明を落とさないことが重要で、
+// 検証を通っていないアサーションの主張からユーザーを紐付けてしまう回帰 (監査証跡への
+// クロステナントな身元の混入) は、この 1 行だけが検出できる
+function expectSingleRejectedAudit(): void {
+  // メモリストアの監査行を取り出す
+  const rows = [...store.authAuditLogs.values()];
+  // ちょうど 1 件記録されている
+  expect(rows).toHaveLength(1);
+  // 種別は sso_assertion_rejected、メールは特定不能の代替値、テナントは URL から解決した値
+  expect(rows[0]).toMatchObject({
+    event: 'sso_assertion_rejected',
+    email: AUTH_AUDIT_UNKNOWN_EMAIL,
+    userId: null,
+    tenantId: TENANT_ID,
+  });
+}
+
 // 各テストの共通初期化: レート制限・監査予算・メモリストアを毎回まっさらにする
 beforeEach(() => {
   __resetRateLimits();
@@ -108,21 +127,6 @@ describe('POST /api/auth/sso/[tenantId]/acs のレート制限', () => {
 });
 
 describe('POST /api/auth/sso/[tenantId]/acs のボディ取り出し段階の監査記録', () => {
-  // 記録された監査行が「検証不能なアサーション試行」として正しい形かを表明する共通ヘルパー
-  function expectSingleRejectedAudit(): void {
-    // メモリストアの監査行を取り出す
-    const rows = [...store.authAuditLogs.values()];
-    // ちょうど 1 件記録されている
-    expect(rows).toHaveLength(1);
-    // 種別は sso_assertion_rejected、メールは特定不能の代替値、テナントは URL から解決した値
-    expect(rows[0]).toMatchObject({
-      event: 'sso_assertion_rejected',
-      email: AUTH_AUDIT_UNKNOWN_EMAIL,
-      userId: null,
-      tenantId: TENANT_ID,
-    });
-  }
-
   // SAMLResponse フィールドそのものが無い POST も監査に残る
   // (レート制限内で 429 ではなく sso-invalid が返ることの確認も兼ねる)
   it('SAMLResponse欠落の拒否をsso_assertion_rejectedとして監査に記録する', async () => {
@@ -178,8 +182,11 @@ describe('POST /api/auth/sso/[tenantId]/acs のリクエストサイズ上限', 
   });
 
   // chunked 転送は Content-Length を省略できるため、ストリームの累計バイト数でも検査する。
-  // Request は body から Content-Length を自動付与しないので、この経路がそのまま再現できる
-  it('Content-Lengthが無くても実バイト数が上限超過なら拒否する', async () => {
+  // Request は body から Content-Length を自動付与しないので、この経路がそのまま再現できる。
+  // サイズ超過も #279 が閉じたギャップ (プローブの形式で監査に写る/写らないが変わる) を
+  // 再び開けないよう他の拒否理由と同じ監査行を残すため、その表明もここに含める
+  // (同一リクエスト・同一経路なので、監査だけ別テストに切り出すと重複になる §6 DRY)
+  it('Content-Lengthが無くても実バイト数が上限超過なら拒否し監査に記録する', async () => {
     const res = await postAcs(TENANT_ID, {
       body: bodyOfExactly(SSO_ACS_MAX_BODY_BYTES + 1),
       headers: FORM_CONTENT_TYPE,
@@ -187,6 +194,8 @@ describe('POST /api/auth/sso/[tenantId]/acs のリクエストサイズ上限', 
     expectSsoInvalidRedirect(res);
     // 上限で打ち切られたので署名検証には進んでいない (上限撤去時に失敗する表明)
     expect(validateSamlResponseSpy).not.toHaveBeenCalled();
+    // 監査行がちょうど 1 件、他の拒否経路とまったく同じ形で残っている
+    expectSingleRejectedAudit();
   });
 
   // 境界値: ちょうど上限のボディは「超過」ではないので通す (> と >= の取り違え防止)。
@@ -200,18 +209,5 @@ describe('POST /api/auth/sso/[tenantId]/acs のリクエストサイズ上限', 
     expectSsoInvalidRedirect(res);
     // ちょうど上限は通すので署名検証に到達している (>= に取り違えるとここで失敗する)
     expect(validateSamlResponseSpy).toHaveBeenCalledTimes(1);
-  });
-
-  // サイズ超過も #279 が閉じたギャップ (プローブの形式で監査に写る/写らないが変わる) を
-  // 再び開けないよう、他の拒否理由と同じく監査に残す
-  it('サイズ超過の拒否もsso_assertion_rejectedとして監査に記録する', async () => {
-    await postAcs(TENANT_ID, {
-      body: bodyOfExactly(SSO_ACS_MAX_BODY_BYTES + 1),
-      headers: FORM_CONTENT_TYPE,
-    });
-    // 監査行がちょうど 1 件、他の拒否経路と同じ形で残っている
-    expect([...store.authAuditLogs.values()]).toMatchObject([
-      { event: 'sso_assertion_rejected', email: AUTH_AUDIT_UNKNOWN_EMAIL, tenantId: TENANT_ID },
-    ]);
   });
 });
