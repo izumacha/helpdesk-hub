@@ -36,11 +36,14 @@
 // Content-Length の事前検査・制限時間・拒否理由の判別を持つ点も異なる。
 // 3 者の統合は本モジュールの利用箇所が増えてから検討する。
 //
-// 採用状況 (未認証で到達できる POST 経路):
-//   済: `auth/sso/[tenantId]/acs` / `auth/magic-link/callback`
-//   未: `inbound/line` / `inbound/email` (読み込み後のバイト数検査のみ = chunked に無防備)、
-//       `webhooks/stripe` (サイズ検査そのものが無い)。いずれも署名検証を通る経路なので、
-//       移行前後で検証結果が一致することをテストで固めてから 3 経路まとめて対応する。追跡: #287
+// 採用状況 (未認証で到達できる POST 経路): **全 5 経路が本モジュール経由** (#287 で完了)。
+//   `auth/sso/[tenantId]/acs` / `auth/magic-link/callback` (PR #286)
+//   `inbound/line` / `inbound/email` / `webhooks/stripe` (#287。いずれも署名・共有シークレット
+//   検証を通る経路のため、移行前後で検証結果が一致することを各ルートのテストで固めてある)
+// 上限値の置き場: 前 2 経路はその経路の他の共有定数と同居 (`sso-rate-limit.ts` /
+// `magic-link.ts`)、後 3 経路は `webhook-body-limits.ts`。いずれも route とテストが
+// 同じ定義を参照する (片方だけ値を変えたら気付けるようにするため)。
+// **新しく未認証 POST 経路を足すときは、ここへ寄せて上限を必ず設けること。**
 
 // チャンクが 1 つも届かないまま許容する最大時間 (slowloris 対策その 1)。
 //

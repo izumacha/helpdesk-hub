@@ -10,6 +10,8 @@ import { createMemoryContext, type Store } from '@/data/adapters/memory';
 import { createMemoryStorage, type MemoryStoragePort } from '@/data/adapters/memory/storage.memory';
 // 型のみ
 import type { Repos } from '@/data/ports/unit-of-work';
+// ボディサイズの上限。ルートと同じ定義を参照する (#287。片方だけ値を変えたら気付けるように)
+import { INBOUND_EMAIL_MAX_BODY_BYTES } from '@/lib/webhook-body-limits';
 
 // テスト用の固定値
 const SECRET = 'test-inbound-secret';
@@ -1131,5 +1133,119 @@ describe('POST /api/inbound/email', () => {
       // 新しいファイルは storage にも書き込まれない
       expect(storage.entries.size).toBe(0);
     });
+  });
+});
+
+// #287: ボディの読み取りを readBodyWithinByteLimit / readFormWithinByteLimit へ寄せた際の回帰防止。
+// この経路は JSON と multipart の 2 系統でボディを読むため、上限がどちらにも効いていること、
+// および読み取り方法を変えても取り込み結果が変わらないこと (境界値ちょうどは従来どおり起票される)
+// を系統ごとに固定する。
+describe('POST /api/inbound/email のリクエストサイズ上限', () => {
+  beforeEach(() => {
+    // 他 describe の beforeEach に相乗りせず、この describe だけでも成立するよう初期化する
+    const ctx = createMemoryContext();
+    store = ctx.store;
+    repos = ctx.repos;
+    uow = ctx.uow;
+    storage = createMemoryStorage();
+    seed();
+    vi.stubEnv('INBOUND_EMAIL_SECRET', SECRET);
+    sentEmails.length = 0;
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  // ちょうど指定バイト数になる JSON ボディを組み立てる。
+  // text フィールドを ASCII の 'A' で詰めて長さを合わせる (詰める文字は ASCII なので 1 文字 = 1 バイト)。
+  // 土台の VALID_EMAIL は日本語を含むため、長さは必ず UTF-8 のバイト数で測る
+  // (文字数で測ると日本語 1 文字あたり 2 バイトぶん超過して境界値がずれる)
+  function jsonBodyOfExactly(totalBytes: number): string {
+    const build = (padding: string) =>
+      JSON.stringify({ ...VALID_EMAIL, text: VALID_EMAIL.text + padding });
+    // 目標バイト数から「padding が空のときのバイト数」を引いた分だけ詰める
+    return build('A'.repeat(totalBytes - Buffer.byteLength(build(''), 'utf8')));
+  }
+
+  // JSON 経路: chunked 転送は Content-Length を省略できるため、ストリームの累計バイト数でも検査する。
+  // Request は body 文字列から Content-Length を自動付与しないので、この経路がそのまま再現できる
+  it('JSON 本文が Content-Length 無しで上限超過なら 413 で拒否する', async () => {
+    const { POST } = await import('@/app/api/inbound/email/route');
+    const res = await POST(
+      new Request('http://localhost/api/inbound/email', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-inbound-secret': SECRET },
+        body: jsonBodyOfExactly(INBOUND_EMAIL_MAX_BODY_BYTES + 1),
+      }),
+    );
+    expect(res.status).toBe(413);
+    // シークレットは正しいので、上限が無ければ起票まで進んでしまう (上限撤去時にここで落ちる)
+    expect(store.tickets.size).toBe(0);
+  });
+
+  // 境界値: ちょうど上限のボディは「超過」ではないので通し、従来どおり起票される
+  // (> と >= の取り違え、および復元時の 1 バイト欠けをここで検出する)
+  it('JSON 本文がちょうど上限ぴったりなら拒否せず起票する', async () => {
+    const { POST } = await import('@/app/api/inbound/email/route');
+    const res = await POST(
+      new Request('http://localhost/api/inbound/email', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-inbound-secret': SECRET },
+        body: jsonBodyOfExactly(INBOUND_EMAIL_MAX_BODY_BYTES),
+      }),
+    );
+    // 上限ちょうどは通すので起票まで到達する (1 バイトでも欠けて復元されると JSON が壊れて 400)
+    expect(res.status).toBe(201);
+    expect(store.tickets.size).toBe(1);
+  });
+
+  // multipart / urlencoded 経路は JSON とは別の読み取り (readFormWithinByteLimit) を通るため、
+  // そちらにも上限が効いていることを確認する。
+  // 実体を上限超過まで膨らませると重いので、ヘッダ申告だけ超過させて「本文を読む前の拒否」を突く
+  // (本文自体は正常な urlencoded なので、上限が無ければパースされて起票まで進む)
+  it('フォーム本文でも Content-Length ヘッダが上限超過なら 413 で拒否する', async () => {
+    // SendGrid 互換のフォーム形式 (route は urlencoded も multipart と同じ経路で読む)
+    const form = new URLSearchParams({
+      to: VALID_EMAIL.to,
+      from: VALID_EMAIL.from,
+      subject: VALID_EMAIL.subject,
+      text: VALID_EMAIL.text,
+    }).toString();
+    const { POST } = await import('@/app/api/inbound/email/route');
+    const res = await POST(
+      new Request('http://localhost/api/inbound/email', {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/x-www-form-urlencoded',
+          'x-inbound-secret': SECRET,
+          'content-length': String(INBOUND_EMAIL_MAX_BODY_BYTES + 1), // 申告だけ超過
+        },
+        body: form,
+      }),
+    );
+    expect(res.status).toBe(413);
+    expect(store.tickets.size).toBe(0);
+  });
+
+  // 等価性の確認: 上限内のフォーム本文は、読み取り方法を変えた後も従来どおりパースされて起票される
+  // (multipart の boundary 引き継ぎが崩れると、ここでフィールドを取り出せず 422 になる)
+  it('上限内のフォーム本文は従来どおりパースされて起票する', async () => {
+    const form = new FormData();
+    form.set('to', VALID_EMAIL.to);
+    form.set('from', VALID_EMAIL.from);
+    form.set('subject', VALID_EMAIL.subject);
+    form.set('text', VALID_EMAIL.text);
+    const { POST } = await import('@/app/api/inbound/email/route');
+    const res = await POST(
+      new Request('http://localhost/api/inbound/email', {
+        method: 'POST',
+        headers: { 'x-inbound-secret': SECRET }, // content-type は FormData が boundary 付きで設定する
+        body: form,
+      }),
+    );
+    expect(res.status).toBe(201);
+    expect(store.tickets.size).toBe(1);
+    expect(Array.from(store.tickets.values())[0].title).toBe(VALID_EMAIL.subject);
   });
 });

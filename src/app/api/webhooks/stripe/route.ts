@@ -9,9 +9,9 @@
 //    不正な POST で課金プランが操作されないよう、署名検証失敗は 400 で拒否する。
 // 2. Stripe Webhook Secret (STRIPE_WEBHOOK_SECRET) は環境変数のみで管理し、コードにハードコードしない。
 // 3. 本ルートは CSRF トークン不要 (Stripe のサーバー→サーバー呼び出し。ブラウザ経由ではない)。
-// 4. 本ルートへのリクエストボディは raw bytes で読む必要がある。
-//    Next.js の bodyParser が動く前に raw body を取得するため、
-//    App Router では Request.text() または arrayBuffer() を使う。
+// 4. 本ルートへのリクエストボディは raw bytes で読む必要がある (署名は生の本文に対して計算される)。
+//    App Router には bodyParser が無いので、サイズ上限つきの読み取りヘルパーで生バイト列を取得し、
+//    それを UTF-8 で復号した文字列を署名検証へ渡す (#287)。
 
 import { NextResponse } from 'next/server';
 // Stripe SDK の型定義 (Event 型を handleStripeEvent の引数に使う)
@@ -28,6 +28,10 @@ import { isProModeAllowed } from '@/lib/plan-guard';
 import type { SubscriptionPlan } from '@/domain/types';
 // §4.3 フォローアップ: 設定変更監査ログへの記録を共通化するヘルパー
 import { recordSettingsAudit } from '@/lib/settings-audit';
+// リクエストボディをサイズ上限つきで読み取るヘルパーと、拒否理由のログ文言 (#287)
+import { readBodyWithinByteLimit, describeBodyRejectReason } from '@/lib/request-body-limit';
+// この経路が受け付けるボディの最大バイト数 (route とテストが同じ定義を参照する)
+import { STRIPE_WEBHOOK_MAX_BODY_BYTES } from '@/lib/webhook-body-limits';
 
 // Stripe Webhook が送ってくる主要イベント種別の定数 (typo 防止のため文字列リテラルを定数化)
 const STRIPE_EVENT_SUBSCRIPTION_CREATED = 'customer.subscription.created';
@@ -60,24 +64,26 @@ export async function POST(request: Request): Promise<NextResponse> {
     return NextResponse.json({ error: 'Stripe-Signature ヘッダが必要です' }, { status: 400 });
   }
 
-  // raw ボディを文字列で読む (Stripe の署名検証は生のリクエストボディを必要とする)。
-  //
-  // **既知の限界: この経路にはボディサイズ上限が無い。** 未認証で到達でき、`request.text()` は
-  // 署名検証より前にボディ全体をメモリへ展開するため、`stripe-signature` ヘッダに何か値を
-  // 付けて巨大な本文を送るだけで展開させられる。同じ形の穴を持つ inbound/line・inbound/email は
-  // 少なくとも読み込み後のバイト数検査を持つが、この経路はそれも無い (最も薄い)。
-  // 塞ぎ方は `src/lib/request-body-limit.ts` の `readBodyWithinByteLimit()` へ寄せる形で、
-  // 署名検証の等価性をテストで固めたうえで 3 経路まとめて別 PR で対応する。追跡: #287
-  let rawBody: string;
-  try {
-    rawBody = await request.text();
-  } catch {
-    // ボディ読み取り失敗は 400 で返す (ボディが壊れている場合)
-    return NextResponse.json(
-      { error: 'リクエストボディの読み取りに失敗しました' },
-      { status: 400 },
+  // raw ボディをサイズ上限つきで読む (Stripe の署名検証は生のリクエストボディを必要とする)。
+  // 未認証で到達できる経路なので、`stripe-signature` に適当な値を付けた巨大ボディでメモリを
+  // 枯渇させられないよう、署名検証より前に上限で打ち切る (§9 / #287)。
+  const bodyResult = await readBodyWithinByteLimit(request, STRIPE_WEBHOOK_MAX_BODY_BYTES);
+  if (!bodyResult.ok) {
+    // どの理由で拒否したかはサーバーログにだけ残す (§6 エラーを握り潰さない)
+    console.warn(
+      `[stripe-webhook] ${describeBodyRejectReason(bodyResult.reason, STRIPE_WEBHOOK_MAX_BODY_BYTES)}`,
     );
+    // サイズ超過は 413、それ以外 (だらだら送り・接続断) は従来どおり 400 で返す。
+    // どちらも Stripe は再送するが、正規イベントがこの経路で失われるのは異常系なので
+    // 「受け取れなかった」ことを 2xx で覆い隠さない (§9 fail-closed)
+    const status = bodyResult.reason === 'too-large' ? 413 : 400;
+    return NextResponse.json({ error: 'リクエストボディの読み取りに失敗しました' }, { status });
   }
+  // 読み取った生バイト列を UTF-8 の文字列に復号する。
+  // 署名検証へ Buffer ではなく文字列を渡すのは、移行前 (`request.text()`) と入力を
+  // 完全に一致させるため — Stripe SDK は文字列を受け取ると内部で UTF-8 の Buffer に戻すので、
+  // 正規イベント (妥当な UTF-8 の JSON) では両者はバイト単位で同一になる
+  const rawBody = new TextDecoder().decode(bodyResult.bytes);
 
   // Stripe クライアントと Webhook Secret を取得する
   let stripeEvent;

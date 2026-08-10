@@ -98,6 +98,10 @@ import { resolveAppBaseUrl } from '@/lib/app-url';
 // チケット詳細ページの URL 組み立て・受付番号 (短縮 ID) の表記を揃えるヘルパー
 import { buildTicketUrl } from '@/lib/ticket-email';
 import { formatTicketRef } from '@/lib/ticket-ref';
+// リクエストボディをサイズ上限つきで読み取るヘルパーと、拒否理由のログ文言 (#287)
+import { readBodyWithinByteLimit, describeBodyRejectReason } from '@/lib/request-body-limit';
+// この経路が受け付けるボディの最大バイト数 (route とテストが同じ定義を参照する)
+import { LINE_WEBHOOK_MAX_BODY_BYTES } from '@/lib/webhook-body-limits';
 // このルートは Node ランタイムで動かす (node:crypto / Prisma を使うため Edge では動かない)
 export const runtime = 'nodejs';
 
@@ -124,11 +128,6 @@ const MAX_EVENTS_PER_REQUEST = 20;
 // チケット本文として保存するテキストの最大文字数 (LINE のプラットフォーム上限は 5000 文字だが、
 // サーバー側でも明示的に制限して DB の TEXT 型フィールドへの過大な書き込みを防ぐ)
 const MAX_BODY_LENGTH = 10_000;
-
-// リクエストボディの最大バイト数 (256KB)。LINE の Webhook ペイロードはテキストのみで小さいため、
-// 巨大ボディはメモリ枯渇狙いの攻撃とみなして本体を読む前に 413 で弾く (§9 DoS 対策。
-// メール取り込み側の MAX_INBOUND_BODY_BYTES と同じ「読む前に上限チェック」方針)
-const MAX_REQUEST_BODY_BYTES = 256 * 1024;
 
 // LINE Webhook が送ってくるテキストメッセージの型
 interface LineTextMessage {
@@ -217,40 +216,29 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: '署名ヘッダがありません' }, { status: 401 });
   }
 
-  // Content-Length が上限超過なら本体を読む前に 413 で弾く (巨大ボディのメモリ枯渇防止 §9)。
-  // || '-1' で null・空文字列どちらも -1 にまとめ「ヘッダ無し/不正値」として扱う。
-  // -1 は MAX_REQUEST_BODY_BYTES より小さいのでプリチェックはスルーし、後段の読み込み後チェックに委ねる。
-  const contentLength = Number(req.headers.get('content-length') || '-1');
-  if (Number.isFinite(contentLength) && contentLength > MAX_REQUEST_BODY_BYTES) {
-    // サイズ超過はサーバーログに残し、外部には詳細を出さない 413 を返す
+  // ボディをサイズ上限つきのストリーム読み取りで取得する (署名検証は JSON.parse 前の生テキストに
+  // 対して行う必要があるため、まずバイト列で受け取る)。
+  // Content-Length の申告・実際の累計バイト数の両方を見るので、ヘッダを省いた chunked 転送でも
+  // 上限を超えた時点で読み取りが打ち切られる (§9 DoS 対策 / #287)。
+  const bodyResult = await readBodyWithinByteLimit(req, LINE_WEBHOOK_MAX_BODY_BYTES);
+  if (!bodyResult.ok) {
+    // どの理由 (サイズ超過 / だらだら送り / 接続断) で拒否したかはサーバーログにだけ残す
     console.warn(
-      `[POST /api/inbound/line] request body too large (header): ${contentLength} bytes`,
+      `[POST /api/inbound/line] ${describeBodyRejectReason(
+        bodyResult.reason,
+        LINE_WEBHOOK_MAX_BODY_BYTES,
+      )}`,
     );
-    return NextResponse.json({ error: 'リクエストが大きすぎます' }, { status: 413 });
+    // サイズ超過は従来どおり 413。それ以外 (本文が届き切らなかった) は形式不正として 400 を返す
+    return bodyResult.reason === 'too-large'
+      ? NextResponse.json({ error: 'リクエストが大きすぎます' }, { status: 413 })
+      : NextResponse.json({ error: 'リクエストの形式が正しくありません' }, { status: 400 });
   }
-
-  // ボディを文字列として読み込む (署名検証は JSON.parse 前の生テキストに対して行う必要がある)
-  const rawBody = await req.text();
-  // 読み込み後に UTF-8 バイト数で実サイズを検査する。
-  // rawBody.length は UTF-16 コードユニット数でバイト数と異なるため Buffer.byteLength を使う。
-  //
-  // **既知の限界: Content-Length を省いた chunked 転送はこの検査では防げない。** `req.text()` は
-  // 上限に関係なくボディ全体をメモリへ展開してから返すため、ここで測る時点では手遅れで、
-  // 手前の Content-Length 事前検査もヘッダが無ければ素通りする
-  // (詳細と実測値は `src/lib/request-body-limit.ts` の冒頭)。
-  // 塞ぐには同モジュールの `readBodyWithinByteLimit()` へ寄せる。技術的な障害は無い
-  // (同関数は受信した生バイト列をそのまま返すので、TextDecoder で復元すれば
-  //  `req.text()` と同一の文字列になり HMAC 検証の入力は変わらない)。
-  // 本 PR で着手しないのは、署名検証を通る経路の読み取り方法を変える以上、
-  // 「移行前後で署名検証の結果が一致する」ことをテストで固めてから入れるべきで、
-  // 同じ形の穴を持つ inbound/email・webhooks/stripe と併せて 1 本の PR にまとめるため。
-  // 追跡: #287
-  const rawBodyBytes = Buffer.byteLength(rawBody, 'utf8');
-  if (rawBodyBytes > MAX_REQUEST_BODY_BYTES) {
-    // 実際の読み取りバイト数が上限超過: 413 で弾く
-    console.warn(`[POST /api/inbound/line] request body too large (actual): ${rawBodyBytes} bytes`);
-    return NextResponse.json({ error: 'リクエストが大きすぎます' }, { status: 413 });
-  }
+  // 読み取った生バイト列を UTF-8 の文字列に復号する。
+  // 署名検証 (verifyLineSignature) は文字列を UTF-8 として HMAC にかけるので、この復号を挟んでも
+  // 移行前の `req.text()` と入力は完全に一致する (どちらも同じ UTF-8 復号を通るため、
+  // 不正なバイト列の置換文字への変換まで同じ結果になる)
+  const rawBody = new TextDecoder().decode(bodyResult.bytes);
 
   // ボディを JSON としてパースする。この時点では署名未検証なので中身は一切信用しない。
   // 唯一の目的は「どのチャネル (テナント) 宛かを示す公開識別子 (destination)」を取り出すことだけ。

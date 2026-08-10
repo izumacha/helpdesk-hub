@@ -11,6 +11,8 @@ import type { Repos, UnitOfWork } from '@/data/ports/unit-of-work';
 import { hashLineLinkCode, normalizeLineLinkCode } from '@/lib/line-link';
 // レート制限バケットをテスト間で初期化するためのヘルパー (グローバル Map の汚染を防ぐ)
 import { __resetRateLimits } from '@/lib/rate-limit';
+// ボディサイズの上限。ルートと同じ定義を参照する (#287。片方だけ値を変えたら気付けるように)
+import { LINE_WEBHOOK_MAX_BODY_BYTES } from '@/lib/webhook-body-limits';
 
 // 外部通知 (Slack/Teams/Chatwork) テスト用の Slack Webhook URL (実際には送信されない)
 const SLACK_WEBHOOK_URL = 'https://hooks.slack.com/services/T000/B000/xxx';
@@ -861,5 +863,137 @@ describe('POST /api/inbound/line', () => {
       expect(store.tickets.size).toBe(1);
       expect(store.attachments.size).toBe(1);
     });
+  });
+});
+
+// #287: ボディの読み取りを readBodyWithinByteLimit へ寄せた際の回帰防止。
+// この経路は「受信した生ボディに対する HMAC」で認証しているため、読み取り方法を変えると
+// 署名検証が丸ごと壊れうる (壊れても 401 が返るだけなので、テストが無いと本番で全メッセージが
+// 取り込まれなくなるまで気付けない)。移行前後で検証結果が一致すること、および上限が実際に
+// 効いていることの両方を固定する。
+describe('POST /api/inbound/line のリクエストサイズ上限と署名検証の等価性', () => {
+  beforeEach(() => {
+    // 他 describe の beforeEach に相乗りせず、この describe だけでも成立するよう初期化する
+    const ctx = createMemoryContext();
+    store = ctx.store;
+    repos = ctx.repos;
+    uow = ctx.uow;
+    storage = createMemoryStorage();
+    seed();
+    __resetRateLimits();
+    // 受領確認 push (LINE Push API) が起票成功時に発火するため、無害な成功レスポンスを返す
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({ ok: true, status: 200, text: () => Promise.resolve('ok') }),
+    );
+  });
+
+  afterEach(() => {
+    __resetRateLimits();
+    vi.unstubAllGlobals();
+  });
+
+  // ちょうど指定バイト数になる Webhook ボディを組み立てる。
+  // text フィールドを ASCII の 'A' で詰めて長さを合わせる (詰める文字は ASCII なので 1 文字 = 1 バイト)。
+  // 長さは必ず UTF-8 のバイト数で測る (土台に非 ASCII が混ざったときに境界値がずれないように)
+  function bodyOfExactly(totalBytes: number): string {
+    const build = (text: string) =>
+      JSON.stringify({
+        destination: BOT_USER_ID,
+        events: [
+          {
+            type: 'message',
+            source: { type: 'user', userId: LINE_ID_UNLINKED },
+            message: { type: 'text', id: 'm-size', text },
+          },
+        ],
+      });
+    // 目標バイト数から「text が空のときのバイト数」を引いた分だけ詰める
+    return build('A'.repeat(totalBytes - Buffer.byteLength(build(''), 'utf8')));
+  }
+
+  // 署名付きの POST を実行する共通処理 (Content-Length を明示したい場合はヘッダで渡す)
+  async function postLine(body: string, headers: Record<string, string> = {}) {
+    const { POST } = await import('@/app/api/inbound/line/route');
+    return POST(
+      new Request('http://localhost/api/inbound/line', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-line-signature': sign(body), ...headers },
+        body,
+      }),
+    );
+  }
+
+  // 署名検証の入力が「受信した本文そのもの」であることを、マルチバイト文字で確認する。
+  // バイト列 → 文字列の復号が 1 箇所でも崩れると HMAC が一致せず、日本語を含む実運用の
+  // メッセージが軒並み 401 になる (この経路の本文はほぼ必ず日本語を含む)
+  it('日本語・絵文字を含む本文でも署名検証を通り、本文がそのまま取り込まれる', async () => {
+    // サロゲートペア (絵文字) と日本語を混ぜ、UTF-8 の復号・再エンコードの往復を検証する
+    const text = 'プリンターが動きません🖨️😢';
+    const { POST } = await import('@/app/api/inbound/line/route');
+    const res = await POST(makeRequest(text, LINE_ID_UNLINKED));
+    // 署名検証を通過して起票されている
+    expect(res.status).toBe(200);
+    expect(store.tickets.size).toBe(1);
+    // 本文が化けずにそのまま保存されている (復号が崩れると別の文字列になる)
+    expect(Array.from(store.tickets.values())[0].body).toContain(text);
+  });
+
+  // 署名は「受信した本文」に対して検証される。本文を 1 文字でも変えれば不一致になることを固定し、
+  // 読み取りが本文を正規化・切り詰めしていないことを裏側から表明する
+  it('本文を 1 文字改変した署名は不一致になり 401 で拒否する', async () => {
+    const body = JSON.stringify({
+      destination: BOT_USER_ID,
+      events: [
+        {
+          type: 'message',
+          source: { type: 'user', userId: LINE_ID_UNLINKED },
+          message: { type: 'text', id: 'm-tamper', text: 'こんにちは' },
+        },
+      ],
+    });
+    const { POST } = await import('@/app/api/inbound/line/route');
+    const res = await POST(
+      new Request('http://localhost/api/inbound/line', {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          // 別の本文に対して計算した署名を付ける (改ざんの検知を模す)
+          'x-line-signature': sign(body.replace('こんにちは', 'こんばんは')),
+        },
+        body,
+      }),
+    );
+    expect(res.status).toBe(401);
+    expect(store.tickets.size).toBe(0);
+  });
+
+  // ヘッダの申告だけで上限超過と分かる場合は、本文を読まずに打ち切る。
+  // 本文自体は上限内なので、実バイト数の検査だけならすり抜けてしまう
+  it('Content-Length ヘッダが上限超過なら本文を読まずに 413 で拒否する', async () => {
+    const res = await postLine(bodyOfExactly(1024), {
+      'content-length': String(LINE_WEBHOOK_MAX_BODY_BYTES + 1), // 申告だけ超過
+    });
+    expect(res.status).toBe(413);
+    // 署名は正しいので、上限が無ければ起票まで進んでしまう (上限撤去時にここで落ちる)
+    expect(store.tickets.size).toBe(0);
+  });
+
+  // chunked 転送は Content-Length を省略できるため、ストリームの累計バイト数でも検査する。
+  // Request は body 文字列から Content-Length を自動付与しないので、この経路がそのまま再現できる
+  it('Content-Length が無くても実バイト数が上限超過なら 413 で拒否する', async () => {
+    const res = await postLine(bodyOfExactly(LINE_WEBHOOK_MAX_BODY_BYTES + 1));
+    expect(res.status).toBe(413);
+    // 署名は正しいので、上限が無ければ起票される (上限撤去時にここで落ちる)
+    expect(store.tickets.size).toBe(0);
+  });
+
+  // 境界値: ちょうど上限のボディは「超過」ではないので通す (> と >= の取り違え防止)
+  it('ちょうど上限ぴったりのボディは拒否せず署名検証を通って起票される', async () => {
+    const res = await postLine(bodyOfExactly(LINE_WEBHOOK_MAX_BODY_BYTES));
+    expect(res.status).toBe(200);
+    // 上限ちょうどは通すので署名検証・起票まで到達する。
+    // 1 バイトでも欠けて復元されると署名が不一致になり 401 で起票されない
+    expect(store.tickets.size).toBe(1);
   });
 });
