@@ -83,20 +83,20 @@ import { getMonthlyTicketQuota, checkAttachmentQuota } from '@/lib/tenant-plan';
 import type { QuarantineReason } from '@/domain/types';
 // 隔離記録の書き込み共通ヘルパー (LINE 取り込みと共有。§6 DRY)
 import { recordQuarantineSafe } from '@/lib/quarantine';
-// リクエストボディをサイズ上限つきで読み取るヘルパーと、拒否理由のログ文言・ステータス変換 (#287)
+// リクエストボディをサイズ上限つきで読み取るヘルパーと、拒否時の応答を組み立てるヘルパー (#287)
 import {
   readTextWithinByteLimit,
   readFormWithinByteLimit,
-  describeBodyRejectReason,
-  bodyRejectStatus,
-  DEFAULT_BODY_IDLE_TIMEOUT_MS,
+  bodyRejectResponse,
+  type BodyRejectMessages,
   type BodyRejectReason,
 } from '@/lib/request-body-limit';
-// この経路が受け付けるボディの最大バイト数と読み取り全体の制限時間
+// この経路が受け付けるボディの最大バイト数と読み取りの制限時間
 // (route とテストが同じ定義を参照する)
 import {
   INBOUND_EMAIL_MAX_BODY_BYTES,
   INBOUND_EMAIL_BODY_TOTAL_TIMEOUT_MS,
+  INBOUND_EMAIL_BODY_IDLE_TIMEOUT_MS,
 } from '@/lib/webhook-body-limits';
 
 // このルートは Node ランタイムで動かす (node:crypto / Prisma を使うため Edge では動かない)
@@ -119,17 +119,33 @@ const INBOUND_RATE_LIMIT = { limit: 120, windowMs: 60_000 } as const;
 class BodyRejectedError extends Error {
   // 読み取りが失敗した理由 (POST ハンドラがステータスと文言の決定に使う)
   readonly reason: BodyRejectReason;
+  // 解析失敗の原因になった例外 (フォーム解析の失敗時のみ入る。それ以外は undefined)。
+  // /code-review ultra 指摘対応: これを運ばないと、移行前は console.error(..., err) に出ていた
+  // multipart 解析失敗の原因 (boundary 不正・パートの途中切れ等) がログから消える (§6)
+  readonly cause: unknown;
 
-  constructor(reason: BodyRejectReason) {
-    // ログに出たときに原因が読めるよう、共通の説明文を message に載せる
-    super(describeBodyRejectReason(reason, INBOUND_EMAIL_MAX_BODY_BYTES));
+  constructor(reason: BodyRejectReason, cause?: unknown) {
+    // ログの本文は POST ハンドラ側の共通ヘルパーが組み立てるため、ここでは理由だけを名乗る
+    // (message にも理由が残っていないと、想定外の経路で握られたときに何も分からなくなる)
+    super(`リクエストボディを読み取れませんでした (${reason})`);
     // this.name を明示設定する。設定しないと err.name が 'Error' になり構造化ロガーで誤分類される
     // (RateLimitError が this.name を設定しているのと同じ理由 - src/lib/rate-limit.ts:37 参照)
     this.name = 'BodyRejectedError';
     // 理由を保持する
     this.reason = reason;
+    // 原因の例外を保持する (無ければ undefined のまま)
+    this.cause = cause;
   }
 }
+
+// ボディを読めなかったときにクライアントへ返す文言 (拒否理由ごとに 1 つずつ決める)。
+// この経路だけ multipart を読むため 'unparsable' が実際に起こりうる
+const INBOUND_EMAIL_BODY_REJECT_MESSAGES: BodyRejectMessages = {
+  'too-large': 'メールが大きすぎます',
+  timeout: 'リクエストの形式が正しくありません',
+  unreadable: 'リクエストの形式が正しくありません',
+  unparsable: 'リクエストの形式が正しくありません',
+};
 
 // リクエストから提示されたシークレットを取り出す。
 // シークレットは x-inbound-secret ヘッダのみから読む。URL クエリパラメータへのフォールバックは
@@ -177,17 +193,23 @@ async function readInboundFields(req: Request): Promise<InboundFields> {
     // 「上限を超えた時点で読み取りを打ち切る」ヘルパーに寄せる (§9 DoS 対策 / #287)。
     // Content-Type (multipart の boundary パラメータを含む) はヘルパーが元のリクエストから
     // 引き継ぐので、以前の「バイト列から Request を組み直して formData() する」形と結果は同じ。
-    // 制限時間は既定 (1MB 想定の 120 秒) では大容量メールを送り切れないため明示的に延ばす
-    // (理由は INBOUND_EMAIL_BODY_TOTAL_TIMEOUT_MS の定義コメント)。無通信の許容時間は既定のまま
+    // 制限時間は既定 (1MB 想定) では大容量メールを送り切れないため、無通信・全体の両方を明示的に
+    // 延ばす (理由は INBOUND_EMAIL_BODY_IDLE_TIMEOUT_MS / _TOTAL_TIMEOUT_MS の定義コメント)
     const formResult = await readFormWithinByteLimit(
       req,
       INBOUND_EMAIL_MAX_BODY_BYTES,
-      DEFAULT_BODY_IDLE_TIMEOUT_MS,
+      INBOUND_EMAIL_BODY_IDLE_TIMEOUT_MS,
       INBOUND_EMAIL_BODY_TOTAL_TIMEOUT_MS,
     );
-    // 読み取れなかった理由をそのまま持つ例外にして投げる (ステータスへの振り分けは POST 側)。
-    // warn ログは catch 節で 1 度だけ出すため、ここでは二重に出さない
-    if (!formResult.ok) throw new BodyRejectedError(formResult.reason);
+    // 読み取れなかった理由と (解析失敗なら) その原因を持つ例外にして投げる。
+    // ステータス・文言・ログは POST 側の共通ヘルパーがまとめて決める (ここで二重にログを出さない)
+    if (!formResult.ok) {
+      // 'unparsable' のときだけ元の例外が付く。他の理由では cause は無い
+      throw new BodyRejectedError(
+        formResult.reason,
+        formResult.reason === 'unparsable' ? formResult.cause : undefined,
+      );
+    }
     // 上限内で読み取れてパースできたフォーム
     const form = formResult.form;
     // SendGrid は実際の RCPT を envelope (JSON 文字列) に入れるため、あれば優先的に使う
@@ -261,11 +283,11 @@ async function readInboundFields(req: Request): Promise<InboundFields> {
   // req.json() / req.text() はボディ全体をメモリに乗せてから返すため、上限つきの
   // ストリーム読み取りで取得する (超えた時点で打ち切られる。#287)。
   // 得られる文字列は移行前の req.text() と一致する (差異と根拠は readTextWithinByteLimit)。
-  // 制限時間を明示するのは multipart 側と同じ理由 (既定の 120 秒では大容量メールを送り切れない)
+  // 制限時間を明示するのは multipart 側と同じ理由 (既定値は上限 1MB の経路向けで、この経路には短い)
   const bodyResult = await readTextWithinByteLimit(
     req,
     INBOUND_EMAIL_MAX_BODY_BYTES,
-    DEFAULT_BODY_IDLE_TIMEOUT_MS,
+    INBOUND_EMAIL_BODY_IDLE_TIMEOUT_MS,
     INBOUND_EMAIL_BODY_TOTAL_TIMEOUT_MS,
   );
   // 読み取れなかった理由をそのまま持つ例外にして投げる (ステータスへの振り分けは POST 側)
@@ -418,17 +440,14 @@ export async function POST(req: Request) {
     fields = await readInboundFields(req);
   } catch (err) {
     // 本文を取り出せなかった場合は、理由に応じたステータス (サイズ超過なら 413) で返す。
-    // どの理由がどのステータスかの判断は共通ヘルパーに委ね、この経路では文言だけを決める
+    // ログ・ステータス・文言の組み立ては共通ヘルパーに委ね、この経路では文言表と接頭辞だけを決める。
+    // 解析失敗の原因 (cause) もそのまま渡してサーバーログに残す (§6 エラーを握り潰さない)
     if (err instanceof BodyRejectedError) {
-      // 失敗の理由はサーバーログにだけ残す (外部には詳細を出さない §9)
-      console.warn(`[POST /api/inbound/email] ${err.message}`);
-      // 理由からステータスを引く (サイズ超過 = 413 / それ以外 = 400)
-      const status = bodyRejectStatus(err.reason);
-      // ステータスに合った文言を返す (413 なのに「読み取りに失敗」と出て運用者が誤読しないように)
-      return NextResponse.json(
-        { error: status === 413 ? 'メールが大きすぎます' : 'リクエストの形式が正しくありません' },
-        { status },
-      );
+      return bodyRejectResponse(err.reason, INBOUND_EMAIL_MAX_BODY_BYTES, {
+        logPrefix: 'POST /api/inbound/email',
+        messages: INBOUND_EMAIL_BODY_REJECT_MESSAGES,
+        cause: err.cause,
+      });
     }
     // それ以外のパースエラーは 400 (握り潰さずログに残す)
     console.error('[POST /api/inbound/email] failed to read request body', err);

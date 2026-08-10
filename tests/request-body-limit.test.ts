@@ -4,12 +4,13 @@
 // (単に読み切ってからバイト数を測る実装でも戻り値のテストは通ってしまい、
 //  Content-Length を省いた chunked 転送でメモリを枯渇させられる穴を見逃す)
 
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   readBodyWithinByteLimit,
   readFormWithinByteLimit,
   readTextWithinByteLimit,
   bodyRejectStatus,
+  bodyRejectResponse,
 } from '@/lib/request-body-limit';
 
 // テストで使う上限 (小さくして高速に回す)
@@ -312,7 +313,13 @@ describe('readFormWithinByteLimit', () => {
     });
     const result = await readFormWithinByteLimit(req, LIMIT);
     // 例外を投げず、パース不能として返す
-    expect(result).toEqual({ ok: false, reason: 'unparsable' });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toBe('unparsable');
+    // **原因の例外を捨てずに載せて返す。** これが無いと呼び出し元は「解析できませんでした」しか
+    // ログに出せず、boundary の不正なのか本文の途中切れなのかを運用者が切り分けられない (§6)
+    if (!result.ok && result.reason === 'unparsable') {
+      expect(result.cause).toBeInstanceOf(Error);
+    }
   });
 
   it('サイズ超過はパースまで進まず too-large をそのまま返す', async () => {
@@ -400,5 +407,72 @@ describe('bodyRejectStatus', () => {
     expect(bodyRejectStatus('timeout')).toBe(400);
     expect(bodyRejectStatus('unreadable')).toBe(400);
     expect(bodyRejectStatus('unparsable')).toBe(400);
+  });
+});
+
+describe('bodyRejectResponse', () => {
+  // 3 経路が共有する「ログ 1 行 + JSON レスポンス」の組み立て。文言が理由ごとに引かれること
+  // (ステータスの 2 値に潰れていないこと) が、このヘルパーを置いた理由そのものなので中心に据える。
+  // テスト用の文言表は、4 つの理由すべてを別々の文字列にして取り違えを検出できるようにする
+  const MESSAGES = {
+    'too-large': '大きすぎます',
+    timeout: '途中で止まりました',
+    unreadable: '読み取れませんでした',
+    unparsable: '解析できませんでした',
+  } as const;
+
+  // console.warn を差し替えて、ログに何が出たかを観測できるようにする
+  function captureWarn() {
+    const calls: unknown[][] = [];
+    const spy = vi.spyOn(console, 'warn').mockImplementation((...args: unknown[]) => {
+      calls.push(args);
+    });
+    return { calls, restore: () => spy.mockRestore() };
+  }
+
+  // 同じ 400 に落ちる 3 つの理由が、それぞれ別の文言で返ることを表明する。
+  // status で文言を選ぶ実装 (`status === 413 ? A : B`) に戻すと、この 3 件が同一文言になって落ちる
+  it.each([
+    ['too-large', 413, MESSAGES['too-large']],
+    ['timeout', 400, MESSAGES.timeout],
+    ['unreadable', 400, MESSAGES.unreadable],
+    ['unparsable', 400, MESSAGES.unparsable],
+  ] as const)('%s は %i と理由ごとの文言を返す', async (reason, status, message) => {
+    const warn = captureWarn();
+    const res = bodyRejectResponse(reason, 1024, { logPrefix: 'test-route', messages: MESSAGES });
+    warn.restore();
+    // ステータスは bodyRejectStatus と一致する
+    expect(res.status).toBe(status);
+    // 本文はその理由に割り当てた文言 (ステータスではなく理由で引けている)
+    expect(await res.json()).toEqual({ error: message });
+  });
+
+  // ログには理由の説明が出て、本文の中身は出ない (§9 PII をログに漏らさない)
+  it('拒否理由をログ接頭辞つきで 1 行だけ出す', () => {
+    const warn = captureWarn();
+    bodyRejectResponse('too-large', 1024, { logPrefix: 'test-route', messages: MESSAGES });
+    warn.restore();
+    // 1 リクエストにつきログは 1 行だけ (呼び出し元との二重出力を防ぐ)
+    expect(warn.calls).toHaveLength(1);
+    // 接頭辞と上限バイト数が読める形で出ている
+    expect(String(warn.calls[0]![0])).toContain('[test-route]');
+    expect(String(warn.calls[0]![0])).toContain('1024');
+    // cause を渡していないので、余計な引数 ('undefined' の出力) は付かない
+    expect(warn.calls[0]).toHaveLength(1);
+  });
+
+  // 解析失敗の原因を渡したときは、それもログに載せる (原因が分かるのはこの例外だけ)
+  it('cause を渡すと原因の例外もログに載せる', () => {
+    const cause = new Error('boundary が壊れています');
+    const warn = captureWarn();
+    bodyRejectResponse('unparsable', 1024, {
+      logPrefix: 'test-route',
+      messages: MESSAGES,
+      cause,
+    });
+    warn.restore();
+    // 説明文と原因の例外が同じ 1 行にまとまって出る
+    expect(warn.calls[0]).toHaveLength(2);
+    expect(warn.calls[0]![1]).toBe(cause);
   });
 });

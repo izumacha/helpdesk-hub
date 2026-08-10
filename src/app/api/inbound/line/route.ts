@@ -98,14 +98,24 @@ import { resolveAppBaseUrl } from '@/lib/app-url';
 // チケット詳細ページの URL 組み立て・受付番号 (短縮 ID) の表記を揃えるヘルパー
 import { buildTicketUrl } from '@/lib/ticket-email';
 import { formatTicketRef } from '@/lib/ticket-ref';
-// リクエストボディをサイズ上限つきで読み取るヘルパーと、拒否理由のログ文言・ステータス変換 (#287)
+// リクエストボディをサイズ上限つきで読み取るヘルパーと、拒否時の応答を組み立てるヘルパー (#287)
 import {
   readTextWithinByteLimit,
-  describeBodyRejectReason,
-  bodyRejectStatus,
+  bodyRejectResponse,
+  type BodyRejectMessages,
 } from '@/lib/request-body-limit';
 // この経路が受け付けるボディの最大バイト数 (route とテストが同じ定義を参照する)
 import { LINE_WEBHOOK_MAX_BODY_BYTES } from '@/lib/webhook-body-limits';
+
+// ボディを読めなかったときにクライアントへ返す文言 (拒否理由ごとに 1 つずつ決める)。
+// LINE は非 2xx を受けると再送するため、こちら側の都合 (上限) と送信側の都合 (途中で止まった) を
+// 文言で区別できるようにしておく
+const LINE_BODY_REJECT_MESSAGES: BodyRejectMessages = {
+  'too-large': 'リクエストが大きすぎます',
+  timeout: 'リクエストの形式が正しくありません',
+  unreadable: 'リクエストの形式が正しくありません',
+  unparsable: 'リクエストの形式が正しくありません', // この経路はフォームを読まないので実際には起きない
+};
 // このルートは Node ランタイムで動かす (node:crypto / Prisma を使うため Edge では動かない)
 export const runtime = 'nodejs';
 
@@ -228,20 +238,12 @@ export async function POST(req: Request) {
   // 得られる文字列は移行前の `req.text()` と一致する (差異と根拠は readTextWithinByteLimit)
   const bodyResult = await readTextWithinByteLimit(req, LINE_WEBHOOK_MAX_BODY_BYTES);
   if (!bodyResult.ok) {
-    // どの理由 (サイズ超過 / だらだら送り / 接続断) で拒否したかはサーバーログにだけ残す
-    console.warn(
-      `[POST /api/inbound/line] ${describeBodyRejectReason(
-        bodyResult.reason,
-        LINE_WEBHOOK_MAX_BODY_BYTES,
-      )}`,
-    );
-    // サイズ超過は従来どおり 413、それ以外 (本文が届き切らなかった) は形式不正の 400。
-    // ステータスの振り分けは共通ヘルパーに任せ、文言だけをこの経路の言い回しに合わせる
-    const status = bodyRejectStatus(bodyResult.reason);
-    return NextResponse.json(
-      { error: status === 413 ? 'リクエストが大きすぎます' : 'リクエストの形式が正しくありません' },
-      { status },
-    );
+    // どの理由 (サイズ超過 / だらだら送り / 接続断) で拒否したかはサーバーログにだけ残し、
+    // 外部には理由ごとに決めた文言だけを返す。ログ・ステータス・文言の組み立ては共通ヘルパーに委ねる
+    return bodyRejectResponse(bodyResult.reason, LINE_WEBHOOK_MAX_BODY_BYTES, {
+      logPrefix: 'POST /api/inbound/line',
+      messages: LINE_BODY_REJECT_MESSAGES,
+    });
   }
   // 上限内で読み取れた本文 (署名検証と JSON.parse の対象になる生テキスト)
   const rawBody = bodyResult.text;

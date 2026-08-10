@@ -28,14 +28,25 @@ import { isProModeAllowed } from '@/lib/plan-guard';
 import type { SubscriptionPlan } from '@/domain/types';
 // §4.3 フォローアップ: 設定変更監査ログへの記録を共通化するヘルパー
 import { recordSettingsAudit } from '@/lib/settings-audit';
-// リクエストボディをサイズ上限つきで読み取るヘルパーと、拒否理由のログ文言・ステータス変換 (#287)
+// リクエストボディをサイズ上限つきで読み取るヘルパーと、拒否時の応答を組み立てるヘルパー (#287)
 import {
   readTextWithinByteLimit,
-  describeBodyRejectReason,
-  bodyRejectStatus,
+  bodyRejectResponse,
+  type BodyRejectMessages,
 } from '@/lib/request-body-limit';
 // この経路が受け付けるボディの最大バイト数 (route とテストが同じ定義を参照する)
 import { STRIPE_WEBHOOK_MAX_BODY_BYTES } from '@/lib/webhook-body-limits';
+
+// ボディを読めなかったときに Stripe へ返す文言 (拒否理由ごとに 1 つずつ決める)。
+// Stripe はどの非 2xx でも再送するが、正規イベントがこの経路で失われるのは異常系なので
+// 「受け取れなかった」ことを 2xx で覆い隠さない (§9 fail-closed)。文言を理由ごとに分けるのは、
+// Stripe の配信ログを見た運用者がサイズ超過と接続断を取り違えないようにするため
+const STRIPE_BODY_REJECT_MESSAGES: BodyRejectMessages = {
+  'too-large': 'リクエストボディが大きすぎます',
+  timeout: 'リクエストボディの送信が途中で止まりました',
+  unreadable: 'リクエストボディの読み取りに失敗しました',
+  unparsable: 'リクエストボディの読み取りに失敗しました', // この経路はフォームを読まないので実際には起きない
+};
 
 // Stripe Webhook が送ってくる主要イベント種別の定数 (typo 防止のため文字列リテラルを定数化)
 const STRIPE_EVENT_SUBSCRIPTION_CREATED = 'customer.subscription.created';
@@ -74,25 +85,12 @@ export async function POST(request: Request): Promise<NextResponse> {
   // 得られる文字列は移行前の `request.text()` と一致する (差異と根拠は readTextWithinByteLimit)
   const bodyResult = await readTextWithinByteLimit(request, STRIPE_WEBHOOK_MAX_BODY_BYTES);
   if (!bodyResult.ok) {
-    // どの理由で拒否したかはサーバーログにだけ残す (§6 エラーを握り潰さない)
-    console.warn(
-      `[stripe-webhook] ${describeBodyRejectReason(bodyResult.reason, STRIPE_WEBHOOK_MAX_BODY_BYTES)}`,
-    );
-    // サイズ超過なら 413、それ以外 (だらだら送り・接続断) は従来どおり 400 で返す。
-    // どちらも Stripe は再送するが、正規イベントがこの経路で失われるのは異常系なので
-    // 「受け取れなかった」ことを 2xx で覆い隠さない (§9 fail-closed)。
-    // 文言はステータスに合わせる — 413 なのに「読み取りに失敗」と返すと、Stripe の配信ログを
-    // 見た運用者がサイズ超過ではなく接続断だと誤読する
-    const status = bodyRejectStatus(bodyResult.reason);
-    return NextResponse.json(
-      {
-        error:
-          status === 413
-            ? 'リクエストボディが大きすぎます'
-            : 'リクエストボディの読み取りに失敗しました',
-      },
-      { status },
-    );
+    // どの理由で拒否したかはサーバーログにだけ残し (§6 エラーを握り潰さない)、
+    // 外部には理由ごとに決めた文言を返す。ログ・ステータス・文言の組み立ては共通ヘルパーに委ねる
+    return bodyRejectResponse(bodyResult.reason, STRIPE_WEBHOOK_MAX_BODY_BYTES, {
+      logPrefix: 'stripe-webhook',
+      messages: STRIPE_BODY_REJECT_MESSAGES,
+    });
   }
   // 上限内で読み取れた本文 (署名検証にかける生テキスト)
   const rawBody = bodyResult.text;

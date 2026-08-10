@@ -27,8 +27,11 @@
 // メモリの目安: 保持するのは「実際の本文サイズ」ぶんのバッファ 1 本で、チャンク数には依存しない。
 // 上限ぶんを先に確保することはせず、INITIAL_BUFFER_BYTES から始めて足りなければ倍々に伸ばす
 // (通常の SAML アサーションは数十 KB なので、毎回 1MB を確保するのは無駄なため)。
-// **上限値を決めるときは、本文サイズの約 3.5 倍を見込むこと。** 内訳:
-//   - バッファを伸ばす瞬間だけ新旧が並ぶ … 最大 1.5 倍
+// **上限値を決めるときは、本文サイズの約 3.7 倍を見込むこと。** 内訳:
+//   - バッファを伸ばす瞬間だけ新旧が並ぶ … 最大 1.7 倍
+//     (伸長は `Math.min(maxBytes, ...)` で頭打ちにするため、最後の 1 回だけ「倍々の途中サイズ +
+//      maxBytes」が同時に生きる。maxBytes が 2 の冪なら旧 = 新の半分で 1.5 倍に収まるが、
+//      そうでない場合はここが最大になる。例: 上限 25MB では 16MiB + 25MiB = 約 1.64 倍)
 //   - readFormWithinByteLimit の `new Response(bytes)` … もう 1 倍
 //     (Response はバイト列を参照せずコピーする。確認方法: 元の Uint8Array を Response 生成後に
 //      書き換えてから arrayBuffer() を読むと、書き換え前の値が返る)
@@ -40,14 +43,23 @@
 // Content-Length の事前検査・制限時間・拒否理由の判別を持つ点も異なる。
 // 3 者の統合は本モジュールの利用箇所が増えてから検討する。
 //
-// 採用状況 (未認証で到達できる POST 経路): **全 5 経路が本モジュール経由** (#287 で完了)。
+// 採用状況: **middleware のセッション認証を素通りする POST 経路のうち、リクエストボディを読む
+// 5 経路すべてが本モジュール経由** (#287 で完了)。
 //   `auth/sso/[tenantId]/acs` / `auth/magic-link/callback` (PR #286)
 //   `inbound/line` / `inbound/email` / `webhooks/stripe` (#287。いずれも署名・共有シークレット
 //   検証を通る経路のため、移行前後で検証結果が一致することを各ルートのテストで固めてある)
 // 上限値の置き場: 前 2 経路はその経路の他の共有定数と同居 (`sso-rate-limit.ts` /
 // `magic-link.ts`)、後 3 経路は `webhook-body-limits.ts`。いずれも route とテストが
 // 同じ定義を参照する (片方だけ値を変えたら気付けるようにするため)。
+//
+// 素通りする POST 経路は上記 5 つで全部ではない (`src/middleware.ts` の `INTERNAL_CRON_ROUTES` =
+// `api/internal/trial-reminders` / `api/internal/sla-reminders` も素通りする)。これらが
+// 本モジュールを使っていないのは「対象外だから」ではなく **ボディを一切読まないから** で、
+// 読むようになった時点でここへ寄せる対象になる。
 // **新しく未認証 POST 経路を足すときは、ここへ寄せて上限を必ず設けること。**
+
+// 拒否時の JSON レスポンスを組み立てるために使う (bodyRejectResponse)
+import { NextResponse } from 'next/server';
 
 // チャンクが 1 つも届かないまま許容する最大時間 (slowloris 対策その 1)。
 //
@@ -96,7 +108,11 @@ type BoundedTextResult =
 // フォームとしての読み取り結果 (バイト列の結果に「パースできなかった」を足したもの)
 type BoundedFormResult =
   | { ok: true; form: FormData } // 上限内で読み取れてフォームとしてパースできた
-  | { ok: false; reason: 'too-large' | 'timeout' | 'unreadable' | 'unparsable' };
+  | { ok: false; reason: 'too-large' | 'timeout' | 'unreadable' } // 本文を読み切れなかった
+  // フォームとして解析できなかった。**元の例外を必ず添えて返す**: 解析失敗の原因
+  // (boundary の不正・パートの途中切れ・未知の transfer encoding) はこの例外にしか無く、
+  // ここで握り潰すと運用者が「なぜ取り込めないのか」を切り分けられなくなる (§6)
+  | { ok: false; reason: 'unparsable'; cause: unknown };
 
 // 本文を取り出せなかった理由。呼び出し元がログ文言の型を自前で導出しなくて済むよう公開する
 export type BodyRejectReason = Exclude<BoundedFormResult, { ok: true }>['reason'];
@@ -136,6 +152,47 @@ export function describeBodyRejectReason(reason: BodyRejectReason, maxBytes: num
 export function bodyRejectStatus(reason: BodyRejectReason): 413 | 400 {
   // 上限超過だけが「大きすぎる」= 413。残りは本文を受け取れなかったので形式不正扱いの 400
   return reason === 'too-large' ? 413 : 400;
+}
+
+// 拒否時に返す文言の一覧。**理由ごとに 1 つずつ決める**のが要点 (下の bodyRejectResponse を参照)
+export type BodyRejectMessages = Readonly<Record<BodyRejectReason, string>>;
+
+/**
+ * ボディを読めなかったときの「サーバーログ 1 行 ＋ クライアントへの JSON レスポンス」をまとめて作る。
+ *
+ * 本モジュールを採用するルートは例外なく「理由をログに出す → ステータスを引く → 文言を選ぶ →
+ * NextResponse.json で返す」の 4 手を踏むため、3 経路目になった時点でここへ集約した (§6 DRY)。
+ *
+ * **文言は `status` ではなく `reason` で引く。** `status === 413 ? A : B` と書くと、
+ * 拒否理由がステータスの 2 値へ再び潰れてしまい、将来 `timeout → 408` のような 3 つ目の
+ * ステータスを `bodyRejectStatus` に足したとき、408 に「形式が正しくありません」という
+ * 噛み合わない文言が黙って組み合わさる (Stripe の配信ログを見た運用者が、サイズ超過や
+ * だらだら送りを接続断だと誤読する)。`Record<BodyRejectReason, string>` を必須にしておけば、
+ * 理由を増やしたときはキー不足で typecheck が落ち、文言の決め忘れが機械的に防げる。
+ *
+ * @param reason 読み取りが失敗した理由
+ * @param maxBytes 適用していた上限バイト数 (ログの文言に載せる)
+ * @param options ログの接頭辞・理由ごとの文言・(あれば) 原因の例外
+ */
+export function bodyRejectResponse(
+  reason: BodyRejectReason,
+  maxBytes: number,
+  options: {
+    logPrefix: string; // ログ行の先頭に付けるルート識別子 (例: 'POST /api/inbound/line')
+    messages: BodyRejectMessages; // 理由ごとにクライアントへ返す日本語の文言
+    cause?: unknown; // 原因の例外 (readFormWithinByteLimit の unparsable でのみ渡る)
+  },
+): NextResponse {
+  // 理由の説明文を組み立てる (本文の中身は含まない。§9 PII をログに漏らさない)
+  const detail = describeBodyRejectReason(reason, maxBytes);
+  // 原因の例外があれば一緒に出す (無いときに undefined を渡すと "undefined" が行末に出るため分岐する)
+  if (options.cause === undefined) console.warn(`[${options.logPrefix}] ${detail}`);
+  else console.warn(`[${options.logPrefix}] ${detail}`, options.cause);
+  // 理由に対応する文言とステータスで JSON を返す (外部には理由の詳細を出さない)
+  return NextResponse.json(
+    { error: options.messages[reason] },
+    { status: bodyRejectStatus(reason) },
+  );
 }
 
 /**
@@ -352,8 +409,10 @@ export async function readFormWithinByteLimit(
     }).formData();
     // パースできたフォームを返す
     return { ok: true, form };
-  } catch {
-    // Content-Type 不一致・本文破損など。ログは呼び出し元が文脈付きで出す
-    return { ok: false, reason: 'unparsable' };
+  } catch (err) {
+    // Content-Type 不一致・本文破損など。**例外を捨てずに結果へ載せて返す** —
+    // ログ自体は呼び出し元が文脈 (どのルートか) を付けて出すが、原因が分かるのはこの例外だけなので
+    // ここで消してしまうと呼び出し元が何を出しても「解析できませんでした」以上のことを言えない
+    return { ok: false, reason: 'unparsable', cause: err };
   }
 }
