@@ -15,7 +15,7 @@
 // `request-body-limit.ts` の `readBodyWithinByteLimit` / `readFormWithinByteLimit` が担う。
 // 上限値をここで決め、読み取り方法をあちらに集約する分担にしている。
 //
-// 値を決めるときの注意: 読み取り中の一時コピーを含めて、本文サイズの約 3.7 倍のメモリを
+// 値を決めるときの注意: 読み取り中の一時コピーを含めて、本文サイズの 4 倍弱のメモリを
 // 見込むこと (内訳は request-body-limit.ts 冒頭の「メモリの目安」)。
 
 // LINE Webhook (`POST /api/inbound/line`) の上限 (256KB)。

@@ -430,6 +430,9 @@ describe('POST /api/webhooks/stripe のリクエストサイズ上限', () => {
       'content-length': String(STRIPE_WEBHOOK_MAX_BODY_BYTES + 1), // 申告だけ超過
     });
     expect(res.status).toBe(413);
+    // 文言はこの経路の文言表から理由 'too-large' で引いたもの。ステータスで文言を選ぶ実装や、
+    // 文言表の項目を入れ替える変更をここで検出する (本番の文言表を固定しているのはここだけ)
+    expect(await res.clone().json()).toEqual({ error: 'リクエストボディが大きすぎます' });
     // 署名検証まで進んでいない (上限を撤去するとここまで届いてしまう)
     expect(constructEventSpy).not.toHaveBeenCalled();
     // プラン反映も起きていない

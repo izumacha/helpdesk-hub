@@ -102,17 +102,18 @@ import { formatTicketRef } from '@/lib/ticket-ref';
 import { readTextWithinByteLimit } from '@/lib/request-body-limit';
 // 拒否時のログ・ステータス・文言をまとめて組み立てるヘルパー (ルート層の関心事なので別モジュール)
 import { bodyRejectResponse, type BodyRejectMessages } from '@/lib/body-reject-response';
+// この経路は本文を読むだけ (フォーム解析をしない) ので、起こりうる理由はこの 3 つに限られる
+import type { BodyReadRejectReason } from '@/lib/request-body-limit';
 // この経路が受け付けるボディの最大バイト数 (route とテストが同じ定義を参照する)
 import { LINE_WEBHOOK_MAX_BODY_BYTES } from '@/lib/webhook-body-limits';
 
 // ボディを読めなかったときにクライアントへ返す文言 (拒否理由ごとに 1 つずつ決める)。
 // LINE は非 2xx を受けると再送するため、こちら側の都合 (上限) と送信側の都合 (途中で止まった) を
 // 文言で区別できるようにしておく
-const LINE_BODY_REJECT_MESSAGES: BodyRejectMessages = {
+const LINE_BODY_REJECT_MESSAGES: BodyRejectMessages<BodyReadRejectReason> = {
   'too-large': 'リクエストが大きすぎます',
   timeout: 'リクエストの送信が途中で止まりました',
   unreadable: 'リクエストの形式が正しくありません',
-  unparsable: 'リクエストの形式が正しくありません', // この経路はフォームを読まないので実際には起きない
 };
 // このルートは Node ランタイムで動かす (node:crypto / Prisma を使うため Edge では動かない)
 export const runtime = 'nodejs';

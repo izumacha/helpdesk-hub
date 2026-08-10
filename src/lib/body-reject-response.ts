@@ -12,8 +12,13 @@ import { NextResponse } from 'next/server';
 // 拒否理由の型・ステータスの振り分け・ログの出し方は読み取り側 (request-body-limit.ts) が持つ
 import { bodyRejectStatus, logBodyReject, type BodyRejectReason } from '@/lib/request-body-limit';
 
-// 拒否時に返す文言の一覧。**理由ごとに 1 つずつ決める**のが要点 (下の bodyRejectResponse を参照)
-export type BodyRejectMessages = Readonly<Record<BodyRejectReason, string>>;
+// 拒否時に返す文言の一覧。**理由ごとに 1 つずつ決める**のが要点 (下の bodyRejectResponse を参照)。
+// 型引数でその経路に起こりうる理由だけに絞れるようにしてある — 例えば本文を読むだけの経路
+// (readTextWithinByteLimit のみ) は 'unparsable' が構造上起こらないので、
+// `BodyRejectMessages<BodyReadRejectReason>` にすれば到達しない文言を書かずに済む
+export type BodyRejectMessages<R extends BodyRejectReason = BodyRejectReason> = Readonly<
+  Record<R, string>
+>;
 
 /**
  * ボディを読めなかったときの「サーバーログ 1 行 ＋ クライアントへの JSON レスポンス」をまとめて作る。
@@ -34,12 +39,12 @@ export type BodyRejectMessages = Readonly<Record<BodyRejectReason, string>>;
  * @param maxBytes 適用していた上限バイト数 (ログの文言に載せる)
  * @param options ログの接頭辞・理由ごとの文言・(あれば) 原因の例外
  */
-export function bodyRejectResponse(
-  reason: BodyRejectReason,
+export function bodyRejectResponse<R extends BodyRejectReason>(
+  reason: R,
   maxBytes: number,
   options: {
     logPrefix: string; // ログ行の先頭に付けるルート識別子 (例: 'POST /api/inbound/line')
-    messages: BodyRejectMessages; // 理由ごとにクライアントへ返す日本語の文言
+    messages: BodyRejectMessages<R>; // その経路に起こりうる理由ごとの日本語の文言
     cause?: unknown; // 原因の例外 (readFormWithinByteLimit の unparsable でのみ渡る)
   },
 ): NextResponse {
