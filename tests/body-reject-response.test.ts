@@ -43,7 +43,7 @@ describe('bodyRejectResponse', () => {
   ] as const)('%s は %i と理由ごとの文言を返す', async (reason, status, message) => {
     captureWarn();
     const res = bodyRejectResponse(reason, MAX_BYTES, {
-      logPrefix: 'test-route',
+      logPrefix: '[test-route]',
       messages: MESSAGES,
     });
     // ステータスは bodyRejectStatus と一致する
@@ -55,7 +55,7 @@ describe('bodyRejectResponse', () => {
   // ログには理由の説明が出て、本文の中身は出ない (§9 PII をログに漏らさない)
   it('拒否理由をログ接頭辞つきで 1 行だけ出す', () => {
     const calls = captureWarn();
-    bodyRejectResponse('too-large', MAX_BYTES, { logPrefix: 'test-route', messages: MESSAGES });
+    bodyRejectResponse('too-large', MAX_BYTES, { logPrefix: '[test-route]', messages: MESSAGES });
     // 1 リクエストにつきログは 1 行だけ (呼び出し元との二重出力を防ぐ)
     expect(calls).toHaveLength(1);
     // 接頭辞と上限バイト数が読める形で出ている
@@ -70,7 +70,7 @@ describe('bodyRejectResponse', () => {
     const cause = new Error('boundary が壊れています');
     const calls = captureWarn();
     bodyRejectResponse('unparsable', MAX_BYTES, {
-      logPrefix: 'test-route',
+      logPrefix: '[test-route]',
       messages: MESSAGES,
       cause,
     });

@@ -232,7 +232,7 @@ export async function POST(req: Request) {
     // どの理由 (サイズ超過 / だらだら送り / 接続断) で拒否したかはサーバーログにだけ残し、
     // 外部には理由ごとに決めた文言だけを返す。ログ・ステータス・文言の組み立ては共通ヘルパーに委ねる
     return bodyRejectResponse(bodyResult.reason, LINE_WEBHOOK_MAX_BODY_BYTES, {
-      logPrefix: 'POST /api/inbound/line',
+      logPrefix: '[POST /api/inbound/line]',
       messages: LINE_BODY_REJECT_MESSAGES,
     });
   }

@@ -44,7 +44,7 @@ describe('受信 Webhook の拒否文言', () => {
     // 表が持つ理由をすべて回す (経路によって 3 つ or 4 つ)
     for (const [reason, message] of Object.entries(messages)) {
       const res = bodyRejectResponse(reason as keyof typeof messages, 1024, {
-        logPrefix: name,
+        logPrefix: `[${name}]`,
         messages,
       });
       // 応答本文はその理由に割り当てた文言そのもの

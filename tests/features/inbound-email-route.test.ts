@@ -21,7 +21,7 @@ import { DEFAULT_BODY_IDLE_TIMEOUT_MS } from '@/lib/request-body-limit';
 
 // 読み取りヘルパーを「本物のまま呼び出し引数だけ記録する」形に差し替える。
 // 上限・制限時間はこのルートが**引数で明示的に渡してはじめて効く**もので、渡し忘れると
-// 既定値 (上限 1MB 経路向けの 10 秒 / 120 秒) に黙って戻る。挙動は既定値でもそれらしく
+// 既定値 (無通信 30 秒 / 全体 120 秒) に黙って戻る。挙動は既定値でもそれらしく
 // 動いてしまい全テストが緑のままなので、引数そのものを表明できるようにしておく
 const { readFormSpy, readTextSpy } = vi.hoisted(() => ({
   readFormSpy: vi.fn(),
@@ -33,12 +33,15 @@ vi.mock('@/lib/request-body-limit', async (importOriginal) => {
   return {
     ...actual,
     // 引数を記録してから本物へ委譲する
+    // 記録するのは第 2 引数以降 (上限と制限時間) だけにする。第 1 引数の Request まで
+    // 記録すると、境界値テストが作る 25MB の本文が mock.calls 経由でファイル終了まで
+    // 参照され続けてしまう (表明に使うのも slice(1) 側だけ)
     readFormWithinByteLimit: (...args: Parameters<typeof actual.readFormWithinByteLimit>) => {
-      readFormSpy(...args);
+      readFormSpy(...args.slice(1));
       return actual.readFormWithinByteLimit(...args);
     },
     readTextWithinByteLimit: (...args: Parameters<typeof actual.readTextWithinByteLimit>) => {
-      readTextSpy(...args);
+      readTextSpy(...args.slice(1));
       return actual.readTextWithinByteLimit(...args);
     },
   };
@@ -1358,7 +1361,7 @@ describe('POST /api/inbound/email のリクエストサイズ上限', () => {
   });
 
   // 上限・制限時間は「ルートが引数で明示的に渡す」ことで初めて効く。渡し忘れると既定値
-  // (上限 1MB 経路向けの 10 秒 / 120 秒) に黙って戻り、25MB の正規メールが送信途中で
+  // (無通信 30 秒 / 全体 120 秒) に黙って戻り、25MB の正規メールが送信途中で
   // 打ち切られる退行が復活する。挙動テストでは既定値でも緑のままなので引数を直接表明する
   it('multipart / JSON のどちらの読み取りにもこの経路の上限と制限時間を渡している', async () => {
     readFormSpy.mockClear();
@@ -1380,7 +1383,7 @@ describe('POST /api/inbound/email のリクエストサイズ上限', () => {
     );
     // 第 2〜4 引数が「この経路の」上限・無通信上限・全体期限になっている
     expect(readFormSpy).toHaveBeenCalledTimes(1);
-    expect(readFormSpy.mock.calls[0]!.slice(1)).toEqual([
+    expect(readFormSpy.mock.calls[0]).toEqual([
       INBOUND_EMAIL_MAX_BODY_BYTES,
       DEFAULT_BODY_IDLE_TIMEOUT_MS,
       INBOUND_EMAIL_BODY_TOTAL_TIMEOUT_MS,
@@ -1395,7 +1398,7 @@ describe('POST /api/inbound/email のリクエストサイズ上限', () => {
       }),
     );
     expect(readTextSpy).toHaveBeenCalledTimes(1);
-    expect(readTextSpy.mock.calls[0]!.slice(1)).toEqual([
+    expect(readTextSpy.mock.calls[0]).toEqual([
       INBOUND_EMAIL_MAX_BODY_BYTES,
       DEFAULT_BODY_IDLE_TIMEOUT_MS,
       INBOUND_EMAIL_BODY_TOTAL_TIMEOUT_MS,

@@ -43,7 +43,7 @@ export function bodyRejectResponse<R extends BodyRejectReason>(
   reason: R,
   maxBytes: number,
   options: {
-    logPrefix: string; // ログ行の先頭に付けるルート識別子 (例: 'POST /api/inbound/line')
+    logPrefix: string; // ログ行の先頭に付ける識別子。角括弧まで含めて渡す (例: '[POST /api/inbound/line]')
     messages: BodyRejectMessages<R>; // その経路に起こりうる理由ごとの日本語の文言
     cause?: unknown; // 原因の例外 (readFormWithinByteLimit の unparsable でのみ渡る)
   },

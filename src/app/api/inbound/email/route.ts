@@ -432,7 +432,7 @@ export async function POST(req: Request) {
     // 解析失敗の原因 (cause) もそのまま渡してサーバーログに残す (§6 エラーを握り潰さない)
     if (err instanceof BodyRejectedError) {
       return bodyRejectResponse(err.reason, INBOUND_EMAIL_MAX_BODY_BYTES, {
-        logPrefix: 'POST /api/inbound/email',
+        logPrefix: '[POST /api/inbound/email]',
         messages: INBOUND_EMAIL_BODY_REJECT_MESSAGES,
         cause: err.cause,
       });

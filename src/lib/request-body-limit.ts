@@ -204,7 +204,9 @@ export function bodyRejectStatus(reason: BodyRejectReason): 413 | 400 {
  * さらに JSON 応答を返す (`bodyRejectResponse`)、2 経路はリダイレクトするだけ、と後段が
  * 分かれる。**ログの出し方だけは 5 経路で揃える**ためにここへ置く (§6 DRY)。
  *
- * @param logPrefix ログ行の先頭に付けるルート識別子 (例: 'sso-acs')
+ * @param logPrefix ログ行の先頭に付ける識別子。**角括弧まで含めて渡す**
+ *   (例: '[sso-acs]')。`quarantine.ts` / `settings-audit.ts` の同名引数と同じ約束にしてある
+ *   — 片方だけ括弧を足す形にすると、隣の呼び出しを写した実装が `[[sso-acs]]` になる
  * @param reason 読み取りが失敗した理由
  * @param maxBytes 適用していた上限バイト数 (サイズ超過の文言に載せる)
  * @param cause 原因の例外 (フォーム解析に失敗したときだけ入る)
@@ -218,8 +220,8 @@ export function logBodyReject(
   // 理由の説明文を組み立てる (本文の中身は含まない。§9 PII をログに漏らさない)
   const detail = describeBodyRejectReason(reason, maxBytes);
   // 原因の例外があれば同じ行に添える (無いときに undefined を渡すと行末に "undefined" が出る)
-  if (cause === undefined) console.warn(`[${logPrefix}] ${detail}`);
-  else console.warn(`[${logPrefix}] ${detail}`, cause);
+  if (cause === undefined) console.warn(`${logPrefix} ${detail}`);
+  else console.warn(`${logPrefix} ${detail}`, cause);
 }
 
 /**

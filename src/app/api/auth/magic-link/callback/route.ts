@@ -194,7 +194,7 @@ export async function POST(request: Request) {
     // §6「エラーを握り潰さない」: どの理由で拒否したかを (解析失敗なら原因の例外も添えて)
     // ログに残す (本文の中身は出さない §9)
     logBodyReject(
-      'magic-link-callback',
+      '[magic-link-callback]',
       formResult.reason,
       MAGIC_LINK_CALLBACK_MAX_BODY_BYTES,
       formResult.cause,

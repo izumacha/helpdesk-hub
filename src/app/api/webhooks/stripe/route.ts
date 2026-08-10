@@ -77,7 +77,7 @@ export async function POST(request: Request): Promise<NextResponse> {
     // どの理由で拒否したかはサーバーログにだけ残し (§6 エラーを握り潰さない)、
     // 外部には理由ごとに決めた文言を返す。ログ・ステータス・文言の組み立ては共通ヘルパーに委ねる
     return bodyRejectResponse(bodyResult.reason, STRIPE_WEBHOOK_MAX_BODY_BYTES, {
-      logPrefix: 'stripe-webhook',
+      logPrefix: '[stripe-webhook]',
       messages: STRIPE_BODY_REJECT_MESSAGES,
     });
   }

@@ -18,21 +18,25 @@ import type { BodyReadRejectReason } from '@/lib/request-body-limit';
 // LINE Webhook (`POST /api/inbound/line`) の文言。
 // LINE は非 2xx を受けると再送するため、こちら側の都合 (上限超過) と送信側の都合
 // (本文が届き切らなかった) を文言で区別できるようにしておく。
+// 'timeout' (送信が止まった) と 'unreadable' (接続断などで読み取り自体が失敗した) は
+// どちらも**本文が届き切らなかった**側なので、そう読める文言にする — 「形式が正しくない」と
+// 返すと、回線が切れただけの配信をプロバイダ側がペイロードの不具合として調査してしまう。
 // この経路は本文を読むだけでフォーム解析をしないので 'unparsable' は構造上起こらない
 export const LINE_BODY_REJECT_MESSAGES: BodyRejectMessages<BodyReadRejectReason> = {
   'too-large': 'リクエストが大きすぎます',
   timeout: 'リクエストの送信が途中で止まりました',
-  unreadable: 'リクエストの形式が正しくありません',
+  unreadable: 'リクエストを最後まで受け取れませんでした',
 };
 
 // メール取り込み (`POST /api/inbound/email`) の文言。
 // この経路だけ multipart を読むため 'unparsable' が実際に起こりうる。
-// 「本文が届き切らなかった (timeout)」と「届いたが壊れていた (unreadable / unparsable)」は
-// プロバイダ側の調査先が変わる (前者は送信の中断、後者は本文の組み立て) ので文言を分ける
+// 調査先が変わるので 3 つを分ける: 'timeout' は送信が途中で止まった、'unreadable' は
+// 接続断などで最後まで受け取れなかった (どちらも回線側)、'unparsable' は届いた本文を
+// フォームとして解釈できなかった (本文の組み立て側)
 export const INBOUND_EMAIL_BODY_REJECT_MESSAGES: BodyRejectMessages = {
   'too-large': 'メールが大きすぎます',
   timeout: 'メールの送信が途中で止まりました',
-  unreadable: 'リクエストの形式が正しくありません',
+  unreadable: 'メールを最後まで受け取れませんでした',
   unparsable: 'リクエストの形式が正しくありません',
 };
 
