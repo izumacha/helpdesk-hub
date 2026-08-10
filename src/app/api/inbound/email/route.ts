@@ -83,16 +83,18 @@ import { getMonthlyTicketQuota, checkAttachmentQuota } from '@/lib/tenant-plan';
 import type { QuarantineReason } from '@/domain/types';
 // 隔離記録の書き込み共通ヘルパー (LINE 取り込みと共有。§6 DRY)
 import { recordQuarantineSafe } from '@/lib/quarantine';
-// リクエストボディをサイズ上限つきで読み取るヘルパーと、拒否理由のログ文言・ステータス変換 (#287)
+// リクエストボディをサイズ上限つきで読み取るヘルパーと、拒否時の応答を組み立てるヘルパー (#287)
 import {
   readTextWithinByteLimit,
   readFormWithinByteLimit,
-  describeBodyRejectReason,
-  bodyRejectStatus,
-  DEFAULT_BODY_IDLE_TIMEOUT_MS,
-  type BodyRejectReason,
+  STALL_TOLERANT_BODY_IDLE_TIMEOUT_MS,
+  type BodyRejectFailure,
 } from '@/lib/request-body-limit';
-// この経路が受け付けるボディの最大バイト数と読み取り全体の制限時間
+// 拒否時のログ・ステータス・文言をまとめて組み立てるヘルパー (ルート層の関心事なので別モジュール)
+import { bodyRejectResponse } from '@/lib/body-reject-response';
+// 拒否理由ごとの文言 (route とテストが同じ表を参照する。理由は同モジュール冒頭)
+import { INBOUND_EMAIL_BODY_REJECT_MESSAGES } from '@/lib/webhook-body-reject-messages';
+// この経路が受け付けるボディの最大バイト数と読み取りの制限時間
 // (route とテストが同じ定義を参照する)
 import {
   INBOUND_EMAIL_MAX_BODY_BYTES,
@@ -105,31 +107,6 @@ export const runtime = 'nodejs';
 // テナント単位の取り込み流量上限。共有シークレット漏洩時でもテナントあたりの起票を抑える。
 // (キーはテナント ID なのでバケット数は実在テナント数で頭打ち = メモリも有界)
 const INBOUND_RATE_LIMIT = { limit: 120, windowMs: 60_000 } as const;
-
-// ボディを取り出せなかったことを示す専用エラー。**拒否理由をそのまま持ち回る**のが要点で、
-// ステータスへの振り分けは POST ハンドラが bodyRejectStatus に委ねる。
-//
-// /code-review ultra 指摘対応: 当初は「サイズ超過 = 専用エラー / それ以外 = 汎用 Error」の
-// 2 値に潰していたが、それだと bodyRejectStatus への集約がこの経路に届かない
-// (将来 timeout → 408 のような第 3 のステータスを足しても、ここで 2 値に潰れるため
-//  email だけ一律 400 のまま静かに食い違う)。理由を保ったまま catch 節へ運ぶ形にする。
-//
-// 本文の読み取りは JSON パスと multipart パスに分かれており、どちらも呼び出し元 (POST) から
-// 見れば readInboundFields の内側なので、例外で運ぶ形は変えない。
-class BodyRejectedError extends Error {
-  // 読み取りが失敗した理由 (POST ハンドラがステータスと文言の決定に使う)
-  readonly reason: BodyRejectReason;
-
-  constructor(reason: BodyRejectReason) {
-    // ログに出たときに原因が読めるよう、共通の説明文を message に載せる
-    super(describeBodyRejectReason(reason, INBOUND_EMAIL_MAX_BODY_BYTES));
-    // this.name を明示設定する。設定しないと err.name が 'Error' になり構造化ロガーで誤分類される
-    // (RateLimitError が this.name を設定しているのと同じ理由 - src/lib/rate-limit.ts:37 参照)
-    this.name = 'BodyRejectedError';
-    // 理由を保持する
-    this.reason = reason;
-  }
-}
 
 // リクエストから提示されたシークレットを取り出す。
 // シークレットは x-inbound-secret ヘッダのみから読む。URL クエリパラメータへのフォールバックは
@@ -164,7 +141,22 @@ interface InboundFields {
 }
 
 // 受信メール 1 通分のフィールドを、JSON / multipart のどちらのボディからでも取り出して共通形に揃える。
-async function readInboundFields(req: Request): Promise<InboundFields> {
+// 本文の読み取り結果。**例外ではなく値で返す**のが要点。
+// readFormWithinByteLimit / readTextWithinByteLimit が既に判別可能ユニオンを返しているので、
+// それを独自 Error に詰め直して catch でほどく往復をやめ、他の 4 経路 (sso-acs / magic-link /
+// line / stripe) と同じ「結果を返して呼び出し元が分岐する」形に揃える。
+// (詰め直していた頃は、cause をクラスフィールドとして宣言すると target: ES2022 では super() の
+//  後に undefined で上書きされる、という罠を 1 経路だけ抱えていた)
+// 失敗側はヘルパーの戻り値をそのまま使う (書き写して広げると、cause が付くのは
+// 'unparsable' のときだけ、という対応関係が型から落ちる)
+type InboundReadResult =
+  | { ok: true; fields: InboundFields } // 本文を読み取ってフィールドを取り出せた
+  | BodyRejectFailure; // 読み取れなかった (理由と、解析失敗なら原因)
+
+// JSON の形式不正 (JSON.parse の失敗・オブジェクトでない) は引き続き例外で投げる。
+// 「本文は受け取れたが中身が不正」は読み取りの失敗とは別の話で、呼び出し元も 400 一本に
+// まとめて扱うため、判別可能ユニオンに混ぜずそのまま throw する
+async function readInboundFields(req: Request): Promise<InboundReadResult> {
   // Content-Type を小文字化して判定 (大文字小文字はメディアタイプ上区別しない)
   const contentType = (req.headers.get('content-type') ?? '').toLowerCase();
   // multipart/form-data (SendGrid Inbound Parse 等) は FormData として読む
@@ -177,17 +169,21 @@ async function readInboundFields(req: Request): Promise<InboundFields> {
     // 「上限を超えた時点で読み取りを打ち切る」ヘルパーに寄せる (§9 DoS 対策 / #287)。
     // Content-Type (multipart の boundary パラメータを含む) はヘルパーが元のリクエストから
     // 引き継ぐので、以前の「バイト列から Request を組み直して formData() する」形と結果は同じ。
-    // 制限時間は既定 (1MB 想定の 120 秒) では大容量メールを送り切れないため明示的に延ばす
-    // (理由は INBOUND_EMAIL_BODY_TOTAL_TIMEOUT_MS の定義コメント)。無通信の許容時間は既定のまま
+    // 全体期限はこの経路の値へ延ばし (既定 120 秒では 25MB を送り切れない)、無通信の上限も
+    // 延ばした方を使う (自分自身の解析でループが止まるので、同時に届いた別のメールが
+    // 巻き添えにならないように)。共有シークレットの照合を通らないとここへ来ないので、
+    // 延ばした分を負えるのは鍵を持つ相手だけになる (同時実行数そのものに上限は無く、
+    // それは既知のギャップとして request-body-limit.ts 冒頭に記述してある)
     const formResult = await readFormWithinByteLimit(
       req,
       INBOUND_EMAIL_MAX_BODY_BYTES,
-      DEFAULT_BODY_IDLE_TIMEOUT_MS,
+      STALL_TOLERANT_BODY_IDLE_TIMEOUT_MS, // 25MB を解析する側でもあるので延ばした方を使う
       INBOUND_EMAIL_BODY_TOTAL_TIMEOUT_MS,
     );
-    // 読み取れなかった理由をそのまま持つ例外にして投げる (ステータスへの振り分けは POST 側)。
-    // warn ログは catch 節で 1 度だけ出すため、ここでは二重に出さない
-    if (!formResult.ok) throw new BodyRejectedError(formResult.reason);
+    // 読み取れなかった理由と (解析失敗なら) その原因をそのまま返す。
+    // ステータス・文言・ログは POST 側の共通ヘルパーがまとめて決める (ここで二重にログを出さない)。
+    // 'unparsable' のときだけ cause に元の例外が入る (他の理由では undefined)
+    if (!formResult.ok) return formResult;
     // 上限内で読み取れてパースできたフォーム
     const form = formResult.form;
     // SendGrid は実際の RCPT を envelope (JSON 文字列) に入れるため、あれば優先的に使う
@@ -234,23 +230,26 @@ async function readInboundFields(req: Request): Promise<InboundFields> {
     // 戻り先で本人性が弱い)。本人性は既知メンバー判定に加え、INBOUND_EMAIL_AUTH=enforce のとき
     // 下流で SPF/DKIM/DMARC の明示 fail を隔離して守る (#147 で実装)。
     return {
-      to: envTo ?? str(form.get('to')),
-      from: str(form.get('from')) ?? envFrom,
-      subject: str(form.get('subject')),
-      text: str(form.get('text')),
-      // Message-ID 系は個別フィールド優先、無ければ生ヘッダから読む
-      messageId: str(form.get('message-id')) ?? readRawHeader(rawHeaders, 'Message-ID'),
-      inReplyTo: str(form.get('in-reply-to')) ?? readRawHeader(rawHeaders, 'In-Reply-To'),
-      references: str(form.get('references')) ?? readRawHeader(rawHeaders, 'References'),
-      // 送信元認証: SendGrid は SPF / dkim を個別フィールドで渡す。汎用は生ヘッダから読む。
-      // SendGrid は 'SPF'、Postmark は 'Spf'、その他は小文字 'spf' — すべて試みる
-      spf: str(form.get('SPF')) ?? str(form.get('Spf')) ?? str(form.get('spf')),
-      dkim: str(form.get('dkim')),
-      authenticationResults: readRawHeader(rawHeaders, 'Authentication-Results'),
-      // 自動応答判定用ヘッダ (multipart では生ヘッダから読む。ループ防止に使う)
-      autoSubmitted: readRawHeader(rawHeaders, 'Auto-Submitted'),
-      precedence: readRawHeader(rawHeaders, 'Precedence'),
-      attachments, // 添付ファイル (フォローアップ 2026-07-13)
+      ok: true,
+      fields: {
+        to: envTo ?? str(form.get('to')),
+        from: str(form.get('from')) ?? envFrom,
+        subject: str(form.get('subject')),
+        text: str(form.get('text')),
+        // Message-ID 系は個別フィールド優先、無ければ生ヘッダから読む
+        messageId: str(form.get('message-id')) ?? readRawHeader(rawHeaders, 'Message-ID'),
+        inReplyTo: str(form.get('in-reply-to')) ?? readRawHeader(rawHeaders, 'In-Reply-To'),
+        references: str(form.get('references')) ?? readRawHeader(rawHeaders, 'References'),
+        // 送信元認証: SendGrid は SPF / dkim を個別フィールドで渡す。汎用は生ヘッダから読む。
+        // SendGrid は 'SPF'、Postmark は 'Spf'、その他は小文字 'spf' — すべて試みる
+        spf: str(form.get('SPF')) ?? str(form.get('Spf')) ?? str(form.get('spf')),
+        dkim: str(form.get('dkim')),
+        authenticationResults: readRawHeader(rawHeaders, 'Authentication-Results'),
+        // 自動応答判定用ヘッダ (multipart では生ヘッダから読む。ループ防止に使う)
+        autoSubmitted: readRawHeader(rawHeaders, 'Auto-Submitted'),
+        precedence: readRawHeader(rawHeaders, 'Precedence'),
+        attachments, // 添付ファイル (フォローアップ 2026-07-13)
+      },
     };
   }
   // それ以外は JSON ボディとして読む (テスト・自前連携向け)。
@@ -261,15 +260,15 @@ async function readInboundFields(req: Request): Promise<InboundFields> {
   // req.json() / req.text() はボディ全体をメモリに乗せてから返すため、上限つきの
   // ストリーム読み取りで取得する (超えた時点で打ち切られる。#287)。
   // 得られる文字列は移行前の req.text() と一致する (差異と根拠は readTextWithinByteLimit)。
-  // 制限時間を明示するのは multipart 側と同じ理由 (既定の 120 秒では大容量メールを送り切れない)
+  // 制限時間の渡し方は multipart 側と同じ (全体期限はこの経路の値、無通信は延ばした方)
   const bodyResult = await readTextWithinByteLimit(
     req,
     INBOUND_EMAIL_MAX_BODY_BYTES,
-    DEFAULT_BODY_IDLE_TIMEOUT_MS,
+    STALL_TOLERANT_BODY_IDLE_TIMEOUT_MS, // 25MB を解析する側でもあるので延ばした方を使う
     INBOUND_EMAIL_BODY_TOTAL_TIMEOUT_MS,
   );
-  // 読み取れなかった理由をそのまま持つ例外にして投げる (ステータスへの振り分けは POST 側)
-  if (!bodyResult.ok) throw new BodyRejectedError(bodyResult.reason);
+  // 読み取れなかった理由をそのまま返す (ステータスへの振り分けは POST 側)
+  if (!bodyResult.ok) return bodyResult;
   // 上限内で読み取れた本文
   const rawText = bodyResult.text;
   // サイズ検査済みの文字列を JSON としてパースする (unknown で受けて次行で型を絞り込む)
@@ -285,23 +284,26 @@ async function readInboundFields(req: Request): Promise<InboundFields> {
   const pick = (k: string): string | null =>
     typeof body[k] === 'string' ? (body[k] as string) : null;
   return {
-    to: pick('to'),
-    from: pick('from'),
-    subject: pick('subject'),
-    text: pick('text'),
-    // camelCase / ヘッダ表記 (ハイフン) のどちらの JSON キーでも受ける
-    messageId: pick('messageId') ?? pick('message-id'),
-    inReplyTo: pick('inReplyTo') ?? pick('in-reply-to'),
-    references: pick('references'),
-    // 送信元認証: 個別キー (SPF/spf, dkim) と生ヘッダ (authentication-results) のどちらも受ける
-    spf: pick('SPF') ?? pick('spf'),
-    dkim: pick('dkim'),
-    authenticationResults: pick('authenticationResults') ?? pick('authentication-results'),
-    // 自動応答判定用ヘッダ (camelCase / ヘッダ表記の両方を受ける)
-    autoSubmitted: pick('autoSubmitted') ?? pick('auto-submitted'),
-    precedence: pick('precedence') ?? pick('Precedence'),
-    // JSON には File 型が無いため常に空配列 (JSON パスはテスト・内部連携専用。上のコメント参照)
-    attachments: [],
+    ok: true,
+    fields: {
+      to: pick('to'),
+      from: pick('from'),
+      subject: pick('subject'),
+      text: pick('text'),
+      // camelCase / ヘッダ表記 (ハイフン) のどちらの JSON キーでも受ける
+      messageId: pick('messageId') ?? pick('message-id'),
+      inReplyTo: pick('inReplyTo') ?? pick('in-reply-to'),
+      references: pick('references'),
+      // 送信元認証: 個別キー (SPF/spf, dkim) と生ヘッダ (authentication-results) のどちらも受ける
+      spf: pick('SPF') ?? pick('spf'),
+      dkim: pick('dkim'),
+      authenticationResults: pick('authenticationResults') ?? pick('authentication-results'),
+      // 自動応答判定用ヘッダ (camelCase / ヘッダ表記の両方を受ける)
+      autoSubmitted: pick('autoSubmitted') ?? pick('auto-submitted'),
+      precedence: pick('precedence') ?? pick('Precedence'),
+      // JSON には File 型が無いため常に空配列 (JSON パスはテスト・内部連携専用。上のコメント参照)
+      attachments: [],
+    },
   };
 }
 
@@ -411,30 +413,28 @@ export async function POST(req: Request) {
   // Content-Length の事前検査はここに書かず readBodyWithinByteLimit に任せる (#287):
   // 同関数が「申告値が上限超過なら本文を一切読まない」検査と「申告が無い/過少申告でも累計で
   // 打ち切る」検査を両方持つため、ここに同じ判定を書き写すと二重管理になる (§6 DRY)
-  let fields: InboundFields;
+  let read: InboundReadResult;
   try {
-    // ボディを読んでフィールドを取り出す。BodyRejectedError (読み取り失敗) か
-    // 汎用 Error (JSON の形式不正など) を投げることがある
-    fields = await readInboundFields(req);
+    // ボディを読んでフィールドを取り出す。読み取りの失敗は戻り値で、
+    // JSON の形式不正 (JSON.parse の失敗など) は例外で返ってくる
+    read = await readInboundFields(req);
   } catch (err) {
-    // 本文を取り出せなかった場合は、理由に応じたステータス (サイズ超過なら 413) で返す。
-    // どの理由がどのステータスかの判断は共通ヘルパーに委ね、この経路では文言だけを決める
-    if (err instanceof BodyRejectedError) {
-      // 失敗の理由はサーバーログにだけ残す (外部には詳細を出さない §9)
-      console.warn(`[POST /api/inbound/email] ${err.message}`);
-      // 理由からステータスを引く (サイズ超過 = 413 / それ以外 = 400)
-      const status = bodyRejectStatus(err.reason);
-      // ステータスに合った文言を返す (413 なのに「読み取りに失敗」と出て運用者が誤読しないように)
-      return NextResponse.json(
-        { error: status === 413 ? 'メールが大きすぎます' : 'リクエストの形式が正しくありません' },
-        { status },
-      );
-    }
-    // それ以外のパースエラーは 400 (握り潰さずログに残す)
-    console.error('[POST /api/inbound/email] failed to read request body', err);
+    // 本文は受け取れたが中身が JSON として不正だった場合 (握り潰さずログに残す)
+    console.error('[POST /api/inbound/email] 受信ボディの解釈に失敗しました', err);
     // 形式不正は 400 で返す (外部には詳細を出さない)
     return NextResponse.json({ error: 'リクエストの形式が正しくありません' }, { status: 400 });
   }
+  // 本文を取り出せなかった場合は、理由に応じたステータス (サイズ超過なら 413) で返す。
+  // ログ・ステータス・文言の組み立ては共通ヘルパーに委ね、この経路では文言表と接頭辞だけを決める。
+  // 解析失敗の原因 (cause) もそのまま渡してサーバーログに残す (§6 エラーを握り潰さない)
+  if (!read.ok) {
+    return bodyRejectResponse(read, INBOUND_EMAIL_MAX_BODY_BYTES, {
+      logPrefix: '[POST /api/inbound/email]',
+      messages: INBOUND_EMAIL_BODY_REJECT_MESSAGES,
+    });
+  }
+  // 上限内で読み取れたフィールド
+  const fields = read.fields;
 
   // 宛先ドメインの検証用 (任意設定)。設定されていれば宛先ドメイン一致を必須にする
   const expectedDomain = process.env.INBOUND_EMAIL_DOMAIN?.trim() || null;

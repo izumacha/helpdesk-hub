@@ -27,12 +27,19 @@
 // メモリの目安: 保持するのは「実際の本文サイズ」ぶんのバッファ 1 本で、チャンク数には依存しない。
 // 上限ぶんを先に確保することはせず、INITIAL_BUFFER_BYTES から始めて足りなければ倍々に伸ばす
 // (通常の SAML アサーションは数十 KB なので、毎回 1MB を確保するのは無駄なため)。
-// **上限値を決めるときは、本文サイズの約 3.5 倍を見込むこと。** 内訳:
-//   - バッファを伸ばす瞬間だけ新旧が並ぶ … 最大 1.5 倍
-//   - readFormWithinByteLimit の `new Response(bytes)` … もう 1 倍
-//     (Response はバイト列を参照せずコピーする。確認方法: 元の Uint8Array を Response 生成後に
-//      書き換えてから arrayBuffer() を読むと、書き換え前の値が返る)
-//   - formData() が作るフィールド値のコピー … もう 1 倍
+// **上限値を決めるときは、本文サイズの約 3 倍を見込むこと。** 山は 2 つあり、時間帯が別なので
+// 足し合わせず**大きい方**を取る:
+//   - 読み取り中 … 最大 2 倍未満
+//     (伸長は `Math.min(maxBytes, ...)` で頭打ちにするため、最後の 1 回だけ「倍々の途中サイズ
+//      (= 旧) + maxBytes (= 新)」が同時に生きる。比は 1 + 旧/maxBytes で、maxBytes が
+//      成長段 (16KiB×2^n) の**直上**にあるとき旧がほぼ maxBytes に等しくなり 2 倍に漸近する。
+//      実測: 上限 2MiB+1 と 16MiB+1 でちょうど 2.000 倍。maxBytes が 2 の冪なら 1.5 倍。
+//      旧バッファは `buffer = grown` の時点で参照が切れるので、次の山までは持ち越さない)
+//   - 解析中 … 約 3 倍 (readFormWithinByteLimit を通る経路のみ)
+//     (読み終えたバッファ 1 倍 ＋ `new Response(bytes)` のコピー 1 倍 ＋ `formData()` が作る
+//      フィールド値のコピー 1 倍。Response がコピーを取ることの確認方法: 元の Uint8Array を
+//      Response 生成後に書き換えてから arrayBuffer() を読むと、書き換え前の値が返る)
+//   本文を読むだけの経路 (readTextWithinByteLimit) は解析側の山が無いので 2 倍未満で収まる。
 //
 // 関連: `webhook-fetch.ts` の `readBodyCapped` と `line-content.ts` の `readBodyCappedBytes` も
 // 「ストリームを上限つきで読む」同種の処理だが、あちらは外向き fetch の **Response** が対象で
@@ -40,23 +47,85 @@
 // Content-Length の事前検査・制限時間・拒否理由の判別を持つ点も異なる。
 // 3 者の統合は本モジュールの利用箇所が増えてから検討する。
 //
-// 採用状況 (未認証で到達できる POST 経路): **全 5 経路が本モジュール経由** (#287 で完了)。
+// 採用状況: **未認証で到達できる経路のうち、自前でボディを読む 5 経路が本モジュール経由**
+// (#287 で完了)。
 //   `auth/sso/[tenantId]/acs` / `auth/magic-link/callback` (PR #286)
 //   `inbound/line` / `inbound/email` / `webhooks/stripe` (#287。いずれも署名・共有シークレット
 //   検証を通る経路のため、移行前後で検証結果が一致することを各ルートのテストで固めてある)
 // 上限値の置き場: 前 2 経路はその経路の他の共有定数と同居 (`sso-rate-limit.ts` /
 // `magic-link.ts`)、後 3 経路は `webhook-body-limits.ts`。いずれも route とテストが
 // 同じ定義を参照する (片方だけ値を変えたら気付けるようにするため)。
-// **新しく未認証 POST 経路を足すときは、ここへ寄せて上限を必ず設けること。**
+//
+// **middleware のセッション認証を素通りする POST はこの 5 つで全部ではない。**
+// 正本は `src/middleware.ts` の除外条件で、下は「本モジュールの対象外である理由」の分類。
+// 網羅リストとして数え上げるのではなく、**経路を足すたびに middleware 側から数え直すこと**
+// (この一覧を信じて監査すると、増えた経路を見落とす)。
+//   - 自前ではボディを読まない選択をしている … `INTERNAL_CRON_ROUTES`
+//     (`api/internal/trial-reminders` / `api/internal/sla-reminders`) はヘッダだけを見て
+//     ボディに触れないので、上限を掛ける対象がそもそも無い。読むようになった時点で対象になる。
+//   - **フレームワークがボディを読むので差し替えられない** … `api/auth/[...nextauth]`
+//     (middleware の `isApiAuth` が `/api/auth` 配下を丸ごと通す) は next-auth のハンドラが、
+//     未認証で開いているページ (`/login` `/signup` `/invite` `/help`) に置いた Server Action
+//     (`requestMagicLink` / `requestSignup` / `completeSignup` / `acceptInvitation` など) は
+//     Next 自身が、それぞれボディを解析する。いずれも上限が掛かっておらず、塞ぐなら
+//     アプリの外側 (リバースプロキシ or middleware での事前検査) が必要になる既知のギャップ。
+//
+// **認証済みの経路にも未対応のものが残っている。** `POST /api/tickets` と
+// `POST /api/tickets/[id]/comments` は `req.formData()` を直接呼んでおり上限が無い
+// (添付の 1 件あたりのサイズ検査は、ボディを全部メモリへ載せた**後**に走る)。
+// ログイン済みしか到達できず 1 分あたりの本数も別途絞ってあるぶん未認証経路より優先度は
+// 低いが、**Content-Length を省いた chunked 転送なら上限なく展開できる**性質は同じなので、
+// ここへ寄せる候補として残す。
+//
+// **新しく POST 経路を足すときは、未認証・認証済みを問わず、ここへ寄せて上限を設けること。**
 
 // チャンクが 1 つも届かないまま許容する最大時間 (slowloris 対策その 1)。
 //
 // 「送るのをやめた接続」をここで落とす。読み取り全体の期限**だけ**にしないのは、全体を
 // 短く絞ると、上限サイズに近い本文を細い上り回線から送っている正規の利用者まで巻き添えに
-// するため (例: 80KB のアサーションを 64kbps のモバイル回線から送ると 10 秒を超える)。
+// するため (例: 80KB のアサーションを 64kbps のモバイル回線から送ると 10 秒を超える。
+// その手の経路は下の STALL_TOLERANT_BODY_IDLE_TIMEOUT_MS を明示的に使う)。
 // ACS の POST はユーザーのブラウザから飛ぶので、回線品質はこちらで選べない。
-// タイマーは 1 チャンクごとに張り直す
+// タイマーは 1 チャンクごとに張り直す。
+//
+// **短くしておくのが既定。** ヘッダだけ送って本文を送らない接続は、この時間ぶん reader と
+// INITIAL_BUFFER_BYTES のバッファとソケットの FD を掴む。同時に生きる本数は「開始レート ×
+// この値」に比例する一方、下の全体期限のコメントにあるとおりレート制限は開始数しか数えず
+// **同時保持数は絞らない**ので、値を延ばした分がそのまま保持数に効く。
+//
+// export しているのはテストが参照するため (§9 に効く値なので、満たすべき関係を固定してある)。
 export const DEFAULT_BODY_IDLE_TIMEOUT_MS = 10_000;
+
+// 無通信の許容時間を延ばした版 (30 秒)。**イベントループの停止に巻き込まれても
+// 落ちてほしくない経路だけ**が明示的に使う。
+//
+// このタイマーは実時間で測るので「相手が送ってこない」と「こちらが詰まっていて受け取れない」を
+// 区別できない。メール取り込みが 25MB の multipart を解析している間はループが止まり、並行して
+// 読んでいる**別経路**のリクエストにも無通信として積算される。既定の 10 秒では、正常に送信中の
+// SSO ACS / マジックリンクのコールバックが巻き添えで打ち切られうる。
+//
+// **既定そのものを延ばさず、使う経路を選ぶ**のが要点。
+//
+// 延ばせば同時保持数は素直に増える (上の既定のコメントどおり「開始レート × この値」に比例し、
+// 10 秒 → 30 秒なら 3 倍)。**ゲートが効くのは増加を消すことではなく、増加幅を見積もれる形に
+// 抑えること**: 読み取りの前にレート制限があれば保持数は「その上限 × この値」で頭打ちになる
+// (例: 60/分 × 30 秒 ≒ 30 本)。ゲートが無ければ増加幅は攻撃者の接続レート次第になる。
+// そこで採用条件は **「読み取りの前に何らかのゲートを通ること」** とし、そのうえで
+// 「延ばす利益が増加分に見合うか」を経路ごとに見る。
+// 現在の採用は 3 経路:
+//   - `auth/sso/[tenantId]/acs` / `auth/magic-link/callback` … 読み取り前にレート制限を通る。
+//     加えて**再送が無い**ので、誤って打ち切るとユーザーにはログイン失敗として出て取り返せない
+//     (延長の動機が最も強い)。
+//   - `inbound/email` … 読み取り前に共有シークレットの照合を通る。再送はあるが、
+//     **自分の 25MB の解析でループを止める側**でもあるので、同時に届いた別のメールを
+//     自分で巻き添えにしないために使う。
+// `inbound/line` は使わない: 読み取りの前にゲートが無い唯一の経路 (レート制限は読み取りより
+// 後ろに置いてある。理由はあちらのコメント) なので、延ばすとゲート無しの保持数だけが増える。
+// 再送があるぶん、誤って打ち切っても取り返せる側でもある。
+//
+// 根本の対処 (タイマーをイベントループの停止に気付かせる / 同時に走るパースの本数を絞る) は
+// 本モジュール単体では閉じないため別途とする。ここは巻き添えを避けているだけである点に注意。
+export const STALL_TOLERANT_BODY_IDLE_TIMEOUT_MS = 30_000;
 
 // 読み取り開始から完了までに許容する最大時間 (slowloris 対策その 2)。
 //
@@ -84,38 +153,102 @@ type BoundedBodyResult =
   // ArrayBuffer 実体に紐づく Uint8Array に限定する (BodyInit として受け付けてもらうため。
   // 既定の Uint8Array<ArrayBufferLike> は SharedArrayBuffer 由来も含むので body に渡せない)
   | { ok: true; bytes: Uint8Array<ArrayBuffer> } // 上限内で読み切れた
-  | { ok: false; reason: 'too-large' } // 上限超過 (ヘッダ申告 or ストリームの累計)
-  | { ok: false; reason: 'timeout' } // 無通信が続いて打ち切った (だらだら送り)
-  | { ok: false; reason: 'unreadable' }; // ストリームの読み取り自体に失敗した (接続断など)
+  // 上限超過 (ヘッダ申告 or ストリームの累計)。**申告が読めていれば、どちらで打ち切っても
+  // declaredLength を載せる。** 申告より実データが大きい (過少申告で手前の検査をすり抜けた)
+  // ケースこそ切り分けたい対象なので、ストリーム側で止めたときも申告値は捨てない
+  // (実サイズの方は、上限で読むのをやめる設計上そもそも分からない)
+  | { ok: false; reason: 'too-large'; declaredLength?: number }
+  // 以下 2 つに declaredLength は付かないが、キーは生やしておく (呼び出し元が reason で
+  // 絞り込まずにそのままログへ渡せるようにするため。cause と同じ理由)
+  | { ok: false; reason: 'timeout'; declaredLength?: undefined } // 無通信が続いて打ち切った
+  | { ok: false; reason: 'unreadable'; declaredLength?: undefined }; // 読み取り自体に失敗した
 
 // 文字列としての読み取り結果 (バイト列の結果の bytes を text に置き換えたもの)
 type BoundedTextResult =
   | { ok: true; text: string } // 上限内で読み切れて UTF-8 として復号できた
-  | { ok: false; reason: 'too-large' | 'timeout' | 'unreadable' };
+  | Exclude<BoundedBodyResult, { ok: true }>;
 
 // フォームとしての読み取り結果 (バイト列の結果に「パースできなかった」を足したもの)
 type BoundedFormResult =
   | { ok: true; form: FormData } // 上限内で読み取れてフォームとしてパースできた
-  | { ok: false; reason: 'too-large' | 'timeout' | 'unreadable' | 'unparsable' };
+  // 本文を読み切れなかった。cause は常に undefined だが**キー自体は生やしておく**:
+  // こうしておくと呼び出し元が reason で絞り込まずに `result.cause` をそのままログへ渡せる
+  // (絞り込みの三項演算子を採用ルートごとに書き写さずに済む。§6 DRY)
+  | (Exclude<BoundedBodyResult, { ok: true }> & { cause?: undefined })
+  // フォームとして解析できなかった。**元の例外を捨てずに添えて返す** (§6 エラーを握り潰さない)。
+  //
+  // ただし今の undici から得られる情報は限られる (Node v22 で実測): multipart の失敗は
+  // boundary 違い・パートの途中切れのいずれも `TypeError: Failed to parse body as FormData.` に
+  // 潰れ、`cause` チェーンも付かない。理由まで判別できるのは Content-Type が
+  // multipart / urlencoded のどちらでもない場合だけで、そのときは専用の文言が返る。
+  // それでも捨てずに運ぶのは、(a) スタックから「どの呼び出しで落ちたか」は分かる、
+  // (b) 上流が将来詳細を載せたらそのまま活きる、(c) 握り潰した実装だと後から足す動機が
+  // 生まれない、の 3 点による。**この 1 行以上の切り分けを期待して上限値やパーサを
+  // 設計しないこと。**
+  | { ok: false; reason: 'unparsable'; cause: unknown; declaredLength?: undefined };
 
 // 本文を取り出せなかった理由。呼び出し元がログ文言の型を自前で導出しなくて済むよう公開する
 export type BodyRejectReason = Exclude<BoundedFormResult, { ok: true }>['reason'];
 
+// 読み取りに失敗したときの結果そのもの。**呼び出し元が自前で書き写さずに済むよう公開する。**
+// 書き写すと `{ reason: BodyRejectReason; cause?: unknown }` のように広げてしまいがちで、
+// 「cause が付くのは unparsable のときだけ」という対応関係が型から落ちる
+// (= timeout に cause を添える実装がコンパイルを通ってしまう)
+export type BodyRejectFailure = Exclude<BoundedFormResult, { ok: true }>;
+
+// 「本文を読むだけ」の経路で起こりうる理由 (フォーム解析をしないので 'unparsable' は生じない)。
+// readTextWithinByteLimit しか使わないルートが、到達しない文言をでっち上げずに済むよう公開する
+export type BodyReadRejectReason = Exclude<BoundedTextResult, { ok: true }>['reason'];
+
+// 拒否時にクライアントへ返す文言の一覧。**理由ごとに 1 つずつ決める**のが要点
+// (引き方の理由は `body-reject-response.ts` の bodyRejectResponse を参照)。
+// 型引数でその経路に起こりうる理由だけに絞れる — 本文を読むだけの経路なら
+// `BodyRejectMessages<BodyReadRejectReason>` で 'unparsable' を書かずに済む。
+//
+// HTTP を一切参照しない純粋な型なので、`next/server` を import する
+// `body-reject-response.ts` ではなくこちらに置く (あちらへ置くと、文言表を持つだけの
+// モジュールが Next へ依存する形になり、分離した意味が薄れる)
+export type BodyRejectMessages<R extends BodyRejectReason = BodyRejectReason> = Readonly<
+  Record<R, string>
+>;
+
 /**
  * 拒否理由をサーバーログ用の日本語 1 行にする。
  *
- * 呼び出し元 (ルート) は理由で処理を分けないが、応答も監査行も理由によらず同じになるため、
- * 「サイズ攻撃なのか、だらだら送りなのか、壊れたクライアントなのか」を後から見分けられる
- * 唯一の手がかりがこのログになる。文言をここに集約して、採用するルートごとに書き写さない。
+ * 外部へ返す文言は経路が理由ごとに出し分ける (`bodyRejectResponse`) が、それはあくまで
+ * 「大きすぎたのか、届き切らなかったのか」程度の粒度で、リダイレクトするだけの 2 経路
+ * (sso-acs / magic-link コールバック) に至っては理由によらず同じ応答になる。
+ * 「サイズ攻撃なのか、だらだら送りなのか、壊れたクライアントなのか」を運用者が後から
+ * 見分けられる手がかりはこのログだけなので、文言をここに集約して各ルートに書き写さない。
  * 本文の中身は決して含めない (§9 PII をログに漏らさない)。
+ *
+ * export しないのは、全ルートが logBodyReject 経由になり外部から名指しで呼ぶ必要が
+ * 無くなったため (§6 デッドコードを残さない)。公開したままにすると logBodyReject を
+ * 迂回して各ルートが console.warn を書き直す余地を残してしまう。
  *
  * @param reason 読み取りが失敗した理由
  * @param maxBytes 適用していた上限バイト数 (サイズ超過の文言に載せる)
+ * @param declaredLength Content-Length の申告値。読めていればそのまま載せ、読めていなければ
+ *   「申告は無し」と明示する (数字をでっち上げない)。上限値だけでは全部の行が同じ文言になり、
+ *   「正規の送信者が上限を少し超えている」と「桁違いで探られている」を区別できないため
  */
-export function describeBodyRejectReason(reason: BodyRejectReason, maxBytes: number): string {
+function describeBodyRejectReason(
+  reason: BodyRejectReason,
+  maxBytes: number,
+  declaredLength?: number,
+): string {
+  // 申告サイズが読めていれば載せる。**上限値だけでは全部の行が同じ文言になり、
+  // 「正規の送信者が上限より少し大きいものを送り続けている (上限の見直しどき)」と
+  // 「桁違いのサイズで探られている」を運用者が区別できない** (上限はソースを見れば分かる値)。
+  // ストリーム側で打ち切った場合は、設計上「上限を踏み越えた時点で読むのをやめる」ので
+  // 実サイズは分からない。その場合は申告が無かった旨だけを残す
+  const declared =
+    declaredLength !== undefined && declaredLength >= 0
+      ? `Content-Length の申告は ${declaredLength} バイト`
+      : 'Content-Length の申告は無し (実サイズは上限で打ち切ったため不明)';
   // Record にして網羅性を型で強制する (理由を増やしたらキー不足で typecheck が落ちる)
   const descriptions: Readonly<Record<BodyRejectReason, string>> = {
-    'too-large': `リクエストボディが上限 ${maxBytes} バイトを超えました。`,
+    'too-large': `リクエストボディが上限 ${maxBytes} バイトを超えました (${declared})。`,
     timeout: 'リクエストボディの送信が途中で止まりました (だらだら送りの疑い)。',
     unreadable: 'リクエストボディの読み取りに失敗しました (接続断など)。',
     unparsable: 'リクエストボディをフォームとして解析できませんでした。',
@@ -127,15 +260,46 @@ export function describeBodyRejectReason(reason: BodyRejectReason, maxBytes: num
 /**
  * 拒否理由を HTTP ステータスへ振り分ける。
  *
- * 「サイズ超過は 413、それ以外 (だらだら送り・接続断・パース不能) は 400」という同じ判断が、
- * 本モジュールを採用する各ルートに繰り返し必要になるため、理由の定義と同じ場所に置いて
- * 書き写しを防ぐ (§6 DRY)。理由を増やしたときの振り分け漏れもここだけ見れば済む。
+ * 呼び出し元は `bodyRejectResponse` だけで、各ルートは直接呼ばない (ルートは応答の組み立てごと
+ * あちらに委ねる)。それでも理由の定義と同じ場所に置いてあるのは、理由を増やしたときに
+ * 「説明文・ステータス・文言」の 3 点セットを 1 画面で見直せるようにするため。
+ * **新しいルートがここを直接呼んで NextResponse を手組みしないこと** — それをやると
+ * bodyRejectResponse が消した 4 行の複製が戻る。
  *
  * @param reason 読み取りが失敗した理由
  */
 export function bodyRejectStatus(reason: BodyRejectReason): 413 | 400 {
   // 上限超過だけが「大きすぎる」= 413。残りは本文を受け取れなかったので形式不正扱いの 400
   return reason === 'too-large' ? 413 : 400;
+}
+
+/**
+ * 拒否理由 (と、あれば原因の例外) をサーバーログへ 1 行で残す。
+ *
+ * 本モジュールを使う 5 経路すべてが「拒否したらログに 1 行残す」を必要とし、うち 3 経路は
+ * さらに JSON 応答を返す (`bodyRejectResponse`)、2 経路はリダイレクトするだけ、と後段が
+ * 分かれる。**ログの出し方だけは 5 経路で揃える**ためにここへ置く (§6 DRY)。
+ *
+ * @param logPrefix ログ行の先頭に付ける識別子。**角括弧まで含めて渡す**
+ *   (例: '[sso-acs]')。`quarantine.ts` / `settings-audit.ts` の同名引数と同じ約束にしてある
+ *   — 片方だけ括弧を足す形にすると、隣の呼び出しを写した実装が `[[sso-acs]]` になる
+ * @param failure 読み取りに失敗した結果そのもの (理由・原因の例外・申告サイズを持つ)
+ * @param maxBytes 適用していた上限バイト数 (サイズ超過の文言に載せる)
+ */
+export function logBodyReject(
+  logPrefix: string,
+  // **読み取り結果そのものを受け取る。** 中身 (reason / cause / declaredLength) を呼び出し元で
+  // ばらして渡す形にすると、5 経路すべてが同じ分解を書き写すうえ、cause が unknown なので
+  // declaredLength と取り違えても typecheck を通ってしまう ('unparsable' 以外は cause が
+  // undefined なので、ほぼ全ケースで成立してしまう)。丸ごと渡せばどちらも起きない
+  failure: BodyRejectFailure,
+  maxBytes: number,
+): void {
+  // 理由の説明文を組み立てる (本文の中身は含まない。§9 PII をログに漏らさない)
+  const detail = describeBodyRejectReason(failure.reason, maxBytes, failure.declaredLength);
+  // 原因の例外があれば同じ行に添える (無いときに undefined を渡すと行末に "undefined" が出る)
+  if (failure.cause === undefined) console.warn(`${logPrefix} ${detail}`);
+  else console.warn(`${logPrefix} ${detail}`, failure.cause);
 }
 
 /**
@@ -168,7 +332,7 @@ export async function readBodyWithinByteLimit(
   const declaredLength = Number(req.headers.get('content-length') || '-1');
   // 数値として読めて上限を超えているなら、本文を読まずにここで打ち切る (一番安い拒否)
   if (Number.isFinite(declaredLength) && declaredLength > maxBytes) {
-    return { ok: false, reason: 'too-large' };
+    return { ok: false, reason: 'too-large', declaredLength };
   }
 
   // ボディが無いリクエスト (GET など) は空のバイト列として扱う
@@ -273,8 +437,14 @@ export async function readBodyWithinByteLimit(
 
   // 時間切れでの打ち切り (だらだら送り) は、読めた量に関わらず拒否する
   if (timedOut) return { ok: false, reason: 'timeout' };
-  // 上限超過なら、確保したバッファは捨てて拒否を返す
-  if (exceeded) return { ok: false, reason: 'too-large' };
+  // 上限超過なら、確保したバッファは捨てて拒否を返す。
+  // 申告が読めていたならここでも載せる — ここへ来たということは「申告は上限内なのに実データが
+  // 上限を超えた」= 過少申告なので、正直な送信者と区別するための一番の手がかりになる
+  if (exceeded) {
+    return Number.isFinite(declaredLength) && declaredLength >= 0
+      ? { ok: false, reason: 'too-large', declaredLength }
+      : { ok: false, reason: 'too-large' };
+  }
 
   // 実際に読んだぶんだけを切り出して返す (subarray なのでコピーは発生しない)
   return { ok: true, bytes: buffer.subarray(0, totalBytes) };
@@ -352,8 +522,10 @@ export async function readFormWithinByteLimit(
     }).formData();
     // パースできたフォームを返す
     return { ok: true, form };
-  } catch {
-    // Content-Type 不一致・本文破損など。ログは呼び出し元が文脈付きで出す
-    return { ok: false, reason: 'unparsable' };
+  } catch (err) {
+    // Content-Type 不一致・本文破損など。**例外を捨てずに結果へ載せて返す** —
+    // ログ自体は呼び出し元が文脈 (どのルートか) を付けて出すが、原因が分かるのはこの例外だけなので
+    // ここで消してしまうと呼び出し元が何を出しても「解析できませんでした」以上のことを言えない
+    return { ok: false, reason: 'unparsable', cause: err };
   }
 }

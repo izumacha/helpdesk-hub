@@ -15,7 +15,7 @@
 // `request-body-limit.ts` の `readBodyWithinByteLimit` / `readFormWithinByteLimit` が担う。
 // 上限値をここで決め、読み取り方法をあちらに集約する分担にしている。
 //
-// 値を決めるときの注意: 読み取り中の一時コピーを含めて、本文サイズの約 3.5 倍のメモリを
+// 値を決めるときの注意: 読み取り中の一時コピーを含めて、本文サイズの約 3 倍のメモリを
 // 見込むこと (内訳は request-body-limit.ts 冒頭の「メモリの目安」)。
 
 // LINE Webhook (`POST /api/inbound/line`) の上限 (256KB)。
@@ -41,8 +41,7 @@ export const INBOUND_EMAIL_MAX_BODY_BYTES = 25 * 1024 * 1024;
 //
 // 一方で「無制限」にはしない (だらだら送りでハンドラを保持され続けるため)。Node の既定
 // requestTimeout が 300 秒で、それを超える値を設定してもサーバー側で先に切られて無意味なので、
-// その内側に収まる 4 分を上限とする。無通信の許容時間 (既定 10 秒) は据え置く
-// ——送り続けている限りタイマーは張り直されるので、遅い回線が巻き添えになることはない。
+// その内側に収まる 4 分を上限とする。
 export const INBOUND_EMAIL_BODY_TOTAL_TIMEOUT_MS = 240_000;
 
 // Stripe Webhook (`POST /api/webhooks/stripe`) の上限 (1MB)。

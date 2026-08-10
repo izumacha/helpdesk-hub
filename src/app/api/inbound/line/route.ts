@@ -98,14 +98,15 @@ import { resolveAppBaseUrl } from '@/lib/app-url';
 // チケット詳細ページの URL 組み立て・受付番号 (短縮 ID) の表記を揃えるヘルパー
 import { buildTicketUrl } from '@/lib/ticket-email';
 import { formatTicketRef } from '@/lib/ticket-ref';
-// リクエストボディをサイズ上限つきで読み取るヘルパーと、拒否理由のログ文言・ステータス変換 (#287)
-import {
-  readTextWithinByteLimit,
-  describeBodyRejectReason,
-  bodyRejectStatus,
-} from '@/lib/request-body-limit';
+// リクエストボディをサイズ上限つきで読み取るヘルパーと、拒否時の応答を組み立てるヘルパー (#287)
+import { readTextWithinByteLimit } from '@/lib/request-body-limit';
+// 拒否時のログ・ステータス・文言をまとめて組み立てるヘルパー (ルート層の関心事なので別モジュール)
+import { bodyRejectResponse } from '@/lib/body-reject-response';
+// 拒否理由ごとの文言 (route とテストが同じ表を参照する。理由は同モジュール冒頭)
+import { LINE_BODY_REJECT_MESSAGES } from '@/lib/webhook-body-reject-messages';
 // この経路が受け付けるボディの最大バイト数 (route とテストが同じ定義を参照する)
 import { LINE_WEBHOOK_MAX_BODY_BYTES } from '@/lib/webhook-body-limits';
+
 // このルートは Node ランタイムで動かす (node:crypto / Prisma を使うため Edge では動かない)
 export const runtime = 'nodejs';
 
@@ -228,20 +229,12 @@ export async function POST(req: Request) {
   // 得られる文字列は移行前の `req.text()` と一致する (差異と根拠は readTextWithinByteLimit)
   const bodyResult = await readTextWithinByteLimit(req, LINE_WEBHOOK_MAX_BODY_BYTES);
   if (!bodyResult.ok) {
-    // どの理由 (サイズ超過 / だらだら送り / 接続断) で拒否したかはサーバーログにだけ残す
-    console.warn(
-      `[POST /api/inbound/line] ${describeBodyRejectReason(
-        bodyResult.reason,
-        LINE_WEBHOOK_MAX_BODY_BYTES,
-      )}`,
-    );
-    // サイズ超過は従来どおり 413、それ以外 (本文が届き切らなかった) は形式不正の 400。
-    // ステータスの振り分けは共通ヘルパーに任せ、文言だけをこの経路の言い回しに合わせる
-    const status = bodyRejectStatus(bodyResult.reason);
-    return NextResponse.json(
-      { error: status === 413 ? 'リクエストが大きすぎます' : 'リクエストの形式が正しくありません' },
-      { status },
-    );
+    // どの理由 (サイズ超過 / だらだら送り / 接続断) で拒否したかはサーバーログにだけ残し、
+    // 外部には理由ごとに決めた文言だけを返す。ログ・ステータス・文言の組み立ては共通ヘルパーに委ねる
+    return bodyRejectResponse(bodyResult, LINE_WEBHOOK_MAX_BODY_BYTES, {
+      logPrefix: '[POST /api/inbound/line]',
+      messages: LINE_BODY_REJECT_MESSAGES,
+    });
   }
   // 上限内で読み取れた本文 (署名検証と JSON.parse の対象になる生テキスト)
   const rawBody = bodyResult.text;
@@ -285,7 +278,15 @@ export async function POST(req: Request) {
   }
 
   // 固定キーの全体レート制限を適用する (DB 参照より前に置き、destination を変え続ける
-  // ことでのレート制限回避・DB 負荷増大を防ぐ。詳細は定数の定義コメント参照)
+  // ことでのレート制限回避・DB 負荷増大を防ぐ。詳細は定数の定義コメント参照)。
+  //
+  // **読み取りより後ろに置いたままにしているのは意図的。** 前へ出すと、JSON として壊れた
+  // 本文や destination の形式不正で 400 になるだけの雑音まで、全テナント共有のこのバケットを
+  // 消費するようになる。600/分を雑音で使い切られると正規の Webhook が 429 になり、LINE が
+  // 再送を諦めた時点でメッセージが失われる (取りこぼしは復旧できない)。
+  // 引き換えに、読み取り中の同時保持数 (無通信の許容時間ぶん reader とバッファを掴む) は
+  // ここでは絞れないままになる。両立させるには「開始レート」ではなく「同時保持数」を
+  // 数える仕組みが要るので、そちらを入れるまでは取りこぼしを避ける側に倒す。
   const unauthLimitResponse = checkRouteRateLimit(
     'inbound-line:unauthenticated',
     LINE_UNAUTHENTICATED_RATE_LIMIT,

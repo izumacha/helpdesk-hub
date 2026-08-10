@@ -10,8 +10,42 @@ import { createMemoryContext, type Store } from '@/data/adapters/memory';
 import { createMemoryStorage, type MemoryStoragePort } from '@/data/adapters/memory/storage.memory';
 // 型のみ
 import type { Repos } from '@/data/ports/unit-of-work';
-// ボディサイズの上限。ルートと同じ定義を参照する (#287。片方だけ値を変えたら気付けるように)
-import { INBOUND_EMAIL_MAX_BODY_BYTES } from '@/lib/webhook-body-limits';
+// ボディサイズの上限と読み取りの制限時間。ルートと同じ定義を参照する
+// (#287。片方だけ値を変えたら気付けるように)
+import {
+  INBOUND_EMAIL_MAX_BODY_BYTES,
+  INBOUND_EMAIL_BODY_TOTAL_TIMEOUT_MS,
+} from '@/lib/webhook-body-limits';
+// 巻き添え回避用の無通信上限 (ルートと同じ定義を参照する)
+import { STALL_TOLERANT_BODY_IDLE_TIMEOUT_MS } from '@/lib/request-body-limit';
+
+// 読み取りヘルパーを「本物のまま呼び出し引数だけ記録する」形に差し替える。
+// 上限・制限時間はこのルートが**引数で明示的に渡してはじめて効く**もので、渡し忘れると
+// 既定値 (無通信 10 秒 / 全体 120 秒) に黙って戻る。挙動は既定値でもそれらしく
+// 動いてしまい全テストが緑のままなので、引数そのものを表明できるようにしておく
+const { readFormSpy, readTextSpy } = vi.hoisted(() => ({
+  readFormSpy: vi.fn(),
+  readTextSpy: vi.fn(),
+}));
+vi.mock('@/lib/request-body-limit', async (importOriginal) => {
+  // 本物の実装を読み込む (差し替えるのは「呼ばれ方の記録」だけで、中身は本物を通す)
+  const actual = await importOriginal<typeof import('@/lib/request-body-limit')>();
+  return {
+    ...actual,
+    // 引数を記録してから本物へ委譲する
+    // 記録するのは第 2 引数以降 (上限と制限時間) だけにする。第 1 引数の Request まで
+    // 記録すると、境界値テストが作る 25MB の本文が mock.calls 経由でファイル終了まで
+    // 参照され続けてしまう (表明に使うのも slice(1) 側だけ)
+    readFormWithinByteLimit: (...args: Parameters<typeof actual.readFormWithinByteLimit>) => {
+      readFormSpy(...args.slice(1));
+      return actual.readFormWithinByteLimit(...args);
+    },
+    readTextWithinByteLimit: (...args: Parameters<typeof actual.readTextWithinByteLimit>) => {
+      readTextSpy(...args.slice(1));
+      return actual.readTextWithinByteLimit(...args);
+    },
+  };
+});
 
 // テスト用の固定値
 const SECRET = 'test-inbound-secret';
@@ -1275,5 +1309,97 @@ describe('POST /api/inbound/email のリクエストサイズ上限', () => {
     expect(res.status).toBe(201);
     expect(store.tickets.size).toBe(1);
     expect(Array.from(store.tickets.values())[0].title).toBe(VALID_EMAIL.subject);
+  });
+
+  // 壊れた multipart を受けたとき、400 を返すだけでなく **原因の例外をサーバーログに残す**。
+  // 移行前は console.error(..., err) に undici の解析エラーが出ており、それが消えると
+  // プロバイダ側の不具合 (boundary の付け方が変わった等) を運用者が切り分けられなくなる (§6)。
+  //
+  // 読み取りの失敗は値で返す形にしてあるので、原因は readFormWithinByteLimit の戻り値から
+  // そのまま POST 側へ渡る。この端から端までの経路が切れていないことをここで押さえる
+  it('壊れた multipart 本文は 400 を返し、原因の例外をログに残す', async () => {
+    // console.warn を差し替えて、何が出たかを観測する
+    const warnCalls: unknown[][] = [];
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation((...args: unknown[]) => {
+      warnCalls.push(args);
+    });
+    // 応答は finally の外でも読むので、try の外側で受ける
+    let res: Response;
+    try {
+      const { POST } = await import('@/app/api/inbound/email/route');
+      res = await POST(
+        new Request('http://localhost/api/inbound/email', {
+          method: 'POST',
+          headers: {
+            // boundary は宣言しているが、本文のパートヘッダが途中で切れている
+            'content-type': 'multipart/form-data; boundary=X',
+            'x-inbound-secret': SECRET,
+          },
+          body: '--X\r\nContent-Dispo',
+        }),
+      );
+      // 解析できない本文は 400 (サイズ超過ではないので 413 にはしない)
+      expect(res.status).toBe(400);
+      // 起票まで進んでいない
+      expect(store.tickets.size).toBe(0);
+    } finally {
+      // 例外で抜けてもモックを必ず戻す (残すと後続テストが警告を飲み込む)
+      warnSpy.mockRestore();
+    }
+    // 説明文と一緒に原因の例外が出ている (第 2 引数が落ちていると cause が消えている)
+    const rejectLog = warnCalls.find((args) => String(args[0]).includes('/api/inbound/email'));
+    expect(rejectLog).toBeDefined();
+    expect(rejectLog).toHaveLength(2);
+    expect(rejectLog![1]).toBeInstanceOf(TypeError);
+    // 解析できない本文に対する文言が、この経路の文言表の 'unparsable' と一致する。
+    // 注: これだけでは「ステータスで文言を選ぶ実装」への退行は検出できない (unparsable は
+    // どちらの実装でも同じ文字列になる)。その退行を捕まえるのは
+    // tests/webhook-body-reject-messages.test.ts の「各理由の文言がそのまま応答本文になる」
+    expect(await res.json()).toEqual({ error: 'リクエストの形式が正しくありません' });
+  });
+
+  // 制限時間は「ルートが引数で明示的に渡す」ことで初めて効く。渡し忘れると既定
+  // (無通信 10 秒 / 全体 120 秒) に黙って戻り、25MB の正規メールが送信途中で打ち切られる
+  // 退行が復活する。挙動テストでは既定値でも緑のままなので引数を直接表明する
+  it('multipart / JSON のどちらの読み取りにもこの経路の上限と制限時間を渡している', async () => {
+    readFormSpy.mockClear();
+    readTextSpy.mockClear();
+    const { POST } = await import('@/app/api/inbound/email/route');
+
+    // multipart 経路 (readFormWithinByteLimit)
+    const form = new FormData();
+    form.set('to', VALID_EMAIL.to);
+    form.set('from', VALID_EMAIL.from);
+    form.set('subject', VALID_EMAIL.subject);
+    form.set('text', VALID_EMAIL.text);
+    await POST(
+      new Request('http://localhost/api/inbound/email', {
+        method: 'POST',
+        headers: { 'x-inbound-secret': SECRET },
+        body: form,
+      }),
+    );
+    // 第 2〜4 引数が「この経路の」上限・無通信上限・全体期限になっている
+    expect(readFormSpy).toHaveBeenCalledTimes(1);
+    expect(readFormSpy.mock.calls[0]).toEqual([
+      INBOUND_EMAIL_MAX_BODY_BYTES,
+      STALL_TOLERANT_BODY_IDLE_TIMEOUT_MS, // 巻き添え回避用の無通信上限を明示的に使う
+      INBOUND_EMAIL_BODY_TOTAL_TIMEOUT_MS,
+    ]);
+
+    // JSON 経路 (readTextWithinByteLimit) も同じ値を渡す
+    await POST(
+      new Request('http://localhost/api/inbound/email', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-inbound-secret': SECRET },
+        body: JSON.stringify({ ...VALID_EMAIL, 'message-id': '<distinct@example.com>' }),
+      }),
+    );
+    expect(readTextSpy).toHaveBeenCalledTimes(1);
+    expect(readTextSpy.mock.calls[0]).toEqual([
+      INBOUND_EMAIL_MAX_BODY_BYTES,
+      STALL_TOLERANT_BODY_IDLE_TIMEOUT_MS, // 巻き添え回避用の無通信上限を明示的に使う
+      INBOUND_EMAIL_BODY_TOTAL_TIMEOUT_MS,
+    ]);
   });
 });

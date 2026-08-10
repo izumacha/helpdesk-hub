@@ -28,12 +28,12 @@ import { isProModeAllowed } from '@/lib/plan-guard';
 import type { SubscriptionPlan } from '@/domain/types';
 // §4.3 フォローアップ: 設定変更監査ログへの記録を共通化するヘルパー
 import { recordSettingsAudit } from '@/lib/settings-audit';
-// リクエストボディをサイズ上限つきで読み取るヘルパーと、拒否理由のログ文言・ステータス変換 (#287)
-import {
-  readTextWithinByteLimit,
-  describeBodyRejectReason,
-  bodyRejectStatus,
-} from '@/lib/request-body-limit';
+// リクエストボディをサイズ上限つきで読み取るヘルパーと、拒否時の応答を組み立てるヘルパー (#287)
+import { readTextWithinByteLimit } from '@/lib/request-body-limit';
+// 拒否時のログ・ステータス・文言をまとめて組み立てるヘルパー (ルート層の関心事なので別モジュール)
+import { bodyRejectResponse } from '@/lib/body-reject-response';
+// 拒否理由ごとの文言 (route とテストが同じ表を参照する。理由は同モジュール冒頭)
+import { STRIPE_BODY_REJECT_MESSAGES } from '@/lib/webhook-body-reject-messages';
 // この経路が受け付けるボディの最大バイト数 (route とテストが同じ定義を参照する)
 import { STRIPE_WEBHOOK_MAX_BODY_BYTES } from '@/lib/webhook-body-limits';
 
@@ -74,25 +74,12 @@ export async function POST(request: Request): Promise<NextResponse> {
   // 得られる文字列は移行前の `request.text()` と一致する (差異と根拠は readTextWithinByteLimit)
   const bodyResult = await readTextWithinByteLimit(request, STRIPE_WEBHOOK_MAX_BODY_BYTES);
   if (!bodyResult.ok) {
-    // どの理由で拒否したかはサーバーログにだけ残す (§6 エラーを握り潰さない)
-    console.warn(
-      `[stripe-webhook] ${describeBodyRejectReason(bodyResult.reason, STRIPE_WEBHOOK_MAX_BODY_BYTES)}`,
-    );
-    // サイズ超過なら 413、それ以外 (だらだら送り・接続断) は従来どおり 400 で返す。
-    // どちらも Stripe は再送するが、正規イベントがこの経路で失われるのは異常系なので
-    // 「受け取れなかった」ことを 2xx で覆い隠さない (§9 fail-closed)。
-    // 文言はステータスに合わせる — 413 なのに「読み取りに失敗」と返すと、Stripe の配信ログを
-    // 見た運用者がサイズ超過ではなく接続断だと誤読する
-    const status = bodyRejectStatus(bodyResult.reason);
-    return NextResponse.json(
-      {
-        error:
-          status === 413
-            ? 'リクエストボディが大きすぎます'
-            : 'リクエストボディの読み取りに失敗しました',
-      },
-      { status },
-    );
+    // どの理由で拒否したかはサーバーログにだけ残し (§6 エラーを握り潰さない)、
+    // 外部には理由ごとに決めた文言を返す。ログ・ステータス・文言の組み立ては共通ヘルパーに委ねる
+    return bodyRejectResponse(bodyResult, STRIPE_WEBHOOK_MAX_BODY_BYTES, {
+      logPrefix: '[stripe-webhook]',
+      messages: STRIPE_BODY_REJECT_MESSAGES,
+    });
   }
   // 上限内で読み取れた本文 (署名検証にかける生テキスト)
   const rawBody = bodyResult.text;

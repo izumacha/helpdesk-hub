@@ -10,7 +10,12 @@ import {
   readFormWithinByteLimit,
   readTextWithinByteLimit,
   bodyRejectStatus,
+  DEFAULT_BODY_IDLE_TIMEOUT_MS,
+  DEFAULT_BODY_TOTAL_TIMEOUT_MS,
+  STALL_TOLERANT_BODY_IDLE_TIMEOUT_MS,
 } from '@/lib/request-body-limit';
+// 経路ごとに上書きしている全体期限 (関係の表明に使う)
+import { INBOUND_EMAIL_BODY_TOTAL_TIMEOUT_MS } from '@/lib/webhook-body-limits';
 
 // テストで使う上限 (小さくして高速に回す)
 const LIMIT = 1024;
@@ -93,6 +98,35 @@ describe('readBodyWithinByteLimit', () => {
     expect(result.ok && result.bytes.byteLength).toBe(LIMIT);
   });
 
+  // 申告値をログに残せるよう、拒否結果に載せて返す。上限値だけでは全部の 413 行が同じ文言に
+  // なり、「正規の送信者が上限を少し超えている」と「桁違いのサイズで探られている」を
+  // 運用者が区別できない
+  it('ヘッダ申告での拒否は申告値を結果に載せて返す', async () => {
+    const req = requestWithBody(1, { 'content-length': String(LIMIT + 1) });
+    const result = await readBodyWithinByteLimit(req, LIMIT);
+    expect(result).toEqual({ ok: false, reason: 'too-large', declaredLength: LIMIT + 1 });
+  });
+
+  // 申告が無いまま実データで超過した場合は、載せる申告値がそもそも無い
+  it('申告が無いまま実データで超過したときは申告値を持たない', async () => {
+    const result = await readBodyWithinByteLimit(requestWithBody(LIMIT + 1), LIMIT);
+    expect(result).toEqual({ ok: false, reason: 'too-large' });
+  });
+
+  // **過少申告 (申告は上限内なのに実データが超過) こそ切り分けたいケース。**
+  // ここで申告値を落とすと、ログには「申告は無し」と出て、正直な送信者と嘘つきを
+  // 区別できなくなる (手前のヘッダ検査をすり抜けたことが分からない)
+  it('過少申告で手前の検査をすり抜けた場合も申告値を載せて返す', async () => {
+    // 申告は上限内 (100) だが、実データは上限超過
+    const req = new Request('http://x', {
+      method: 'POST',
+      body: 'A'.repeat(LIMIT + 1),
+      headers: { ...CONTENT_TYPE, 'content-length': '100' },
+    });
+    const result = await readBodyWithinByteLimit(req, LIMIT);
+    expect(result).toEqual({ ok: false, reason: 'too-large', declaredLength: 100 });
+  });
+
   it('Content-Lengthの申告が上限超過なら本文を読み進めずに拒否する', async () => {
     // 実本文はいくらでも流せるが、申告だけを上限超過にする
     const chunkSize = 64;
@@ -100,8 +134,8 @@ describe('readBodyWithinByteLimit', () => {
     // 申告値を上書きする (Headers は生成後も変更できる)
     req.headers.set('content-length', String(LIMIT + 1));
     const result = await readBodyWithinByteLimit(req, LIMIT);
-    // 申告だけで拒否される
-    expect(result).toEqual({ ok: false, reason: 'too-large' });
+    // 申告だけで拒否される (申告値はログの切り分け用にそのまま載せて返す)
+    expect(result).toEqual({ ok: false, reason: 'too-large', declaredLength: LIMIT + 1 });
     // ヘルパーはストリームを 1 度も read していない。
     // ここが 0 ではなく最大 1 チャンクなのは ReadableStream 自身の先読み (highWaterMark)
     // によるもので、ヘルパーがボディを読み進めた結果ではない
@@ -189,9 +223,13 @@ describe('readBodyWithinByteLimit', () => {
   // 送ってくる正規の利用者 (SSO は利用者のブラウザから POST される) まで巻き添えで
   // 落ちてしまう。無通信時間で測っているからこそ、遅くても送り続けていれば通る
   it('無通信の許容時間より長くかかっても、送り続けていれば読み切れる', async () => {
-    // 1 チャンクあたりの待ち時間 (無通信の許容時間より十分に短い)
+    // 1 チャンクあたりの待ち時間。**無通信の許容時間に対して十分な余裕を取る** —
+    // setTimeout が保証するのは下限だけなので、CI で 120 ファイルを並列に回している最中に
+    // GC やスケジューラの遅延で 1 回でも許容時間を超えると、無関係な変更で赤くなる
     const chunkDelayMs = 20;
-    // 送るチャンク数。全体では chunkDelayMs * 5 = 100ms かかり、許容時間 50ms を上回る
+    // 送るチャンク数。全体では chunkDelayMs * 5 = 100ms かかり、無通信の許容時間 (下で 500ms を
+    // 渡す) より長い = 「全体の所要時間で測っていない」ことがこの 1 件で言える。
+    // 1 チャンクあたりの間隔 (20ms) に対しては 25 倍の余裕があるので、遅延には強い
     const chunkCount = 5;
     // 送信済みチャンク数
     let sent = 0;
@@ -216,7 +254,7 @@ describe('readBodyWithinByteLimit', () => {
     } as RequestInit & { duplex: 'half' });
 
     // 無通信の許容時間 (50ms) < 全体の所要時間 (約 100ms)、かつ全体期限 (5s) には余裕がある条件で読む
-    const result = await readBodyWithinByteLimit(req, LIMIT, 50, 5_000);
+    const result = await readBodyWithinByteLimit(req, LIMIT, 500, 5_000);
     // 全体期限「だけ」で打ち切る実装ならここで timeout になり失敗する
     expect(result.ok).toBe(true);
     // 送ったバイトはすべて読み取れている
@@ -312,7 +350,56 @@ describe('readFormWithinByteLimit', () => {
     });
     const result = await readFormWithinByteLimit(req, LIMIT);
     // 例外を投げず、パース不能として返す
-    expect(result).toEqual({ ok: false, reason: 'unparsable' });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.reason).toBe('unparsable');
+      // 原因の例外を捨てずに載せて返す (§6 エラーを握り潰さない)
+      expect(result.cause).toBeInstanceOf(Error);
+    }
+  });
+
+  // 上のケースは Content-Type がフォーム系でない場合で、メール取り込みルートは手前で
+  // Content-Type を振り分けるため到達しない。**実運用で起こるのは「Content-Type は multipart
+  // なのに本文が壊れている」形**なので、そちらでも例外が付いて返ることを別途固定する
+  // (この経路が無いと、ルートが握れる cause は実質テストされていないことになる)
+  // §9「機密情報・PII をログに漏らさない」の実測固定。この cause は sso-acs と
+  // マジックリンクのコールバック — **SAML アサーションとログイントークンを本文に持つ経路** —
+  // でサーバーログへ書き出される。現在の undici は本文を例外に載せないが、それはコメントで
+  // 観測を書いているだけでは守れない (パーサ改善で該当パートのヘッダを message に含める
+  // 実装は珍しくない)。将来のランタイム更新で載るようになったらここで落ちる
+  it('解析失敗の例外に本文の中身が入らない (ログへ書き出すため)', async () => {
+    // 本文に見つけやすい印を仕込む (実際は SAMLResponse やトークンが入る位置)
+    const marker = 'SECRET-MARKER-DO-NOT-LOG';
+    const req = new Request('http://x', {
+      method: 'POST',
+      body: `--X\r\nContent-Disposition: form-data; name="SAMLResponse"\r\n\r\n${marker}`,
+      headers: { 'content-type': 'multipart/form-data; boundary=X' },
+    });
+    const result = await readFormWithinByteLimit(req, LIMIT);
+    expect(result.ok).toBe(false);
+    if (!result.ok && result.reason === 'unparsable') {
+      // console.warn(msg, cause) が実際に描画するのは message と stack
+      const rendered = `${String((result.cause as Error).message)}\n${String((result.cause as Error).stack)}`;
+      expect(rendered).not.toContain(marker);
+    }
+  });
+
+  it('multipart の本文が壊れていても unparsable と原因の例外を返す', async () => {
+    // boundary は宣言しているが、パートのヘッダが途中で切れている本文
+    const req = new Request('http://x', {
+      method: 'POST',
+      body: '--X\r\nContent-Dispo',
+      headers: { 'content-type': 'multipart/form-data; boundary=X' },
+    });
+    const result = await readFormWithinByteLimit(req, LIMIT);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.reason).toBe('unparsable');
+      // 原因の例外が付く。**ただし undici は multipart の失敗をすべて同じ 1 種類の
+      // TypeError に潰すため、ここで理由の内訳までは判別できない** (型と発生箇所だけが分かる)。
+      // 上流が詳細を載せるようになればこの表明はより強い意味を持つ
+      expect(result.cause).toBeInstanceOf(TypeError);
+    }
   });
 
   it('サイズ超過はパースまで進まず too-large をそのまま返す', async () => {
@@ -400,5 +487,52 @@ describe('bodyRejectStatus', () => {
     expect(bodyRejectStatus('timeout')).toBe(400);
     expect(bodyRejectStatus('unreadable')).toBe(400);
     expect(bodyRejectStatus('unparsable')).toBe(400);
+  });
+});
+
+describe('既定の制限時間', () => {
+  // **slowloris 耐性を決めるのはこの 2 つ**なので、値そのものではなく満たすべき関係を固定する。
+  // (値を写経すると、両方を同時に書き換える変更を素通ししてしまう)
+  // 実時間で待って挙動から確かめる形にしないのは、既定値ぶん (数十秒) テストが止まるため。
+
+  it('無通信の上限は全体期限より短い', () => {
+    // 逆転すると無通信の検知が一度も働かず、「送るのをやめた接続」が全体期限まで居座る
+    expect(DEFAULT_BODY_IDLE_TIMEOUT_MS).toBeLessThan(DEFAULT_BODY_TOTAL_TIMEOUT_MS);
+  });
+
+  it('全体期限は Node 既定の requestTimeout (300 秒) より短い', () => {
+    // 超えるとサーバー側で先に切られ、こちらの打ち切りが一度も効かなくなる
+    expect(DEFAULT_BODY_TOTAL_TIMEOUT_MS).toBeLessThan(300_000);
+  });
+
+  // 経路ごとに上書きしている唯一の全体期限も同じ関係を満たす必要がある。
+  // **むしろこちらの方が天井に近い** (240 秒 / 300 秒) ので、緩める変更はここで止める
+  it('メール取り込みの全体期限も無通信の上限と requestTimeout の間に収まる', () => {
+    expect(INBOUND_EMAIL_BODY_TOTAL_TIMEOUT_MS).toBeGreaterThan(DEFAULT_BODY_IDLE_TIMEOUT_MS);
+    expect(INBOUND_EMAIL_BODY_TOTAL_TIMEOUT_MS).toBeLessThan(300_000);
+  });
+
+  it('巻き添え回避用の無通信上限は、既定より長く全体期限より短い', () => {
+    // 既定より長くないと「巻き添えを避ける」目的を果たさず、全体期限を超えると意味を持たない
+    expect(STALL_TOLERANT_BODY_IDLE_TIMEOUT_MS).toBeGreaterThan(DEFAULT_BODY_IDLE_TIMEOUT_MS);
+    expect(STALL_TOLERANT_BODY_IDLE_TIMEOUT_MS).toBeLessThan(DEFAULT_BODY_TOTAL_TIMEOUT_MS);
+  });
+
+  // **実際に保持時間を決めているのはこちら** (3 経路が明示的に使う)。全体期限より短いだけでは
+  // 119 秒まで伸ばせてしまうので、保持数が跳ねない範囲の上限も掛ける。
+  // 延ばせば保持数は「読み取り前のゲートの上限 × この値」に比例して増える
+  it('巻き添え回避用の無通信上限も、保持数が伸びすぎない範囲に収まっている', () => {
+    expect(STALL_TOLERANT_BODY_IDLE_TIMEOUT_MS).toBeLessThanOrEqual(60_000);
+  });
+
+  it('無通信の上限は、保持数が伸びすぎない範囲に収まっている', () => {
+    // 長くするほど「ヘッダだけ送る接続」の同時保持数が増える (この経路には同時保持数の
+    // 歯止めが無い)。一方で短すぎるとイベントループの停止で正規リクエストを誤って落とす。
+    // 現在の判断は 10 秒 (延長が要る経路は STALL_TOLERANT の方を明示的に使う)。
+    // 上下どちらへ大きく動かすときは根拠を添えて見直すこと
+    // 既定は「読み取り前にゲートが無い経路」にも当たるので、延長版より厳しく縛る
+    // (30 秒まで許すと、撤回した『既定ごと 30 秒へ』の変更が素通りしてしまう)
+    expect(DEFAULT_BODY_IDLE_TIMEOUT_MS).toBeGreaterThanOrEqual(5_000);
+    expect(DEFAULT_BODY_IDLE_TIMEOUT_MS).toBeLessThanOrEqual(15_000);
   });
 });
