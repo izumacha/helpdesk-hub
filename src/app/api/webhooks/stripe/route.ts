@@ -60,7 +60,14 @@ export async function POST(request: Request): Promise<NextResponse> {
     return NextResponse.json({ error: 'Stripe-Signature ヘッダが必要です' }, { status: 400 });
   }
 
-  // raw ボディを文字列で読む (Stripe の署名検証は生のリクエストボディを必要とする)
+  // raw ボディを文字列で読む (Stripe の署名検証は生のリクエストボディを必要とする)。
+  //
+  // **既知の限界: この経路にはボディサイズ上限が無い。** 未認証で到達でき、`request.text()` は
+  // 署名検証より前にボディ全体をメモリへ展開するため、`stripe-signature` ヘッダに何か値を
+  // 付けて巨大な本文を送るだけで展開させられる。同じ形の穴を持つ inbound/line・inbound/email は
+  // 少なくとも読み込み後のバイト数検査を持つが、この経路はそれも無い (最も薄い)。
+  // 塞ぎ方は `src/lib/request-body-limit.ts` の `readBodyWithinByteLimit()` へ寄せる形で、
+  // 署名検証の等価性をテストで固めたうえで 3 経路まとめて別 PR で対応する。追跡: #287
   let rawBody: string;
   try {
     rawBody = await request.text();
@@ -250,8 +257,7 @@ async function handleSubscriptionUpsert(
   const status = subscriptionObject['status'] as string | undefined;
   // items.data[0].price.id で Price ID を取得する (最初のアイテムのみ使用)
   const items = subscriptionObject['items'] as
-    | { data?: Array<{ price?: { id?: string } }> }
-    | undefined;
+    { data?: Array<{ price?: { id?: string } }> } | undefined;
   const priceId = items?.data?.[0]?.price?.id ?? '';
   // メタデータから tenantId を取得する (チェックアウト時に metadata.tenantId として設定する)
   const metadata = subscriptionObject['metadata'] as Record<string, string> | undefined;

@@ -40,7 +40,11 @@ import {
   SSO_UNAUTHENTICATED_RATE_LIMIT,
   SSO_TENANT_RATE_LIMIT,
   SSO_RATE_LIMIT_MESSAGE,
+  SSO_ACS_MAX_BODY_BYTES,
 } from '@/lib/sso-rate-limit';
+// ボディをストリームで読みつつバイト数上限で打ち切ってからフォームにする共通ヘルパー
+// (§9 リクエストサイズの上限。req.formData() を直接呼ぶとボディ全体がメモリに載る)
+import { readFormWithinByteLimit, describeBodyRejectReason } from '@/lib/request-body-limit';
 
 // SSO ハンドオフトークンの有効期限 (2 分)。ACS → コールバックの即時引き渡し専用なので短くする
 const SSO_HANDOFF_TTL_MS = 2 * 60 * 1000;
@@ -93,7 +97,11 @@ export async function POST(req: Request, { params }: Params) {
   // console.error/warn はプロセス再起動やログローテーションで失われるが、監査行は追記専用テーブルに
   // 残るため「どのテナントの ACS へ不正なリクエストが飛んだか」を後から追える。
   // /code-review ultra 指摘対応: 従来は SAMLResponse 欠落・ボディ破損での拒否 (sso-invalid) だけが
-  // 監査に残らず、プローブの形式次第で監査に写る/写らないが変わっていたギャップを解消する
+  // 監査に残らず、プローブの形式次第で監査に写る/写らないが変わっていたギャップを解消する。
+  // 既知の制約: AuthAuditLog に自由記述列は無い (PII 流入の口を作らないため) ので、監査行だけでは
+  // 「本文が無かった」のか「署名検証に落ちた」のかを区別できない。区別するにはイベント種別を
+  // 分けるしかなく、その場合は失敗イベントの書き込み予算の再分割も伴う (auth-audit.ts 参照)。
+  // サーバーログは経路ごとに出す/出さないが分かれるので、突き合わせ先として当てにはできない
   const auditRejectedAssertion = () =>
     recordAuthAudit({
       event: 'sso_assertion_rejected',
@@ -102,25 +110,37 @@ export async function POST(req: Request, { params }: Params) {
       tenantId,
     });
 
-  // POST ボディ (application/x-www-form-urlencoded) から SAMLResponse を取り出す
-  let samlResponse: string;
-  try {
-    // フォームデータをパースする
-    const form = await req.formData();
-    // SAMLResponse フィールドを取得する
-    const value = form.get('SAMLResponse');
-    // 文字列でなければ不正な応答として扱う (監査に記録してから拒否する)
-    if (typeof value !== 'string' || value.length === 0) {
-      // 認証イベント監査: SAMLResponse フィールドの欠落・空文字での試行を記録する
-      await auditRejectedAssertion();
-      return errorRedirect('sso-invalid');
-    }
-    samlResponse = value;
-  } catch {
-    // ボディが壊れている場合は不正扱い (監査に記録してから拒否する)
+  // POST ボディ (application/x-www-form-urlencoded) をサイズ上限付きで読み取る (§9)。
+  // 読めなかった理由 (サイズ超過・ストリーム断・パース失敗) は helper 側がログに残す
+  const form = await readAcsForm(req);
+
+  // 本文を取り出せなかったリクエストは、理由によらず同じ扱いにする:
+  // 監査に「検証不能なアサーション試行」として残してからログイン画面へ戻す。
+  // 理由ごとに応答や監査の有無を変えないのは、どれも「SSO 有効テナントの ACS を叩いたが
+  // 検証できる本文が無かった」という同じ事実で、外から見た区別を攻撃者に与える意味も無いため
+  // (#279 が閉じた「プローブの形式次第で監査に写る/写らないが変わる」ギャップを再び開けない)
+  if (!form) {
     await auditRejectedAssertion();
     return errorRedirect('sso-invalid');
   }
+
+  // SAMLResponse フィールドを取得する
+  const value = form.get('SAMLResponse');
+  // 文字列でなければ (フィールド欠落・ファイル添付) / 空文字なら不正な応答として扱う
+  if (typeof value !== 'string' || value.length === 0) {
+    // 認証イベント監査: SAMLResponse フィールドの欠落・空文字での試行を記録する。
+    // この分岐にサーバーログを足さないのは、監査行に載る以上の情報が無いため。
+    // 起こり得る原因は「フィールドが無い / 空だった」の 1 つだけで、監査行を見れば
+    // それと分かる。一方 readAcsForm 側は拒否理由が 4 通り (サイズ超過・時間切れ・接続断・
+    // パース失敗) あり、応答も監査行も 4 通りで同一なので、ログだけが唯一の見分けどころに
+    // なる。ログを出すかどうかは「未認証経路だから一律で出さない」ではなく
+    // 「監査行に無い情報を足せるか」で決めている (どちらの分岐もレート制限で
+    // 毎分 60 行に頭打ちになる点は同じ)
+    await auditRejectedAssertion();
+    return errorRedirect('sso-invalid');
+  }
+  // ここから先は検証対象の SAMLResponse 文字列が確実にある
+  const samlResponse = value;
 
   // 署名・条件を検証して本人のメールを取り出す
   let email: string;
@@ -243,6 +263,20 @@ export async function POST(req: Request, { params }: Params) {
       'Content-Security-Policy': "frame-ancestors 'none'",
     },
   });
+}
+
+// ACS のリクエストボディをサイズ上限付きで読み取り FormData にする。
+// 取り出せなければ null を返す (呼び出し元は理由によらず一律で監査 + sso-invalid にする)。
+// 理由の区別は呼び出し元では使わないが、運用調査のためログには書き分ける
+// (文言は describeBodyRejectReason に集約。採用するルートごとに書き写さないため)。
+async function readAcsForm(req: Request): Promise<FormData | null> {
+  // ボディをサイズ上限つきで読み取ってフォームにする (超過・時間切れ・断・パース失敗を判別して返す)
+  const result = await readFormWithinByteLimit(req, SSO_ACS_MAX_BODY_BYTES);
+  // 取り出せたフォームをそのまま返す
+  if (result.ok) return result.form;
+  // §6「エラーを握り潰さない」: どの理由で拒否したかをログに残してから null を返す
+  console.warn(`[sso-acs] ${describeBodyRejectReason(result.reason, SSO_ACS_MAX_BODY_BYTES)}`);
+  return null;
 }
 
 // SSO 認証後に表示する「ログイン続行の確認」ページを描画する。
