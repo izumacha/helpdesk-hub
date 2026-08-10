@@ -36,6 +36,13 @@ export const MAGIC_LINK_REQUEST_GLOBAL_RATE_LIMIT = { limit: 30, windowMs: 60_00
 // 「テナント/ユーザーに紐づく前の固定キー制限」)。
 export const MAGIC_LINK_CALLBACK_RATE_LIMIT = { limit: 60, windowMs: 60_000 } as const;
 
+// コールバック (POST /api/auth/magic-link/callback) が受け付けるリクエストボディの最大バイト数 (64KB)。
+// このフォームが運ぶのはトークン 1 つ (43 文字の base64url) だけなので 64KB でも桁違いに余裕がある。
+// 上限を置くのは、この経路が未認証で到達でき、フォームのパースがボディ全体をメモリに載せるため
+// (§9)。レート制限は毎分のリクエスト数しか数えないので、1 本あたりのサイズは別に縛る必要がある。
+// SSO ACS の SSO_ACS_MAX_BODY_BYTES と同じ考え方で、実際の読み取りは request-body-limit.ts が担う
+export const MAGIC_LINK_CALLBACK_MAX_BODY_BYTES = 64 * 1024;
+
 // 32 byte (256 bit) のランダム値を URL 安全な base64url 文字列にして返す
 // base64url なので URL に直接入れても percent-encode が要らない
 export function generateMagicLinkToken(): string {

@@ -150,7 +150,18 @@ async function readInboundFields(req: Request): Promise<InboundFields> {
   ) {
     // ボディをバイト列として読み取る。req.formData() は生バイト数を隠蔽するため、
     // 先に arrayBuffer() で読んでサイズを確認してから FormData にパースする。
-    // chunked 転送など Content-Length なしで大きなボディを送り込む攻撃への対策 (§9)。
+    //
+    // **既知の限界: これは chunked 転送への対策になっていない。** `arrayBuffer()` は上限に
+    // 関係なくボディ全体をメモリへ展開してから返すため、ここでバイト数を測った時点で
+    // すでに展開は済んでいる。Content-Length を省略すれば手前のヘッダ検査もすり抜ける
+    // (詳細と実測値は `src/lib/request-body-limit.ts` の冒頭)。
+    // 塞ぐには同モジュールの `readBodyWithinByteLimit()` へ寄せる。技術的な障害は無い
+    // (同関数は受信した生バイト列をそのまま返し、この経路は既に「バイト列から Request を
+    //  組み直して formData() する」形になっているため、置き換え先はほぼそのまま使える)。
+    // 本 PR で着手しないのは、署名検証を通る経路の読み取り方法を変える以上、
+    // 「移行前後で署名検証の結果が一致する」ことをテストで固めてから入れるべきで、
+    // 同じ形の穴を持つ inbound/line・webhooks/stripe と併せて 1 本の PR にまとめるため。
+    // 追跡: #287
     const rawBuffer = await req.arrayBuffer();
     // バイト列の実サイズが上限を超えていれば専用エラーを投げる (POST ハンドラが 413 にマップする)
     if (rawBuffer.byteLength > MAX_INBOUND_BODY_BYTES) {
@@ -398,7 +409,7 @@ export async function POST(req: Request) {
     // ボディを読んでフィールドを取り出す。BodyTooLargeError または汎用 Error を投げることがある
     fields = await readInboundFields(req);
   } catch (err) {
-    // BodyTooLargeError は 413 にマップする (Content-Length ヘッダなし chunked 転送のサイズ超過)
+    // BodyTooLargeError は 413 にマップする (読み込み後の実バイト数が上限を超えた場合)
     if (err instanceof BodyTooLargeError) {
       // サイズ超過はサーバーログに残す (外部には詳細を出さない §9)
       console.warn('[POST /api/inbound/email] request body too large (actual)');
