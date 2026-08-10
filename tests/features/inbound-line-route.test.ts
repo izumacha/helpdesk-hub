@@ -977,7 +977,8 @@ describe('POST /api/inbound/line のリクエストサイズ上限と署名検�
     expect(res.status).toBe(413);
     // 文言がこの経路の文言表の 'too-large' と一致する (表の項目を入れ替える変更を検出する)。
     // 「ステータスで文言を選ぶ実装」への退行は too-large では検出できない (どちらも同じ文字列)。
-    // それは tests/webhook-body-reject-messages.test.ts の 'timeout' が受け持つ
+    // それは tests/webhook-body-reject-messages.test.ts の
+    // 「各理由の文言がそのまま応答本文になる」が受け持つ
     expect(await res.clone().json()).toEqual({ error: 'リクエストが大きすぎます' });
     // 署名は正しいので、上限が無ければ起票まで進んでしまう (上限撤去時にここで落ちる)
     expect(store.tickets.size).toBe(0);

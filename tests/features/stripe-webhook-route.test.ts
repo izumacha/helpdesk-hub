@@ -432,7 +432,8 @@ describe('POST /api/webhooks/stripe のリクエストサイズ上限', () => {
     expect(res.status).toBe(413);
     // 文言がこの経路の文言表の 'too-large' と一致する (表の項目を入れ替える変更を検出する)。
     // 「ステータスで文言を選ぶ実装」への退行は too-large では検出できない (どちらも同じ文字列)。
-    // それは tests/webhook-body-reject-messages.test.ts の 'timeout' が受け持つ
+    // それは tests/webhook-body-reject-messages.test.ts の
+    // 「各理由の文言がそのまま応答本文になる」が受け持つ
     expect(await res.clone().json()).toEqual({ error: 'リクエストボディが大きすぎます' });
     // 署名検証まで進んでいない (上限を撤去するとここまで届いてしまう)
     expect(constructEventSpy).not.toHaveBeenCalled();

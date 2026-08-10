@@ -29,9 +29,10 @@ const TABLES = [
 ] as const;
 
 describe('受信 Webhook の拒否文言', () => {
-  // **この 1 件がステータス 2 値への退行を捕まえる本体。**
-  // timeout と unreadable はどちらも 400 なので、ステータスで文言を選ぶ実装では必ず同じ
-  // 文字列になる。表の側で別々にしておき、ヘルパーがそれを理由で引けることを確かめる
+  // 表の側の前提: timeout と unreadable はどちらも 400 なので、ステータスで文言を選ぶ実装では
+  // 必ず同じ文字列になる。まず表が別々の文言を持っていることを押さえる。
+  // (この 1 件は表だけを見るのでヘルパーの実装には反応しない。退行を捕まえるのは下の
+  //  「各理由の文言がそのまま応答本文になる」の方 — 退行を注入して実際に確認済み)
   it.each(TABLES)('%s: timeout と unreadable に別々の文言を持つ', (_name, messages) => {
     expect(messages.timeout).not.toBe(messages.unreadable);
   });

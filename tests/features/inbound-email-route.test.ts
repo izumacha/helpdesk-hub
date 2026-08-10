@@ -1313,10 +1313,8 @@ describe('POST /api/inbound/email のリクエストサイズ上限', () => {
   // 移行前は console.error(..., err) に undici の解析エラーが出ており、それが消えると
   // プロバイダ側の不具合 (boundary の付け方が変わった等) を運用者が切り分けられなくなる (§6)。
   //
-  // このテストは BodyRejectedError が原因を運べているかの端から端までの確認でもある。
-  // `cause` をクラスフィールドとして宣言し直すと、target: ES2022 では super() の後に
-  // undefined で上書きされてログから原因が消えるが、typecheck も lint も通ってしまうため、
-  // それを捕まえられるのはここだけ
+  // 読み取りの失敗は値で返す形にしてあるので、原因は readFormWithinByteLimit の戻り値から
+  // そのまま POST 側へ渡る。この端から端までの経路が切れていないことをここで押さえる
   it('壊れた multipart 本文は 400 を返し、原因の例外をログに残す', async () => {
     // console.warn を差し替えて、何が出たかを観測する
     const warnCalls: unknown[][] = [];
@@ -1354,7 +1352,7 @@ describe('POST /api/inbound/email のリクエストサイズ上限', () => {
     // 解析できない本文に対する文言が、この経路の文言表の 'unparsable' と一致する。
     // 注: これだけでは「ステータスで文言を選ぶ実装」への退行は検出できない (unparsable は
     // どちらの実装でも同じ文字列になる)。その退行を捕まえるのは
-    // tests/webhook-body-reject-messages.test.ts の 'timeout' の表明
+    // tests/webhook-body-reject-messages.test.ts の「各理由の文言がそのまま応答本文になる」
     expect(await res.json()).toEqual({ error: 'リクエストの形式が正しくありません' });
   });
 
