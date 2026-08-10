@@ -71,7 +71,7 @@ export async function POST(request: Request): Promise<NextResponse> {
   // raw ボディをサイズ上限つきで読む (Stripe の署名検証は生のリクエストボディを必要とする)。
   // 未認証で到達できる経路なので、`stripe-signature` に適当な値を付けた巨大ボディでメモリを
   // 枯渇させられないよう、署名検証より前に上限で打ち切る (§9 / #287)。
-  // 得られる文字列は移行前の `request.text()` と完全に一致する (根拠は readTextWithinByteLimit)
+  // 得られる文字列は移行前の `request.text()` と一致する (差異と根拠は readTextWithinByteLimit)
   const bodyResult = await readTextWithinByteLimit(request, STRIPE_WEBHOOK_MAX_BODY_BYTES);
   if (!bodyResult.ok) {
     // どの理由で拒否したかはサーバーログにだけ残す (§6 エラーを握り潰さない)

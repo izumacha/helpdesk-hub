@@ -260,7 +260,7 @@ async function readInboundFields(req: Request): Promise<InboundFields> {
   // multipart/form-data を使う。運用では JSON パスを本番プロバイダに開かないこと (§9)。
   // req.json() / req.text() はボディ全体をメモリに乗せてから返すため、上限つきの
   // ストリーム読み取りで取得する (超えた時点で打ち切られる。#287)。
-  // 得られる文字列は移行前の req.text() と完全に一致する (根拠は readTextWithinByteLimit)。
+  // 得られる文字列は移行前の req.text() と一致する (差異と根拠は readTextWithinByteLimit)。
   // 制限時間を明示するのは multipart 側と同じ理由 (既定の 120 秒では大容量メールを送り切れない)
   const bodyResult = await readTextWithinByteLimit(
     req,

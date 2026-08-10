@@ -225,7 +225,7 @@ export async function POST(req: Request) {
   // (署名検証は JSON.parse 前の生テキストに対して行う必要がある)。
   // Content-Length の申告・実際の累計バイト数の両方を見るので、ヘッダを省いた chunked 転送でも
   // 上限を超えた時点で読み取りが打ち切られる (§9 DoS 対策 / #287)。
-  // 得られる文字列は移行前の `req.text()` と完全に一致する (根拠は readTextWithinByteLimit)
+  // 得られる文字列は移行前の `req.text()` と一致する (差異と根拠は readTextWithinByteLimit)
   const bodyResult = await readTextWithinByteLimit(req, LINE_WEBHOOK_MAX_BODY_BYTES);
   if (!bodyResult.ok) {
     // どの理由 (サイズ超過 / だらだら送り / 接続断) で拒否したかはサーバーログにだけ残す
