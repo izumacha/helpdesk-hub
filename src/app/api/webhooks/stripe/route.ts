@@ -29,11 +29,9 @@ import type { SubscriptionPlan } from '@/domain/types';
 // §4.3 フォローアップ: 設定変更監査ログへの記録を共通化するヘルパー
 import { recordSettingsAudit } from '@/lib/settings-audit';
 // リクエストボディをサイズ上限つきで読み取るヘルパーと、拒否時の応答を組み立てるヘルパー (#287)
-import {
-  readTextWithinByteLimit,
-  bodyRejectResponse,
-  type BodyRejectMessages,
-} from '@/lib/request-body-limit';
+import { readTextWithinByteLimit } from '@/lib/request-body-limit';
+// 拒否時のログ・ステータス・文言をまとめて組み立てるヘルパー (ルート層の関心事なので別モジュール)
+import { bodyRejectResponse, type BodyRejectMessages } from '@/lib/body-reject-response';
 // この経路が受け付けるボディの最大バイト数 (route とテストが同じ定義を参照する)
 import { STRIPE_WEBHOOK_MAX_BODY_BYTES } from '@/lib/webhook-body-limits';
 

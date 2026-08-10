@@ -58,9 +58,6 @@
 // 読むようになった時点でここへ寄せる対象になる。
 // **新しく未認証 POST 経路を足すときは、ここへ寄せて上限を必ず設けること。**
 
-// 拒否時の JSON レスポンスを組み立てるために使う (bodyRejectResponse)
-import { NextResponse } from 'next/server';
-
 // チャンクが 1 つも届かないまま許容する最大時間 (slowloris 対策その 1)。
 //
 // 「送るのをやめた接続」をここで落とす。読み取り全体の期限**だけ**にしないのは、全体を
@@ -108,10 +105,20 @@ type BoundedTextResult =
 // フォームとしての読み取り結果 (バイト列の結果に「パースできなかった」を足したもの)
 type BoundedFormResult =
   | { ok: true; form: FormData } // 上限内で読み取れてフォームとしてパースできた
-  | { ok: false; reason: 'too-large' | 'timeout' | 'unreadable' } // 本文を読み切れなかった
-  // フォームとして解析できなかった。**元の例外を必ず添えて返す**: 解析失敗の原因
-  // (boundary の不正・パートの途中切れ・未知の transfer encoding) はこの例外にしか無く、
-  // ここで握り潰すと運用者が「なぜ取り込めないのか」を切り分けられなくなる (§6)
+  // 本文を読み切れなかった。cause は常に undefined だが**キー自体は生やしておく**:
+  // こうしておくと呼び出し元が reason で絞り込まずに `result.cause` をそのままログへ渡せる
+  // (絞り込みの三項演算子を採用ルートごとに書き写さずに済む。§6 DRY)
+  | { ok: false; reason: 'too-large' | 'timeout' | 'unreadable'; cause?: undefined }
+  // フォームとして解析できなかった。**元の例外を捨てずに添えて返す** (§6 エラーを握り潰さない)。
+  //
+  // ただし今の undici から得られる情報は限られる (Node v22 で実測): multipart の失敗は
+  // boundary 違い・パートの途中切れのいずれも `TypeError: Failed to parse body as FormData.` に
+  // 潰れ、`cause` チェーンも付かない。理由まで判別できるのは Content-Type が
+  // multipart / urlencoded のどちらでもない場合だけで、そのときは専用の文言が返る。
+  // それでも捨てずに運ぶのは、(a) スタックから「どの呼び出しで落ちたか」は分かる、
+  // (b) 上流が将来詳細を載せたらそのまま活きる、(c) 握り潰した実装だと後から足す動機が
+  // 生まれない、の 3 点による。**この 1 行以上の切り分けを期待して上限値やパーサを
+  // 設計しないこと。**
   | { ok: false; reason: 'unparsable'; cause: unknown };
 
 // 本文を取り出せなかった理由。呼び出し元がログ文言の型を自前で導出しなくて済むよう公開する
@@ -154,45 +161,29 @@ export function bodyRejectStatus(reason: BodyRejectReason): 413 | 400 {
   return reason === 'too-large' ? 413 : 400;
 }
 
-// 拒否時に返す文言の一覧。**理由ごとに 1 つずつ決める**のが要点 (下の bodyRejectResponse を参照)
-export type BodyRejectMessages = Readonly<Record<BodyRejectReason, string>>;
-
 /**
- * ボディを読めなかったときの「サーバーログ 1 行 ＋ クライアントへの JSON レスポンス」をまとめて作る。
+ * 拒否理由 (と、あれば原因の例外) をサーバーログへ 1 行で残す。
  *
- * 本モジュールを採用するルートは例外なく「理由をログに出す → ステータスを引く → 文言を選ぶ →
- * NextResponse.json で返す」の 4 手を踏むため、3 経路目になった時点でここへ集約した (§6 DRY)。
+ * 本モジュールを使う 5 経路すべてが「拒否したらログに 1 行残す」を必要とし、うち 3 経路は
+ * さらに JSON 応答を返す (`bodyRejectResponse`)、2 経路はリダイレクトするだけ、と後段が
+ * 分かれる。**ログの出し方だけは 5 経路で揃える**ためにここへ置く (§6 DRY)。
  *
- * **文言は `status` ではなく `reason` で引く。** `status === 413 ? A : B` と書くと、
- * 拒否理由がステータスの 2 値へ再び潰れてしまい、将来 `timeout → 408` のような 3 つ目の
- * ステータスを `bodyRejectStatus` に足したとき、408 に「形式が正しくありません」という
- * 噛み合わない文言が黙って組み合わさる (Stripe の配信ログを見た運用者が、サイズ超過や
- * だらだら送りを接続断だと誤読する)。`Record<BodyRejectReason, string>` を必須にしておけば、
- * 理由を増やしたときはキー不足で typecheck が落ち、文言の決め忘れが機械的に防げる。
- *
+ * @param logPrefix ログ行の先頭に付けるルート識別子 (例: 'sso-acs')
  * @param reason 読み取りが失敗した理由
- * @param maxBytes 適用していた上限バイト数 (ログの文言に載せる)
- * @param options ログの接頭辞・理由ごとの文言・(あれば) 原因の例外
+ * @param maxBytes 適用していた上限バイト数 (サイズ超過の文言に載せる)
+ * @param cause 原因の例外 (フォーム解析に失敗したときだけ入る)
  */
-export function bodyRejectResponse(
+export function logBodyReject(
+  logPrefix: string,
   reason: BodyRejectReason,
   maxBytes: number,
-  options: {
-    logPrefix: string; // ログ行の先頭に付けるルート識別子 (例: 'POST /api/inbound/line')
-    messages: BodyRejectMessages; // 理由ごとにクライアントへ返す日本語の文言
-    cause?: unknown; // 原因の例外 (readFormWithinByteLimit の unparsable でのみ渡る)
-  },
-): NextResponse {
+  cause?: unknown,
+): void {
   // 理由の説明文を組み立てる (本文の中身は含まない。§9 PII をログに漏らさない)
   const detail = describeBodyRejectReason(reason, maxBytes);
-  // 原因の例外があれば一緒に出す (無いときに undefined を渡すと "undefined" が行末に出るため分岐する)
-  if (options.cause === undefined) console.warn(`[${options.logPrefix}] ${detail}`);
-  else console.warn(`[${options.logPrefix}] ${detail}`, options.cause);
-  // 理由に対応する文言とステータスで JSON を返す (外部には理由の詳細を出さない)
-  return NextResponse.json(
-    { error: options.messages[reason] },
-    { status: bodyRejectStatus(reason) },
-  );
+  // 原因の例外があれば同じ行に添える (無いときに undefined を渡すと行末に "undefined" が出る)
+  if (cause === undefined) console.warn(`[${logPrefix}] ${detail}`);
+  else console.warn(`[${logPrefix}] ${detail}`, cause);
 }
 
 /**

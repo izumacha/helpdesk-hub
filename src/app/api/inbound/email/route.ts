@@ -87,10 +87,10 @@ import { recordQuarantineSafe } from '@/lib/quarantine';
 import {
   readTextWithinByteLimit,
   readFormWithinByteLimit,
-  bodyRejectResponse,
-  type BodyRejectMessages,
   type BodyRejectReason,
 } from '@/lib/request-body-limit';
+// 拒否時のログ・ステータス・文言をまとめて組み立てるヘルパー (ルート層の関心事なので別モジュール)
+import { bodyRejectResponse, type BodyRejectMessages } from '@/lib/body-reject-response';
 // この経路が受け付けるボディの最大バイト数と読み取りの制限時間
 // (route とテストが同じ定義を参照する)
 import {
@@ -119,30 +119,31 @@ const INBOUND_RATE_LIMIT = { limit: 120, windowMs: 60_000 } as const;
 class BodyRejectedError extends Error {
   // 読み取りが失敗した理由 (POST ハンドラがステータスと文言の決定に使う)
   readonly reason: BodyRejectReason;
-  // 解析失敗の原因になった例外 (フォーム解析の失敗時のみ入る。それ以外は undefined)。
-  // /code-review ultra 指摘対応: これを運ばないと、移行前は console.error(..., err) に出ていた
-  // multipart 解析失敗の原因 (boundary 不正・パートの途中切れ等) がログから消える (§6)
-  readonly cause: unknown;
 
   constructor(reason: BodyRejectReason, cause?: unknown) {
     // ログの本文は POST ハンドラ側の共通ヘルパーが組み立てるため、ここでは理由だけを名乗る
-    // (message にも理由が残っていないと、想定外の経路で握られたときに何も分からなくなる)
-    super(`リクエストボディを読み取れませんでした (${reason})`);
+    // (message にも理由が残っていないと、想定外の経路で握られたときに何も分からなくなる)。
+    //
+    // 原因の例外は **`cause` フィールドを自前で宣言せず** ES2022 の Error 標準オプションに載せる。
+    // 宣言してしまうと `target: ES2022` (= useDefineForClassFields が既定 true) では
+    // クラスフィールドの定義が super() の後に走って `cause` を undefined で上書きしてしまい、
+    // typecheck も lint も通ったまま原因だけが静かに消える (実測で確認済み)。
+    super(`リクエストボディを読み取れませんでした (${reason})`, { cause });
     // this.name を明示設定する。設定しないと err.name が 'Error' になり構造化ロガーで誤分類される
     // (RateLimitError が this.name を設定しているのと同じ理由 - src/lib/rate-limit.ts:37 参照)
     this.name = 'BodyRejectedError';
     // 理由を保持する
     this.reason = reason;
-    // 原因の例外を保持する (無ければ undefined のまま)
-    this.cause = cause;
   }
 }
 
 // ボディを読めなかったときにクライアントへ返す文言 (拒否理由ごとに 1 つずつ決める)。
-// この経路だけ multipart を読むため 'unparsable' が実際に起こりうる
+// この経路だけ multipart を読むため 'unparsable' が実際に起こりうる。
+// 「本文が届き切らなかった (timeout)」と「届いたが壊れていた (unreadable / unparsable)」は
+// プロバイダ側の調査先が変わる (前者は送信の中断、後者は本文の組み立て) ので文言を分ける
 const INBOUND_EMAIL_BODY_REJECT_MESSAGES: BodyRejectMessages = {
   'too-large': 'メールが大きすぎます',
-  timeout: 'リクエストの形式が正しくありません',
+  timeout: 'メールの送信が途中で止まりました',
   unreadable: 'リクエストの形式が正しくありません',
   unparsable: 'リクエストの形式が正しくありません',
 };
@@ -203,13 +204,8 @@ async function readInboundFields(req: Request): Promise<InboundFields> {
     );
     // 読み取れなかった理由と (解析失敗なら) その原因を持つ例外にして投げる。
     // ステータス・文言・ログは POST 側の共通ヘルパーがまとめて決める (ここで二重にログを出さない)
-    if (!formResult.ok) {
-      // 'unparsable' のときだけ元の例外が付く。他の理由では cause は無い
-      throw new BodyRejectedError(
-        formResult.reason,
-        formResult.reason === 'unparsable' ? formResult.cause : undefined,
-      );
-    }
+    // 'unparsable' のときだけ cause に元の例外が入る (他の理由では undefined)
+    if (!formResult.ok) throw new BodyRejectedError(formResult.reason, formResult.cause);
     // 上限内で読み取れてパースできたフォーム
     const form = formResult.form;
     // SendGrid は実際の RCPT を envelope (JSON 文字列) に入れるため、あれば優先的に使う

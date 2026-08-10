@@ -1276,4 +1276,46 @@ describe('POST /api/inbound/email のリクエストサイズ上限', () => {
     expect(store.tickets.size).toBe(1);
     expect(Array.from(store.tickets.values())[0].title).toBe(VALID_EMAIL.subject);
   });
+
+  // 壊れた multipart を受けたとき、400 を返すだけでなく **原因の例外をサーバーログに残す**。
+  // 移行前は console.error(..., err) に undici の解析エラーが出ており、それが消えると
+  // プロバイダ側の不具合 (boundary の付け方が変わった等) を運用者が切り分けられなくなる (§6)。
+  //
+  // このテストは BodyRejectedError が原因を運べているかの端から端までの確認でもある。
+  // `cause` をクラスフィールドとして宣言し直すと、target: ES2022 では super() の後に
+  // undefined で上書きされてログから原因が消えるが、typecheck も lint も通ってしまうため、
+  // それを捕まえられるのはここだけ
+  it('壊れた multipart 本文は 400 を返し、原因の例外をログに残す', async () => {
+    // console.warn を差し替えて、何が出たかを観測する
+    const warnCalls: unknown[][] = [];
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation((...args: unknown[]) => {
+      warnCalls.push(args);
+    });
+    try {
+      const { POST } = await import('@/app/api/inbound/email/route');
+      const res = await POST(
+        new Request('http://localhost/api/inbound/email', {
+          method: 'POST',
+          headers: {
+            // boundary は宣言しているが、本文のパートヘッダが途中で切れている
+            'content-type': 'multipart/form-data; boundary=X',
+            'x-inbound-secret': SECRET,
+          },
+          body: '--X\r\nContent-Dispo',
+        }),
+      );
+      // 解析できない本文は 400 (サイズ超過ではないので 413 にはしない)
+      expect(res.status).toBe(400);
+      // 起票まで進んでいない
+      expect(store.tickets.size).toBe(0);
+    } finally {
+      // 例外で抜けてもモックを必ず戻す (残すと後続テストが警告を飲み込む)
+      warnSpy.mockRestore();
+    }
+    // 説明文と一緒に原因の例外が出ている (第 2 引数が落ちていると cause が消えている)
+    const rejectLog = warnCalls.find((args) => String(args[0]).includes('/api/inbound/email'));
+    expect(rejectLog).toBeDefined();
+    expect(rejectLog).toHaveLength(2);
+    expect(rejectLog![1]).toBeInstanceOf(TypeError);
+  });
 });

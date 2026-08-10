@@ -68,10 +68,7 @@ export function getStripeWebhookSecret(): string {
 // Stripe Webhook の customer.subscription.updated / deleted イベントで使用する。
 // 戻り値に 'enterprise' は含めない: Enterprise は個別見積で Stripe チェックアウトを経由せず
 // 運用が手動設定するため、Stripe イベント経由でこのプランへ昇格/降格させることはない。
-export function stripeStatusToPlan(
-  status: string,
-  priceId: string,
-): 'free' | 'standard' | 'pro' {
+export function stripeStatusToPlan(status: string, priceId: string): 'free' | 'standard' | 'pro' {
   // サブスク status が有効 (active | trialing) のときだけプランを昇格する
   if (status !== 'active' && status !== 'trialing') {
     // キャンセル・支払い遅延 (past_due | canceled 等) は free に降格

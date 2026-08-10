@@ -114,7 +114,8 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
       // 前回リフレッシュ時刻が未記録 (旧 JWT) または 30 分以上経過していれば DB を再確認する。
       // JWT 型が Record<string,unknown> を継承するため、number 型として明示的にキャストする
       const lastRefreshed = (token.roleRefreshedAt as number | undefined) ?? 0;
-      const needsRefresh = lastRefreshed === 0 || Date.now() - lastRefreshed > ROLE_REFRESH_INTERVAL_MS;
+      const needsRefresh =
+        lastRefreshed === 0 || Date.now() - lastRefreshed > ROLE_REFRESH_INTERVAL_MS;
       if (needsRefresh && token.id) {
         // DB からユーザーを取得して最新のロール・テナントを反映する
         const fresh = await repos.users.findById(token.id as string);

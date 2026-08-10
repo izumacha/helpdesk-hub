@@ -99,11 +99,9 @@ import { resolveAppBaseUrl } from '@/lib/app-url';
 import { buildTicketUrl } from '@/lib/ticket-email';
 import { formatTicketRef } from '@/lib/ticket-ref';
 // リクエストボディをサイズ上限つきで読み取るヘルパーと、拒否時の応答を組み立てるヘルパー (#287)
-import {
-  readTextWithinByteLimit,
-  bodyRejectResponse,
-  type BodyRejectMessages,
-} from '@/lib/request-body-limit';
+import { readTextWithinByteLimit } from '@/lib/request-body-limit';
+// 拒否時のログ・ステータス・文言をまとめて組み立てるヘルパー (ルート層の関心事なので別モジュール)
+import { bodyRejectResponse, type BodyRejectMessages } from '@/lib/body-reject-response';
 // この経路が受け付けるボディの最大バイト数 (route とテストが同じ定義を参照する)
 import { LINE_WEBHOOK_MAX_BODY_BYTES } from '@/lib/webhook-body-limits';
 
@@ -112,7 +110,7 @@ import { LINE_WEBHOOK_MAX_BODY_BYTES } from '@/lib/webhook-body-limits';
 // 文言で区別できるようにしておく
 const LINE_BODY_REJECT_MESSAGES: BodyRejectMessages = {
   'too-large': 'リクエストが大きすぎます',
-  timeout: 'リクエストの形式が正しくありません',
+  timeout: 'リクエストの送信が途中で止まりました',
   unreadable: 'リクエストの形式が正しくありません',
   unparsable: 'リクエストの形式が正しくありません', // この経路はフォームを読まないので実際には起きない
 };

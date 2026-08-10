@@ -46,7 +46,7 @@ import {
 } from '@/lib/magic-link';
 // ボディをストリームで読みつつバイト数上限で打ち切ってからフォームにする共通ヘルパー
 // (§9 リクエストサイズの上限。SSO ACS と同じものを使う)
-import { readFormWithinByteLimit, describeBodyRejectReason } from '@/lib/request-body-limit';
+import { readFormWithinByteLimit, logBodyReject } from '@/lib/request-body-limit';
 // Route Handler 向け共通レート制限ラッパー (inbound-email/inbound-line/sso-acs と共有)
 import { checkRouteRateLimit } from '@/lib/route-rate-limit';
 // 同一オリジン検証ヘルパー (POST /api/tickets・POST /api/tickets/[id]/comments と共有。
@@ -191,12 +191,13 @@ export async function POST(request: Request) {
   const formResult = await readFormWithinByteLimit(request, MAGIC_LINK_CALLBACK_MAX_BODY_BYTES);
   // 本文を取り出せなかったリクエストは、理由によらずトークン無しと同じ扱いにする
   if (!formResult.ok) {
-    // §6「エラーを握り潰さない」: どの理由で拒否したかをログに残す (本文の中身は出さない §9)
-    console.warn(
-      `[magic-link-callback] ${describeBodyRejectReason(
-        formResult.reason,
-        MAGIC_LINK_CALLBACK_MAX_BODY_BYTES,
-      )}`,
+    // §6「エラーを握り潰さない」: どの理由で拒否したかを (解析失敗なら原因の例外も添えて)
+    // ログに残す (本文の中身は出さない §9)
+    logBodyReject(
+      'magic-link-callback',
+      formResult.reason,
+      MAGIC_LINK_CALLBACK_MAX_BODY_BYTES,
+      formResult.cause,
     );
     // フォームとして解釈できない場合はトークン無しと同じ扱いにする
     redirect('/login?error=magic-link-invalid');

@@ -44,7 +44,7 @@ import {
 } from '@/lib/sso-rate-limit';
 // ボディをストリームで読みつつバイト数上限で打ち切ってからフォームにする共通ヘルパー
 // (§9 リクエストサイズの上限。req.formData() を直接呼ぶとボディ全体がメモリに載る)
-import { readFormWithinByteLimit, describeBodyRejectReason } from '@/lib/request-body-limit';
+import { readFormWithinByteLimit, logBodyReject } from '@/lib/request-body-limit';
 
 // SSO ハンドオフトークンの有効期限 (2 分)。ACS → コールバックの即時引き渡し専用なので短くする
 const SSO_HANDOFF_TTL_MS = 2 * 60 * 1000;
@@ -274,8 +274,9 @@ async function readAcsForm(req: Request): Promise<FormData | null> {
   const result = await readFormWithinByteLimit(req, SSO_ACS_MAX_BODY_BYTES);
   // 取り出せたフォームをそのまま返す
   if (result.ok) return result.form;
-  // §6「エラーを握り潰さない」: どの理由で拒否したかをログに残してから null を返す
-  console.warn(`[sso-acs] ${describeBodyRejectReason(result.reason, SSO_ACS_MAX_BODY_BYTES)}`);
+  // §6「エラーを握り潰さない」: どの理由で拒否したかを (解析失敗なら原因の例外も添えて)
+  // ログに残してから null を返す
+  logBodyReject('sso-acs', result.reason, SSO_ACS_MAX_BODY_BYTES, result.cause);
   return null;
 }
 
