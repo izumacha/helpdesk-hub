@@ -223,9 +223,13 @@ describe('readBodyWithinByteLimit', () => {
   // 送ってくる正規の利用者 (SSO は利用者のブラウザから POST される) まで巻き添えで
   // 落ちてしまう。無通信時間で測っているからこそ、遅くても送り続けていれば通る
   it('無通信の許容時間より長くかかっても、送り続けていれば読み切れる', async () => {
-    // 1 チャンクあたりの待ち時間 (無通信の許容時間より十分に短い)
+    // 1 チャンクあたりの待ち時間。**無通信の許容時間に対して十分な余裕を取る** —
+    // setTimeout が保証するのは下限だけなので、CI で 120 ファイルを並列に回している最中に
+    // GC やスケジューラの遅延で 1 回でも許容時間を超えると、無関係な変更で赤くなる
     const chunkDelayMs = 20;
-    // 送るチャンク数。全体では chunkDelayMs * 5 = 100ms かかり、許容時間 50ms を上回る
+    // 送るチャンク数。全体では chunkDelayMs * 5 = 100ms かかり、無通信の許容時間 (下で 500ms を
+    // 渡す) より長い = 「全体の所要時間で測っていない」ことがこの 1 件で言える。
+    // 1 チャンクあたりの間隔 (20ms) に対しては 25 倍の余裕があるので、遅延には強い
     const chunkCount = 5;
     // 送信済みチャンク数
     let sent = 0;
@@ -250,7 +254,7 @@ describe('readBodyWithinByteLimit', () => {
     } as RequestInit & { duplex: 'half' });
 
     // 無通信の許容時間 (50ms) < 全体の所要時間 (約 100ms)、かつ全体期限 (5s) には余裕がある条件で読む
-    const result = await readBodyWithinByteLimit(req, LIMIT, 50, 5_000);
+    const result = await readBodyWithinByteLimit(req, LIMIT, 500, 5_000);
     // 全体期限「だけ」で打ち切る実装ならここで timeout になり失敗する
     expect(result.ok).toBe(true);
     // 送ったバイトはすべて読み取れている

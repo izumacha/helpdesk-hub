@@ -259,7 +259,7 @@ async function readInboundFields(req: Request): Promise<InboundReadResult> {
   // req.json() / req.text() はボディ全体をメモリに乗せてから返すため、上限つきの
   // ストリーム読み取りで取得する (超えた時点で打ち切られる。#287)。
   // 得られる文字列は移行前の req.text() と一致する (差異と根拠は readTextWithinByteLimit)。
-  // 制限時間の渡し方は multipart 側と同じ (全体期限だけこの経路の値、無通信は共有の既定)
+  // 制限時間の渡し方は multipart 側と同じ (全体期限はこの経路の値、無通信は延ばした方)
   const bodyResult = await readTextWithinByteLimit(
     req,
     INBOUND_EMAIL_MAX_BODY_BYTES,
