@@ -76,10 +76,12 @@ Server Actions (`'use server'`) を使用。クライアントから直接呼び
 | ロール | チケット閲覧 | チケット更新 | エスカレーション | FAQ管理 | 監査ログ (`/audit`) | 隔離一覧 (`/quarantine`) | テナント設定 (`/settings`) |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | requester | 自分のみ | 不可 | 不可 | 不可 | 不可 | 不可 | 不可 |
-| agent | 全件 | 可 | 可 | 可 | 不可 | 不可 | 不可 |
-| admin | 全件 | 可 | 可 | 可 | 可※ | 可 | 可 |
+| agent | 全件 | 可 | 可※2 | 可 | 不可 | 不可 | 不可 |
+| admin | 全件 | 可 | 可※2 | 可 | 可※1 | 可 | 可 |
 
-※ `/audit` はロールに加えて**課金プランでもゲート**され、Pro / Enterprise プランのテナントのみ利用可能（`src/lib/plan-guard.ts` の `isAuditLogAllowed`）。`/quarantine` には意図的にプランゲートを設けない（Free プランでのプランゲート起因の隔離を admin 自身が確認できる必要があるため）。
+※1 `/audit` はロールに加えて**課金プランでもゲート**され、Pro / Enterprise プランのテナントのみ利用可能（`src/lib/plan-guard.ts` の `isAuditLogAllowed`）。`/quarantine` には意図的にプランゲートを設けない（Free プランでのプランゲート起因の隔離を admin 自身が確認できる必要があるため）。
+
+※2 エスカレーションはロールに加えて**テナントの動作モードでもゲート**され、Pro モードのみ利用可能（Lite モードでは `escalateTicket` がサーバ側で拒否する。`src/features/tickets/actions/update-ticket.ts`）。FAQ 管理は Lite でも利用可能（呼称が「よくある質問」に変わる）。
 
 - チケット系の権限は `isAgent(role)`（`src/lib/role.ts`）で判定し、agent と admin を同等に扱う。
 - admin 専用画面（`/audit` / `/quarantine` / `/settings`）は例外的に `role === 'admin'` の直接比較でゲートする。
