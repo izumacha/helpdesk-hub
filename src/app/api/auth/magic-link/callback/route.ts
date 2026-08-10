@@ -40,7 +40,13 @@ import { redirect } from 'next/navigation';
 // HTML に外部由来文字列を安全に差し込むためのエスケープ関数 (XSS 対策)
 import { escapeHtml } from '@/lib/html-escape';
 // トークン消費 (POST) 側の固定キーレート制限値 (監査で発見したギャップ対応)
-import { MAGIC_LINK_CALLBACK_RATE_LIMIT } from '@/lib/magic-link';
+import {
+  MAGIC_LINK_CALLBACK_RATE_LIMIT,
+  MAGIC_LINK_CALLBACK_MAX_BODY_BYTES,
+} from '@/lib/magic-link';
+// ボディをストリームで読みつつバイト数上限で打ち切ってからフォームにする共通ヘルパー
+// (§9 リクエストサイズの上限。SSO ACS と同じものを使う)
+import { readFormWithinByteLimit, describeBodyRejectReason } from '@/lib/request-body-limit';
 // Route Handler 向け共通レート制限ラッパー (inbound-email/inbound-line/sso-acs と共有)
 import { checkRouteRateLimit } from '@/lib/route-rate-limit';
 // 同一オリジン検証ヘルパー (POST /api/tickets・POST /api/tickets/[id]/comments と共有。
@@ -179,16 +185,24 @@ export async function POST(request: Request) {
     redirect('/login?error=magic-link-invalid');
   }
 
-  // フォームの multipart/form-data または application/x-www-form-urlencoded からトークンを取り出す
-  let token: string | undefined;
-  try {
-    // formData() は Content-Type が form 系でないとエラーになる可能性があるため try で包む
-    const formData = await request.formData();
-    token = formData.get('token')?.toString();
-  } catch {
+  // フォーム (multipart/form-data または application/x-www-form-urlencoded) をサイズ上限つきで
+  // 読み取る (§9)。request.formData() を直接呼ぶとボディ全体がメモリに載るため、
+  // Content-Length を省いた chunked 転送で巨大な本文を送り付けられる
+  const formResult = await readFormWithinByteLimit(request, MAGIC_LINK_CALLBACK_MAX_BODY_BYTES);
+  // 本文を取り出せなかったリクエストは、理由によらずトークン無しと同じ扱いにする
+  if (!formResult.ok) {
+    // §6「エラーを握り潰さない」: どの理由で拒否したかをログに残す (本文の中身は出さない §9)
+    console.warn(
+      `[magic-link-callback] ${describeBodyRejectReason(
+        formResult.reason,
+        MAGIC_LINK_CALLBACK_MAX_BODY_BYTES,
+      )}`,
+    );
     // フォームとして解釈できない場合はトークン無しと同じ扱いにする
     redirect('/login?error=magic-link-invalid');
   }
+  // フォームからトークンを取り出す (欠落していれば undefined になり次の分岐で弾かれる)
+  const token = formResult.form.get('token')?.toString();
 
   // トークンが無ければエラー画面へ
   if (!token) {

@@ -66,7 +66,7 @@ export const AUTH_AUDIT_EVENT_IS_FAILURE: Readonly<Record<AuthAuditEvent, boolea
   magic_link_login_failure: true, // 無効・失効・消費済みトークン / 孤児トークン
   sso_login_success: false, // 発行済みハンドオフトークンの消費が前提
   sso_assertion_accepted: false, // 署名検証を通ったアサーションが前提
-  sso_assertion_rejected: true, // SAML の署名・条件検証に失敗
+  sso_assertion_rejected: true, // SAML の署名・条件検証に失敗 / SAMLResponse 欠落・ボディ破損
   sso_assertion_replayed: true, // 同一アサーションの再利用を検知
   sso_user_not_found: true, // 検証は通ったがテナント内にユーザーが居ない
 };
