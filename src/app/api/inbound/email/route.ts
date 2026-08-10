@@ -106,29 +106,29 @@ export const runtime = 'nodejs';
 // (キーはテナント ID なのでバケット数は実在テナント数で頭打ち = メモリも有界)
 const INBOUND_RATE_LIMIT = { limit: 120, windowMs: 60_000 } as const;
 
-// ボディサイズ超過を示す専用エラー。Error のサブクラスにすることで POST ハンドラの catch 節が
-// instanceof 判定で 413 と 400 を区別できる (汎用 Error では両者を区別できず 400 になってしまう)。
-class BodyTooLargeError extends Error {
-  // スーパークラスに日本語メッセージを渡す (ログに出たときに原因が読める)
-  constructor() {
-    // Error の message プロパティを設定する
-    super('リクエストが大きすぎます');
+// ボディを取り出せなかったことを示す専用エラー。**拒否理由をそのまま持ち回る**のが要点で、
+// ステータスへの振り分けは POST ハンドラが bodyRejectStatus に委ねる。
+//
+// /code-review ultra 指摘対応: 当初は「サイズ超過 = 専用エラー / それ以外 = 汎用 Error」の
+// 2 値に潰していたが、それだと bodyRejectStatus への集約がこの経路に届かない
+// (将来 timeout → 408 のような第 3 のステータスを足しても、ここで 2 値に潰れるため
+//  email だけ一律 400 のまま静かに食い違う)。理由を保ったまま catch 節へ運ぶ形にする。
+//
+// 本文の読み取りは JSON パスと multipart パスに分かれており、どちらも呼び出し元 (POST) から
+// 見れば readInboundFields の内側なので、例外で運ぶ形は変えない。
+class BodyRejectedError extends Error {
+  // 読み取りが失敗した理由 (POST ハンドラがステータスと文言の決定に使う)
+  readonly reason: BodyRejectReason;
+
+  constructor(reason: BodyRejectReason) {
+    // ログに出たときに原因が読めるよう、共通の説明文を message に載せる
+    super(describeBodyRejectReason(reason, INBOUND_EMAIL_MAX_BODY_BYTES));
     // this.name を明示設定する。設定しないと err.name が 'Error' になり構造化ロガーで誤分類される
     // (RateLimitError が this.name を設定しているのと同じ理由 - src/lib/rate-limit.ts:37 参照)
-    this.name = 'BodyTooLargeError';
+    this.name = 'BodyRejectedError';
+    // 理由を保持する
+    this.reason = reason;
   }
-}
-
-// ボディを取り出せなかった理由を、POST ハンドラの catch 節がステータスへ振り分けられる例外に変換する。
-// JSON パスと multipart パスの両方で同じ変換が要るため、書き写さずここへ集約する (§6 DRY)。
-// サイズ超過だけ 413 にしたいので専用エラーにし、それ以外 (だらだら送り・接続断・パース不能) は
-// 汎用 Error = 400 に落とす。文言は describeBodyRejectReason に集約済みのものを使う。
-function bodyRejectToError(reason: BodyRejectReason): Error {
-  // 413 に振り分けられる理由 (サイズ超過) は専用エラーにする。どの理由が 413 かの判断は
-  // 共通ヘルパーに委ねる (この経路で書き写すと、理由が増えたときに振り分けが食い違う)
-  if (bodyRejectStatus(reason) === 413) return new BodyTooLargeError();
-  // それ以外は理由付きの汎用 Error (POST の catch が 400 にマップし、文脈付きでログに残す)
-  return new Error(describeBodyRejectReason(reason, INBOUND_EMAIL_MAX_BODY_BYTES));
 }
 
 // リクエストから提示されたシークレットを取り出す。
@@ -185,9 +185,9 @@ async function readInboundFields(req: Request): Promise<InboundFields> {
       DEFAULT_BODY_IDLE_TIMEOUT_MS,
       INBOUND_EMAIL_BODY_TOTAL_TIMEOUT_MS,
     );
-    // 読み取れなかった理由を、POST ハンドラが 413 / 400 に振り分けられる例外へ変換して投げる
-    // (warn ログは catch 節で 1 度だけ出すため、ここでは二重に出さない)
-    if (!formResult.ok) throw bodyRejectToError(formResult.reason);
+    // 読み取れなかった理由をそのまま持つ例外にして投げる (ステータスへの振り分けは POST 側)。
+    // warn ログは catch 節で 1 度だけ出すため、ここでは二重に出さない
+    if (!formResult.ok) throw new BodyRejectedError(formResult.reason);
     // 上限内で読み取れてパースできたフォーム
     const form = formResult.form;
     // SendGrid は実際の RCPT を envelope (JSON 文字列) に入れるため、あれば優先的に使う
@@ -268,8 +268,8 @@ async function readInboundFields(req: Request): Promise<InboundFields> {
     DEFAULT_BODY_IDLE_TIMEOUT_MS,
     INBOUND_EMAIL_BODY_TOTAL_TIMEOUT_MS,
   );
-  // 読み取れなかった理由を、POST ハンドラが 413 / 400 に振り分けられる例外へ変換して投げる
-  if (!bodyResult.ok) throw bodyRejectToError(bodyResult.reason);
+  // 読み取れなかった理由をそのまま持つ例外にして投げる (ステータスへの振り分けは POST 側)
+  if (!bodyResult.ok) throw new BodyRejectedError(bodyResult.reason);
   // 上限内で読み取れた本文
   const rawText = bodyResult.text;
   // サイズ検査済みの文字列を JSON としてパースする (unknown で受けて次行で型を絞り込む)
@@ -413,18 +413,22 @@ export async function POST(req: Request) {
   // 打ち切る」検査を両方持つため、ここに同じ判定を書き写すと二重管理になる (§6 DRY)
   let fields: InboundFields;
   try {
-    // ボディを読んでフィールドを取り出す。BodyTooLargeError または汎用 Error を投げることがある
+    // ボディを読んでフィールドを取り出す。BodyRejectedError (読み取り失敗) か
+    // 汎用 Error (JSON の形式不正など) を投げることがある
     fields = await readInboundFields(req);
   } catch (err) {
-    // BodyTooLargeError は 413 にマップする
-    // (Content-Length の申告超過・ストリームの累計超過のどちらもこの経路に来る)
-    if (err instanceof BodyTooLargeError) {
-      // サイズ超過はサーバーログに残す (外部には詳細を出さない §9)
-      console.warn(
-        `[POST /api/inbound/email] request body too large (max ${INBOUND_EMAIL_MAX_BODY_BYTES} bytes)`,
+    // 本文を取り出せなかった場合は、理由に応じたステータス (サイズ超過なら 413) で返す。
+    // どの理由がどのステータスかの判断は共通ヘルパーに委ね、この経路では文言だけを決める
+    if (err instanceof BodyRejectedError) {
+      // 失敗の理由はサーバーログにだけ残す (外部には詳細を出さない §9)
+      console.warn(`[POST /api/inbound/email] ${err.message}`);
+      // 理由からステータスを引く (サイズ超過 = 413 / それ以外 = 400)
+      const status = bodyRejectStatus(err.reason);
+      // ステータスに合った文言を返す (413 なのに「読み取りに失敗」と出て運用者が誤読しないように)
+      return NextResponse.json(
+        { error: status === 413 ? 'メールが大きすぎます' : 'リクエストの形式が正しくありません' },
+        { status },
       );
-      // 上限超過は 413 で返す
-      return NextResponse.json({ error: 'メールが大きすぎます' }, { status: 413 });
     }
     // それ以外のパースエラーは 400 (握り潰さずログに残す)
     console.error('[POST /api/inbound/email] failed to read request body', err);

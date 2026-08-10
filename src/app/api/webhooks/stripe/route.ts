@@ -80,10 +80,18 @@ export async function POST(request: Request): Promise<NextResponse> {
     );
     // サイズ超過なら 413、それ以外 (だらだら送り・接続断) は従来どおり 400 で返す。
     // どちらも Stripe は再送するが、正規イベントがこの経路で失われるのは異常系なので
-    // 「受け取れなかった」ことを 2xx で覆い隠さない (§9 fail-closed)
+    // 「受け取れなかった」ことを 2xx で覆い隠さない (§9 fail-closed)。
+    // 文言はステータスに合わせる — 413 なのに「読み取りに失敗」と返すと、Stripe の配信ログを
+    // 見た運用者がサイズ超過ではなく接続断だと誤読する
+    const status = bodyRejectStatus(bodyResult.reason);
     return NextResponse.json(
-      { error: 'リクエストボディの読み取りに失敗しました' },
-      { status: bodyRejectStatus(bodyResult.reason) },
+      {
+        error:
+          status === 413
+            ? 'リクエストボディが大きすぎます'
+            : 'リクエストボディの読み取りに失敗しました',
+      },
+      { status },
     );
   }
   // 上限内で読み取れた本文 (署名検証にかける生テキスト)
