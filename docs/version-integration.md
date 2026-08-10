@@ -4,6 +4,12 @@
 
 この文書は、既存資料を4つの観点（=バージョン）として検証し、矛盾のない単一仕様に統合するための基準を定義します。
 
+> **SMB ピボット後の位置づけ（重要）**: 本書の 4 バージョンは初期開発時の資料体系であり、現在は
+> **プロダクト方針・ロードマップの正本は [`smb-dx-pivot-plan.md`](./smb-dx-pivot-plan.md)**（SMB 向けピボット計画）。
+> 計画書と本書内のどのバージョン（README / requirements / issue-backlog）が衝突する場合も**計画書を最優先**し、
+> 本書の調停ルール（正本ルール・差分優先順位）はその下位で適用する。
+> ピボットで追加された要件（マルチテナント・Lite/Pro 二層・メール/LINE 取り込み・マジックリンク認証・課金等）の定義は計画書側にある。
+
 ## 対象バージョン
 
 ```mermaid
@@ -75,12 +81,16 @@ flowchart TD
 ## 4バージョン統合後の正本ルール
 
 ```mermaid
-flowchart LR
+flowchart TD
+    Pivot["プロダクト方針 (最上位)<br/>docs/smb-dx-pivot-plan.md"]
     Req["機能要件<br/>docs/requirements.md"]
     Backlog["実装順序<br/>docs/issue-backlog.md"]
     Readme["外部説明<br/>README.md"]
     Self["差分調停<br/>docs/version-integration.md"]
 
+    Pivot -- "衝突時は計画書優先" --> Req
+    Pivot -- "衝突時は計画書優先" --> Backlog
+    Pivot -- "衝突時は計画書優先" --> Readme
     Req --- Backlog
     Req --- Readme
     Self -- "矛盾時の裁定" --> Req
@@ -88,10 +98,11 @@ flowchart LR
     Self -- "矛盾時の裁定" --> Readme
 ```
 
-1. **機能要件の正本**: `docs/requirements.md`
-2. **実装順序の正本**: `docs/issue-backlog.md`
-3. **外部説明の正本**: `README.md`
-4. **差分調停の正本**: `docs/version-integration.md`
+1. **プロダクト方針の正本（最上位）**: `docs/smb-dx-pivot-plan.md` — 他のどの文書とも衝突した場合は計画書を優先する
+2. **機能要件の正本**: `docs/requirements.md`（初期要件。ピボット追加要件は計画書側に定義）
+3. **実装順序の正本**: `docs/issue-backlog.md`
+4. **外部説明の正本**: `README.md`
+5. **差分調停の正本**: `docs/version-integration.md`
 
 ## 差分が出たときの優先順位
 
@@ -114,6 +125,7 @@ flowchart TD
 
 ## 今後の運用
 
+- プロダクト方針そのものを変える場合は、**先に `docs/smb-dx-pivot-plan.md` を PR で更新してから**実装・他文書に反映する（`CLAUDE.md` §1 と同一ルール）。
 - 仕様変更PRでは、以下3点を同時更新する。
   1. `docs/requirements.md`
   2. `docs/issue-backlog.md`
