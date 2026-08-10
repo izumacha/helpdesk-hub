@@ -14,9 +14,10 @@ import type { Repos } from '@/data/ports/unit-of-work';
 // (#287。片方だけ値を変えたら気付けるように)
 import {
   INBOUND_EMAIL_MAX_BODY_BYTES,
-  INBOUND_EMAIL_BODY_IDLE_TIMEOUT_MS,
   INBOUND_EMAIL_BODY_TOTAL_TIMEOUT_MS,
 } from '@/lib/webhook-body-limits';
+// 無通信の上限は経路固有ではなく共有の既定を使う (詰まりを作る側と被る側が別経路のため)
+import { DEFAULT_BODY_IDLE_TIMEOUT_MS } from '@/lib/request-body-limit';
 
 // 読み取りヘルパーを「本物のまま呼び出し引数だけ記録する」形に差し替える。
 // 上限・制限時間はこのルートが**引数で明示的に渡してはじめて効く**もので、渡し忘れると
@@ -1349,8 +1350,10 @@ describe('POST /api/inbound/email のリクエストサイズ上限', () => {
     expect(rejectLog).toBeDefined();
     expect(rejectLog).toHaveLength(2);
     expect(rejectLog![1]).toBeInstanceOf(TypeError);
-    // 解析できない本文に対する文言は、この経路の文言表から理由 'unparsable' で引いたもの。
-    // ステータスで文言を選ぶ実装に戻すとサイズ超過用の文言が出るため、ここで検出できる
+    // 解析できない本文に対する文言が、この経路の文言表の 'unparsable' と一致する。
+    // 注: これだけでは「ステータスで文言を選ぶ実装」への退行は検出できない (unparsable は
+    // どちらの実装でも同じ文字列になる)。その退行を捕まえるのは
+    // tests/webhook-body-reject-messages.test.ts の 'timeout' の表明
     expect(await res.json()).toEqual({ error: 'リクエストの形式が正しくありません' });
   });
 
@@ -1379,7 +1382,7 @@ describe('POST /api/inbound/email のリクエストサイズ上限', () => {
     expect(readFormSpy).toHaveBeenCalledTimes(1);
     expect(readFormSpy.mock.calls[0]!.slice(1)).toEqual([
       INBOUND_EMAIL_MAX_BODY_BYTES,
-      INBOUND_EMAIL_BODY_IDLE_TIMEOUT_MS,
+      DEFAULT_BODY_IDLE_TIMEOUT_MS,
       INBOUND_EMAIL_BODY_TOTAL_TIMEOUT_MS,
     ]);
 
@@ -1394,7 +1397,7 @@ describe('POST /api/inbound/email のリクエストサイズ上限', () => {
     expect(readTextSpy).toHaveBeenCalledTimes(1);
     expect(readTextSpy.mock.calls[0]!.slice(1)).toEqual([
       INBOUND_EMAIL_MAX_BODY_BYTES,
-      INBOUND_EMAIL_BODY_IDLE_TIMEOUT_MS,
+      DEFAULT_BODY_IDLE_TIMEOUT_MS,
       INBOUND_EMAIL_BODY_TOTAL_TIMEOUT_MS,
     ]);
   });

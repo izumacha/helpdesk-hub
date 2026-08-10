@@ -31,21 +31,11 @@ import { recordSettingsAudit } from '@/lib/settings-audit';
 // リクエストボディをサイズ上限つきで読み取るヘルパーと、拒否時の応答を組み立てるヘルパー (#287)
 import { readTextWithinByteLimit } from '@/lib/request-body-limit';
 // 拒否時のログ・ステータス・文言をまとめて組み立てるヘルパー (ルート層の関心事なので別モジュール)
-import { bodyRejectResponse, type BodyRejectMessages } from '@/lib/body-reject-response';
-// この経路は本文を読むだけ (フォーム解析をしない) ので、起こりうる理由はこの 3 つに限られる
-import type { BodyReadRejectReason } from '@/lib/request-body-limit';
+import { bodyRejectResponse } from '@/lib/body-reject-response';
+// 拒否理由ごとの文言 (route とテストが同じ表を参照する。理由は同モジュール冒頭)
+import { STRIPE_BODY_REJECT_MESSAGES } from '@/lib/webhook-body-reject-messages';
 // この経路が受け付けるボディの最大バイト数 (route とテストが同じ定義を参照する)
 import { STRIPE_WEBHOOK_MAX_BODY_BYTES } from '@/lib/webhook-body-limits';
-
-// ボディを読めなかったときに Stripe へ返す文言 (拒否理由ごとに 1 つずつ決める)。
-// Stripe はどの非 2xx でも再送するが、正規イベントがこの経路で失われるのは異常系なので
-// 「受け取れなかった」ことを 2xx で覆い隠さない (§9 fail-closed)。文言を理由ごとに分けるのは、
-// Stripe の配信ログを見た運用者がサイズ超過と接続断を取り違えないようにするため
-const STRIPE_BODY_REJECT_MESSAGES: BodyRejectMessages<BodyReadRejectReason> = {
-  'too-large': 'リクエストボディが大きすぎます',
-  timeout: 'リクエストボディの送信が途中で止まりました',
-  unreadable: 'リクエストボディの読み取りに失敗しました',
-};
 
 // Stripe Webhook が送ってくる主要イベント種別の定数 (typo 防止のため文字列リテラルを定数化)
 const STRIPE_EVENT_SUBSCRIPTION_CREATED = 'customer.subscription.created';

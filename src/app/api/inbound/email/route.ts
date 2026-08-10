@@ -87,16 +87,18 @@ import { recordQuarantineSafe } from '@/lib/quarantine';
 import {
   readTextWithinByteLimit,
   readFormWithinByteLimit,
+  DEFAULT_BODY_IDLE_TIMEOUT_MS,
   type BodyRejectReason,
 } from '@/lib/request-body-limit';
 // 拒否時のログ・ステータス・文言をまとめて組み立てるヘルパー (ルート層の関心事なので別モジュール)
-import { bodyRejectResponse, type BodyRejectMessages } from '@/lib/body-reject-response';
+import { bodyRejectResponse } from '@/lib/body-reject-response';
+// 拒否理由ごとの文言 (route とテストが同じ表を参照する。理由は同モジュール冒頭)
+import { INBOUND_EMAIL_BODY_REJECT_MESSAGES } from '@/lib/webhook-body-reject-messages';
 // この経路が受け付けるボディの最大バイト数と読み取りの制限時間
 // (route とテストが同じ定義を参照する)
 import {
   INBOUND_EMAIL_MAX_BODY_BYTES,
   INBOUND_EMAIL_BODY_TOTAL_TIMEOUT_MS,
-  INBOUND_EMAIL_BODY_IDLE_TIMEOUT_MS,
 } from '@/lib/webhook-body-limits';
 
 // このルートは Node ランタイムで動かす (node:crypto / Prisma を使うため Edge では動かない)
@@ -136,17 +138,6 @@ class BodyRejectedError extends Error {
     this.reason = reason;
   }
 }
-
-// ボディを読めなかったときにクライアントへ返す文言 (拒否理由ごとに 1 つずつ決める)。
-// この経路だけ multipart を読むため 'unparsable' が実際に起こりうる。
-// 「本文が届き切らなかった (timeout)」と「届いたが壊れていた (unreadable / unparsable)」は
-// プロバイダ側の調査先が変わる (前者は送信の中断、後者は本文の組み立て) ので文言を分ける
-const INBOUND_EMAIL_BODY_REJECT_MESSAGES: BodyRejectMessages = {
-  'too-large': 'メールが大きすぎます',
-  timeout: 'メールの送信が途中で止まりました',
-  unreadable: 'リクエストの形式が正しくありません',
-  unparsable: 'リクエストの形式が正しくありません',
-};
 
 // リクエストから提示されたシークレットを取り出す。
 // シークレットは x-inbound-secret ヘッダのみから読む。URL クエリパラメータへのフォールバックは
@@ -194,12 +185,13 @@ async function readInboundFields(req: Request): Promise<InboundFields> {
     // 「上限を超えた時点で読み取りを打ち切る」ヘルパーに寄せる (§9 DoS 対策 / #287)。
     // Content-Type (multipart の boundary パラメータを含む) はヘルパーが元のリクエストから
     // 引き継ぐので、以前の「バイト列から Request を組み直して formData() する」形と結果は同じ。
-    // 制限時間は既定 (1MB 想定) では大容量メールを送り切れないため、無通信・全体の両方を明示的に
-    // 延ばす (理由は INBOUND_EMAIL_BODY_IDLE_TIMEOUT_MS / _TOTAL_TIMEOUT_MS の定義コメント)
+    // 全体期限だけこの経路の値へ延ばす (既定 120 秒では 25MB を送り切れない。理由は
+    // INBOUND_EMAIL_BODY_TOTAL_TIMEOUT_MS の定義コメント)。無通信の上限は共有の既定でよいので
+    // そのまま渡す — 位置引数なので 4 つ目を指定するには 3 つ目も書く必要がある
     const formResult = await readFormWithinByteLimit(
       req,
       INBOUND_EMAIL_MAX_BODY_BYTES,
-      INBOUND_EMAIL_BODY_IDLE_TIMEOUT_MS,
+      DEFAULT_BODY_IDLE_TIMEOUT_MS,
       INBOUND_EMAIL_BODY_TOTAL_TIMEOUT_MS,
     );
     // 読み取れなかった理由と (解析失敗なら) その原因を持つ例外にして投げる。
@@ -279,11 +271,11 @@ async function readInboundFields(req: Request): Promise<InboundFields> {
   // req.json() / req.text() はボディ全体をメモリに乗せてから返すため、上限つきの
   // ストリーム読み取りで取得する (超えた時点で打ち切られる。#287)。
   // 得られる文字列は移行前の req.text() と一致する (差異と根拠は readTextWithinByteLimit)。
-  // 制限時間を明示するのは multipart 側と同じ理由 (既定値は上限 1MB の経路向けで、この経路には短い)
+  // 制限時間の渡し方は multipart 側と同じ (全体期限だけこの経路の値、無通信は共有の既定)
   const bodyResult = await readTextWithinByteLimit(
     req,
     INBOUND_EMAIL_MAX_BODY_BYTES,
-    INBOUND_EMAIL_BODY_IDLE_TIMEOUT_MS,
+    DEFAULT_BODY_IDLE_TIMEOUT_MS,
     INBOUND_EMAIL_BODY_TOTAL_TIMEOUT_MS,
   );
   // 読み取れなかった理由をそのまま持つ例外にして投げる (ステータスへの振り分けは POST 側)
