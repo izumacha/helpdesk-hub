@@ -8,7 +8,7 @@ import Stripe from 'stripe';
 // Stripe の API バージョン (後方互換を固定するため定数化)
 // Stripe は定期的に API バージョンを更新するため、明示固定して意図しない挙動変化を防ぐ
 // インストール済み stripe SDK が対応するバージョンに合わせる (npm ls stripe で確認)
-const STRIPE_API_VERSION = '2026-06-24.dahlia' as const;
+const STRIPE_API_VERSION = '2026-07-29.dahlia' as const;
 
 // Stripe シークレットキーを環境変数から取得する (サーバー側のみで参照 — クライアントに漏らさない)
 function getStripeSecretKey(): string {
