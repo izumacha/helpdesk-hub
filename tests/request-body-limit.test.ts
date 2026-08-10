@@ -10,6 +10,8 @@ import {
   readFormWithinByteLimit,
   readTextWithinByteLimit,
   bodyRejectStatus,
+  DEFAULT_BODY_IDLE_TIMEOUT_MS,
+  DEFAULT_BODY_TOTAL_TIMEOUT_MS,
 } from '@/lib/request-body-limit';
 
 // テストで使う上限 (小さくして高速に回す)
@@ -313,9 +315,11 @@ describe('readFormWithinByteLimit', () => {
     const result = await readFormWithinByteLimit(req, LIMIT);
     // 例外を投げず、パース不能として返す
     expect(result.ok).toBe(false);
-    if (!result.ok) expect(result.reason).toBe('unparsable');
-    // 原因の例外を捨てずに載せて返す (§6 エラーを握り潰さない)
-    if (!result.ok) expect(result.cause).toBeInstanceOf(Error);
+    if (!result.ok) {
+      expect(result.reason).toBe('unparsable');
+      // 原因の例外を捨てずに載せて返す (§6 エラーを握り潰さない)
+      expect(result.cause).toBeInstanceOf(Error);
+    }
   });
 
   // 上のケースは Content-Type がフォーム系でない場合で、メール取り込みルートは手前で
@@ -425,5 +429,29 @@ describe('bodyRejectStatus', () => {
     expect(bodyRejectStatus('timeout')).toBe(400);
     expect(bodyRejectStatus('unreadable')).toBe(400);
     expect(bodyRejectStatus('unparsable')).toBe(400);
+  });
+});
+
+describe('既定の制限時間', () => {
+  // **slowloris 耐性を決めるのはこの 2 つ**なので、値そのものではなく満たすべき関係を固定する。
+  // (値を写経すると、両方を同時に書き換える変更を素通ししてしまう)
+  // 実時間で待って挙動から確かめる形にしないのは、既定値ぶん (数十秒) テストが止まるため。
+
+  it('無通信の上限は全体期限より短い', () => {
+    // 逆転すると無通信の検知が一度も働かず、「送るのをやめた接続」が全体期限まで居座る
+    expect(DEFAULT_BODY_IDLE_TIMEOUT_MS).toBeLessThan(DEFAULT_BODY_TOTAL_TIMEOUT_MS);
+  });
+
+  it('全体期限は Node 既定の requestTimeout (300 秒) より短い', () => {
+    // 超えるとサーバー側で先に切られ、こちらの打ち切りが一度も効かなくなる
+    expect(DEFAULT_BODY_TOTAL_TIMEOUT_MS).toBeLessThan(300_000);
+  });
+
+  it('無通信の上限は、保持数が伸びすぎない範囲に収まっている', () => {
+    // 長くするほど「ヘッダだけ送る接続」の同時保持数が増える (この経路には同時保持数の
+    // 歯止めが無い)。一方で短すぎるとイベントループの停止で正規リクエストを誤って落とす。
+    // 現在の判断はその間の 30 秒で、上下どちらへ大きく動かすときは根拠を添えて見直すこと
+    expect(DEFAULT_BODY_IDLE_TIMEOUT_MS).toBeGreaterThanOrEqual(10_000);
+    expect(DEFAULT_BODY_IDLE_TIMEOUT_MS).toBeLessThanOrEqual(60_000);
   });
 });

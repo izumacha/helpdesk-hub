@@ -98,7 +98,10 @@
 //
 // 根本の対処 (タイマーをイベントループの停止に気付かせる / 同時に走るパースの本数を絞る) は
 // 本モジュール単体では閉じないため別途とする。ここは余裕を揃えただけである点に注意。
-const DEFAULT_BODY_IDLE_TIMEOUT_MS = 30_000;
+// export しているのはテストが参照するため。ルートは既定に委ねる (引数を渡さない) ので
+// 本番コードからの呼び出し元は無いが、**この 2 つが slowloris 耐性そのもの**なので、
+// 満たすべき関係 (無通信 < 全体期限 < Node の requestTimeout) をテストで固定してある
+export const DEFAULT_BODY_IDLE_TIMEOUT_MS = 30_000;
 
 // 読み取り開始から完了までに許容する最大時間 (slowloris 対策その 2)。
 //
@@ -111,7 +114,7 @@ const DEFAULT_BODY_IDLE_TIMEOUT_MS = 30_000;
 // 値は「正規の利用者を落とさない範囲でできるだけ短く」で決める。120 秒あれば 64kbps の
 // 細い回線でも約 960KB (上限 1MB のほぼ全域) を送り切れるので、実際のアサーション
 // (数十 KB) が巻き添えになる余地は無い。Node 既定の requestTimeout (300 秒) より十分短い
-const DEFAULT_BODY_TOTAL_TIMEOUT_MS = 120_000;
+export const DEFAULT_BODY_TOTAL_TIMEOUT_MS = 120_000;
 
 // 最初に確保するバッファのサイズ。小さな本文 (通常の SAML アサーションは数十 KB) のために
 // 上限ぶんを毎回確保するのは無駄なので、ここから始めて足りなければ倍々に伸ばす
