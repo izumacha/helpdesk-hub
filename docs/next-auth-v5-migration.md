@@ -1,3 +1,5 @@
+[← ドキュメント目次](./index.md)
+
 # next-auth v5 (Auth.js) 安定版への移行計画
 
 - 作成日: 2026-07-26（課題棚卸し「next-auth beta 依存」ギャップ対応）
