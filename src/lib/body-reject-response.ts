@@ -10,15 +10,12 @@
 
 import { NextResponse } from 'next/server';
 // 拒否理由の型・ステータスの振り分け・ログの出し方は読み取り側 (request-body-limit.ts) が持つ
-import { bodyRejectStatus, logBodyReject, type BodyRejectReason } from '@/lib/request-body-limit';
-
-// 拒否時に返す文言の一覧。**理由ごとに 1 つずつ決める**のが要点 (下の bodyRejectResponse を参照)。
-// 型引数でその経路に起こりうる理由だけに絞れるようにしてある — 例えば本文を読むだけの経路
-// (readTextWithinByteLimit のみ) は 'unparsable' が構造上起こらないので、
-// `BodyRejectMessages<BodyReadRejectReason>` にすれば到達しない文言を書かずに済む
-export type BodyRejectMessages<R extends BodyRejectReason = BodyRejectReason> = Readonly<
-  Record<R, string>
->;
+import {
+  bodyRejectStatus,
+  logBodyReject,
+  type BodyRejectReason,
+  type BodyRejectMessages,
+} from '@/lib/request-body-limit';
 
 /**
  * ボディを読めなかったときの「サーバーログ 1 行 ＋ クライアントへの JSON レスポンス」をまとめて作る。

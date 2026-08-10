@@ -27,19 +27,19 @@
 // メモリの目安: 保持するのは「実際の本文サイズ」ぶんのバッファ 1 本で、チャンク数には依存しない。
 // 上限ぶんを先に確保することはせず、INITIAL_BUFFER_BYTES から始めて足りなければ倍々に伸ばす
 // (通常の SAML アサーションは数十 KB なので、毎回 1MB を確保するのは無駄なため)。
-// **上限値を決めるときは、本文サイズの 4 倍弱を見込むこと。** 内訳:
-//   - バッファを伸ばす瞬間だけ新旧が並ぶ … 2 倍未満
+// **上限値を決めるときは、本文サイズの約 3 倍を見込むこと。** 山は 2 つあり、時間帯が別なので
+// 足し合わせず**大きい方**を取る:
+//   - 読み取り中 … 最大 2 倍未満
 //     (伸長は `Math.min(maxBytes, ...)` で頭打ちにするため、最後の 1 回だけ「倍々の途中サイズ
 //      (= 旧) + maxBytes (= 新)」が同時に生きる。比は 1 + 旧/maxBytes で、maxBytes が
 //      成長段 (16KiB×2^n) の**直上**にあるとき旧がほぼ maxBytes に等しくなり 2 倍に漸近する。
-//      実測: 上限 2MiB+1 と 16MiB+1 でちょうど 2.000 倍。逆に maxBytes が 2 の冪なら
-//      旧 = 新の半分で 1.5 倍に収まる。現行の上限はいずれも 1.5〜1.64 倍に収まっているが、
-//      **これは値の選び方に依存する結果であって上界ではない**ので、新しい上限を決めるときは
-//      2 倍側で見積もること)
-//   - readFormWithinByteLimit の `new Response(bytes)` … もう 1 倍
-//     (Response はバイト列を参照せずコピーする。確認方法: 元の Uint8Array を Response 生成後に
-//      書き換えてから arrayBuffer() を読むと、書き換え前の値が返る)
-//   - formData() が作るフィールド値のコピー … もう 1 倍
+//      実測: 上限 2MiB+1 と 16MiB+1 でちょうど 2.000 倍。maxBytes が 2 の冪なら 1.5 倍。
+//      旧バッファは `buffer = grown` の時点で参照が切れるので、次の山までは持ち越さない)
+//   - 解析中 … 約 3 倍 (readFormWithinByteLimit を通る経路のみ)
+//     (読み終えたバッファ 1 倍 ＋ `new Response(bytes)` のコピー 1 倍 ＋ `formData()` が作る
+//      フィールド値のコピー 1 倍。Response がコピーを取ることの確認方法: 元の Uint8Array を
+//      Response 生成後に書き換えてから arrayBuffer() を読むと、書き換え前の値が返る)
+//   本文を読むだけの経路 (readTextWithinByteLimit) は解析側の山が無いので 2 倍未満で収まる。
 //
 // 関連: `webhook-fetch.ts` の `readBodyCapped` と `line-content.ts` の `readBodyCappedBytes` も
 // 「ストリームを上限つきで読む」同種の処理だが、あちらは外向き fetch の **Response** が対象で
@@ -59,7 +59,7 @@
 // 正本は `src/middleware.ts` の除外条件で、下は「本モジュールの対象外である理由」の分類。
 // 網羅リストとして数え上げるのではなく、**経路を足すたびに middleware 側から数え直すこと**
 // (この一覧を信じて監査すると、増えた経路を見落とす)。
-//   - 自前でボディを読むが読まない選択をしている … `INTERNAL_CRON_ROUTES`
+//   - 自前ではボディを読まない選択をしている … `INTERNAL_CRON_ROUTES`
 //     (`api/internal/trial-reminders` / `api/internal/sla-reminders`) はヘッダだけを見て
 //     ボディに触れないので、上限を掛ける対象がそもそも無い。読むようになった時点で対象になる。
 //   - **フレームワークがボディを読むので差し替えられない** … `api/auth/[...nextauth]`
@@ -74,7 +74,8 @@
 //
 // 「送るのをやめた接続」をここで落とす。読み取り全体の期限**だけ**にしないのは、全体を
 // 短く絞ると、上限サイズに近い本文を細い上り回線から送っている正規の利用者まで巻き添えに
-// するため (例: 80KB のアサーションを 64kbps のモバイル回線から送ると 10 秒を超える)。
+// するため (例: 80KB のアサーションを 64kbps のモバイル回線から送ると 10 秒を超える。
+// 現在の値は下記の理由で 30 秒なので、この例はさらに余裕をもって通る)。
 // ACS の POST はユーザーのブラウザから飛ぶので、回線品質はこちらで選べない。
 // タイマーは 1 チャンクごとに張り直す。
 //
@@ -89,7 +90,7 @@
 //
 // 根本の対処 (タイマーをイベントループの停止に気付かせる / 同時に走るパースの本数を絞る) は
 // 本モジュール単体では閉じないため別途とする。ここは余裕を揃えただけである点に注意。
-export const DEFAULT_BODY_IDLE_TIMEOUT_MS = 30_000;
+const DEFAULT_BODY_IDLE_TIMEOUT_MS = 30_000;
 
 // 読み取り開始から完了までに許容する最大時間 (slowloris 対策その 2)。
 //
@@ -151,6 +152,18 @@ export type BodyRejectReason = Exclude<BoundedFormResult, { ok: true }>['reason'
 // 「本文を読むだけ」の経路で起こりうる理由 (フォーム解析をしないので 'unparsable' は生じない)。
 // readTextWithinByteLimit しか使わないルートが、到達しない文言をでっち上げずに済むよう公開する
 export type BodyReadRejectReason = Exclude<BoundedTextResult, { ok: true }>['reason'];
+
+// 拒否時にクライアントへ返す文言の一覧。**理由ごとに 1 つずつ決める**のが要点
+// (引き方の理由は `body-reject-response.ts` の bodyRejectResponse を参照)。
+// 型引数でその経路に起こりうる理由だけに絞れる — 本文を読むだけの経路なら
+// `BodyRejectMessages<BodyReadRejectReason>` で 'unparsable' を書かずに済む。
+//
+// HTTP を一切参照しない純粋な型なので、`next/server` を import する
+// `body-reject-response.ts` ではなくこちらに置く (あちらへ置くと、文言表を持つだけの
+// モジュールが Next へ依存する形になり、分離した意味が薄れる)
+export type BodyRejectMessages<R extends BodyRejectReason = BodyRejectReason> = Readonly<
+  Record<R, string>
+>;
 
 /**
  * 拒否理由をサーバーログ用の日本語 1 行にする。

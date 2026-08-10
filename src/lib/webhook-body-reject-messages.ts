@@ -12,8 +12,7 @@
 //   - 表をここへ出しておけば、ルートを経由せずに表そのもの＋ヘルパーの組で表明できる。
 // 実際の表明は `tests/webhook-body-reject-messages.test.ts`。
 
-import type { BodyRejectMessages } from '@/lib/body-reject-response';
-import type { BodyReadRejectReason } from '@/lib/request-body-limit';
+import type { BodyRejectMessages, BodyReadRejectReason } from '@/lib/request-body-limit';
 
 // LINE Webhook (`POST /api/inbound/line`) の文言。
 // LINE は非 2xx を受けると再送するため、こちら側の都合 (上限超過) と送信側の都合

@@ -16,8 +16,6 @@ import {
   INBOUND_EMAIL_MAX_BODY_BYTES,
   INBOUND_EMAIL_BODY_TOTAL_TIMEOUT_MS,
 } from '@/lib/webhook-body-limits';
-// 無通信の上限は経路固有ではなく共有の既定を使う (詰まりを作る側と被る側が別経路のため)
-import { DEFAULT_BODY_IDLE_TIMEOUT_MS } from '@/lib/request-body-limit';
 
 // 読み取りヘルパーを「本物のまま呼び出し引数だけ記録する」形に差し替える。
 // 上限・制限時間はこのルートが**引数で明示的に渡してはじめて効く**もので、渡し忘れると
@@ -1360,9 +1358,10 @@ describe('POST /api/inbound/email のリクエストサイズ上限', () => {
     expect(await res.json()).toEqual({ error: 'リクエストの形式が正しくありません' });
   });
 
-  // 上限・制限時間は「ルートが引数で明示的に渡す」ことで初めて効く。渡し忘れると既定値
-  // (無通信 30 秒 / 全体 120 秒) に黙って戻り、25MB の正規メールが送信途中で
-  // 打ち切られる退行が復活する。挙動テストでは既定値でも緑のままなので引数を直接表明する
+  // 全体期限は「ルートが引数で明示的に渡す」ことで初めて効く。渡し忘れると既定の 120 秒に
+  // 黙って戻り、25MB の正規メールが送信途中で打ち切られる退行が復活する。挙動テストでは
+  // 既定値でも緑のままなので引数を直接表明する
+  // (無通信の枠が undefined であることも併せて固定する = 経路固有の値を持ち込んでいない表明)
   it('multipart / JSON のどちらの読み取りにもこの経路の上限と制限時間を渡している', async () => {
     readFormSpy.mockClear();
     readTextSpy.mockClear();
@@ -1385,7 +1384,7 @@ describe('POST /api/inbound/email のリクエストサイズ上限', () => {
     expect(readFormSpy).toHaveBeenCalledTimes(1);
     expect(readFormSpy.mock.calls[0]).toEqual([
       INBOUND_EMAIL_MAX_BODY_BYTES,
-      DEFAULT_BODY_IDLE_TIMEOUT_MS,
+      undefined, // 無通信の上限は共有の既定に委ねている (経路固有の事情が無いため)
       INBOUND_EMAIL_BODY_TOTAL_TIMEOUT_MS,
     ]);
 
@@ -1400,7 +1399,7 @@ describe('POST /api/inbound/email のリクエストサイズ上限', () => {
     expect(readTextSpy).toHaveBeenCalledTimes(1);
     expect(readTextSpy.mock.calls[0]).toEqual([
       INBOUND_EMAIL_MAX_BODY_BYTES,
-      DEFAULT_BODY_IDLE_TIMEOUT_MS,
+      undefined, // 無通信の上限は共有の既定に委ねている (経路固有の事情が無いため)
       INBOUND_EMAIL_BODY_TOTAL_TIMEOUT_MS,
     ]);
   });
