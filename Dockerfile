@@ -1,5 +1,5 @@
-# ベースイメージ: 軽量な Alpine Linux 上の Node.js 20
-FROM node:20-alpine AS base
+# ベースイメージ: 軽量な Alpine Linux 上の Node.js 22 (undici 8 が Node >= 22.19 を要求するため)
+FROM node:22-alpine AS base
 # 作業ディレクトリ (以降のコマンドのカレント)
 WORKDIR /app
 
