@@ -49,6 +49,15 @@ import { notifyOutboundBestEffort } from '@/lib/outbound-notify';
 // 判定ロジック。このルートも 1MB ボディ上限回避のため意図的に切り出した通常の Route Handler で、
 // Server Action の組み込み Origin 検証を受けないため、ここで明示的に検証する)
 import { isSameOriginRequest } from '@/lib/csrf';
+// リクエストボディをサイズ上限つきで読み取るヘルパー。req.formData() を直接呼ぶと
+// Content-Length を省いた chunked 転送に対して上限なくメモリへ展開されるため、こちらを通す (§9)
+import { readFormWithinByteLimit } from '@/lib/request-body-limit';
+// 拒否時のログ・ステータス・文言をまとめて組み立てるヘルパー (Webhook 3 経路と共有)
+import { bodyRejectResponse } from '@/lib/body-reject-response';
+// この経路が受け付けるボディの最大バイト数 (新規起票の添付経路と共有。route とテストが同じ定義を参照)
+import { ATTACHMENT_UPLOAD_MAX_BODY_BYTES } from '@/lib/ticket-body-limits';
+// 拒否理由ごとの文言 (新規起票の添付経路と共有。route とテストが同じ表を参照する)
+import { TICKET_MULTIPART_BODY_REJECT_MESSAGES } from '@/lib/ticket-body-reject-messages';
 
 // /api/tickets/[id]/comments の動的セグメント
 type Params = { params: Promise<{ id: string }> };
@@ -106,15 +115,21 @@ export async function POST(req: Request, { params }: Params) {
     throw err;
   }
 
-  // FormData として読み出す (multipart/form-data 専用)
-  let form: FormData;
-  try {
-    form = await req.formData();
-  } catch (err) {
-    // FormData のパースに失敗した場合はログに残してから 400 を返す
-    console.error('[POST /api/tickets/[id]/comments] FormData のパースに失敗しました', err);
-    return NextResponse.json({ error: 'リクエストの形式が正しくありません' }, { status: 400 });
+  // FormData をサイズ上限つきで読み出す (multipart/form-data 専用)。
+  // req.formData() を直接呼ぶと、Content-Length を省いた chunked 転送に対しては上限なく
+  // ボディ全体がメモリへ展開されてしまう (添付 1 件あたりのサイズ検査は、全部読み終えた
+  // **後**の validateUploadedFiles まで走らない)。読み取り側で先に打ち切る (§9 / #290)
+  const formResult = await readFormWithinByteLimit(req, ATTACHMENT_UPLOAD_MAX_BODY_BYTES);
+  if (!formResult.ok) {
+    // どの理由 (サイズ超過 / だらだら送り / 接続断 / 解析失敗) で拒否したかはサーバーログに残し、
+    // 利用者には理由ごとに決めた文言を返す。文言表は新規起票の添付経路と共有する (§6 DRY)
+    return bodyRejectResponse(formResult, ATTACHMENT_UPLOAD_MAX_BODY_BYTES, {
+      logPrefix: '[POST /api/tickets/[id]/comments]',
+      messages: TICKET_MULTIPART_BODY_REJECT_MESSAGES,
+    });
   }
+  // 上限内で読み取れてフォームとして解析できたボディ
+  const form = formResult.form;
 
   // 本文を Zod で検証 (前後空白トリム、1〜5000 文字)
   const rawBody = (form.get('body') ?? '') as string;

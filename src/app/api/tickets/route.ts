@@ -45,6 +45,21 @@ import { checkRouteRateLimit } from '@/lib/route-rate-limit';
 // 検証で保護されるが、このルートは 1MB ボディ上限回避のため意図的に切り出した通常の
 // Route Handler でその保護を受けないため、ここで明示的に検証する)
 import { isSameOriginRequest } from '@/lib/csrf';
+// リクエストボディをサイズ上限つきで読み取るヘルパー。req.formData() / req.json() を直接呼ぶと
+// Content-Length を省いた chunked 転送に対して上限なくメモリへ展開されるため、こちらを通す (§9)
+import { readFormWithinByteLimit, readTextWithinByteLimit } from '@/lib/request-body-limit';
+// 拒否時のログ・ステータス・文言をまとめて組み立てるヘルパー (Webhook 3 経路と共有)
+import { bodyRejectResponse } from '@/lib/body-reject-response';
+// この経路が受け付けるボディの最大バイト数 (route とテストが同じ定義を参照する)
+import {
+  ATTACHMENT_UPLOAD_MAX_BODY_BYTES,
+  TICKET_JSON_MAX_BODY_BYTES,
+} from '@/lib/ticket-body-limits';
+// 拒否理由ごとの文言 (route とテストが同じ表を参照する。理由は同モジュール冒頭)
+import {
+  TICKET_JSON_BODY_REJECT_MESSAGES,
+  TICKET_MULTIPART_BODY_REJECT_MESSAGES,
+} from '@/lib/ticket-body-reject-messages';
 
 // 監査で発見したギャップ: POST /api/tickets/[id]/comments (ticket-comment) や CSV インポート
 // (csv-import) 等、他の全てのチケット関連ミューテーションはレート制限済みだったが、
@@ -139,16 +154,21 @@ export async function POST(req: Request) {
   // ため、小文字化してから比較し、プロキシ等が大文字化したヘッダでも正しく multipart と認識する
   const contentType = (req.headers.get('content-type') ?? '').toLowerCase();
   if (contentType.includes('multipart/form-data')) {
-    // multipart/form-data を FormData として読み出す
-    let form: FormData;
-    try {
-      form = await req.formData(); // ブラウザが送った multipart ボディを FormData オブジェクトに変換する
-    } catch (formErr) {
-      // FormData の読み出し失敗はサーバログにエラーとして記録する (握りつぶさない)
-      console.error('[POST /api/tickets] failed to parse FormData', formErr);
-      // 不正な FormData は 400 で弾く
-      return NextResponse.json({ error: 'リクエストの形式が正しくありません' }, { status: 400 });
+    // multipart/form-data をサイズ上限つきで読み出して FormData に変換する。
+    // req.formData() を直接呼ぶと、Content-Length を省いた chunked 転送に対しては上限なく
+    // ボディ全体がメモリへ展開されてしまう (添付 1 件あたりのサイズ検査は、全部読み終えた
+    // **後**の validateUploadedFiles まで走らない)。読み取り側で先に打ち切る (§9 / #290)
+    const formResult = await readFormWithinByteLimit(req, ATTACHMENT_UPLOAD_MAX_BODY_BYTES);
+    if (!formResult.ok) {
+      // どの理由 (サイズ超過 / だらだら送り / 接続断 / 解析失敗) で拒否したかはサーバーログに残し、
+      // 利用者には理由ごとに決めた文言を返す。ログ・ステータス・文言の組み立ては共通ヘルパーに委ねる
+      return bodyRejectResponse(formResult, ATTACHMENT_UPLOAD_MAX_BODY_BYTES, {
+        logPrefix: '[POST /api/tickets]',
+        messages: TICKET_MULTIPART_BODY_REJECT_MESSAGES,
+      });
     }
+    // 上限内で読み取れてフォームとして解析できたボディ
+    const form = formResult.form;
     // テキスト系フィールドを 1 つのオブジェクトに集約 (Zod へ渡すため)
     rawInput = {
       title: form.get('title') ?? undefined,
@@ -162,9 +182,20 @@ export async function POST(req: Request) {
     // files フィールドを全て拾い、File 型だけ抽出する (空入力で文字列 "" が混ざるのを除外)
     uploadedFiles = form.getAll('files').filter((entry): entry is File => entry instanceof File);
   } else {
-    // 従来どおり JSON ボディとして読み出す
+    // JSON ボディもサイズ上限つきで読み出す。req.json() は multipart と同じく、Content-Length を
+    // 省いた chunked 転送に対して上限なくメモリへ展開してしまう。添付が無いと分かっている経路
+    // なので枠は multipart 側より大幅に小さい (§9 最小権限・最小公開)
+    const bodyResult = await readTextWithinByteLimit(req, TICKET_JSON_MAX_BODY_BYTES);
+    if (!bodyResult.ok) {
+      // 拒否理由ごとの文言・ステータス・ログは multipart 側と同じ共通ヘルパーに委ねる
+      return bodyRejectResponse(bodyResult, TICKET_JSON_MAX_BODY_BYTES, {
+        logPrefix: '[POST /api/tickets]',
+        messages: TICKET_JSON_BODY_REJECT_MESSAGES,
+      });
+    }
+    // 読み取れた文字列を JSON として解析する (解析失敗の扱いは移行前と同じ 400)
     try {
-      rawInput = (await req.json()) as Record<string, unknown>; // JSON を JS オブジェクトに変換する
+      rawInput = JSON.parse(bodyResult.text) as Record<string, unknown>; // JSON を JS オブジェクトに変換する
     } catch (jsonErr) {
       // JSON の解析失敗はサーバログにエラーとして記録する (握りつぶさない)
       console.error('[POST /api/tickets] failed to parse JSON body', jsonErr);
