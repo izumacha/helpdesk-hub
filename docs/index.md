@@ -28,6 +28,9 @@
 ## 進捗・レビュー
 
 - [issue-backlog](./issue-backlog.md) — 優先度ベースの実装バックログ
-- [github-issues](./github-issues.md) — GitHub Issue 登録用の Issue ドラフト集
-- [pr-review-report](./pr-review-report.md) — PR レビューレポート
-- [self-review](./self-review.md) — セルフレビュー記録
+
+## アーカイブ（歴史的記録・現行状態を反映しない）
+
+- [github-issues](./archive/github-issues.md) — GitHub Issue 登録用の Issue ドラフト集（初期開発時）
+- [pr-review-report](./archive/pr-review-report.md) — 過去の PR レビューレポート
+- [self-review](./archive/self-review.md) — セルフレビュー記録（2026-04-10）

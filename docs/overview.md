@@ -320,4 +320,4 @@ Pro モードの問い合わせは 7 つのステータスを行き来します�
 ### 履歴・調整資料
 
 - [`version-integration.md`](./version-integration.md) — 要件差分の調停ルール
-- [`pr-review-report.md`](./pr-review-report.md) — 過去の PR レビュー履歴
+- [`archive/pr-review-report.md`](./archive/pr-review-report.md) — 過去の PR レビュー履歴（アーカイブ）

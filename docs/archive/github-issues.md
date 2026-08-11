@@ -1,4 +1,6 @@
-[← ドキュメント目次](./index.md) / GitHub Issues 登録用ドラフト（36件）
+[← ドキュメント目次](../index.md) / GitHub Issues 登録用ドラフト（36件）
+
+> **アーカイブ（歴史的記録）**: 本書は作成当時の内容をそのまま保存したものであり、現行の状態を反映しない。最新の進捗・優先度は [`issue-backlog.md`](../issue-backlog.md) と正本 [`smb-dx-pivot-plan.md`](../smb-dx-pivot-plan.md) を参照。
 
 # GitHub Issues 登録用ドラフト（36件）
 
