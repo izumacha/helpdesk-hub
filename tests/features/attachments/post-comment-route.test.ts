@@ -181,6 +181,27 @@ function buildRequest(body: string, files: File[]): Request {
   });
 }
 
+// 実ブラウザと同じ生の multipart ボディを組み立てるヘルパー。
+// **buildRequest とは別に用意する理由**: undici の FormData は、名前が空の File を append しても
+// Content-Disposition に filename を出力しない (= サーバー側では文字列エントリになる) ため、
+// 未選択 file input の再現にならない。実ブラウザは filename="" のパートを送り、undici はこれを
+// File (name: '', size: 0) として解析する — つまり instanceof File では落ちない。
+function buildRawMultipartRequest(body: string, extraParts: string): Request {
+  const boundary = '----browserlike';
+  const raw =
+    `--${boundary}\r\nContent-Disposition: form-data; name="body"\r\n\r\n${body}\r\n` +
+    extraParts +
+    `--${boundary}--\r\n`;
+  return new Request('http://localhost/api/tickets/x/comments', {
+    method: 'POST',
+    body: new TextEncoder().encode(raw),
+    headers: {
+      'sec-fetch-site': 'same-origin',
+      'content-type': `multipart/form-data; boundary=${boundary}`,
+    },
+  });
+}
+
 // 動的セグメント params の Promise を作るヘルパー
 function makeParams(id: string) {
   return { params: Promise.resolve({ id }) };
@@ -207,6 +228,28 @@ beforeEach(() => {
 });
 
 describe('POST /api/tickets/[id]/comments', () => {
+  // 回帰テスト: 写真を添付せずにコメントを送っても 201 になること。
+  // ブラウザは未選択の <input type="file"> を filename="" のパートとして必ず送り、undici は
+  // これを File (name: '', size: 0) として解析する。ルート側で番兵を落とし損ねると
+  // validateUploadedFiles が 0 バイトとして拒否し、**添付なしのコメント投稿が全て
+  // 422「空のファイルは添付できません」で失敗する** (実際にこの状態だった)。
+  // selectAttachmentFiles を素の instanceof File に戻すとこのテストが 422 で落ちる。
+  it('accepts a comment when the file input was left empty (browser sends filename="")', async () => {
+    const { ticketId } = await seed();
+    mockSession = buildSession(REQUESTER, 'requester', TENANT);
+    const { POST } = await import('@/app/api/tickets/[id]/comments/route');
+    const emptyFilePart =
+      `------browserlike\r\nContent-Disposition: form-data; name="files"; filename=""\r\n` +
+      `Content-Type: application/octet-stream\r\n\r\n\r\n`;
+    const res = await POST(
+      buildRawMultipartRequest('添付なしのコメント', emptyFilePart),
+      makeParams(ticketId),
+    );
+    expect(res.status).toBe(201);
+    // 番兵が添付として保存されていないことも確認する (0 バイトの添付が生えない)
+    expect(store.attachments.size).toBe(0);
+  });
+
   // 未認証は 401
   it('returns 401 when no session', async () => {
     const { ticketId } = await seed();

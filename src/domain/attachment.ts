@@ -50,6 +50,111 @@ export function formatBytesAsGb(bytes: number): string {
   return (bytes / (1024 * 1024 * 1024)).toFixed(2);
 }
 
+// バイト数を MB に丸めて文字列化する (ユーザー向けエラーで使う)
+function formatMb(bytes: number): string {
+  // 小数第 1 位までに丸める (例: 10.0MB)
+  return (bytes / (1024 * 1024)).toFixed(1);
+}
+
+// 添付の違反を利用者に伝える文言。**サーバー検証 (validations/attachment.ts) と
+// フォームの事前検査が同じ文字列を使う**ための単一の参照元 (§6 UI 文言は単一の参照元に集約する)。
+// このモジュール冒頭が宣言しているとおり「同じ閾値・メッセージを使うための単一の真実源」は
+// ここなので、UI 層からも安全に import できるドメイン側に置く
+// (サーバー専用の非同期検証を含む validations/ 側に置くと、Client Component が
+// そのモジュール全体を依存グラフに引き込んでしまう)。
+export const EMPTY_ATTACHMENT_MESSAGE = '空のファイルは添付できません';
+export const ATTACHMENT_TOO_LARGE_MESSAGE = `1 ファイルあたり ${formatMb(MAX_ATTACHMENT_SIZE_BYTES)}MB までです`;
+export const TOO_MANY_ATTACHMENTS_MESSAGE = `添付ファイルは最大 ${MAX_ATTACHMENTS_PER_UPLOAD} 件までです`;
+
+/**
+ * 1 ファイルに対して「中身を読まずに判定できる違反」(空・サイズ超過) を探す。
+ * 違反があれば利用者向けの文言を、無ければ null を返す。
+ *
+ * **サーバー検証とフォームの事前検査がこの 1 つの関数を共有する。** 文言だけを共有して
+ * 判定式を各所に書き写すと、片方に検査を足したり判定順を入れ替えたりしたときに
+ * 画面表示と実際の 422 がずれる (規則そのものを 1 箇所に置く / §6 DRY)。
+ *
+ * MIME とマジックバイトの検査をここに含めないのは、後者が非同期でバイト列の読み出しを伴い、
+ * ブラウザ側で先回りする利益が薄いため (サーバーが必ずやり直す)。
+ *
+ * @param file 判定対象のファイル
+ * @returns 違反があればその文言、無ければ null
+ */
+export function findCheapAttachmentViolation(file: File): string | null {
+  // size === 0 のファイルは空ファイル (フォームから誤って送られたケース) として弾く
+  if (file.size === 0) return EMPTY_ATTACHMENT_MESSAGE;
+  // 1 件あたりのサイズ上限を超えるファイルを弾く
+  if (file.size > MAX_ATTACHMENT_SIZE_BYTES) return ATTACHMENT_TOO_LARGE_MESSAGE;
+  // 安価に判定できる違反は無し (MIME・マジックバイトはサーバー側が見る)
+  return null;
+}
+
+/**
+ * FormData の `files` エントリから「実際に選ばれた添付」だけを取り出す。
+ *
+ * **未選択の file input が混ぜてくる番兵 (sentinel) を落とすのが目的。** HTML の仕様上、
+ * ファイルを 1 つも選んでいない `<input type="file">` もフォームにエントリを 1 件足す。
+ * その中身は、**ブラウザでもサーバーでも `File` (name: '', size: 0)** になる
+ * (実測: Chromium の `new FormData(form)` は空の File を返し、その `filename=""` パートを
+ * undici の `Response.formData()` に通しても空の File が返る)。
+ *
+ * **`instanceof File` の判定だけでは落ちない**点が要注意で、落とし損ねると
+ * `validateUploadedFiles` が 0 バイトとして拒否し、**添付を付けずに送っただけの投稿が
+ * 毎回「空のファイルは添付できません」で失敗する**。実際にコメント投稿がこの状態だった。
+ * ルート層の回帰テスト (`post-comment-route.test.ts` の「番兵」ケース) が
+ * ブラウザと同じ `filename=""` の生ボディで固定してある。
+ *
+ * 名前のある 0 バイトファイル (利用者が空のファイルを選んだ場合) は番兵ではないので残し、
+ * 「空のファイルは添付できません」で弾かれるようにする。
+ *
+ * @param entries `form.getAll('files')` の戻り値
+ * @returns 実際に選ばれた File だけの配列 (未選択なら空配列)
+ */
+export function selectAttachmentFiles(entries: FormDataEntryValue[]): File[] {
+  return entries.filter(
+    (entry): entry is File =>
+      // 文字列エントリ (想定外の値) は添付ではない
+      entry instanceof File &&
+      // 番兵 (名前が空 かつ 中身も空) は「未選択」なので添付として数えない
+      !(entry.name === '' && entry.size === 0),
+  );
+}
+
+/**
+ * 送信前にブラウザ側で判定できる添付の違反 (件数・空ファイル・1 件あたりのサイズ) を探す。
+ * 違反が見つかれば利用者向けの文言を、無ければ null を返す。
+ *
+ * **なぜフォーム側にも検査が要るのか**: 合計サイズがボディの受け入れ枠
+ * (`ticket-body-limits.ts` の `ATTACHMENT_UPLOAD_MAX_BODY_BYTES`) を超えると、サーバーは
+ * Content-Length の申告だけで判断して**本文を 1 バイトも読まずに 413 を返す**
+ * (`request-body-limit.ts`)。このとき送信途中の接続が未消費のまま閉じるため、ブラウザが
+ * 応答より先に接続断を観測して fetch が reject し、画面には「通信状態をご確認ください」という
+ * 的外れな案内しか出せない (本来出したいのは「1 ファイルあたり 10.0MB までです」)。
+ * 件数上限 × 1 件あたりの上限は枠の内側に収まるので、**ここで弾いておけば正規の入力が
+ * 413 に到達することはなくなり**、違反したときは具体的な理由が画面に出る。
+ *
+ * **これは体験のための先回りであって、検証の本体ではない。** クライアントの検査は改ざんできるため、
+ * 件数・サイズ・MIME・マジックバイトの判定は従来どおりサーバー側の `validateUploadedFiles` が
+ * 権威を持つ (§9 認可・検証はサーバー側で強制する)。
+ *
+ * @param files フォームで選択された File の一覧 (添付なしは空配列)
+ * @returns 違反があればその文言、無ければ null
+ */
+export function findAttachmentPreflightError(files: File[]): string | null {
+  // 添付なしは常に許可 (添付は任意のため)
+  if (files.length === 0) return null;
+  // 件数上限を超えていたら、その時点で確定なので先に返す
+  if (files.length > MAX_ATTACHMENTS_PER_UPLOAD) return TOO_MANY_ATTACHMENTS_MESSAGE;
+  // 1 件ずつ、サーバー検証と同じ関数で安価な検査だけ当てる
+  for (const file of files) {
+    const violation = findCheapAttachmentViolation(file);
+    // 1 件でも違反があれば、その文言をそのまま返す
+    if (violation) return violation;
+  }
+  // 安価な検査はすべて通過
+  return null;
+}
+
 // 添付ファイル 1 件分のドメイン表現 (画面表示・API 配信で使う最小情報)
 export interface Attachment {
   id: string; // 添付 ID (主キー)

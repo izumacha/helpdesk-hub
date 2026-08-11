@@ -4,10 +4,13 @@
 import { useRef, useState, useTransition } from 'react';
 // 投稿後のサーバー側キャッシュを再取得させるためのルーター
 import { useRouter } from 'next/navigation';
-// 添付ファイル件数の上限 (UI ヒント表示用)
-import { MAX_ATTACHMENTS_PER_UPLOAD } from '@/domain/attachment';
-// 送信前の添付チェックと、未選択 file input の番兵を落とすヘルパー (サーバー検証と文言を共有する)
-import { findAttachmentPreflightError, selectAttachmentFiles } from '@/lib/validations/attachment';
+// MAX_ATTACHMENTS_PER_UPLOAD は UI ヒント表示用、残り 2 つは送信前の添付チェックと
+// 未選択 file input の番兵除去 (いずれもサーバー検証と規則・文言を共有する)
+import {
+  MAX_ATTACHMENTS_PER_UPLOAD,
+  findAttachmentPreflightError,
+  selectAttachmentFiles,
+} from '@/domain/attachment';
 // 「送信そのものが成立しなかった」ときの共通文言 (新規起票フォームと共有)
 import { NETWORK_ERROR_MESSAGE } from '@/lib/constants';
 
@@ -49,10 +52,10 @@ export function CommentForm({ ticketId }: Props) {
     // 送信前に、ブラウザ側で判定できる添付の違反 (件数・空・1 件あたりのサイズ) を先に弾く。
     // 枠 (51MB) を超える送信はサーバーが本文を読まずに 413 を返すため、そのまま送ると接続断で
     // fetch が reject し「通信状態をご確認ください」という的外れな案内しか出せない。
-    // 検証の本体はサーバー側 (validateUploadedFiles) のままで、これは体験のための先回り
-    // 未選択の file input が足す番兵 (name/size とも空の File) は selectAttachmentFiles が落とす。
-    // ここを instanceof File だけで済ませると、添付なしのコメントが毎回「空のファイルは添付できません」で
-    // 止まってしまう (ブラウザでは番兵が本物の File として現れるため)
+    // 検証の本体はサーバー側 (validateUploadedFiles) のままで、これは体験のための先回り。
+    // 未選択の file input が足す番兵 (name/size とも空の File) は selectAttachmentFiles が落とす —
+    // ここを instanceof File だけで済ませると、添付なしのコメントが毎回
+    // 「空のファイルは添付できません」で止まってしまう
     const selectedFiles = selectAttachmentFiles(data.getAll('files'));
     const attachmentError = findAttachmentPreflightError(selectedFiles);
     if (attachmentError) {

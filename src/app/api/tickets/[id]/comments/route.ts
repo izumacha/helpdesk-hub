@@ -32,7 +32,9 @@ import { enforceRateLimit, RateLimitError } from '@/lib/rate-limit';
 // コメント本文の Zod スキーマ
 import { commentBodySchema } from '@/lib/validations/ticket';
 // 添付ファイル検証ヘルパー
-import { selectAttachmentFiles, validateUploadedFiles } from '@/lib/validations/attachment';
+import { validateUploadedFiles } from '@/lib/validations/attachment';
+// 実際に選ばれた添付だけを取り出すヘルパー (未選択 file input の番兵を落とす。ドメイン規則)
+import { selectAttachmentFiles } from '@/domain/attachment';
 // 添付ファイルのストレージ保存 / 失敗時クリーンアップの共通ヘルパー (POST /api/tickets・
 // POST /api/inbound/email と共有。/code-review ultra 指摘対応: 3 箇所目の重複を解消)
 // checkTicketAttachmentQuota はチケット当たりの添付総数上限チェック (監査で発見したギャップ対応)

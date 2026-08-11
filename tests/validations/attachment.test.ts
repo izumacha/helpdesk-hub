@@ -4,16 +4,17 @@
 // Vitest の DSL
 import { describe, expect, it } from 'vitest';
 // 検証対象
+import { validateUploadedFiles } from '@/lib/validations/attachment';
+// ドメイン側の規則: 上限値・共有文言・番兵除去・送信前チェック
 import {
   ATTACHMENT_TOO_LARGE_MESSAGE,
   EMPTY_ATTACHMENT_MESSAGE,
+  MAX_ATTACHMENT_SIZE_BYTES,
+  MAX_ATTACHMENTS_PER_UPLOAD,
   TOO_MANY_ATTACHMENTS_MESSAGE,
   findAttachmentPreflightError,
   selectAttachmentFiles,
-  validateUploadedFiles,
-} from '@/lib/validations/attachment';
-// ドメイン定数 (上限値の参照用)
-import { MAX_ATTACHMENT_SIZE_BYTES, MAX_ATTACHMENTS_PER_UPLOAD } from '@/domain/attachment';
+} from '@/domain/attachment';
 
 // 既知のマジックバイト (各画像形式のシグネチャ)
 const JPEG_MAGIC = new Uint8Array([0xff, 0xd8, 0xff, 0xe0]);
@@ -147,8 +148,9 @@ describe('validateUploadedFiles', () => {
 // 未選択の file input が混ぜてくる番兵を落とす selectAttachmentFiles の検証。
 // **ブラウザの実挙動を写し取ったテスト**: Chromium で `new FormData(form)` を実行すると、
 // ファイル未選択の <input type="file"> は File (name: '', size: 0, type: 'application/octet-stream')
-// を 1 件足す (サーバー側で undici が multipart を解析した場合は空文字列になる)。
-// ここが落ちないと、添付なしのコメントが毎回「空のファイルは添付できません」で止まる。
+// を 1 件足す。その `filename=""` パートはサーバー側 (undici) でも File として解析されるため、
+// **instanceof File の判定では落ちない**。ここが落ちないと、添付なしの投稿が毎回
+// 「空のファイルは添付できません」で失敗する (ルート層の回帰は post-comment-route.test.ts)。
 describe('selectAttachmentFiles', () => {
   // ブラウザの番兵 (名前も中身も空の File) は添付として数えない
   it('drops the empty-file sentinel a browser appends for an unselected file input', () => {
@@ -156,8 +158,8 @@ describe('selectAttachmentFiles', () => {
     expect(selectAttachmentFiles([sentinel])).toEqual([]);
   });
 
-  // サーバー側の番兵 (空文字列) も添付として数えない
-  it('drops the empty-string sentinel undici produces server-side', () => {
+  // 想定外の文字列エントリも添付として数えない
+  it('drops a plain string entry', () => {
     expect(selectAttachmentFiles([''])).toEqual([]);
   });
 
@@ -171,7 +173,7 @@ describe('selectAttachmentFiles', () => {
   it('keeps real files while dropping a sentinel mixed in', () => {
     const real = makeFile({ size: 100, type: 'image/png', name: 'a.png', magic: PNG_MAGIC });
     const sentinel = new File([], '', { type: 'application/octet-stream' });
-    expect(selectAttachmentFiles([sentinel, real]).map((f) => f.name)).toEqual(['a.png']);
+    expect(selectAttachmentFiles([sentinel, real]).map((f: File) => f.name)).toEqual(['a.png']);
   });
 });
 

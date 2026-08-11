@@ -10,16 +10,18 @@ import { zodResolver } from '@hookform/resolvers/zod';
 import { useRouter } from 'next/navigation';
 // チケット作成入力の Zod スキーマと型
 import { createTicketSchema, type CreateTicketFormValues } from '@/lib/validations/ticket';
-// PRIORITY_LABELS は優先度の日本語ラベル、NETWORK_ERROR_MESSAGE は
-// 「送信そのものが成立しなかった」ときの共通文言 (コメント投稿フォームと共有)
-import { NETWORK_ERROR_MESSAGE, PRIORITY_LABELS } from '@/lib/constants';
+// PRIORITY_LABELS は優先度の日本語ラベル、NETWORK_ERROR_MESSAGE は「送信そのものが成立しなかった」
+// ときの共通文言 (コメント投稿フォームと共有)、最後は登録成功後に遷移だけ失敗したときの文言
+import {
+  NETWORK_ERROR_MESSAGE,
+  PRIORITY_LABELS,
+  TICKET_CREATED_BUT_NAVIGATION_FAILED_MESSAGE,
+} from '@/lib/constants';
 // テナントモード型 (lite | pro)。Lite では入力項目を 3 つに絞る
 import type { TenantMode } from '@/domain/types';
-// 送信前に添付の違反 (件数・空・1 件あたりのサイズ) を判定する共有ヘルパー。
-// サーバー側の検証と同じ文言を返すので、事前に弾いても案内がぶれない
-import { findAttachmentPreflightError } from '@/lib/validations/attachment';
-// 添付ファイル件数の上限 (UI ヒント表示用)
-import { MAX_ATTACHMENTS_PER_UPLOAD } from '@/domain/attachment';
+// MAX_ATTACHMENTS_PER_UPLOAD は UI ヒント表示用、findAttachmentPreflightError は送信前の
+// 添付チェック (サーバー側の検証と同じ規則・文言を返すので、事前に弾いても案内がぶれない)
+import { MAX_ATTACHMENTS_PER_UPLOAD, findAttachmentPreflightError } from '@/domain/attachment';
 
 // プルダウン項目用の最小型 (id と name)
 type Category = { id: string; name: string };
@@ -160,7 +162,8 @@ export function TicketForm({ categories, locations, mode }: Props) {
       // エラー応答が JSON でないこともある (プロキシが返す 413 の HTML 等)。
       // その場合は本文の解析に失敗するので、ステータスだけを添えた文言にフォールバックする
       try {
-        const err = await res.json();
+        // 応答の形は API のエラー契約 { error, issues } を明示する (any にしない / §6 TypeScript)
+        const err = (await res.json()) as { error?: string; issues?: Array<{ message?: string }> };
         // 添付検証 (422 + issues に path:['files'] が入る) のメッセージも拾える
         const issueMessage = Array.isArray(err.issues) ? err.issues[0]?.message : null;
         setServerError(issueMessage ?? err.error ?? '登録に失敗しました');
@@ -172,8 +175,25 @@ export function TicketForm({ categories, locations, mode }: Props) {
       return;
     }
 
-    // 成功時: 作成された行を読み取り、詳細ページへ遷移
-    const ticket = await res.json();
+    // 成功時: 作成された行を読み取り、詳細ページへ遷移。
+    // 200 系でも本文が JSON とは限らない (プロキシやキャッシュ層が差し込むことがある) ため、
+    // ここも解析失敗を捕まえる。捕まえないと Promise が rejected になるだけで画面には何も出ず、
+    // 利用者は登録できたのか分からないまま止まる
+    let ticket: { id?: string };
+    try {
+      ticket = (await res.json()) as { id?: string };
+    } catch (parseErr) {
+      // 解析できなかった理由をコンソールに残す (§6 エラーを握り潰さない)
+      console.error('[TicketForm] 成功応答を JSON として解析できませんでした', parseErr);
+      setServerError(TICKET_CREATED_BUT_NAVIGATION_FAILED_MESSAGE);
+      return;
+    }
+    // id が無い応答で /tickets/undefined へ飛ばさない (存在しないページに着地させない)
+    if (!ticket.id) {
+      console.error('[TicketForm] 成功応答にチケット ID が含まれていません', ticket);
+      setServerError(TICKET_CREATED_BUT_NAVIGATION_FAILED_MESSAGE);
+      return;
+    }
     router.push(`/tickets/${ticket.id}`);
   }
 
