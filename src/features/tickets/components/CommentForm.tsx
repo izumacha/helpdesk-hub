@@ -98,7 +98,12 @@ export function CommentForm({ ticketId }: Props) {
 
       // 失敗時: Route Handler の error / issues[0].message を読み取って画面に出す。
       // 読み取り手順は新規起票フォームと共通のヘルパーに委ねる (§6 DRY)
-      setError(await readApiErrorMessage(res, '送信に失敗しました', '[CommentForm]'));
+      setError(
+        await readApiErrorMessage(res, {
+          fallbackMessage: '送信に失敗しました',
+          logPrefix: '[CommentForm]',
+        }),
+      );
     });
   }
 

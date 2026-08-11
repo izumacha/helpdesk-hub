@@ -26,23 +26,37 @@ interface ApiErrorBody {
  * 理由をコンソールに残したうえでステータス番号を添えた文言へ落とす
  * (§6 エラーを握り潰さない / §9 内部詳細は画面に出さない)。
  *
+ * **引数はオブジェクトで受け取る。** `fallbackMessage` と `logPrefix` はどちらも string なので、
+ * 位置引数だと取り違えても型検査を通ってしまい、画面に '[TicketForm] (HTTP 502)' が出て
+ * ログ側に利用者向け文言が流れる、という壊れ方をする (このヘルパーは「間違えようがない形」に
+ * するために切り出したので、その穴を残さない)。
+ *
  * @param res 失敗した fetch のレスポンス
- * @param fallbackMessage 本文から何も読み取れなかったときに使う既定文言
- * @param logPrefix ログ行の先頭に付ける識別子 (角括弧まで含めて渡す。例: '[TicketForm]')
+ * @param options.fallbackMessage 本文から何も読み取れなかったときに使う既定文言
+ * @param options.logPrefix ログ行の先頭に付ける識別子 (角括弧まで含めて渡す。例: '[TicketForm]')
  * @returns 画面にそのまま出せる日本語メッセージ
  */
 export async function readApiErrorMessage(
   res: Response,
-  fallbackMessage: string,
-  logPrefix: string,
+  options: {
+    fallbackMessage: string; // 何も読み取れなかったときに出す文言
+    logPrefix: string; // ログ行の識別子 (角括弧込み)
+  },
 ): Promise<string> {
+  const { fallbackMessage, logPrefix } = options;
   try {
     // エラー契約の形を明示して読む (any にしない / §6 TypeScript)
     const body = (await res.json()) as ApiErrorBody | null;
     // 項目ごとの検証エラーがあれば、その先頭を最優先で使う
     const issueMessage = Array.isArray(body?.issues) ? body.issues[0]?.message : null;
-    // issues → error → 既定文言 の順に採用する
-    return issueMessage ?? body?.error ?? fallbackMessage;
+    // **文字列であることを実際に確かめてから返す。** 上のキャストは型注釈にすぎず、
+    // 想定外の応答 ({"error": {"code": "..."}} 等) では object が素通りしてしまう。
+    // それを setState に渡すと React が「Objects are not valid as a React child」で
+    // 描画ごと落ち、エラー表示どころか画面が真っ白になる
+    if (typeof issueMessage === 'string') return issueMessage;
+    if (typeof body?.error === 'string') return body.error;
+    // 読めたが文字列ではなかった場合も、既定文言へ落とす
+    return fallbackMessage;
   } catch (parseErr) {
     // JSON として読めなかった理由はコンソールに残す (画面には出さない)
     console.error(`${logPrefix} エラー応答を JSON として解析できませんでした`, parseErr);

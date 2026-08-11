@@ -12,7 +12,11 @@ import { useRouter } from 'next/navigation';
 import { createTicketSchema, type CreateTicketFormValues } from '@/lib/validations/ticket';
 // PRIORITY_LABELS は優先度の日本語ラベル、NETWORK_ERROR_MESSAGE は「送信そのものが成立しなかった」
 // ときの共通文言 (コメント投稿フォームと共有)
-import { NETWORK_ERROR_MESSAGE, PRIORITY_LABELS } from '@/lib/constants';
+import {
+  NETWORK_ERROR_MESSAGE,
+  PRIORITY_LABELS,
+  TICKET_RESULT_UNKNOWN_MESSAGE,
+} from '@/lib/constants';
 // エラー応答から画面用のメッセージを取り出す共通ヘルパー (コメント投稿フォームと共有)
 import { readApiErrorMessage } from '@/lib/api-error-message';
 // テナントモード型 (lite | pro)。Lite では入力項目を 3 つに絞る
@@ -159,7 +163,12 @@ export function TicketForm({ categories, locations, mode }: Props) {
     // 応答の読み取り (添付検証 422 の issues 優先・非 JSON へのフォールバック) は
     // コメント投稿フォームと共通のヘルパーに委ねる (§6 DRY)
     if (!res.ok) {
-      setServerError(await readApiErrorMessage(res, '登録に失敗しました', '[TicketForm]'));
+      setServerError(
+        await readApiErrorMessage(res, {
+          fallbackMessage: '登録に失敗しました',
+          logPrefix: '[TicketForm]',
+        }),
+      );
       return;
     }
 
@@ -181,11 +190,15 @@ export function TicketForm({ categories, locations, mode }: Props) {
       router.push(`/tickets/${ticket.id}`);
       return;
     }
-    // ID が読めなかった場合: 登録自体は成功している (2xx) ので、**一覧へ遷移する**。
-    // ここでフォームを残したままエラー文言だけ出すと、利用者がもう一度「登録する」を押して
-    // 同じ内容の重複チケットが生まれる。一覧へ送れば、作成済みのチケットがそこに見える
+    // ID が読めなかった場合。**「2xx だから登録できた」とは判断しない**のが要点:
+    // このルートは成功時に必ず id を含む JSON を返すので、読み取れないということは
+    // 応答を返したのがこのアプリではない可能性が高い (社内プロキシやキャッシュ層が
+    // 差し込んだ 200 の HTML など)。つまり実際には登録されていない公算が大きい。
+    // ここで一覧へ遷移すると、入力した内容を失ったうえ何も表示されないまま終わる。
+    // フォームと入力値はそのまま残し、**確認してから再送**するよう促す
+    // (重複を避けたいので「もう一度お試しください」だけにはしない)
     console.error('[TicketForm] 成功応答からチケット ID を読み取れませんでした', ticket);
-    router.push('/tickets');
+    setServerError(TICKET_RESULT_UNKNOWN_MESSAGE);
   }
 
   return (
