@@ -115,7 +115,7 @@ docker compose exec app npx prisma db seed
 
 ### ローカル直接起動
 
-**前提条件:** Node.js 20+, PostgreSQL
+**前提条件:** Node.js 22.19+, PostgreSQL
 
 ```bash
 # 依存関係インストール
