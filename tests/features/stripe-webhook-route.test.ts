@@ -34,11 +34,21 @@ vi.mock('@/data', () => ({
 // Stripe SDK 呼び出し (署名検証・Price ID→プラン判定) をモックする。
 // vi.hoisted で先に用意することで、vi.mock のファクトリから参照できるようにする (巻き上げ順序対策)。
 // planForNextCall でテストごとに「今回のイベントで判定させたいプラン」を差し替える。
-// constructEventSpy は #287 の移行 (req.text() → readBodyWithinByteLimit + TextDecoder) で
-// 「署名検証へ渡る生ボディ」が変わっていないことを検証するために呼び出しを記録する
+// constructEventSpy は「署名検証へ渡る生ボディ」を検証するために呼び出しを記録する。
+// #290 以降、ルートは復号を挟まず受信バイト列そのものを Buffer で渡すため、
+// スパイ側も Buffer を受け取れる形にしてある (本物の Stripe SDK も string | Buffer を受け付ける)
 const { planForNextCall, constructEventSpy } = vi.hoisted(() => ({
   planForNextCall: { current: 'pro' as 'free' | 'standard' | 'pro' },
-  constructEventSpy: vi.fn((rawBody: string) => JSON.parse(rawBody) as unknown),
+  // 署名検証はモックで飛ばし、受け取ったバイト列を JSON として解釈するだけにする。
+  // 引数の型を Uint8Array に固定してあるのが要点で、ルートが復号済みの文字列を渡す形へ
+  // 退行すると型チェックと実行時の両方で落ちる (SDK の WebhookPayload は string も許すため、
+  // 本物の型をそのまま使うと退行を検出できない)。
+  // 復号に TextDecoder を使うのは、BOM 付きの本文でも JSON として解釈できるようにするため。
+  // **このスパイの復号はあくまで JSON 解釈用**で、署名対象が何だったかは
+  // mock.calls に記録された引数そのもので確かめる
+  constructEventSpy: vi.fn(
+    (rawBody: Uint8Array) => JSON.parse(new TextDecoder().decode(rawBody)) as unknown,
+  ),
 }));
 vi.mock('@/lib/stripe', () => ({
   // 署名検証はモックし、リクエストボディの JSON をそのまま Stripe イベントとして扱う
@@ -318,12 +328,11 @@ describe('POST /api/webhooks/stripe', () => {
     expect(tenant.stripeEventProcessedAt?.getTime()).toBe(newEventCreatedAtSec * 1000);
   });
 
-  // #287: ボディの読み取りを readBodyWithinByteLimit に寄せても、署名検証へ渡る文字列が
-  // 移行前 (request.text()) と 1 バイトも変わらないことを固定する。
+  // #287 / #290: SDK の署名検証へ渡るのが「受信したバイト列そのもの」であることを固定する。
   // 読み取り方法の変更は署名検証の回帰に直結する (デコードや切り詰めが 1 箇所でも挟まると
   // 正規の Stripe イベントが全て検証失敗になり、課金状態の反映が丸ごと止まる) ため、
   // マルチバイト文字を含む本文で「受信した本文そのもの」が渡ることを表明する
-  it('署名検証には受信した本文がそのまま渡る (マルチバイト文字を含んでも一致する)', async () => {
+  it('SDK には受信した本文がそのまま渡る (マルチバイト文字を含んでも一致する)', async () => {
     seedTenant('lite', 'free');
     // 日本語 + 絵文字 (サロゲートペア) を含めて、UTF-8 の復号・再エンコードが挟まっても
     // 壊れないことを確かめる (壊れると実運用では HMAC 不一致 = 全イベント拒否になる)
@@ -351,11 +360,100 @@ describe('POST /api/webhooks/stripe', () => {
     );
     // イベントとして処理されている (= 復元した本文が JSON として壊れていない)
     expect(res.status).toBe(200);
-    // 署名検証へ渡った第 1 引数が、送信した本文と完全一致する (これが崩れると HMAC が不一致になる)
+    // 署名検証へ渡った第 1 引数が、送信したバイト列と完全一致する
+    // (これが崩れると HMAC が不一致になる)
     expect(constructEventSpy).toHaveBeenCalledTimes(1);
-    expect(constructEventSpy.mock.calls[0]![0]).toBe(body);
+    const passed = constructEventSpy.mock.calls[0]![0];
+    // #290: 復号済み文字列ではなく生バイト列が渡ることを表明する
+    // (SDK の payload 型は string も許すので、渡し方の退行はここでしか捕まえられない)
+    expect(passed).toBeInstanceOf(Uint8Array);
+    // 送信した本文を UTF-8 でエンコードしたバイト列と 1 バイトも違わない
+    expect(Buffer.compare(passed, Buffer.from(body, 'utf8'))).toBe(0);
     // 署名検証の先まで進み、プラン反映まで到達している
     expect(store.tenants.get(TENANT)!.subscriptionPlan).toBe('pro');
+  });
+
+  // #290: 先頭 BOM (EF BB BF) を含む本文でも、ルートが本文を加工せず SDK へ渡すこと。
+  //
+  // **このテストが表明する範囲に注意。** constructEvent はモックなので、確かめているのは
+  // 「ルート層が受信バイト列を BOM ごとそのまま境界へ渡す」ところまでで、**署名検証が
+  // 生バイト列基準で成立すること**ではない。実際の SDK (stripe@22.4.0) は payload を内部で
+  // TextDecoder に通してから HMAC を組むため、BOM によるずれは SDK の内側に残る
+  // (根拠と、それでもバイト列を渡す理由は route ファイル冒頭のセキュリティ要点 4)。
+  // それでもこの表明に価値があるのは、**ルート層が復号・切り詰め・正規化を再び挟む退行**を
+  // 検出できるため (SDK が将来バイト列で検証するようになった時に効いてくる前提条件でもある)
+  it('先頭 BOM を含む本文でも、ルートは BOM 込みのバイト列を SDK へ渡す', async () => {
+    seedTenant('lite', 'free');
+    const json = JSON.stringify({
+      created: Math.floor(Date.now() / 1000),
+      type: 'customer.subscription.updated',
+      data: {
+        object: {
+          id: 'sub_bom',
+          customer: 'cus_bom',
+          status: 'active',
+          items: { data: [{ price: { id: 'price_pro' } }] },
+          metadata: { tenantId: TENANT },
+        },
+      },
+    });
+    // BOM を先頭に付けたバイト列を作る (文字列ではなくバイト列で送るのが要点)
+    const bodyBytes = Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from(json, 'utf8')]);
+    const { POST } = await import('@/app/api/webhooks/stripe/route');
+    const res = await POST(
+      new Request('http://localhost/api/webhooks/stripe', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'stripe-signature': 'sig' },
+        body: bodyBytes,
+      }),
+    );
+    expect(res.status).toBe(200);
+    // SDK へ渡ったバイト列に BOM がそのまま残っている (ルートで復号を挟むと 3 バイト短くなる)
+    expect(constructEventSpy).toHaveBeenCalledTimes(1);
+    expect(Buffer.compare(constructEventSpy.mock.calls[0]![0], bodyBytes)).toBe(0);
+  });
+
+  // #290: 不正な UTF-8 バイト列を含む本文でも、ルート層で置換文字 (U+FFFD) へ潰さないこと。
+  // 表明の範囲は上の BOM のテストと同じ (ルート層が加工しないところまで)。
+  // 不正バイトは Stripe が JSON 文字列として扱える位置 (metadata の値) に混ぜる
+  it('不正な UTF-8 を含む本文でも、ルートは置換せずそのまま SDK へ渡す', async () => {
+    seedTenant('lite', 'free');
+    // 単独の 0x80 は UTF-8 として不正 (継続バイトが先頭に来ている)。復号すると U+FFFD になる
+    const invalidUtf8 = Buffer.from([0x80]);
+    // JSON 構造は壊さず metadata.memo の値の中にだけ不正バイトを差し込む。
+    // 目印を JSON へ埋めてから前後で切り、その隙間に不正バイトを挟む
+    // (文字列置換で組み立てると閉じ括弧の位置がずれて JSON が壊れる)
+    const [beforeMarker, afterMarker] = JSON.stringify({
+      created: Math.floor(Date.now() / 1000),
+      type: 'customer.subscription.updated',
+      data: {
+        object: {
+          id: 'sub_bad',
+          customer: 'cus_bad',
+          status: 'active',
+          items: { data: [{ price: { id: 'price_pro' } }] },
+          metadata: { tenantId: TENANT, memo: 'INVALID_BYTE_HERE' },
+        },
+      },
+    }).split('INVALID_BYTE_HERE');
+    const bodyBytes = Buffer.concat([
+      Buffer.from(beforeMarker!, 'utf8'),
+      invalidUtf8,
+      Buffer.from(afterMarker!, 'utf8'),
+    ]);
+    const { POST } = await import('@/app/api/webhooks/stripe/route');
+    const res = await POST(
+      new Request('http://localhost/api/webhooks/stripe', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'stripe-signature': 'sig' },
+        body: bodyBytes,
+      }),
+    );
+    expect(res.status).toBe(200);
+    // SDK へ渡ったバイト列が受信したものと 1 バイトも違わない
+    // (ルートで復号を挟むと 0x80 が U+FFFD の 3 バイトへ膨らんで落ちる)
+    expect(constructEventSpy).toHaveBeenCalledTimes(1);
+    expect(Buffer.compare(constructEventSpy.mock.calls[0]![0], bodyBytes)).toBe(0);
   });
 
   // 署名ヘッダが無いリクエストは 400 で拒否する (なりすまし対策)

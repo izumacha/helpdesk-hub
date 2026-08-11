@@ -10,8 +10,21 @@
 // 2. Stripe Webhook Secret (STRIPE_WEBHOOK_SECRET) は環境変数のみで管理し、コードにハードコードしない。
 // 3. 本ルートは CSRF トークン不要 (Stripe のサーバー→サーバー呼び出し。ブラウザ経由ではない)。
 // 4. 本ルートへのリクエストボディは raw bytes で読む必要がある (署名は生の本文に対して計算される)。
-//    App Router には bodyParser が無いので、サイズ上限つきの読み取りヘルパーで生バイト列を取得し、
-//    それを UTF-8 で復号した文字列を署名検証へ渡す (#287)。
+//    App Router には bodyParser が無いので、サイズ上限つきの読み取りヘルパー (#287) で生バイト列を
+//    取得し、**こちら側では復号せずそのまま** constructEvent へ渡す (#290)。
+//
+//    **既知の限界 (#290): 生バイト列を渡しても、HMAC の対象は SDK が復号した文字列になる。**
+//    stripe@22.4.0 の `parseEventDetails` は payload が Uint8Array なら
+//    `new TextDecoder('utf8').decode(payload)` で文字列化し、`verifyHeader` はその文字列で
+//    `${timestamp}.${payload}` を組んで HMAC を計算する (`Webhooks.js`)。つまり Buffer を渡しても
+//    文字列を渡しても HMAC の入力は同じで、**先頭 BOM の除去・不正 UTF-8 の U+FFFD 置換による
+//    署名ずれは SDK の内側で起きるため、このルート層では塞げない**。
+//    塞ぐには Stripe の署名方式 (v1 スキーム・タイムスタンプ許容差・リプレイ窓) を自前で
+//    実装し直すことになり、§9「暗号・認証情報は自前実装しない」に反するので採らない。
+//    それでも復号を SDK 側に寄せてあるのは、(a) このルートが本文の解釈について判断を持たなくなる、
+//    (b) SDK が将来バイト列のまま検証するようになれば自動的に追随できる、の 2 点による。
+//    実運用では Stripe は妥当な UTF-8 の JSON しか送らないため、現時点で顕在化する不具合ではない。
+//    (LINE 側 `inbound/line` は自前で HMAC を計算しているので、そちらは生バイト列で検証している)
 
 import { NextResponse } from 'next/server';
 // Stripe SDK の型定義 (Event 型を handleStripeEvent の引数に使う)
@@ -28,8 +41,9 @@ import { isProModeAllowed } from '@/lib/plan-guard';
 import type { SubscriptionPlan } from '@/domain/types';
 // §4.3 フォローアップ: 設定変更監査ログへの記録を共通化するヘルパー
 import { recordSettingsAudit } from '@/lib/settings-audit';
-// リクエストボディをサイズ上限つきで読み取るヘルパーと、拒否時の応答を組み立てるヘルパー (#287)
-import { readTextWithinByteLimit } from '@/lib/request-body-limit';
+// リクエストボディをサイズ上限つきで読み取るヘルパー (#287)。署名検証は復号前のバイト列に
+// 対して行うため、文字列版ではなく生バイト列を返す方を使う (#290)
+import { readBodyWithinByteLimit } from '@/lib/request-body-limit';
 // 拒否時のログ・ステータス・文言をまとめて組み立てるヘルパー (ルート層の関心事なので別モジュール)
 import { bodyRejectResponse } from '@/lib/body-reject-response';
 // 拒否理由ごとの文言 (route とテストが同じ表を参照する。理由は同モジュール冒頭)
@@ -71,8 +85,7 @@ export async function POST(request: Request): Promise<NextResponse> {
   // raw ボディをサイズ上限つきで読む (Stripe の署名検証は生のリクエストボディを必要とする)。
   // 未認証で到達できる経路なので、`stripe-signature` に適当な値を付けた巨大ボディでメモリを
   // 枯渇させられないよう、署名検証より前に上限で打ち切る (§9 / #287)。
-  // 得られる文字列は移行前の `request.text()` と一致する (差異と根拠は readTextWithinByteLimit)
-  const bodyResult = await readTextWithinByteLimit(request, STRIPE_WEBHOOK_MAX_BODY_BYTES);
+  const bodyResult = await readBodyWithinByteLimit(request, STRIPE_WEBHOOK_MAX_BODY_BYTES);
   if (!bodyResult.ok) {
     // どの理由で拒否したかはサーバーログにだけ残し (§6 エラーを握り潰さない)、
     // 外部には理由ごとに決めた文言を返す。ログ・ステータス・文言の組み立ては共通ヘルパーに委ねる
@@ -81,8 +94,15 @@ export async function POST(request: Request): Promise<NextResponse> {
       messages: STRIPE_BODY_REJECT_MESSAGES,
     });
   }
-  // 上限内で読み取れた本文 (署名検証にかける生テキスト)
-  const rawBody = bodyResult.text;
+  // 上限内で読み取れた本文のバイト列を、コピーも変換もせずそのまま渡す (#290)。
+  // constructEvent の payload 型は `string | Uint8Array` (Stripe SDK の `WebhookPayload`) なので
+  // Buffer へ包み直す必要はない。**Buffer.from で包み直さないのは意図的**で、
+  // `Buffer.from(bytes.buffer)` のように長さを省いた形へ「単純化」されると、
+  // readBodyWithinByteLimit が確保した未使用領域 (16KiB から倍々に伸ばすので最大 maxBytes 近く)
+  // まで署名対象に混ざり、全 Webhook が検証失敗する。包まなければその余地自体が無くなる。
+  // **なおバイト列を渡しても署名検証が生バイト列基準になるわけではない** — 理由と、
+  // それでもこの形にしている根拠はファイル冒頭のセキュリティ要点 4 を参照
+  const rawBody = bodyResult.bytes;
 
   // Stripe クライアントと Webhook Secret を取得する
   let stripeEvent;

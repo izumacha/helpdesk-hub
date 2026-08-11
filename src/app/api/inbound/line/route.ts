@@ -98,8 +98,9 @@ import { resolveAppBaseUrl } from '@/lib/app-url';
 // チケット詳細ページの URL 組み立て・受付番号 (短縮 ID) の表記を揃えるヘルパー
 import { buildTicketUrl } from '@/lib/ticket-email';
 import { formatTicketRef } from '@/lib/ticket-ref';
-// リクエストボディをサイズ上限つきで読み取るヘルパーと、拒否時の応答を組み立てるヘルパー (#287)
-import { readTextWithinByteLimit } from '@/lib/request-body-limit';
+// リクエストボディをサイズ上限つきで読み取るヘルパー (#287) と、そのバイト列を JSON パース用に
+// 復号するヘルパー。署名検証は復号前のバイト列に対して行うため、生バイト列を返す方を使う (#290)
+import { decodeBodyText, readBodyWithinByteLimit } from '@/lib/request-body-limit';
 // 拒否時のログ・ステータス・文言をまとめて組み立てるヘルパー (ルート層の関心事なので別モジュール)
 import { bodyRejectResponse } from '@/lib/body-reject-response';
 // 拒否理由ごとの文言 (route とテストが同じ表を参照する。理由は同モジュール冒頭)
@@ -197,11 +198,21 @@ interface LineEventContext {
 // LINE Webhook の署名を検証する関数 (LINE Developers ドキュメント準拠)
 // X-Line-Signature = Base64(HMAC-SHA256(requestBody, channelSecret))
 // タイミング攻撃対策として定数時間比較を使う
-function verifyLineSignature(rawBody: string, signature: string, channelSecret: string): boolean {
+function verifyLineSignature(
+  // **受信したバイト列そのもの**を署名対象にする (#290)。UTF-8 へ復号した文字列を渡すと、
+  // 先頭 BOM が取り除かれたり不正なバイト列が U+FFFD へ潰れたりして、LINE が署名した
+  // バイト列と HMAC の対象がずれる (= 正規のメッセージが 401 になる) 方向の誤りが起きる。
+  // 引数名を `rawBody` ではなく `rawBytes` にしてあるのは、呼び出し元の POST が復号済みの
+  // 文字列を `rawBody` と名付けているため — 同じ名前にすると、この関数に決して渡してはいけない
+  // 値と呼び名が一致してしまい、本 PR が確立した不変条件が読み手には逆に見える
+  rawBytes: Uint8Array,
+  signature: string,
+  channelSecret: string,
+): boolean {
   // チャネルシークレットでリクエストボディを HMAC-SHA256 で署名する
   const hmac = createHmac('sha256', channelSecret);
-  // ボディは UTF-8 文字列として署名対象にする (LINE は文字コードを UTF-8 前提にしている)
-  hmac.update(rawBody, 'utf8');
+  // 受信したバイト列をそのまま署名対象にする (復号を挟まないので送信者の署名対象と必ず一致する)
+  hmac.update(rawBytes);
   // 期待される署名を Base64 で得る
   const expected = hmac.digest('base64');
 
@@ -212,7 +223,7 @@ function verifyLineSignature(rawBody: string, signature: string, channelSecret: 
 // POST /api/inbound/line : LINE Webhook を受信してチケットを作成する
 export async function POST(req: Request) {
   // 署名ヘッダの存在を最初に確認する。未認証リクエストにサイズ情報を漏らさないため、
-  // ボディのサイズ検査 (readTextWithinByteLimit。Content-Length の事前検査を内包する) より
+  // ボディのサイズ検査 (readBodyWithinByteLimit。Content-Length の事前検査を内包する) より
   // 前に行う (存在しなければ 401 を返して終了)。
   // trim() でプロキシが付加した余分な空白を除去してから比較する
   // (末尾に \n 等が付くと Buffer の長さが変わり定数時間比較が失敗して正規リクエストを弾く)
@@ -223,11 +234,10 @@ export async function POST(req: Request) {
   }
 
   // ボディをサイズ上限つきのストリーム読み取りで取得する
-  // (署名検証は JSON.parse 前の生テキストに対して行う必要がある)。
+  // (署名検証は JSON.parse 前の、受信したバイト列そのものに対して行う必要がある)。
   // Content-Length の申告・実際の累計バイト数の両方を見るので、ヘッダを省いた chunked 転送でも
-  // 上限を超えた時点で読み取りが打ち切られる (§9 DoS 対策 / #287)。
-  // 得られる文字列は移行前の `req.text()` と一致する (差異と根拠は readTextWithinByteLimit)
-  const bodyResult = await readTextWithinByteLimit(req, LINE_WEBHOOK_MAX_BODY_BYTES);
+  // 上限を超えた時点で読み取りが打ち切られる (§9 DoS 対策 / #287)
+  const bodyResult = await readBodyWithinByteLimit(req, LINE_WEBHOOK_MAX_BODY_BYTES);
   if (!bodyResult.ok) {
     // どの理由 (サイズ超過 / だらだら送り / 接続断) で拒否したかはサーバーログにだけ残し、
     // 外部には理由ごとに決めた文言だけを返す。ログ・ステータス・文言の組み立ては共通ヘルパーに委ねる
@@ -236,8 +246,10 @@ export async function POST(req: Request) {
       messages: LINE_BODY_REJECT_MESSAGES,
     });
   }
-  // 上限内で読み取れた本文 (署名検証と JSON.parse の対象になる生テキスト)
-  const rawBody = bodyResult.text;
+  // 上限内で読み取れた本文のバイト列 (署名検証はこのバイト列に対して行う)
+  const rawBytes = bodyResult.bytes;
+  // JSON パース用にだけ UTF-8 の文字列へ復号する (署名検証には使わない。理由は decodeBodyText)
+  const rawBody = decodeBodyText(rawBytes);
 
   // ボディを JSON としてパースする。この時点では署名未検証なので中身は一切信用しない。
   // 唯一の目的は「どのチャネル (テナント) 宛かを示す公開識別子 (destination)」を取り出すことだけ。
@@ -312,7 +324,7 @@ export async function POST(req: Request) {
   if (tenantLimitResponse) return tenantLimitResponse;
 
   // このチャネル (テナント) 専用のシークレットで署名を検証する (不正なら 401)
-  if (!verifyLineSignature(rawBody, signature, lineConfig.channelSecret)) {
+  if (!verifyLineSignature(rawBytes, signature, lineConfig.channelSecret)) {
     // 署名不一致は LINE サーバからのものではないため拒否する (なりすまし POST の防止)
     return NextResponse.json({ error: '署名の検証に失敗しました' }, { status: 401 });
   }
