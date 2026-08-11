@@ -454,13 +454,30 @@ export async function readBodyWithinByteLimit(
 const UTF8_DECODER = new TextDecoder();
 
 /**
+ * 上限つきで読み取ったバイト列を UTF-8 の文字列に復号する。
+ *
+ * 署名検証を生バイト列で行う経路 (#290) でも、JSON パースには文字列が要る。そこだけ
+ * `new TextDecoder()` を各ルートで書くと、復号の挙動 (BOM の扱い・不正バイト列の置換) が
+ * ルートごとに分かれてしまい、上の `readTextWithinByteLimit` に集約した根拠が薄れる。
+ * **復号は理由を問わずこの 1 箇所を通す**ため公開する (§6 DRY)。
+ *
+ * 復号の性質そのものは `readTextWithinByteLimit` の docstring を参照 (同じ復号器を使う)。
+ * **この関数の戻り値を HMAC にかけないこと** — 理由は同じ docstring に書いてある。
+ *
+ * @param bytes 復号対象のバイト列 (`readBodyWithinByteLimit` が返す `bytes`)
+ */
+export function decodeBodyText(bytes: Uint8Array): string {
+  // 共有の復号器で UTF-8 として文字列化する (不正なバイト列は U+FFFD に置換される)
+  return UTF8_DECODER.decode(bytes);
+}
+
+/**
  * リクエストボディをバイト数上限つきで読み取り、UTF-8 の文字列として返す。
  *
  * **実運用で起こりうる本文については `req.text()` と結果が一致する。** どちらも同じ WHATWG の
  * UTF-8 復号を通るため、先頭 BOM の除去も、不正なバイト列が置換文字 (U+FFFD) になる挙動も
  * 同じ結果になる (BOM 無し / BOM 1 つ / 不正バイト列を含む本文で一致することを確認済み)。
- * この等価性は署名検証 (LINE の HMAC / Stripe の constructEvent) を通る経路で決定的に重要
- * ——復号が 1 箇所でも崩れると正規のリクエストが軒並み署名不一致で拒否される——ため、
+ * この等価性は `req.text()` から移行した経路 (#287) が本文の解釈を変えていないことの拠り所なので、
  * 呼び出し元がそれぞれ TextDecoder を書くのではなく、根拠ごとここに 1 つだけ置く (§6 DRY)。
  *
  * **唯一の差異: BOM が 2 つ以上連続する本文。** undici の `req.text()` は BOM を自前で 1 つ
@@ -469,9 +486,12 @@ const UTF8_DECODER = new TextDecoder();
  * (署名鍵を持たない相手の偽造が通る方向) の差ではない。この挙動は
  * `tests/request-body-limit.test.ts` で固定してある。
  *
- * 署名検証に使うなら、本関数ではなく `readBodyWithinByteLimit` の生バイト列を直接
- * HMAC にかける方が理屈の上ではより厳密 (復号を挟まないぶん、不正な UTF-8 でも送信者が
- * 署名したバイト列そのものを検証できる)。現在は移行前の `req.text()` との等価性を優先している。
+ * **署名検証にはこの関数を使わない (#290)。** 復号は上のとおり BOM を取り除き、不正な UTF-8 を
+ * 置換文字 (U+FFFD) へ潰すため、**送信者が署名したバイト列と HMAC の対象がずれる**。ずれる方向は
+ * 「正規のリクエストが署名不一致として拒否される」側で、Stripe なら再送が尽きた時点で
+ * プラン状態が実際の課金とずれたまま残る。署名検証を通る 2 経路 (`inbound/line` /
+ * `webhooks/stripe`) は `readBodyWithinByteLimit` の生バイト列をそのまま HMAC へ渡し、
+ * JSON パース用の文字列だけを `decodeBodyText` で得る形にしてある。
  *
  * @param req 読み取り対象のリクエスト
  * @param maxBytes 許容する最大バイト数
@@ -488,8 +508,8 @@ export async function readTextWithinByteLimit(
   const body = await readBodyWithinByteLimit(req, maxBytes, idleTimeoutMs, totalTimeoutMs);
   // 読めなかった理由はそのまま呼び出し元へ渡す
   if (!body.ok) return body;
-  // 読み取れたバイト列を UTF-8 の文字列に復号して返す
-  return { ok: true, text: UTF8_DECODER.decode(body.bytes) };
+  // 読み取れたバイト列を UTF-8 の文字列に復号して返す (復号は decodeBodyText に一本化)
+  return { ok: true, text: decodeBodyText(body.bytes) };
 }
 
 /**

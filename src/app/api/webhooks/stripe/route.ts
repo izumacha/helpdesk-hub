@@ -10,8 +10,9 @@
 // 2. Stripe Webhook Secret (STRIPE_WEBHOOK_SECRET) は環境変数のみで管理し、コードにハードコードしない。
 // 3. 本ルートは CSRF トークン不要 (Stripe のサーバー→サーバー呼び出し。ブラウザ経由ではない)。
 // 4. 本ルートへのリクエストボディは raw bytes で読む必要がある (署名は生の本文に対して計算される)。
-//    App Router には bodyParser が無いので、サイズ上限つきの読み取りヘルパーで生バイト列を取得し、
-//    それを UTF-8 で復号した文字列を署名検証へ渡す (#287)。
+//    App Router には bodyParser が無いので、サイズ上限つきの読み取りヘルパー (#287) で生バイト列を
+//    取得し、**復号を挟まずそのまま** constructEvent へ渡す (#290)。UTF-8 復号を挟むと BOM の除去や
+//    不正バイト列の U+FFFD 置換で HMAC の対象がずれ、正規イベントが署名不一致で落ちうる。
 
 import { NextResponse } from 'next/server';
 // Stripe SDK の型定義 (Event 型を handleStripeEvent の引数に使う)
@@ -28,8 +29,9 @@ import { isProModeAllowed } from '@/lib/plan-guard';
 import type { SubscriptionPlan } from '@/domain/types';
 // §4.3 フォローアップ: 設定変更監査ログへの記録を共通化するヘルパー
 import { recordSettingsAudit } from '@/lib/settings-audit';
-// リクエストボディをサイズ上限つきで読み取るヘルパーと、拒否時の応答を組み立てるヘルパー (#287)
-import { readTextWithinByteLimit } from '@/lib/request-body-limit';
+// リクエストボディをサイズ上限つきで読み取るヘルパー (#287)。署名検証は復号前のバイト列に
+// 対して行うため、文字列版ではなく生バイト列を返す方を使う (#290)
+import { readBodyWithinByteLimit } from '@/lib/request-body-limit';
 // 拒否時のログ・ステータス・文言をまとめて組み立てるヘルパー (ルート層の関心事なので別モジュール)
 import { bodyRejectResponse } from '@/lib/body-reject-response';
 // 拒否理由ごとの文言 (route とテストが同じ表を参照する。理由は同モジュール冒頭)
@@ -71,8 +73,7 @@ export async function POST(request: Request): Promise<NextResponse> {
   // raw ボディをサイズ上限つきで読む (Stripe の署名検証は生のリクエストボディを必要とする)。
   // 未認証で到達できる経路なので、`stripe-signature` に適当な値を付けた巨大ボディでメモリを
   // 枯渇させられないよう、署名検証より前に上限で打ち切る (§9 / #287)。
-  // 得られる文字列は移行前の `request.text()` と一致する (差異と根拠は readTextWithinByteLimit)
-  const bodyResult = await readTextWithinByteLimit(request, STRIPE_WEBHOOK_MAX_BODY_BYTES);
+  const bodyResult = await readBodyWithinByteLimit(request, STRIPE_WEBHOOK_MAX_BODY_BYTES);
   if (!bodyResult.ok) {
     // どの理由で拒否したかはサーバーログにだけ残し (§6 エラーを握り潰さない)、
     // 外部には理由ごとに決めた文言を返す。ログ・ステータス・文言の組み立ては共通ヘルパーに委ねる
@@ -81,8 +82,16 @@ export async function POST(request: Request): Promise<NextResponse> {
       messages: STRIPE_BODY_REJECT_MESSAGES,
     });
   }
-  // 上限内で読み取れた本文 (署名検証にかける生テキスト)
-  const rawBody = bodyResult.text;
+  // 上限内で読み取れた本文を、Stripe SDK が受け付ける Buffer として包む (#290)。
+  // Buffer.from(ArrayBuffer, offset, length) は**中身をコピーせず**同じメモリを見る窓を作る
+  // (Buffer.from(Uint8Array) だと本文サイズぶんのコピーが 1 回増える)。
+  // 読み取り側のバッファはこの後どこからも書き換えないので、窓のまま渡して問題ない。
+  // constructEvent の payload は string / Buffer のどちらでも受け付ける (Stripe SDK の型定義)
+  const rawBody = Buffer.from(
+    bodyResult.bytes.buffer,
+    bodyResult.bytes.byteOffset,
+    bodyResult.bytes.byteLength,
+  );
 
   // Stripe クライアントと Webhook Secret を取得する
   let stripeEvent;

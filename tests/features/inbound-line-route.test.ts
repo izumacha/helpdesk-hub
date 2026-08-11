@@ -127,9 +127,13 @@ function seed() {
   });
 }
 
-// LINE 署名を計算する (X-Line-Signature = Base64(HMAC-SHA256(body, secret)))
-function sign(body: string): string {
-  return createHmac('sha256', SECRET).update(body, 'utf8').digest('base64');
+// LINE 署名を計算する (X-Line-Signature = Base64(HMAC-SHA256(body, secret)))。
+// #290: 署名対象は**送信するバイト列そのもの**なので、文字列で渡された場合も UTF-8 の
+// バイト列に直してから HMAC にかける (LINE 本体と同じ計算をテスト側でも再現する)
+function sign(body: string | Uint8Array): string {
+  // 文字列なら UTF-8 バイト列へ変換し、バイト列ならそのまま署名対象にする
+  const bytes = typeof body === 'string' ? Buffer.from(body, 'utf8') : body;
+  return createHmac('sha256', SECRET).update(bytes).digest('base64');
 }
 
 // 1 件のテキストメッセージイベントを含む署名付きリクエストを組み立てる。
@@ -912,14 +916,19 @@ describe('POST /api/inbound/line のリクエストサイズ上限と署名検�
     return build('A'.repeat(totalBytes - Buffer.byteLength(build(''), 'utf8')));
   }
 
-  // 署名付きの POST を実行する共通処理 (Content-Length を明示したい場合はヘッダで渡す)
-  async function postLine(body: string, headers: Record<string, string> = {}) {
+  // 署名付きの POST を実行する共通処理 (Content-Length を明示したい場合はヘッダで渡す)。
+  // #290 の検証で「文字列にできない本文 (BOM 付き・不正 UTF-8)」を送るため、バイト列も受け付ける
+  async function postLine(body: string | Uint8Array, headers: Record<string, string> = {}) {
     const { POST } = await import('@/app/api/inbound/line/route');
+    // バイト列は ArrayBuffer 裏付けの Uint8Array へ写してから渡す (素の Uint8Array<ArrayBufferLike>
+    // は SharedArrayBuffer 由来も含むため BodyInit として受け付けてもらえない。
+    // src/lib/request-body-limit.ts の BoundedBodyResult と同じ事情)
+    const bodyInit = typeof body === 'string' ? body : new Uint8Array(body);
     return POST(
       new Request('http://localhost/api/inbound/line', {
         method: 'POST',
         headers: { 'content-type': 'application/json', 'x-line-signature': sign(body), ...headers },
-        body,
+        body: bodyInit,
       }),
     );
   }
@@ -966,6 +975,68 @@ describe('POST /api/inbound/line のリクエストサイズ上限と署名検�
     );
     expect(res.status).toBe(401);
     expect(store.tickets.size).toBe(0);
+  });
+
+  // 1 件のテキストメッセージを含む Webhook ボディを組み立てる (#290 の 2 テストで共有)。
+  // 本文テキストを目印で切って、その隙間に任意のバイト列を差し込めるようにしてある
+  // (文字列に直せないバイト列を JSON の値の中へ埋めるにはバイト列で組み立てるしかないため)
+  function bodyWithRawBytesInText(messageId: string, rawBytesInText: Uint8Array): Buffer {
+    const [beforeMarker, afterMarker] = JSON.stringify({
+      destination: BOT_USER_ID,
+      events: [
+        {
+          type: 'message',
+          source: { type: 'user', userId: LINE_ID_UNLINKED },
+          message: { type: 'text', id: messageId, text: 'RAW_BYTES_HERE' },
+        },
+      ],
+    }).split('RAW_BYTES_HERE');
+    return Buffer.concat([
+      Buffer.from(beforeMarker!, 'utf8'),
+      rawBytesInText,
+      Buffer.from(afterMarker!, 'utf8'),
+    ]);
+  }
+
+  // #290: 先頭 BOM (EF BB BF) を含む本文でも、署名対象は BOM 込みの受信バイト列のままであること。
+  // UTF-8 復号を挟むと TextDecoder が BOM を取り除くため、LINE が署名したバイト列と HMAC の
+  // 対象がずれ、正規のメッセージが 401 で取りこぼされる。復号を挟む実装へ戻すとここで落ちる
+  it('先頭 BOM を含む本文でも BOM 込みのバイト列で署名検証が通り起票される', async () => {
+    // JSON 本体の前に BOM を置いたバイト列を作る (署名はこのバイト列全体に対して計算される)
+    const bodyBytes = Buffer.concat([
+      Buffer.from([0xef, 0xbb, 0xbf]),
+      Buffer.from(
+        JSON.stringify({
+          destination: BOT_USER_ID,
+          events: [
+            {
+              type: 'message',
+              source: { type: 'user', userId: LINE_ID_UNLINKED },
+              message: { type: 'text', id: 'm-bom', text: 'プリンターが動きません' },
+            },
+          ],
+        }),
+        'utf8',
+      ),
+    ]);
+    const res = await postLine(bodyBytes);
+    // 署名検証を通過して起票されている (復号を挟む実装だと 401 になり起票されない)
+    expect(res.status).toBe(200);
+    expect(store.tickets.size).toBe(1);
+  });
+
+  // #290: 不正な UTF-8 バイト列を含む本文でも、置換文字 (U+FFFD) へ潰さず署名検証を通すこと。
+  // BOM と同じく「正規のメッセージが署名不一致で拒否される」方向の誤りを防ぐ。
+  // JSON パース用の文字列は従来どおり復号して得るため、本文には U+FFFD が入って起票される
+  it('不正な UTF-8 を含む本文でも署名検証が通り、本文は置換文字として取り込まれる', async () => {
+    // 単独の 0x80 は UTF-8 として不正 (継続バイトが先頭に来ている)。復号すると U+FFFD になる
+    const bodyBytes = bodyWithRawBytesInText('m-invalid-utf8', Uint8Array.from([0x80]));
+    const res = await postLine(bodyBytes);
+    // 署名検証を通過して起票されている (復号を挟む実装だと 401 になり起票されない)
+    expect(res.status).toBe(200);
+    expect(store.tickets.size).toBe(1);
+    // JSON パースは復号後の文字列に対して行うので、本文側は置換文字になっている
+    expect(Array.from(store.tickets.values())[0].body).toContain('�');
   });
 
   // ヘッダの申告だけで上限超過と分かる場合は、本文を読まずに打ち切る。
