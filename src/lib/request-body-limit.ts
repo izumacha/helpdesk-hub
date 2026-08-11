@@ -52,6 +52,10 @@
 //   `auth/sso/[tenantId]/acs` / `auth/magic-link/callback` (PR #286)
 //   `inbound/line` / `inbound/email` / `webhooks/stripe` (#287。いずれも署名・共有シークレット
 //   検証を通る経路のため、移行前後で検証結果が一致することを各ルートのテストで固めてある)
+// **ただし `inbound/line` はこの等価性を #290 で意図的に捨てた。** 署名対象を復号後の文字列から
+// 受信バイト列そのものへ変えたため、BOM 付き・不正 UTF-8 の本文では移行前 (401) と結果が変わる
+// (現在は 200 で取り込む)。等価性ではなく「バイト列に対する署名が通ること」を固定する形へ
+// テストも差し替えてある。詳細は readTextWithinByteLimit の docstring を参照。
 // 上限値の置き場: 前 2 経路はその経路の他の共有定数と同居 (`sso-rate-limit.ts` /
 // `magic-link.ts`)、後 3 経路は `webhook-body-limits.ts`。いずれも route とテストが
 // 同じ定義を参照する (片方だけ値を変えたら気付けるようにするため)。

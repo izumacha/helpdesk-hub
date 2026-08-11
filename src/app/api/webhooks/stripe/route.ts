@@ -94,18 +94,15 @@ export async function POST(request: Request): Promise<NextResponse> {
       messages: STRIPE_BODY_REJECT_MESSAGES,
     });
   }
-  // 上限内で読み取れた本文を、Stripe SDK が受け付ける Buffer として包む (#290)。
-  // Buffer.from(ArrayBuffer, offset, length) は**中身をコピーせず**同じメモリを見る窓を作る
-  // (Buffer.from(Uint8Array) だと本文サイズぶんのコピーが 1 回増える)。
-  // 読み取り側のバッファはこの後どこからも書き換えないので、窓のまま渡して問題ない。
-  // constructEvent の payload は string / Buffer のどちらでも受け付ける (Stripe SDK の型定義)。
-  // **ここで Buffer を渡しても署名検証が生バイト列基準になるわけではない** — 理由と、
+  // 上限内で読み取れた本文のバイト列を、コピーも変換もせずそのまま渡す (#290)。
+  // constructEvent の payload 型は `string | Uint8Array` (Stripe SDK の `WebhookPayload`) なので
+  // Buffer へ包み直す必要はない。**Buffer.from で包み直さないのは意図的**で、
+  // `Buffer.from(bytes.buffer)` のように長さを省いた形へ「単純化」されると、
+  // readBodyWithinByteLimit が確保した未使用領域 (16KiB から倍々に伸ばすので最大 maxBytes 近く)
+  // まで署名対象に混ざり、全 Webhook が検証失敗する。包まなければその余地自体が無くなる。
+  // **なおバイト列を渡しても署名検証が生バイト列基準になるわけではない** — 理由と、
   // それでもこの形にしている根拠はファイル冒頭のセキュリティ要点 4 を参照
-  const rawBody = Buffer.from(
-    bodyResult.bytes.buffer,
-    bodyResult.bytes.byteOffset,
-    bodyResult.bytes.byteLength,
-  );
+  const rawBody = bodyResult.bytes;
 
   // Stripe クライアントと Webhook Secret を取得する
   let stripeEvent;

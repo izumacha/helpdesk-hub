@@ -40,12 +40,14 @@ vi.mock('@/data', () => ({
 const { planForNextCall, constructEventSpy } = vi.hoisted(() => ({
   planForNextCall: { current: 'pro' as 'free' | 'standard' | 'pro' },
   // 署名検証はモックで飛ばし、受け取ったバイト列を JSON として解釈するだけにする。
-  // 復号に TextDecoder を使うのは、BOM 付きの本文でも JSON として解釈できるようにするため
-  // (Buffer#toString('utf8') は BOM を文字として残すので JSON.parse が落ちる)。
+  // 引数の型を Uint8Array に固定してあるのが要点で、ルートが復号済みの文字列を渡す形へ
+  // 退行すると型チェックと実行時の両方で落ちる (SDK の WebhookPayload は string も許すため、
+  // 本物の型をそのまま使うと退行を検出できない)。
+  // 復号に TextDecoder を使うのは、BOM 付きの本文でも JSON として解釈できるようにするため。
   // **このスパイの復号はあくまで JSON 解釈用**で、署名対象が何だったかは
   // mock.calls に記録された引数そのもので確かめる
   constructEventSpy: vi.fn(
-    (rawBody: Buffer) => JSON.parse(new TextDecoder().decode(rawBody)) as unknown,
+    (rawBody: Uint8Array) => JSON.parse(new TextDecoder().decode(rawBody)) as unknown,
   ),
 }));
 vi.mock('@/lib/stripe', () => ({
@@ -362,8 +364,9 @@ describe('POST /api/webhooks/stripe', () => {
     // (これが崩れると HMAC が不一致になる)
     expect(constructEventSpy).toHaveBeenCalledTimes(1);
     const passed = constructEventSpy.mock.calls[0]![0];
-    // #290: 復号済み文字列ではなく生バイト列 (Buffer) が渡ることを型レベルでも表明する
-    expect(Buffer.isBuffer(passed)).toBe(true);
+    // #290: 復号済み文字列ではなく生バイト列が渡ることを表明する
+    // (SDK の payload 型は string も許すので、渡し方の退行はここでしか捕まえられない)
+    expect(passed).toBeInstanceOf(Uint8Array);
     // 送信した本文を UTF-8 でエンコードしたバイト列と 1 バイトも違わない
     expect(Buffer.compare(passed, Buffer.from(body, 'utf8'))).toBe(0);
     // 署名検証の先まで進み、プラン反映まで到達している

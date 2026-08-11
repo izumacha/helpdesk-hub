@@ -201,15 +201,18 @@ interface LineEventContext {
 function verifyLineSignature(
   // **受信したバイト列そのもの**を署名対象にする (#290)。UTF-8 へ復号した文字列を渡すと、
   // 先頭 BOM が取り除かれたり不正なバイト列が U+FFFD へ潰れたりして、LINE が署名した
-  // バイト列と HMAC の対象がずれる (= 正規のメッセージが 401 になる) 方向の誤りが起きる
-  rawBody: Uint8Array,
+  // バイト列と HMAC の対象がずれる (= 正規のメッセージが 401 になる) 方向の誤りが起きる。
+  // 引数名を `rawBody` ではなく `rawBytes` にしてあるのは、呼び出し元の POST が復号済みの
+  // 文字列を `rawBody` と名付けているため — 同じ名前にすると、この関数に決して渡してはいけない
+  // 値と呼び名が一致してしまい、本 PR が確立した不変条件が読み手には逆に見える
+  rawBytes: Uint8Array,
   signature: string,
   channelSecret: string,
 ): boolean {
   // チャネルシークレットでリクエストボディを HMAC-SHA256 で署名する
   const hmac = createHmac('sha256', channelSecret);
   // 受信したバイト列をそのまま署名対象にする (復号を挟まないので送信者の署名対象と必ず一致する)
-  hmac.update(rawBody);
+  hmac.update(rawBytes);
   // 期待される署名を Base64 で得る
   const expected = hmac.digest('base64');
 
