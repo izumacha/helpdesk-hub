@@ -4,7 +4,14 @@
 // Vitest の DSL
 import { describe, expect, it } from 'vitest';
 // 検証対象
-import { validateUploadedFiles } from '@/lib/validations/attachment';
+import {
+  ATTACHMENT_TOO_LARGE_MESSAGE,
+  EMPTY_ATTACHMENT_MESSAGE,
+  TOO_MANY_ATTACHMENTS_MESSAGE,
+  findAttachmentPreflightError,
+  selectAttachmentFiles,
+  validateUploadedFiles,
+} from '@/lib/validations/attachment';
 // ドメイン定数 (上限値の参照用)
 import { MAX_ATTACHMENT_SIZE_BYTES, MAX_ATTACHMENTS_PER_UPLOAD } from '@/domain/attachment';
 
@@ -134,5 +141,115 @@ describe('validateUploadedFiles', () => {
     const result = await validateUploadedFiles([file]);
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.message).toMatch(/画像として認識できません/);
+  });
+});
+
+// 未選択の file input が混ぜてくる番兵を落とす selectAttachmentFiles の検証。
+// **ブラウザの実挙動を写し取ったテスト**: Chromium で `new FormData(form)` を実行すると、
+// ファイル未選択の <input type="file"> は File (name: '', size: 0, type: 'application/octet-stream')
+// を 1 件足す (サーバー側で undici が multipart を解析した場合は空文字列になる)。
+// ここが落ちないと、添付なしのコメントが毎回「空のファイルは添付できません」で止まる。
+describe('selectAttachmentFiles', () => {
+  // ブラウザの番兵 (名前も中身も空の File) は添付として数えない
+  it('drops the empty-file sentinel a browser appends for an unselected file input', () => {
+    const sentinel = new File([], '', { type: 'application/octet-stream' });
+    expect(selectAttachmentFiles([sentinel])).toEqual([]);
+  });
+
+  // サーバー側の番兵 (空文字列) も添付として数えない
+  it('drops the empty-string sentinel undici produces server-side', () => {
+    expect(selectAttachmentFiles([''])).toEqual([]);
+  });
+
+  // 名前のある 0 バイトファイルは番兵ではないので残す (「空のファイル」として弾かせるため)
+  it('keeps a named zero-byte file so the empty-file rule can reject it', () => {
+    const named = makeFile({ size: 0, type: 'image/png', name: 'empty.png' });
+    expect(selectAttachmentFiles([named])).toHaveLength(1);
+  });
+
+  // 実ファイルと番兵が混在しても、実ファイルだけが残る
+  it('keeps real files while dropping a sentinel mixed in', () => {
+    const real = makeFile({ size: 100, type: 'image/png', name: 'a.png', magic: PNG_MAGIC });
+    const sentinel = new File([], '', { type: 'application/octet-stream' });
+    expect(selectAttachmentFiles([sentinel, real]).map((f) => f.name)).toEqual(['a.png']);
+  });
+});
+
+// 送信前の事前検査。サーバー検証と同じ文言を返すことを表明する
+// (フォームだけ推敲されて同じ違反に別の案内が出る退行を検出するため)。
+describe('findAttachmentPreflightError', () => {
+  // 添付なしは常に通す
+  it('returns null when no files are selected', () => {
+    expect(findAttachmentPreflightError([])).toBeNull();
+  });
+
+  // 件数上限ちょうどは通す (境界値)
+  it('returns null at exactly the attachment count limit', () => {
+    const files = Array.from({ length: MAX_ATTACHMENTS_PER_UPLOAD }, (_, i) =>
+      makeFile({ size: 100, type: 'image/png', name: `a${i}.png`, magic: PNG_MAGIC }),
+    );
+    expect(findAttachmentPreflightError(files)).toBeNull();
+  });
+
+  // 件数上限 + 1 は件数の文言で弾く
+  it('rejects one file over the count limit with the shared message', () => {
+    const files = Array.from({ length: MAX_ATTACHMENTS_PER_UPLOAD + 1 }, (_, i) =>
+      makeFile({ size: 100, type: 'image/png', name: `a${i}.png`, magic: PNG_MAGIC }),
+    );
+    expect(findAttachmentPreflightError(files)).toBe(TOO_MANY_ATTACHMENTS_MESSAGE);
+  });
+
+  // 1 件あたりのサイズ上限ちょうどは通す (境界値)
+  it('returns null at exactly the per-file size limit', () => {
+    const file = makeFile({
+      size: MAX_ATTACHMENT_SIZE_BYTES,
+      type: 'image/png',
+      name: 'big.png',
+      magic: PNG_MAGIC,
+    });
+    expect(findAttachmentPreflightError([file])).toBeNull();
+  });
+
+  // サイズ上限 + 1 バイトはサイズの文言で弾く
+  it('rejects one byte over the per-file size limit with the shared message', () => {
+    const file = makeFile({
+      size: MAX_ATTACHMENT_SIZE_BYTES + 1,
+      type: 'image/png',
+      name: 'big.png',
+      magic: PNG_MAGIC,
+    });
+    expect(findAttachmentPreflightError([file])).toBe(ATTACHMENT_TOO_LARGE_MESSAGE);
+  });
+
+  // 空ファイルは空ファイルの文言で弾く
+  it('rejects a named empty file with the shared message', () => {
+    const file = makeFile({ size: 0, type: 'image/png', name: 'empty.png' });
+    expect(findAttachmentPreflightError([file])).toBe(EMPTY_ATTACHMENT_MESSAGE);
+  });
+
+  // **サーバー検証と同じ文言であること** — 片方だけ推敲されると案内がぶれるので機械的に固定する
+  it('uses the same wording the server-side validation returns', async () => {
+    const tooMany = Array.from({ length: MAX_ATTACHMENTS_PER_UPLOAD + 1 }, (_, i) =>
+      makeFile({ size: 100, type: 'image/png', name: `a${i}.png`, magic: PNG_MAGIC }),
+    );
+    const serverCount = await validateUploadedFiles(tooMany);
+    expect(serverCount.ok).toBe(false);
+    if (!serverCount.ok) {
+      expect(serverCount.message).toBe(findAttachmentPreflightError(tooMany));
+    }
+
+    const tooBig = [
+      makeFile({
+        size: MAX_ATTACHMENT_SIZE_BYTES + 1,
+        type: 'image/png',
+        name: 'big.png',
+        magic: PNG_MAGIC,
+      }),
+    ];
+    const serverSize = await validateUploadedFiles(tooBig);
+    expect(serverSize.ok).toBe(false);
+    if (!serverSize.ok) {
+      expect(serverSize.message).toBe(findAttachmentPreflightError(tooBig));
+    }
   });
 });

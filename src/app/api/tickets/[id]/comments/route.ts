@@ -32,7 +32,7 @@ import { enforceRateLimit, RateLimitError } from '@/lib/rate-limit';
 // コメント本文の Zod スキーマ
 import { commentBodySchema } from '@/lib/validations/ticket';
 // 添付ファイル検証ヘルパー
-import { validateUploadedFiles } from '@/lib/validations/attachment';
+import { selectAttachmentFiles, validateUploadedFiles } from '@/lib/validations/attachment';
 // 添付ファイルのストレージ保存 / 失敗時クリーンアップの共通ヘルパー (POST /api/tickets・
 // POST /api/inbound/email と共有。/code-review ultra 指摘対応: 3 箇所目の重複を解消)
 // checkTicketAttachmentQuota はチケット当たりの添付総数上限チェック (監査で発見したギャップ対応)
@@ -157,7 +157,9 @@ export async function POST(req: Request, { params }: Params) {
   const trimmedBody = parsedBody.data;
 
   // 添付ファイルを抽出して件数 / MIME / サイズ / マジックバイトを検証する
-  const files = form.getAll('files').filter((e): e is File => e instanceof File);
+  // 実際に選ばれた添付だけを取り出す (未選択の file input が足す番兵はここで落ちる。
+  // 番兵の姿は実行環境で違う — 詳細は selectAttachmentFiles の docstring)
+  const files = selectAttachmentFiles(form.getAll('files'));
   const attachmentValidation = await validateUploadedFiles(files);
   if (!attachmentValidation.ok) {
     return validationError(attachmentValidation.message, ['files']);

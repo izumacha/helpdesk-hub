@@ -15,6 +15,9 @@ import { createTicketSchema, type CreateTicketFormValues } from '@/lib/validatio
 import { NETWORK_ERROR_MESSAGE, PRIORITY_LABELS } from '@/lib/constants';
 // テナントモード型 (lite | pro)。Lite では入力項目を 3 つに絞る
 import type { TenantMode } from '@/domain/types';
+// 送信前に添付の違反 (件数・空・1 件あたりのサイズ) を判定する共有ヘルパー。
+// サーバー側の検証と同じ文言を返すので、事前に弾いても案内がぶれない
+import { findAttachmentPreflightError } from '@/lib/validations/attachment';
 // 添付ファイル件数の上限 (UI ヒント表示用)
 import { MAX_ATTACHMENTS_PER_UPLOAD } from '@/domain/attachment';
 
@@ -103,6 +106,17 @@ export function TicketForm({ categories, locations, mode }: Props) {
     // 選択中のファイル (state から取得)
     const hasFiles = selectedFiles.length > 0;
 
+    // 送信前に、ブラウザ側で判定できる添付の違反 (件数・空・1 件あたりのサイズ) を先に弾く。
+    // 枠 (51MB) を超える送信はサーバーが本文を読まずに 413 を返すため、そのまま送ると接続断で
+    // fetch が reject し「通信状態をご確認ください」という的外れな案内しか出せない。
+    // 検証の本体はサーバー側 (validateUploadedFiles) のままで、これは体験のための先回り
+    const attachmentError = findAttachmentPreflightError(selectedFiles);
+    if (attachmentError) {
+      // 具体的な理由 (「1 ファイルあたり 10.0MB までです」等) をそのまま画面に出す
+      setServerError(attachmentError);
+      return;
+    }
+
     // 送信用のリクエスト本体を選択: hasFiles なら FormData、それ以外は JSON
     let res: Response;
     // 送信そのものが成立しないこと (オフライン・接続断・サーバーが本文を読まずに応答を返した等) が
@@ -132,7 +146,10 @@ export function TicketForm({ categories, locations, mode }: Props) {
           body: JSON.stringify(data),
         });
       }
-    } catch {
+    } catch (fetchErr) {
+      // 何が起きたか (オフライン / 接続断 / 413 由来のリセット) を後から切り分けられるよう、
+      // 例外は捨てずにブラウザのコンソールへ文脈付きで残す (§6 エラーを握り潰さない)
+      console.error('[TicketForm] POST /api/tickets の送信に失敗しました', fetchErr);
       // 応答を受け取れていないので、サーバーの文言ではなく共通の通信失敗文言を出す
       setServerError(NETWORK_ERROR_MESSAGE);
       return;
@@ -147,7 +164,9 @@ export function TicketForm({ categories, locations, mode }: Props) {
         // 添付検証 (422 + issues に path:['files'] が入る) のメッセージも拾える
         const issueMessage = Array.isArray(err.issues) ? err.issues[0]?.message : null;
         setServerError(issueMessage ?? err.error ?? '登録に失敗しました');
-      } catch {
+      } catch (parseErr) {
+        // JSON として読めなかった理由をコンソールに残す (§6 エラーを握り潰さない)
+        console.error('[TicketForm] エラー応答を JSON として解析できませんでした', parseErr);
         setServerError(`登録に失敗しました (HTTP ${res.status})`);
       }
       return;

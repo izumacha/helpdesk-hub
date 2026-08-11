@@ -6,6 +6,8 @@ import { useRef, useState, useTransition } from 'react';
 import { useRouter } from 'next/navigation';
 // 添付ファイル件数の上限 (UI ヒント表示用)
 import { MAX_ATTACHMENTS_PER_UPLOAD } from '@/domain/attachment';
+// 送信前の添付チェックと、未選択 file input の番兵を落とすヘルパー (サーバー検証と文言を共有する)
+import { findAttachmentPreflightError, selectAttachmentFiles } from '@/lib/validations/attachment';
 // 「送信そのものが成立しなかった」ときの共通文言 (新規起票フォームと共有)
 import { NETWORK_ERROR_MESSAGE } from '@/lib/constants';
 
@@ -43,6 +45,22 @@ export function CommentForm({ ticketId }: Props) {
 
     // 直前のエラーをクリアしておく
     setError(null);
+
+    // 送信前に、ブラウザ側で判定できる添付の違反 (件数・空・1 件あたりのサイズ) を先に弾く。
+    // 枠 (51MB) を超える送信はサーバーが本文を読まずに 413 を返すため、そのまま送ると接続断で
+    // fetch が reject し「通信状態をご確認ください」という的外れな案内しか出せない。
+    // 検証の本体はサーバー側 (validateUploadedFiles) のままで、これは体験のための先回り
+    // 未選択の file input が足す番兵 (name/size とも空の File) は selectAttachmentFiles が落とす。
+    // ここを instanceof File だけで済ませると、添付なしのコメントが毎回「空のファイルは添付できません」で
+    // 止まってしまう (ブラウザでは番兵が本物の File として現れるため)
+    const selectedFiles = selectAttachmentFiles(data.getAll('files'));
+    const attachmentError = findAttachmentPreflightError(selectedFiles);
+    if (attachmentError) {
+      // 具体的な理由 (「1 ファイルあたり 10.0MB までです」等) をそのまま画面に出す
+      setError(attachmentError);
+      return;
+    }
+
     // 非ブロッキング送信
     startTransition(async () => {
       // multipart/form-data を Route Handler へ POST する
@@ -55,7 +73,10 @@ export function CommentForm({ ticketId }: Props) {
           method: 'POST',
           body: data,
         });
-      } catch {
+      } catch (fetchErr) {
+        // 何が起きたか (オフライン / 接続断 / 413 由来のリセット) を後から切り分けられるよう、
+        // 例外は捨てずにブラウザのコンソールへ文脈付きで残す (§6 エラーを握り潰さない)
+        console.error('[CommentForm] コメントの送信に失敗しました', fetchErr);
         // 応答を受け取れていないので、サーバーの文言ではなく共通の通信失敗文言を出す
         setError(NETWORK_ERROR_MESSAGE);
         return;
@@ -75,7 +96,9 @@ export function CommentForm({ ticketId }: Props) {
         const err = (await res.json()) as { error?: string; issues?: Array<{ message?: string }> };
         const issueMessage = Array.isArray(err.issues) ? err.issues[0]?.message : null;
         setError(issueMessage ?? err.error ?? '送信に失敗しました');
-      } catch {
+      } catch (parseErr) {
+        // JSON として読めなかった理由をコンソールに残す (§6 エラーを握り潰さない)
+        console.error('[CommentForm] エラー応答を JSON として解析できませんでした', parseErr);
         // JSON でないレスポンス (502 等) はステータスをそのまま伝える
         setError(`送信に失敗しました (HTTP ${res.status})`);
       }
