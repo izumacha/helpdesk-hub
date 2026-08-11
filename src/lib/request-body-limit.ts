@@ -488,10 +488,15 @@ export function decodeBodyText(bytes: Uint8Array): string {
  *
  * **署名検証にはこの関数を使わない (#290)。** 復号は上のとおり BOM を取り除き、不正な UTF-8 を
  * 置換文字 (U+FFFD) へ潰すため、**送信者が署名したバイト列と HMAC の対象がずれる**。ずれる方向は
- * 「正規のリクエストが署名不一致として拒否される」側で、Stripe なら再送が尽きた時点で
- * プラン状態が実際の課金とずれたまま残る。署名検証を通る 2 経路 (`inbound/line` /
- * `webhooks/stripe`) は `readBodyWithinByteLimit` の生バイト列をそのまま HMAC へ渡し、
- * JSON パース用の文字列だけを `decodeBodyText` で得る形にしてある。
+ * 「正規のリクエストが署名不一致として拒否される」側なので、検証が緩む差ではないが、
+ * 取りこぼしは送信者側の再送が尽きると復旧できない。
+ *
+ * 署名検証を通る 2 経路の現状:
+ *   - `inbound/line` … 自前で HMAC を計算しているので `readBodyWithinByteLimit` の生バイト列を
+ *     そのまま渡し、JSON パース用の文字列だけを `decodeBodyText` で得ている (ずれは解消済み)。
+ *   - `webhooks/stripe` … SDK の `constructEvent` が payload を内部で復号してから HMAC を組む
+ *     ため、生バイト列を渡してもずれは残る (詳細と、それでも渡す根拠はあちらのファイル冒頭)。
+ * どちらにせよ**この関数の戻り値を HMAC の入力にはしない**。
  *
  * @param req 読み取り対象のリクエスト
  * @param maxBytes 許容する最大バイト数

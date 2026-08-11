@@ -11,8 +11,20 @@
 // 3. 本ルートは CSRF トークン不要 (Stripe のサーバー→サーバー呼び出し。ブラウザ経由ではない)。
 // 4. 本ルートへのリクエストボディは raw bytes で読む必要がある (署名は生の本文に対して計算される)。
 //    App Router には bodyParser が無いので、サイズ上限つきの読み取りヘルパー (#287) で生バイト列を
-//    取得し、**復号を挟まずそのまま** constructEvent へ渡す (#290)。UTF-8 復号を挟むと BOM の除去や
-//    不正バイト列の U+FFFD 置換で HMAC の対象がずれ、正規イベントが署名不一致で落ちうる。
+//    取得し、**こちら側では復号せずそのまま** constructEvent へ渡す (#290)。
+//
+//    **既知の限界 (#290): 生バイト列を渡しても、HMAC の対象は SDK が復号した文字列になる。**
+//    stripe@22.4.0 の `parseEventDetails` は payload が Uint8Array なら
+//    `new TextDecoder('utf8').decode(payload)` で文字列化し、`verifyHeader` はその文字列で
+//    `${timestamp}.${payload}` を組んで HMAC を計算する (`Webhooks.js`)。つまり Buffer を渡しても
+//    文字列を渡しても HMAC の入力は同じで、**先頭 BOM の除去・不正 UTF-8 の U+FFFD 置換による
+//    署名ずれは SDK の内側で起きるため、このルート層では塞げない**。
+//    塞ぐには Stripe の署名方式 (v1 スキーム・タイムスタンプ許容差・リプレイ窓) を自前で
+//    実装し直すことになり、§9「暗号・認証情報は自前実装しない」に反するので採らない。
+//    それでも復号を SDK 側に寄せてあるのは、(a) このルートが本文の解釈について判断を持たなくなる、
+//    (b) SDK が将来バイト列のまま検証するようになれば自動的に追随できる、の 2 点による。
+//    実運用では Stripe は妥当な UTF-8 の JSON しか送らないため、現時点で顕在化する不具合ではない。
+//    (LINE 側 `inbound/line` は自前で HMAC を計算しているので、そちらは生バイト列で検証している)
 
 import { NextResponse } from 'next/server';
 // Stripe SDK の型定義 (Event 型を handleStripeEvent の引数に使う)
@@ -86,7 +98,9 @@ export async function POST(request: Request): Promise<NextResponse> {
   // Buffer.from(ArrayBuffer, offset, length) は**中身をコピーせず**同じメモリを見る窓を作る
   // (Buffer.from(Uint8Array) だと本文サイズぶんのコピーが 1 回増える)。
   // 読み取り側のバッファはこの後どこからも書き換えないので、窓のまま渡して問題ない。
-  // constructEvent の payload は string / Buffer のどちらでも受け付ける (Stripe SDK の型定義)
+  // constructEvent の payload は string / Buffer のどちらでも受け付ける (Stripe SDK の型定義)。
+  // **ここで Buffer を渡しても署名検証が生バイト列基準になるわけではない** — 理由と、
+  // それでもこの形にしている根拠はファイル冒頭のセキュリティ要点 4 を参照
   const rawBody = Buffer.from(
     bodyResult.bytes.buffer,
     bodyResult.bytes.byteOffset,

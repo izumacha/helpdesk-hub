@@ -326,11 +326,11 @@ describe('POST /api/webhooks/stripe', () => {
     expect(tenant.stripeEventProcessedAt?.getTime()).toBe(newEventCreatedAtSec * 1000);
   });
 
-  // #287 / #290: 署名検証へ渡るのが「受信したバイト列そのもの」であることを固定する。
+  // #287 / #290: SDK の署名検証へ渡るのが「受信したバイト列そのもの」であることを固定する。
   // 読み取り方法の変更は署名検証の回帰に直結する (デコードや切り詰めが 1 箇所でも挟まると
   // 正規の Stripe イベントが全て検証失敗になり、課金状態の反映が丸ごと止まる) ため、
   // マルチバイト文字を含む本文で「受信した本文そのもの」が渡ることを表明する
-  it('署名検証には受信した本文がそのまま渡る (マルチバイト文字を含んでも一致する)', async () => {
+  it('SDK には受信した本文がそのまま渡る (マルチバイト文字を含んでも一致する)', async () => {
     seedTenant('lite', 'free');
     // 日本語 + 絵文字 (サロゲートペア) を含めて、UTF-8 の復号・再エンコードが挟まっても
     // 壊れないことを確かめる (壊れると実運用では HMAC 不一致 = 全イベント拒否になる)
@@ -370,11 +370,16 @@ describe('POST /api/webhooks/stripe', () => {
     expect(store.tenants.get(TENANT)!.subscriptionPlan).toBe('pro');
   });
 
-  // #290: 先頭 BOM (EF BB BF) を含む本文でも、署名対象は BOM 込みの受信バイト列のままであること。
-  // UTF-8 復号を挟むと TextDecoder が BOM を取り除くため、Stripe が署名したバイト列と
-  // HMAC の対象がずれる (= 正規イベントが署名不一致で落ち、再送が尽きるとプラン状態が
-  // 実際の課金とずれたまま残る)。復号を挟む実装へ戻すとこのテストが落ちる
-  it('先頭 BOM を含む本文でも BOM 込みのバイト列が署名検証へ渡る', async () => {
+  // #290: 先頭 BOM (EF BB BF) を含む本文でも、ルートが本文を加工せず SDK へ渡すこと。
+  //
+  // **このテストが表明する範囲に注意。** constructEvent はモックなので、確かめているのは
+  // 「ルート層が受信バイト列を BOM ごとそのまま境界へ渡す」ところまでで、**署名検証が
+  // 生バイト列基準で成立すること**ではない。実際の SDK (stripe@22.4.0) は payload を内部で
+  // TextDecoder に通してから HMAC を組むため、BOM によるずれは SDK の内側に残る
+  // (根拠と、それでもバイト列を渡す理由は route ファイル冒頭のセキュリティ要点 4)。
+  // それでもこの表明に価値があるのは、**ルート層が復号・切り詰め・正規化を再び挟む退行**を
+  // 検出できるため (SDK が将来バイト列で検証するようになった時に効いてくる前提条件でもある)
+  it('先頭 BOM を含む本文でも、ルートは BOM 込みのバイト列を SDK へ渡す', async () => {
     seedTenant('lite', 'free');
     const json = JSON.stringify({
       created: Math.floor(Date.now() / 1000),
@@ -400,15 +405,15 @@ describe('POST /api/webhooks/stripe', () => {
       }),
     );
     expect(res.status).toBe(200);
-    // 渡ったバイト列に BOM がそのまま残っている (復号を挟むと 3 バイト短くなって落ちる)
+    // SDK へ渡ったバイト列に BOM がそのまま残っている (ルートで復号を挟むと 3 バイト短くなる)
     expect(constructEventSpy).toHaveBeenCalledTimes(1);
     expect(Buffer.compare(constructEventSpy.mock.calls[0]![0], bodyBytes)).toBe(0);
   });
 
-  // #290: 不正な UTF-8 バイト列を含む本文でも、置換文字 (U+FFFD) へ潰されず素通しされること。
-  // BOM と同じく「正規のリクエストが署名不一致で拒否される」方向の誤りを防ぐ。
+  // #290: 不正な UTF-8 バイト列を含む本文でも、ルート層で置換文字 (U+FFFD) へ潰さないこと。
+  // 表明の範囲は上の BOM のテストと同じ (ルート層が加工しないところまで)。
   // 不正バイトは Stripe が JSON 文字列として扱える位置 (metadata の値) に混ぜる
-  it('不正な UTF-8 を含む本文でも置換されずそのまま署名検証へ渡る', async () => {
+  it('不正な UTF-8 を含む本文でも、ルートは置換せずそのまま SDK へ渡す', async () => {
     seedTenant('lite', 'free');
     // 単独の 0x80 は UTF-8 として不正 (継続バイトが先頭に来ている)。復号すると U+FFFD になる
     const invalidUtf8 = Buffer.from([0x80]);
@@ -442,8 +447,8 @@ describe('POST /api/webhooks/stripe', () => {
       }),
     );
     expect(res.status).toBe(200);
-    // 渡ったバイト列が受信したものと 1 バイトも違わない
-    // (復号を挟むと 0x80 が U+FFFD の 3 バイトへ膨らんで落ちる)
+    // SDK へ渡ったバイト列が受信したものと 1 バイトも違わない
+    // (ルートで復号を挟むと 0x80 が U+FFFD の 3 バイトへ膨らんで落ちる)
     expect(constructEventSpy).toHaveBeenCalledTimes(1);
     expect(Buffer.compare(constructEventSpy.mock.calls[0]![0], bodyBytes)).toBe(0);
   });
