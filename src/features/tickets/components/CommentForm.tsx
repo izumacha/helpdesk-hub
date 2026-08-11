@@ -6,6 +6,8 @@ import { useRef, useState, useTransition } from 'react';
 import { useRouter } from 'next/navigation';
 // 添付ファイル件数の上限 (UI ヒント表示用)
 import { MAX_ATTACHMENTS_PER_UPLOAD } from '@/domain/attachment';
+// 「送信そのものが成立しなかった」ときの共通文言 (新規起票フォームと共有)
+import { NETWORK_ERROR_MESSAGE } from '@/lib/constants';
 
 // 受け取る props (どのチケットへのコメントか)
 interface Props {
@@ -44,11 +46,20 @@ export function CommentForm({ ticketId }: Props) {
     // 非ブロッキング送信
     startTransition(async () => {
       // multipart/form-data を Route Handler へ POST する
-      // Content-Type は手動指定せず、ブラウザに boundary を自動付与させる
-      const res = await fetch(`/api/tickets/${ticketId}/comments`, {
-        method: 'POST',
-        body: data,
-      });
+      // Content-Type は手動指定せず、ブラウザに boundary を自動付与させる。
+      // 送信そのものが成立しないこと (オフライン・接続断・サーバーが本文を読まずに応答を返した等) が
+      // あるため try/catch で囲む。catch が無いと例外がそのまま浮いて画面に何も表示されない
+      let res: Response;
+      try {
+        res = await fetch(`/api/tickets/${ticketId}/comments`, {
+          method: 'POST',
+          body: data,
+        });
+      } catch {
+        // 応答を受け取れていないので、サーバーの文言ではなく共通の通信失敗文言を出す
+        setError(NETWORK_ERROR_MESSAGE);
+        return;
+      }
 
       if (res.ok) {
         // 成功後にテキストエリアとファイル入力をクリアする

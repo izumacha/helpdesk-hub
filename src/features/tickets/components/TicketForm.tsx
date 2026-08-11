@@ -10,8 +10,9 @@ import { zodResolver } from '@hookform/resolvers/zod';
 import { useRouter } from 'next/navigation';
 // チケット作成入力の Zod スキーマと型
 import { createTicketSchema, type CreateTicketFormValues } from '@/lib/validations/ticket';
-// 優先度の日本語ラベル
-import { PRIORITY_LABELS } from '@/lib/constants';
+// PRIORITY_LABELS は優先度の日本語ラベル、NETWORK_ERROR_MESSAGE は
+// 「送信そのものが成立しなかった」ときの共通文言 (コメント投稿フォームと共有)
+import { NETWORK_ERROR_MESSAGE, PRIORITY_LABELS } from '@/lib/constants';
 // テナントモード型 (lite | pro)。Lite では入力項目を 3 つに絞る
 import type { TenantMode } from '@/domain/types';
 // 添付ファイル件数の上限 (UI ヒント表示用)
@@ -104,37 +105,51 @@ export function TicketForm({ categories, locations, mode }: Props) {
 
     // 送信用のリクエスト本体を選択: hasFiles なら FormData、それ以外は JSON
     let res: Response;
-    if (hasFiles) {
-      // multipart/form-data を組み立てる
-      const fd = new FormData();
-      // フォームの各フィールドを文字列として詰める (Zod は string を受け取る)
-      fd.set('title', data.title);
-      fd.set('body', data.body);
-      fd.set('priority', data.priority);
-      // optional フィールドは値があるときだけセットする
-      if (data.categoryId) fd.set('categoryId', data.categoryId);
-      if (data.dueDate) fd.set('dueDate', data.dueDate);
-      // 拠点 ID が選択されている場合にセットする (Phase 4 多拠点)
-      if (data.locationId) fd.set('locationId', data.locationId);
-      // ファイルは files キーに同名で複数 append する
-      for (const f of selectedFiles) fd.append('files', f, f.name);
-      // Content-Type は手動で指定せず、ブラウザに自動で boundary を組み立てさせる
-      res = await fetch('/api/tickets', { method: 'POST', body: fd });
-    } else {
-      // 添付なしの単純パス (従来どおり JSON で送る)
-      res = await fetch('/api/tickets', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(data),
-      });
+    // 送信そのものが成立しないこと (オフライン・接続断・サーバーが本文を読まずに応答を返した等) が
+    // あるため fetch を try/catch で囲む。catch が無いと例外がそのまま浮いて画面に何も表示されない
+    try {
+      if (hasFiles) {
+        // multipart/form-data を組み立てる
+        const fd = new FormData();
+        // フォームの各フィールドを文字列として詰める (Zod は string を受け取る)
+        fd.set('title', data.title);
+        fd.set('body', data.body);
+        fd.set('priority', data.priority);
+        // optional フィールドは値があるときだけセットする
+        if (data.categoryId) fd.set('categoryId', data.categoryId);
+        if (data.dueDate) fd.set('dueDate', data.dueDate);
+        // 拠点 ID が選択されている場合にセットする (Phase 4 多拠点)
+        if (data.locationId) fd.set('locationId', data.locationId);
+        // ファイルは files キーに同名で複数 append する
+        for (const f of selectedFiles) fd.append('files', f, f.name);
+        // Content-Type は手動で指定せず、ブラウザに自動で boundary を組み立てさせる
+        res = await fetch('/api/tickets', { method: 'POST', body: fd });
+      } else {
+        // 添付なしの単純パス (従来どおり JSON で送る)
+        res = await fetch('/api/tickets', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(data),
+        });
+      }
+    } catch {
+      // 応答を受け取れていないので、サーバーの文言ではなく共通の通信失敗文言を出す
+      setServerError(NETWORK_ERROR_MESSAGE);
+      return;
     }
 
     // 失敗時はエラー文言を表示して中断
     if (!res.ok) {
-      const err = await res.json();
-      // 添付検証 (422 + issues に path:['files'] が入る) のメッセージも拾える
-      const issueMessage = Array.isArray(err.issues) ? err.issues[0]?.message : null;
-      setServerError(issueMessage ?? err.error ?? '登録に失敗しました');
+      // エラー応答が JSON でないこともある (プロキシが返す 413 の HTML 等)。
+      // その場合は本文の解析に失敗するので、ステータスだけを添えた文言にフォールバックする
+      try {
+        const err = await res.json();
+        // 添付検証 (422 + issues に path:['files'] が入る) のメッセージも拾える
+        const issueMessage = Array.isArray(err.issues) ? err.issues[0]?.message : null;
+        setServerError(issueMessage ?? err.error ?? '登録に失敗しました');
+      } catch {
+        setServerError(`登録に失敗しました (HTTP ${res.status})`);
+      }
       return;
     }
 
@@ -258,10 +273,7 @@ export function TicketForm({ categories, locations, mode }: Props) {
         {/* カテゴリ (Pro モードのみ。Lite では非表示) */}
         {!isLite && (
           <div>
-            <label
-              htmlFor="categoryId"
-              className="mb-1.5 block text-sm font-medium text-slate-700"
-            >
+            <label htmlFor="categoryId" className="mb-1.5 block text-sm font-medium text-slate-700">
               カテゴリ
             </label>
             <select id="categoryId" {...register('categoryId')} className={fieldBaseClass}>

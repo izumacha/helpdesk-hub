@@ -51,11 +51,19 @@ import { notifyOutboundBestEffort } from '@/lib/outbound-notify';
 import { isSameOriginRequest } from '@/lib/csrf';
 // リクエストボディをサイズ上限つきで読み取るヘルパー。req.formData() を直接呼ぶと
 // Content-Length を省いた chunked 転送に対して上限なくメモリへ展開されるため、こちらを通す (§9)
-import { readFormWithinByteLimit } from '@/lib/request-body-limit';
+// STALL_TOLERANT_BODY_IDLE_TIMEOUT_MS は「他経路の重い解析でイベントループが止まった巻き添えで
+// 正規の送信を打ち切らない」ための延長版の無通信許容時間 (採用条件は同モジュールのコメント)
+import {
+  readFormWithinByteLimit,
+  STALL_TOLERANT_BODY_IDLE_TIMEOUT_MS,
+} from '@/lib/request-body-limit';
 // 拒否時のログ・ステータス・文言をまとめて組み立てるヘルパー (Webhook 3 経路と共有)
 import { bodyRejectResponse } from '@/lib/body-reject-response';
 // この経路が受け付けるボディの最大バイト数 (新規起票の添付経路と共有。route とテストが同じ定義を参照)
-import { ATTACHMENT_UPLOAD_MAX_BODY_BYTES } from '@/lib/ticket-body-limits';
+import {
+  ATTACHMENT_UPLOAD_BODY_TOTAL_TIMEOUT_MS,
+  ATTACHMENT_UPLOAD_MAX_BODY_BYTES,
+} from '@/lib/ticket-body-limits';
 // 拒否理由ごとの文言 (新規起票の添付経路と共有。route とテストが同じ表を参照する)
 import { TICKET_MULTIPART_BODY_REJECT_MESSAGES } from '@/lib/ticket-body-reject-messages';
 
@@ -119,7 +127,15 @@ export async function POST(req: Request, { params }: Params) {
   // req.formData() を直接呼ぶと、Content-Length を省いた chunked 転送に対しては上限なく
   // ボディ全体がメモリへ展開されてしまう (添付 1 件あたりのサイズ検査は、全部読み終えた
   // **後**の validateUploadedFiles まで走らない)。読み取り側で先に打ち切る (§9 / #290)
-  const formResult = await readFormWithinByteLimit(req, ATTACHMENT_UPLOAD_MAX_BODY_BYTES);
+  // 制限時間は新規起票の添付経路と同じ値を使う (枠が同じなので送り切るのに必要な時間も同じ)。
+  // 無通信は STALL_TOLERANT (30 秒) — 読み取り前に auth() / 同一オリジン検証 / レート制限の
+  // ゲートを通り、かつ再送が無い経路なので、他経路の重い解析の巻き添えで落とさない
+  const formResult = await readFormWithinByteLimit(
+    req,
+    ATTACHMENT_UPLOAD_MAX_BODY_BYTES,
+    STALL_TOLERANT_BODY_IDLE_TIMEOUT_MS,
+    ATTACHMENT_UPLOAD_BODY_TOTAL_TIMEOUT_MS,
+  );
   if (!formResult.ok) {
     // どの理由 (サイズ超過 / だらだら送り / 接続断 / 解析失敗) で拒否したかはサーバーログに残し、
     // 利用者には理由ごとに決めた文言を返す。文言表は新規起票の添付経路と共有する (§6 DRY)

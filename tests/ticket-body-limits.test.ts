@@ -10,13 +10,19 @@
 //     (`tests/webhook-body-reject-messages.test.ts` と同じ理由)。
 
 import { describe, expect, it, vi, afterEach } from 'vitest';
-// 検証対象の上限値 (本番の route が参照するのと同じ定義)
+// 検証対象の上限値・制限時間 (本番の route が参照するのと同じ定義)
 import {
+  ATTACHMENT_UPLOAD_BODY_TOTAL_TIMEOUT_MS,
   ATTACHMENT_UPLOAD_MAX_BODY_BYTES,
   TICKET_JSON_MAX_BODY_BYTES,
 } from '@/lib/ticket-body-limits';
 // 上限の導出元となるドメイン定数
 import { MAX_ATTACHMENTS_PER_UPLOAD, MAX_ATTACHMENT_SIZE_BYTES } from '@/domain/attachment';
+// 既定・延長版の制限時間 (この経路の全体期限が満たすべき関係の比較対象)
+import {
+  DEFAULT_BODY_TOTAL_TIMEOUT_MS,
+  STALL_TOLERANT_BODY_IDLE_TIMEOUT_MS,
+} from '@/lib/request-body-limit';
 // 検証対象の文言表 (本番の route が参照するのと同じ表)
 import {
   TICKET_JSON_BODY_REJECT_MESSAGES,
@@ -69,6 +75,27 @@ describe('TICKET_JSON_MAX_BODY_BYTES', () => {
   });
 });
 
+describe('ATTACHMENT_UPLOAD_BODY_TOTAL_TIMEOUT_MS', () => {
+  // 既定 (120 秒) を上書きする意味があること。ここが既定以下だと、51MB の枠に対して
+  // 時間が足りず正規のアップロードが送信途中で打ち切られる (移行前からのデグレ)
+  it('既定の全体期限より長い', () => {
+    expect(ATTACHMENT_UPLOAD_BODY_TOTAL_TIMEOUT_MS).toBeGreaterThan(DEFAULT_BODY_TOTAL_TIMEOUT_MS);
+  });
+
+  // Node 既定の requestTimeout (300 秒) を超えるとサーバー側で先に切られ、こちらの
+  // 打ち切り (だらだら送りの検知) が一度も効かなくなる
+  it('Node 既定の requestTimeout (300 秒) より短い', () => {
+    expect(ATTACHMENT_UPLOAD_BODY_TOTAL_TIMEOUT_MS).toBeLessThan(300_000);
+  });
+
+  // 無通信の上限より短いと、無通信の検知が一度も働かずに全体期限まで居座られる
+  it('この経路が使う無通信の上限より長い', () => {
+    expect(ATTACHMENT_UPLOAD_BODY_TOTAL_TIMEOUT_MS).toBeGreaterThan(
+      STALL_TOLERANT_BODY_IDLE_TIMEOUT_MS,
+    );
+  });
+});
+
 // 2 つの表を同じ観点で回す (経路ごとに文言は違うが、満たすべき性質は同じ)
 const TABLES = [
   ['チケット添付 (multipart)', TICKET_MULTIPART_BODY_REJECT_MESSAGES],
@@ -112,6 +139,26 @@ describe('チケット書き込み経路の拒否文言', () => {
     expect(TICKET_JSON_BODY_REJECT_MESSAGES).not.toHaveProperty('unparsable');
     // multipart を読む添付経路だけは持つ
     expect(TICKET_MULTIPART_BODY_REJECT_MESSAGES).toHaveProperty('unparsable');
+  });
+
+  // 「本文が届き切らなかった」2 理由は、利用者に伝えるべきことが経路で変わらないので
+  // 2 つの表で同じ文言を共有する (共有の名前付き定数を両表が参照している)。
+  // 片方だけ推敲されて同じ失敗理由に別の案内が出る退行をここで止める
+  it('timeout と unreadable の文言は 2 つの表で一致する', () => {
+    expect(TICKET_JSON_BODY_REJECT_MESSAGES.timeout).toBe(
+      TICKET_MULTIPART_BODY_REJECT_MESSAGES.timeout,
+    );
+    expect(TICKET_JSON_BODY_REJECT_MESSAGES.unreadable).toBe(
+      TICKET_MULTIPART_BODY_REJECT_MESSAGES.unreadable,
+    );
+  });
+
+  // 一方で 'too-large' は経路ごとに変える (multipart は「添付を減らす」、JSON は「本文を短く」)。
+  // 減らす対象が無い経路に添付の案内を出さないための区別で、上の共有とは意図が別
+  it('too-large の文言は経路ごとに異なる', () => {
+    expect(TICKET_JSON_BODY_REJECT_MESSAGES['too-large']).not.toBe(
+      TICKET_MULTIPART_BODY_REJECT_MESSAGES['too-large'],
+    );
   });
 
   // multipart の解析失敗の文言だけは移行前 (req.formData() の catch) と同じ文字列を保つ。

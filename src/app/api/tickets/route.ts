@@ -47,11 +47,18 @@ import { checkRouteRateLimit } from '@/lib/route-rate-limit';
 import { isSameOriginRequest } from '@/lib/csrf';
 // リクエストボディをサイズ上限つきで読み取るヘルパー。req.formData() / req.json() を直接呼ぶと
 // Content-Length を省いた chunked 転送に対して上限なくメモリへ展開されるため、こちらを通す (§9)
-import { readFormWithinByteLimit, readTextWithinByteLimit } from '@/lib/request-body-limit';
+// STALL_TOLERANT_BODY_IDLE_TIMEOUT_MS は「他経路の重い解析でイベントループが止まった巻き添えで
+// 正規の送信を打ち切らない」ための延長版の無通信許容時間 (採用条件は同モジュールのコメント)
+import {
+  readFormWithinByteLimit,
+  readTextWithinByteLimit,
+  STALL_TOLERANT_BODY_IDLE_TIMEOUT_MS,
+} from '@/lib/request-body-limit';
 // 拒否時のログ・ステータス・文言をまとめて組み立てるヘルパー (Webhook 3 経路と共有)
 import { bodyRejectResponse } from '@/lib/body-reject-response';
 // この経路が受け付けるボディの最大バイト数 (route とテストが同じ定義を参照する)
 import {
+  ATTACHMENT_UPLOAD_BODY_TOTAL_TIMEOUT_MS,
   ATTACHMENT_UPLOAD_MAX_BODY_BYTES,
   TICKET_JSON_MAX_BODY_BYTES,
 } from '@/lib/ticket-body-limits';
@@ -158,7 +165,17 @@ export async function POST(req: Request) {
     // req.formData() を直接呼ぶと、Content-Length を省いた chunked 転送に対しては上限なく
     // ボディ全体がメモリへ展開されてしまう (添付 1 件あたりのサイズ検査は、全部読み終えた
     // **後**の validateUploadedFiles まで走らない)。読み取り側で先に打ち切る (§9 / #290)
-    const formResult = await readFormWithinByteLimit(req, ATTACHMENT_UPLOAD_MAX_BODY_BYTES);
+    // 制限時間は 2 つとも既定を上書きする。無通信の許容は STALL_TOLERANT (30 秒) を使う:
+    // 読み取りの前に auth() / 同一オリジン検証 / レート制限のゲートを通るので採用条件を満たし、
+    // かつ**再送が無い**経路 (打ち切ると利用者が手で送り直すしかない) なので、他経路の重い
+    // 解析でイベントループが止まった巻き添えで落とさない。全体期限は 51MB の枠に対して
+    // 既定の 120 秒では足りないため専用の値を渡す (どちらも理由は各定数のコメント)
+    const formResult = await readFormWithinByteLimit(
+      req,
+      ATTACHMENT_UPLOAD_MAX_BODY_BYTES,
+      STALL_TOLERANT_BODY_IDLE_TIMEOUT_MS,
+      ATTACHMENT_UPLOAD_BODY_TOTAL_TIMEOUT_MS,
+    );
     if (!formResult.ok) {
       // どの理由 (サイズ超過 / だらだら送り / 接続断 / 解析失敗) で拒否したかはサーバーログに残し、
       // 利用者には理由ごとに決めた文言を返す。ログ・ステータス・文言の組み立ては共通ヘルパーに委ねる
@@ -185,7 +202,14 @@ export async function POST(req: Request) {
     // JSON ボディもサイズ上限つきで読み出す。req.json() は multipart と同じく、Content-Length を
     // 省いた chunked 転送に対して上限なくメモリへ展開してしまう。添付が無いと分かっている経路
     // なので枠は multipart 側より大幅に小さい (§9 最小権限・最小公開)
-    const bodyResult = await readTextWithinByteLimit(req, TICKET_JSON_MAX_BODY_BYTES);
+    // 無通信の許容は multipart 側と同じ理由で STALL_TOLERANT を使う (ゲートを通る / 再送が無い)。
+    // 全体期限は既定の 120 秒で足りる — 128KB は細い回線でも一瞬で送り切れるので、
+    // 上書きするとだらだら送りに掴まれる時間を延ばすだけになる
+    const bodyResult = await readTextWithinByteLimit(
+      req,
+      TICKET_JSON_MAX_BODY_BYTES,
+      STALL_TOLERANT_BODY_IDLE_TIMEOUT_MS,
+    );
     if (!bodyResult.ok) {
       // 拒否理由ごとの文言・ステータス・ログは multipart 側と同じ共通ヘルパーに委ねる
       return bodyRejectResponse(bodyResult, TICKET_JSON_MAX_BODY_BYTES, {

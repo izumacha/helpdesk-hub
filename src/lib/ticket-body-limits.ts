@@ -49,6 +49,24 @@ const MULTIPART_ENVELOPE_OVERHEAD_BYTES = 1024 * 1024;
 export const ATTACHMENT_UPLOAD_MAX_BODY_BYTES =
   MAX_ATTACHMENTS_PER_UPLOAD * MAX_ATTACHMENT_SIZE_BYTES + MULTIPART_ENVELOPE_OVERHEAD_BYTES;
 
+// 添付付きアップロードの読み取り全体に許容する最大時間 (4 分)。
+//
+// **この経路が既定値 (`DEFAULT_BODY_TOTAL_TIMEOUT_MS` = 120 秒) を上書きする理由**:
+// 既定は「上限 1MB の経路なら細い回線でもほぼ全域を送り切れる」という前提で決めた値で、
+// 上限が 50 倍あるこの経路にそのまま当てると、正規のアップロードが送信途中で打ち切られて
+// 400 になる。移行前の `req.formData()` には時間制限が無かったため、既定のままでは
+// **移行によるデグレ**になる (上限 25MB のメール取り込みが
+// `INBOUND_EMAIL_BODY_TOTAL_TIMEOUT_MS` で同じ上書きをしているのと同じ理由)。
+//
+// 目安: 上り 1Mbps (125KB/s) のモバイル回線なら 4 分で約 30MB — 現場で撮った写真 3 枚
+// (1 枚 10MB 上限なので最大 30MB) がちょうど収まる。**枠いっぱいの 51MB を上り 1Mbps で
+// 送り切るには 7 分近くかかり、それは Node の既定 requestTimeout (300 秒) の外なので
+// この定数をいくら延ばしても届かない** — サーバー側で先に切られる。上限バイト数の枠と
+// 送り切れる時間の枠は別物で、後者は Node の 300 秒が天井になる点に注意。
+//
+// 一方で「無制限」にはしない (だらだら送りでハンドラを保持され続けるため)。
+export const ATTACHMENT_UPLOAD_BODY_TOTAL_TIMEOUT_MS = 240_000;
+
 // 添付なしの新規起票 (`application/json` 経路) の上限 (128KB)。
 //
 // この経路の本文はテキストフィールドだけで、最長の `body` は `createTicketSchema` が

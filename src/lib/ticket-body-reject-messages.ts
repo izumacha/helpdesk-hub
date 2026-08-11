@@ -5,7 +5,8 @@
 // Next.js の Route Handler は既知のエクスポート名しか許さないため route.ts から定数を
 // export できず、置いたままではテストから参照できない。ここへ出しておけば、
 // `timeout` / `unreadable` のように発火させるのが重い理由まで含めて、**本番の表そのもの**を
-// ルート越しではなく直接表明できる (実際の表明は `tests/ticket-body-reject-messages.test.ts`)。
+// ルート越しではなく直接表明できる (実際の表明は `tests/ticket-body-limits.test.ts`。上限値と
+// 同じファイルにまとめてあるのは、どちらも「route から export できない定義」で理由が同じため)。
 //
 // Webhook 3 経路の表 (`webhook-body-reject-messages.ts`) と分けているのは読み手が違うため:
 // あちらは LINE / メールプロバイダ / Stripe の配信ログを見る運用者向けで、こちらは
@@ -13,6 +14,17 @@
 // `error` をフォーム下のエラー表示へそのまま流す)。
 
 import type { BodyRejectMessages, BodyReadRejectReason } from '@/lib/request-body-limit';
+
+// 本文が届き切らなかった 2 理由 (`timeout` / `unreadable`) の文言。**2 つの表で共有する。**
+// 「送信が途中で止まった」「最後まで受け取れなかった」は本文の中身と無関係な回線側の失敗で、
+// 利用者に伝えるべきこと (通信状態を確認してもう一度送る) も multipart / JSON で変わらない。
+// 表ごとに文字列を直書きすると、文言を推敲した人が片方だけ直して同じ失敗理由に別の案内が
+// 出る (§6 UI 文言は単一の参照元に集約する)。**理由ごとに違う文言であること自体は保つ** —
+// どちらも 400 なので、ステータスで文言を選ぶ実装への退行はここが同一だと検出できなくなる。
+const BODY_INCOMPLETE_TIMEOUT_MESSAGE =
+  '送信が途中で止まりました。通信状態をご確認のうえもう一度お試しください';
+const BODY_INCOMPLETE_UNREADABLE_MESSAGE =
+  '送信を最後まで受け取れませんでした。もう一度お試しください';
 
 // 添付付きアップロード (multipart) 2 経路の文言。
 // **`unparsable` は移行前の文言をそのまま使う**: この経路は以前から解析失敗時に
@@ -25,8 +37,8 @@ import type { BodyRejectMessages, BodyReadRejectReason } from '@/lib/request-bod
 // (§1.2 ペルソナ「現場リーダー」はモバイル回線からの添付送信が主な使い方)。
 export const TICKET_MULTIPART_BODY_REJECT_MESSAGES: BodyRejectMessages = {
   'too-large': '送信内容が大きすぎます。添付ファイルを減らすか小さくしてお試しください',
-  timeout: '送信が途中で止まりました。通信状態をご確認のうえもう一度お試しください',
-  unreadable: '送信を最後まで受け取れませんでした。もう一度お試しください',
+  timeout: BODY_INCOMPLETE_TIMEOUT_MESSAGE,
+  unreadable: BODY_INCOMPLETE_UNREADABLE_MESSAGE,
   unparsable: 'リクエストの形式が正しくありません',
 };
 
@@ -37,6 +49,6 @@ export const TICKET_MULTIPART_BODY_REJECT_MESSAGES: BodyRejectMessages = {
 // (「添付を減らして」と案内しても利用者には減らす対象が無い)。
 export const TICKET_JSON_BODY_REJECT_MESSAGES: BodyRejectMessages<BodyReadRejectReason> = {
   'too-large': '入力内容が大きすぎます。本文を短くしてお試しください',
-  timeout: '送信が途中で止まりました。通信状態をご確認のうえもう一度お試しください',
-  unreadable: '送信を最後まで受け取れませんでした。もう一度お試しください',
+  timeout: BODY_INCOMPLETE_TIMEOUT_MESSAGE,
+  unreadable: BODY_INCOMPLETE_UNREADABLE_MESSAGE,
 };

@@ -21,11 +21,14 @@ import { createMemoryStorage, type MemoryStoragePort } from '@/data/adapters/mem
 import type { Repos, UnitOfWork } from '@/data/ports/unit-of-work';
 // レート制限の履歴をテスト間でクリアする内部用関数
 import { __resetRateLimits } from '@/lib/rate-limit';
-// 検証対象の上限値 (route が参照するのと同じ定義を使う。片方だけ変えたら気付けるようにするため)
+// 検証対象の上限値・制限時間 (route が参照するのと同じ定義を使う。片方だけ変えたら気付けるように)
 import {
+  ATTACHMENT_UPLOAD_BODY_TOTAL_TIMEOUT_MS,
   ATTACHMENT_UPLOAD_MAX_BODY_BYTES,
   TICKET_JSON_MAX_BODY_BYTES,
 } from '@/lib/ticket-body-limits';
+// 巻き添え回避用の無通信上限 (両経路が既定ではなくこちらを明示的に使う)
+import { STALL_TOLERANT_BODY_IDLE_TIMEOUT_MS } from '@/lib/request-body-limit';
 // 期待する文言も表そのものから引く (文言を書き写すと、表を変えたときにテストだけ古くなる)
 import {
   TICKET_JSON_BODY_REJECT_MESSAGES,
@@ -41,6 +44,32 @@ let store: Store;
 let repos: Repos;
 let uow: UnitOfWork;
 let storage: MemoryStoragePort;
+
+// 上限・制限時間は「ルートが引数で明示的に渡す」ことで初めて効く。渡し忘れると既定
+// (無通信 10 秒 / 全体 120 秒) に黙って戻り、51MB の枠に対して時間が足りず正規のアップロードが
+// 途中で打ち切られる。挙動テストでは既定値でも緑のままなので、引数そのものを表明する。
+// 記録するのは第 2 引数以降 (上限と制限時間) だけ — 第 1 引数の Request まで記録すると
+// 本文が mock.calls 経由でファイル終了まで参照され続ける (inbound-email-route.test.ts と同じ)
+const { readFormSpy, readTextSpy } = vi.hoisted(() => ({
+  readFormSpy: vi.fn(),
+  readTextSpy: vi.fn(),
+}));
+vi.mock('@/lib/request-body-limit', async (importOriginal) => {
+  // 本物の実装を読み込む (差し替えるのは「呼ばれ方の記録」だけで、中身は本物を通す)
+  const actual = await importOriginal<typeof import('@/lib/request-body-limit')>();
+  return {
+    ...actual,
+    // 引数を記録してから本物へ委譲する
+    readFormWithinByteLimit: (...args: Parameters<typeof actual.readFormWithinByteLimit>) => {
+      readFormSpy(...args.slice(1));
+      return actual.readFormWithinByteLimit(...args);
+    },
+    readTextWithinByteLimit: (...args: Parameters<typeof actual.readTextWithinByteLimit>) => {
+      readTextSpy(...args.slice(1));
+      return actual.readTextWithinByteLimit(...args);
+    },
+  };
+});
 
 // @/data モジュールを差し替え (getter で参照することで beforeEach の上書きを反映)
 vi.mock('@/data', () => ({
@@ -184,6 +213,9 @@ beforeEach(() => {
   vi.resetModules();
   // 他ファイル・他テストのレート制限履歴を持ち込まない (この経路は 60 秒 20 件で 429 になる)
   __resetRateLimits();
+  // 引数の記録をテストごとにリセットする
+  readFormSpy.mockClear();
+  readTextSpy.mockClear();
 });
 
 describe('POST /api/tickets のボディ上限', () => {
@@ -249,6 +281,71 @@ describe('POST /api/tickets のボディ上限', () => {
     const res = await POST(req);
     expect(res.status).toBe(400);
     expect(await res.json()).toEqual({ error: 'リクエストの形式が正しくありません' });
+  });
+});
+
+describe('読み取りヘルパーへ渡す上限と制限時間', () => {
+  // multipart 経路: 51MB の枠に対して既定の全体期限 (120 秒) では足りないため専用の値を渡す。
+  // 無通信は巻き添え回避用の 30 秒を明示的に使う (採用条件は request-body-limit.ts のコメント)
+  it('multipart 起票はこの経路の上限・無通信上限・全体期限を渡している', async () => {
+    await seed();
+    const { POST } = await import('@/app/api/tickets/route');
+    const form = new FormData();
+    form.set('title', 't');
+    form.set('body', 'b');
+    form.set('priority', 'Medium');
+    form.append('files', makeJpeg('a.jpg'), 'a.jpg');
+    await POST(
+      new Request('http://localhost/api/tickets', {
+        method: 'POST',
+        body: form,
+        headers: { 'sec-fetch-site': 'same-origin' },
+      }),
+    );
+
+    expect(readFormSpy).toHaveBeenCalledTimes(1);
+    expect(readFormSpy.mock.calls[0]).toEqual([
+      ATTACHMENT_UPLOAD_MAX_BODY_BYTES,
+      STALL_TOLERANT_BODY_IDLE_TIMEOUT_MS, // 巻き添え回避用の無通信上限を明示的に使う
+      ATTACHMENT_UPLOAD_BODY_TOTAL_TIMEOUT_MS,
+    ]);
+  });
+
+  // JSON 経路: 128KB は一瞬で送り切れるので全体期限は既定のまま (第 4 引数を渡さない)。
+  // 無通信だけは multipart 側と同じ理由で巻き添え回避用の値を渡す
+  it('JSON 起票は上限と無通信上限を渡し、全体期限は既定に任せている', async () => {
+    await seed();
+    const { POST } = await import('@/app/api/tickets/route');
+    await POST(buildJsonRequest({ title: 't', body: 'b', priority: 'Medium' }));
+
+    expect(readTextSpy).toHaveBeenCalledTimes(1);
+    expect(readTextSpy.mock.calls[0]).toEqual([
+      TICKET_JSON_MAX_BODY_BYTES,
+      STALL_TOLERANT_BODY_IDLE_TIMEOUT_MS,
+    ]);
+  });
+
+  // コメント投稿も新規起票の添付経路とまったく同じ 3 値を渡す (枠が同じなので時間も同じ)
+  it('コメント投稿は新規起票の添付経路と同じ上限・制限時間を渡している', async () => {
+    const ticketId = await seed();
+    const { POST } = await import('@/app/api/tickets/[id]/comments/route');
+    const form = new FormData();
+    form.set('body', 'コメント');
+    await POST(
+      new Request(`http://localhost/api/tickets/${ticketId}/comments`, {
+        method: 'POST',
+        body: form,
+        headers: { 'sec-fetch-site': 'same-origin' },
+      }),
+      { params: Promise.resolve({ id: ticketId }) },
+    );
+
+    expect(readFormSpy).toHaveBeenCalledTimes(1);
+    expect(readFormSpy.mock.calls[0]).toEqual([
+      ATTACHMENT_UPLOAD_MAX_BODY_BYTES,
+      STALL_TOLERANT_BODY_IDLE_TIMEOUT_MS,
+      ATTACHMENT_UPLOAD_BODY_TOTAL_TIMEOUT_MS,
+    ]);
   });
 });
 
