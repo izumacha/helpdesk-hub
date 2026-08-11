@@ -12,7 +12,7 @@ import {
   selectAttachmentFiles,
 } from '@/domain/attachment';
 // 「送信そのものが成立しなかった」ときの共通文言 (新規起票フォームと共有)
-import { NETWORK_ERROR_MESSAGE } from '@/lib/constants';
+import { COMMENT_RESULT_UNKNOWN_MESSAGE, NETWORK_ERROR_MESSAGE } from '@/lib/constants';
 // エラー応答から画面用のメッセージを取り出す共通ヘルパー (新規起票フォームと共有)
 import { readApiErrorMessage } from '@/lib/api-error-message';
 
@@ -88,7 +88,23 @@ export function CommentForm({ ticketId }: Props) {
       }
 
       if (res.ok) {
-        // 成功後にテキストエリアとファイル入力をクリアする
+        // **2xx というだけで成功扱いにしない。** このルートは成功時に必ず {"ok": true} を返すので、
+        // それを確かめてから入力欄を消す。社内プロキシやキャッシュ層が差し込んだ 200 の HTML を
+        // 成功と見なすと、実際には投稿されていないのに**利用者が書いた本文を消してしまう**
+        let accepted = false;
+        try {
+          const body = (await res.json()) as { ok?: boolean } | null;
+          accepted = body?.ok === true;
+        } catch (parseErr) {
+          // 解析できなかった理由はコンソールに残す (§6 エラーを握り潰さない)
+          console.error('[CommentForm] 成功応答を JSON として解析できませんでした', parseErr);
+        }
+        // 確認できなければ本文を残したまま、成功とも失敗とも言い切らない文言を出す
+        if (!accepted) {
+          setError(COMMENT_RESULT_UNKNOWN_MESSAGE);
+          return;
+        }
+        // 成功が確認できたのでテキストエリアとファイル入力をクリアする
         if (textareaRef.current) textareaRef.current.value = '';
         if (fileRef.current) fileRef.current.value = '';
         // サーバーキャッシュを refresh して新しいコメントを画面に反映する

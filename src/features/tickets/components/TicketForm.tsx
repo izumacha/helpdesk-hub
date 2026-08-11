@@ -185,9 +185,12 @@ export function TicketForm({ categories, locations, mode }: Props) {
       // 解析できなかった理由をコンソールに残す (§6 エラーを握り潰さない)
       console.error('[TicketForm] 成功応答を JSON として解析できませんでした', parseErr);
     }
-    // ID が読めたら詳細ページへ遷移する (通常はこちら)
-    if (ticket?.id) {
-      router.push(`/tickets/${ticket.id}`);
+    // ID が「使える文字列」なら詳細ページへ遷移する (通常はこちら)。
+    // typeof を確かめるのは、上のキャストが型注釈にすぎず、想定外の応答では
+    // オブジェクトが素通りして /tickets/[object Object] へ飛んでしまうため。
+    // encodeURIComponent は、ID に / や .. が混ざっていても別のパスへ化けないようにする
+    if (typeof ticket?.id === 'string' && ticket.id.length > 0) {
+      router.push(`/tickets/${encodeURIComponent(ticket.id)}`);
       return;
     }
     // ID が読めなかった場合。**「2xx だから登録できた」とは判断しない**のが要点:

@@ -9,6 +9,12 @@
 // **応答の本文を読むのはここだけにする。** 呼び出し元が `res.json()` を自前で呼ぶと、
 // 解析失敗を捕まえ忘れる余地が残る (捕まえ損ねると例外がそのまま浮いて画面に何も出ない)。
 
+// 画面にそのまま出せる文字列か (文字列であり、空白だけでもないこと) を判定する。
+// 空白だけの文言は表示上「何も出ていない」のと同じなので既定文言へ落とす
+function isDisplayableMessage(value: unknown): value is string {
+  return typeof value === 'string' && value.trim().length > 0;
+}
+
 // API のエラー応答の形。`issues` は Zod 互換 (422 の添付検証などが使う)
 interface ApiErrorBody {
   error?: string; // 汎用のエラー文言
@@ -49,13 +55,16 @@ export async function readApiErrorMessage(
     const body = (await res.json()) as ApiErrorBody | null;
     // 項目ごとの検証エラーがあれば、その先頭を最優先で使う
     const issueMessage = Array.isArray(body?.issues) ? body.issues[0]?.message : null;
-    // **文字列であることを実際に確かめてから返す。** 上のキャストは型注釈にすぎず、
-    // 想定外の応答 ({"error": {"code": "..."}} 等) では object が素通りしてしまう。
+    // **「表示できる文字列」であることを実際に確かめてから返す。** 上のキャストは型注釈に
+    // すぎず、想定外の応答 ({"error": {"code": "..."}} 等) では object が素通りしてしまう。
     // それを setState に渡すと React が「Objects are not valid as a React child」で
-    // 描画ごと落ち、エラー表示どころか画面が真っ白になる
-    if (typeof issueMessage === 'string') return issueMessage;
-    if (typeof body?.error === 'string') return body.error;
-    // 読めたが文字列ではなかった場合も、既定文言へ落とす
+    // 描画ごと落ち、エラー表示どころか画面が真っ白になる。
+    // **空文字列も弾く**: 呼び出し元はどちらも `{error && <p role="alert">…}` の形で
+    // 真値のときだけ表示するため、空文字列を返すと警告が 1 つも描画されず、
+    // 「送信ボタンが戻るだけで何も起きない」という最悪の見え方になる
+    if (isDisplayableMessage(issueMessage)) return issueMessage;
+    if (isDisplayableMessage(body?.error)) return body.error;
+    // 読めたが表示できる文字列ではなかった場合も、既定文言へ落とす
     return fallbackMessage;
   } catch (parseErr) {
     // JSON として読めなかった理由はコンソールに残す (画面には出さない)
