@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest';
 // テスト対象: サイドバーのメニュー項目アクティブ判定 (純粋関数)
 import { isItemActive } from '../src/lib/nav-active';
 
-// docs/pr-review-report.md 推奨フォローアップ「isItemActive のユニットテスト追加」に対応
+// docs/archive/pr-review-report.md 推奨フォローアップ「isItemActive のユニットテスト追加」に対応
 describe('isItemActive', () => {
   // ルート "/" は完全一致のときのみアクティブ
   it('treats root "/" as active only on an exact match', () => {

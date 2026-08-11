@@ -1,6 +1,6 @@
 // サイドバーのメニュー項目が「現在表示中のページ」かどうかを判定する純粋関数。
 // Next.js (usePathname) にも React にも依存しないため、Vitest の node 環境でそのまま
-// ユニットテストできる (docs/pr-review-report.md §4 のフォローアップ「isItemActive のユニット
+// ユニットテストできる (docs/archive/pr-review-report.md §4 のフォローアップ「isItemActive のユニット
 // テスト追加」に対応。ロジック自体は src/components/layout/Sidebar.tsx に元々インライン定義
 // されていたものを、テスト容易性のためここへ切り出した。挙動は変更していない)。
 
