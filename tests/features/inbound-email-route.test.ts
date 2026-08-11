@@ -922,6 +922,52 @@ describe('POST /api/inbound/email', () => {
       });
     }
 
+    // 回帰テスト: attachments=1 と申告しつつ本体が空パート (filename="") のときに、
+    // 「添付を却下した」という偽の警告ログを出さないこと。
+    // undici は filename="" のパートを File (name: '', size: 0) として解析するため
+    // instanceof File では落ちず、そのまま寛容版検証に渡すと size 0 で却下され
+    // droppedCount が 1 になる (実際には添付が 1 件も無いのに運用ログが汚れる)。
+    // selectAttachmentFiles を素の instanceof File に戻すとこのテストが落ちる。
+    it('空の添付パート (filename="") を添付として数えず、却下の警告も出さない', async () => {
+      // 警告ログを観測するためにスパイを張る (実出力は抑制する)
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const boundary = '----browserlike';
+      // body フィールド相当のテキスト部と、空の添付パートを手で組み立てる
+      const parts = [
+        `Content-Disposition: form-data; name="to"\r\n\r\n${VALID_EMAIL.to}`,
+        `Content-Disposition: form-data; name="from"\r\n\r\n${VALID_EMAIL.from}`,
+        `Content-Disposition: form-data; name="subject"\r\n\r\n${VALID_EMAIL.subject}`,
+        `Content-Disposition: form-data; name="text"\r\n\r\n${VALID_EMAIL.text}`,
+        'Content-Disposition: form-data; name="attachments"\r\n\r\n1',
+        'Content-Disposition: form-data; name="attachment1"; filename=""\r\nContent-Type: application/octet-stream\r\n\r\n',
+      ];
+      const raw =
+        parts.map((part) => `--${boundary}\r\n${part}\r\n`).join('') + `--${boundary}--\r\n`;
+      const req = new Request('http://localhost/api/inbound/email', {
+        method: 'POST',
+        headers: {
+          'x-inbound-secret': SECRET,
+          'content-type': `multipart/form-data; boundary=${boundary}`,
+        },
+        body: new TextEncoder().encode(raw),
+      });
+      const { POST } = await import('@/app/api/inbound/email/route');
+      const res = await POST(req);
+      // 起票自体は成功する (添付が無いだけ)
+      expect(res.status).toBe(201);
+      const json = (await res.json()) as { ticketId: string };
+      // 0 バイトの添付が保存されていないこと
+      expect([...store.attachments.values()].filter((a) => a.ticketId === json.ticketId)).toEqual(
+        [],
+      );
+      // 「添付を却下した」旨の警告が出ていないこと (番兵を添付として数えていない証拠)。
+      // 文言はルート側の console.warn と一致させる (ここがずれるとテストが素通りする)
+      const droppedWarnings = warnSpy.mock.calls.filter((call) =>
+        String(call[0]).includes('some attachments were rejected'),
+      );
+      expect(droppedWarnings).toEqual([]);
+    });
+
     // 新規起票 + 有効な画像添付 1 枚 → チケット作成 + 添付メタ INSERT (commentId は null) +
     // バイト列が storage に書かれること
     it('新規起票時に有効な画像添付があれば保存される', async () => {

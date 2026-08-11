@@ -7,8 +7,9 @@
 // ドメイン定数 (許可 MIME / サイズ上限 / 件数上限) を引き当てる
 import {
   ALLOWED_IMAGE_MIME_TYPES,
-  MAX_ATTACHMENT_SIZE_BYTES,
   MAX_ATTACHMENTS_PER_UPLOAD,
+  TOO_MANY_ATTACHMENTS_MESSAGE,
+  findCheapAttachmentViolation,
   isAllowedImageMimeType,
   type AllowedImageMimeType,
 } from '@/domain/attachment';
@@ -35,12 +36,6 @@ export interface ValidatedAttachment {
   originalName: string; // 表示・ダウンロード時のヒント
 }
 
-// バイト数を MB に丸めて文字列化する (ユーザー向けエラーで使う)
-function formatMb(bytes: number): string {
-  // 小数第 1 位までに丸める (例: 10.0MB)
-  return (bytes / (1024 * 1024)).toFixed(1);
-}
-
 // 1 ファイル分の検証本体 (件数チェックは呼び出し側の責務)。
 // 申告 MIME (file.type) と サイズの安価な検査を先に通し、最後に先頭 16 バイトのマジックバイトを
 // 実バイト列で確認する (中身偽装への防御)。validateUploadedFiles (全件一括・1 件でも違反があれば
@@ -49,16 +44,11 @@ function formatMb(bytes: number): string {
 async function validateSingleFile(
   file: File,
 ): Promise<{ ok: true; value: ValidatedAttachment } | { ok: false; message: string }> {
-  // size === 0 のファイルは空ファイル (フォームから誤って送られたケース) として弾く
-  if (file.size === 0) {
-    return { ok: false, message: '空のファイルは添付できません' };
-  }
-  // サイズ上限を超えるファイルは弾く
-  if (file.size > MAX_ATTACHMENT_SIZE_BYTES) {
-    return {
-      ok: false,
-      message: `1 ファイルあたり ${formatMb(MAX_ATTACHMENT_SIZE_BYTES)}MB までです`,
-    };
+  // 中身を読まずに判定できる違反 (空・サイズ超過) は、フォームの事前検査と同じ関数で見る。
+  // 判定式そのものを共有するので、片方だけ規則が古くなって画面と 422 がずれることがない
+  const cheapViolation = findCheapAttachmentViolation(file);
+  if (cheapViolation) {
+    return { ok: false, message: cheapViolation };
   }
   // MIME は許可リストにあるものだけ通す (申告ベース)
   if (!isAllowedImageMimeType(file.type)) {
@@ -99,12 +89,9 @@ export async function validateUploadedFiles(
   if (files.length === 0) {
     return { ok: true, files: [] };
   }
-  // 件数上限を超える場合は明確なメッセージで弾く
+  // 件数上限を超える場合は明確なメッセージで弾く (文言はフォームの事前検査と共有)
   if (files.length > MAX_ATTACHMENTS_PER_UPLOAD) {
-    return {
-      ok: false,
-      message: `添付ファイルは最大 ${MAX_ATTACHMENTS_PER_UPLOAD} 件までです`,
-    };
+    return { ok: false, message: TOO_MANY_ATTACHMENTS_MESSAGE };
   }
 
   // 検証通過済みのバッファ

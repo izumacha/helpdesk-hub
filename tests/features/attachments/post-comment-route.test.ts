@@ -181,6 +181,42 @@ function buildRequest(body: string, files: File[]): Request {
   });
 }
 
+// 実ブラウザと同じ生の multipart ボディを組み立てるヘルパー。
+// **buildRequest とは別に用意する理由**: undici の FormData は、名前が空の File を append しても
+// Content-Disposition に filename を出力しない (= サーバー側では文字列エントリになる) ため、
+// 未選択 file input の再現にならない。実ブラウザは filename="" のパートを送り、undici はこれを
+// File (name: '', size: 0) として解析する — つまり instanceof File では落ちない。
+//
+// **境界文字列はこのヘルパーが組み立てまで持つ。** 呼び出し側に境界を書き写させると、
+// ここの値を変えた瞬間に呼び出し側の文字列が区切りとして働かなくなり、ファイルパートが
+// 直前のフィールド値へ吸い込まれる。テストは 201 のまま通り続けるが、**番兵を一切
+// 検査していない**状態に静かに変わってしまう (この回帰テストが唯一の防波堤なので致命的)。
+function buildRawMultipartRequest(
+  body: string,
+  // 追加パートの本体だけを渡す (Content-Disposition 以降。境界行は組み立て側が付ける)
+  extraPartHeadersAndBody: string[] = [],
+): Request {
+  const boundary = '----browserlike';
+  // 先頭は必ず body フィールド
+  const parts = [`Content-Disposition: form-data; name="body"\r\n\r\n${body}`];
+  // 呼び出し側が指定した追加パートを続ける
+  parts.push(...extraPartHeadersAndBody);
+  // 各パートを境界行で連結し、終端境界で閉じる
+  const raw = parts.map((part) => `--${boundary}\r\n${part}\r\n`).join('') + `--${boundary}--\r\n`;
+  return new Request('http://localhost/api/tickets/x/comments', {
+    method: 'POST',
+    body: new TextEncoder().encode(raw),
+    headers: {
+      'sec-fetch-site': 'same-origin',
+      'content-type': `multipart/form-data; boundary=${boundary}`,
+    },
+  });
+}
+
+// 未選択 file input が送るパート (filename="" + 空ボディ)。境界行はヘルパーが付ける
+const EMPTY_FILE_INPUT_PART =
+  'Content-Disposition: form-data; name="files"; filename=""\r\nContent-Type: application/octet-stream\r\n\r\n';
+
 // 動的セグメント params の Promise を作るヘルパー
 function makeParams(id: string) {
   return { params: Promise.resolve({ id }) };
@@ -207,6 +243,28 @@ beforeEach(() => {
 });
 
 describe('POST /api/tickets/[id]/comments', () => {
+  // 回帰テスト: 写真を添付せずにコメントを送っても 201 になること。
+  // ブラウザは未選択の <input type="file"> を filename="" のパートとして必ず送り、undici は
+  // これを File (name: '', size: 0) として解析する。ルート側で番兵を落とし損ねると
+  // validateUploadedFiles が 0 バイトとして拒否し、**添付なしのコメント投稿が全て
+  // 422「空のファイルは添付できません」で失敗する** (実際にこの状態だった)。
+  // selectAttachmentFiles を素の instanceof File に戻すとこのテストが 422 で落ちる。
+  it('accepts a comment when the file input was left empty (browser sends filename="")', async () => {
+    const { ticketId } = await seed();
+    mockSession = buildSession(REQUESTER, 'requester', TENANT);
+    const { POST } = await import('@/app/api/tickets/[id]/comments/route');
+    const res = await POST(
+      buildRawMultipartRequest('添付なしのコメント', [EMPTY_FILE_INPUT_PART]),
+      makeParams(ticketId),
+    );
+    expect(res.status).toBe(201);
+    // 本文が正しく届いていること (境界の組み立てを間違えると body が壊れ、
+    // このテストが番兵を検査しないまま通ってしまうため一緒に固定する)
+    expect([...store.comments.values()][0]?.body).toBe('添付なしのコメント');
+    // 番兵が添付として保存されていないことも確認する (0 バイトの添付が生えない)
+    expect(store.attachments.size).toBe(0);
+  });
+
   // 未認証は 401
   it('returns 401 when no session', async () => {
     const { ticketId } = await seed();

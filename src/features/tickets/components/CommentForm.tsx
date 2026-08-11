@@ -4,10 +4,17 @@
 import { useRef, useState, useTransition } from 'react';
 // 投稿後のサーバー側キャッシュを再取得させるためのルーター
 import { useRouter } from 'next/navigation';
-// 添付ファイル件数の上限 (UI ヒント表示用)
-import { MAX_ATTACHMENTS_PER_UPLOAD } from '@/domain/attachment';
+// MAX_ATTACHMENTS_PER_UPLOAD は UI ヒント表示用、残り 2 つは送信前の添付チェックと
+// 未選択 file input の番兵除去 (いずれもサーバー検証と規則・文言を共有する)
+import {
+  MAX_ATTACHMENTS_PER_UPLOAD,
+  findAttachmentPreflightError,
+  selectAttachmentFiles,
+} from '@/domain/attachment';
 // 「送信そのものが成立しなかった」ときの共通文言 (新規起票フォームと共有)
-import { NETWORK_ERROR_MESSAGE } from '@/lib/constants';
+import { COMMENT_RESULT_UNKNOWN_MESSAGE, NETWORK_ERROR_MESSAGE } from '@/lib/constants';
+// エラー応答から画面用のメッセージを取り出す共通ヘルパー (新規起票フォームと共有)
+import { readApiErrorMessage } from '@/lib/api-error-message';
 
 // 受け取る props (どのチケットへのコメントか)
 interface Props {
@@ -43,6 +50,22 @@ export function CommentForm({ ticketId }: Props) {
 
     // 直前のエラーをクリアしておく
     setError(null);
+
+    // 送信前に、ブラウザ側で判定できる添付の違反 (件数・空・1 件あたりのサイズ) を先に弾く。
+    // 枠 (51MB) を超える送信はサーバーが本文を読まずに 413 を返すため、そのまま送ると接続断で
+    // fetch が reject し「通信状態をご確認ください」という的外れな案内しか出せない。
+    // 検証の本体はサーバー側 (validateUploadedFiles) のままで、これは体験のための先回り。
+    // 未選択の file input が足す番兵 (name/size とも空の File) は selectAttachmentFiles が落とす —
+    // ここを instanceof File だけで済ませると、添付なしのコメントが毎回
+    // 「空のファイルは添付できません」で止まってしまう
+    const selectedFiles = selectAttachmentFiles(data.getAll('files'));
+    const attachmentError = findAttachmentPreflightError(selectedFiles);
+    if (attachmentError) {
+      // 具体的な理由 (「1 ファイルあたり 10.0MB までです」等) をそのまま画面に出す
+      setError(attachmentError);
+      return;
+    }
+
     // 非ブロッキング送信
     startTransition(async () => {
       // multipart/form-data を Route Handler へ POST する
@@ -55,14 +78,33 @@ export function CommentForm({ ticketId }: Props) {
           method: 'POST',
           body: data,
         });
-      } catch {
+      } catch (fetchErr) {
+        // 何が起きたか (オフライン / 接続断 / 413 由来のリセット) を後から切り分けられるよう、
+        // 例外は捨てずにブラウザのコンソールへ文脈付きで残す (§6 エラーを握り潰さない)
+        console.error('[CommentForm] コメントの送信に失敗しました', fetchErr);
         // 応答を受け取れていないので、サーバーの文言ではなく共通の通信失敗文言を出す
         setError(NETWORK_ERROR_MESSAGE);
         return;
       }
 
       if (res.ok) {
-        // 成功後にテキストエリアとファイル入力をクリアする
+        // **2xx というだけで成功扱いにしない。** このルートは成功時に必ず {"ok": true} を返すので、
+        // それを確かめてから入力欄を消す。社内プロキシやキャッシュ層が差し込んだ 200 の HTML を
+        // 成功と見なすと、実際には投稿されていないのに**利用者が書いた本文を消してしまう**
+        let accepted = false;
+        try {
+          const body = (await res.json()) as { ok?: boolean } | null;
+          accepted = body?.ok === true;
+        } catch (parseErr) {
+          // 解析できなかった理由はコンソールに残す (§6 エラーを握り潰さない)
+          console.error('[CommentForm] 成功応答を JSON として解析できませんでした', parseErr);
+        }
+        // 確認できなければ本文を残したまま、成功とも失敗とも言い切らない文言を出す
+        if (!accepted) {
+          setError(COMMENT_RESULT_UNKNOWN_MESSAGE);
+          return;
+        }
+        // 成功が確認できたのでテキストエリアとファイル入力をクリアする
         if (textareaRef.current) textareaRef.current.value = '';
         if (fileRef.current) fileRef.current.value = '';
         // サーバーキャッシュを refresh して新しいコメントを画面に反映する
@@ -70,15 +112,14 @@ export function CommentForm({ ticketId }: Props) {
         return;
       }
 
-      // 失敗時: Route Handler の error / issues[0].message を読み取って画面に出す
-      try {
-        const err = (await res.json()) as { error?: string; issues?: Array<{ message?: string }> };
-        const issueMessage = Array.isArray(err.issues) ? err.issues[0]?.message : null;
-        setError(issueMessage ?? err.error ?? '送信に失敗しました');
-      } catch {
-        // JSON でないレスポンス (502 等) はステータスをそのまま伝える
-        setError(`送信に失敗しました (HTTP ${res.status})`);
-      }
+      // 失敗時: Route Handler の error / issues[0].message を読み取って画面に出す。
+      // 読み取り手順は新規起票フォームと共通のヘルパーに委ねる (§6 DRY)
+      setError(
+        await readApiErrorMessage(res, {
+          fallbackMessage: '送信に失敗しました',
+          logPrefix: '[CommentForm]',
+        }),
+      );
     });
   }
 

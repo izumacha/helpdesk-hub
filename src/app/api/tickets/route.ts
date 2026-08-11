@@ -10,6 +10,8 @@ import { calculateFirstResponseDueAt, calculateResolutionDueAt } from '@/lib/sla
 import { createTicketSchema } from '@/lib/validations/ticket';
 // 添付ファイル検証ヘルパー
 import { validateUploadedFiles } from '@/lib/validations/attachment';
+// 実際に選ばれた添付だけを取り出すヘルパー (未選択 file input の番兵を落とす。ドメイン規則)
+import { selectAttachmentFiles } from '@/domain/attachment';
 // 添付ファイルのストレージ保存 / 失敗時クリーンアップの共通ヘルパー (POST /api/tickets/[id]/comments・
 // POST /api/inbound/email と共有。/code-review ultra 指摘対応: 3 箇所目の重複を解消)
 import { persistAttachments, cleanupWrittenAttachments } from '@/lib/attachment-persistence';
@@ -196,8 +198,10 @@ export async function POST(req: Request) {
       // Phase 4 多拠点: 拠点 ID (未選択の場合は空文字 → Zod が undefined に変換)
       locationId: form.get('locationId') ?? undefined,
     };
-    // files フィールドを全て拾い、File 型だけ抽出する (空入力で文字列 "" が混ざるのを除外)
-    uploadedFiles = form.getAll('files').filter((entry): entry is File => entry instanceof File);
+    // 実際に選ばれた添付だけを取り出す (未選択の file input が足す番兵はここで落ちる。
+    // 番兵はブラウザ・サーバーとも File (name/size とも空) なので instanceof File では
+    // 落ちない — 詳細は selectAttachmentFiles の docstring)
+    uploadedFiles = selectAttachmentFiles(form.getAll('files'));
   } else {
     // JSON ボディもサイズ上限つきで読み出す。req.json() は multipart と同じく、Content-Length を
     // 省いた chunked 転送に対して上限なくメモリへ展開してしまう。添付が無いと分かっている経路
