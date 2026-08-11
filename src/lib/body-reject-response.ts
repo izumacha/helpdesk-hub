@@ -23,6 +23,7 @@ import {
  *
  * 本モジュールを採用するルートは例外なく「理由をログに出す → ステータスを引く → 文言を選ぶ →
  * NextResponse.json で返す」の 4 手を踏むため、3 経路目になった時点でここへ集約した (§6 DRY)。
+ * 現在の利用は 5 経路 (受信 Webhook 3 経路 ＋ チケット起票・コメント投稿)。
  *
  * **文言は `status` ではなく `reason` で引く。** `status === 413 ? A : B` と書くと、拒否理由が
  * ステータスの 2 値へ潰れてしまい、将来 `timeout → 408` のような 3 つ目のステータスを
@@ -46,7 +47,8 @@ export function bodyRejectResponse<R extends BodyRejectReason>(
     messages: BodyRejectMessages<R>; // その経路に起こりうる理由ごとの日本語の文言
   },
 ): NextResponse {
-  // 拒否理由と (あれば) 原因の例外・申告サイズをサーバーログへ 1 行で残す (出し方は 5 経路で共通)
+  // 拒否理由と (あれば) 原因の例外・申告サイズをサーバーログへ 1 行で残す
+  // (出し方は本モジュールを使わない 2 経路も含めて 7 経路で共通)
   logBodyReject(options.logPrefix, failure, maxBytes);
   // 理由に対応する文言とステータスで JSON を返す (外部には理由の詳細を出さない)
   return NextResponse.json(

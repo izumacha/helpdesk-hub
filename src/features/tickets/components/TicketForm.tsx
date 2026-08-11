@@ -10,12 +10,20 @@ import { zodResolver } from '@hookform/resolvers/zod';
 import { useRouter } from 'next/navigation';
 // チケット作成入力の Zod スキーマと型
 import { createTicketSchema, type CreateTicketFormValues } from '@/lib/validations/ticket';
-// 優先度の日本語ラベル
-import { PRIORITY_LABELS } from '@/lib/constants';
+// PRIORITY_LABELS は優先度の日本語ラベル、NETWORK_ERROR_MESSAGE は「送信そのものが成立しなかった」
+// ときの共通文言 (コメント投稿フォームと共有)
+import {
+  NETWORK_ERROR_MESSAGE,
+  PRIORITY_LABELS,
+  TICKET_RESULT_UNKNOWN_MESSAGE,
+} from '@/lib/constants';
+// エラー応答から画面用のメッセージを取り出す共通ヘルパー (コメント投稿フォームと共有)
+import { readApiErrorMessage } from '@/lib/api-error-message';
 // テナントモード型 (lite | pro)。Lite では入力項目を 3 つに絞る
 import type { TenantMode } from '@/domain/types';
-// 添付ファイル件数の上限 (UI ヒント表示用)
-import { MAX_ATTACHMENTS_PER_UPLOAD } from '@/domain/attachment';
+// MAX_ATTACHMENTS_PER_UPLOAD は UI ヒント表示用、findAttachmentPreflightError は送信前の
+// 添付チェック (サーバー側の検証と同じ規則・文言を返すので、事前に弾いても案内がぶれない)
+import { MAX_ATTACHMENTS_PER_UPLOAD, findAttachmentPreflightError } from '@/domain/attachment';
 
 // プルダウン項目用の最小型 (id と name)
 type Category = { id: string; name: string };
@@ -102,45 +110,98 @@ export function TicketForm({ categories, locations, mode }: Props) {
     // 選択中のファイル (state から取得)
     const hasFiles = selectedFiles.length > 0;
 
-    // 送信用のリクエスト本体を選択: hasFiles なら FormData、それ以外は JSON
-    let res: Response;
-    if (hasFiles) {
-      // multipart/form-data を組み立てる
-      const fd = new FormData();
-      // フォームの各フィールドを文字列として詰める (Zod は string を受け取る)
-      fd.set('title', data.title);
-      fd.set('body', data.body);
-      fd.set('priority', data.priority);
-      // optional フィールドは値があるときだけセットする
-      if (data.categoryId) fd.set('categoryId', data.categoryId);
-      if (data.dueDate) fd.set('dueDate', data.dueDate);
-      // 拠点 ID が選択されている場合にセットする (Phase 4 多拠点)
-      if (data.locationId) fd.set('locationId', data.locationId);
-      // ファイルは files キーに同名で複数 append する
-      for (const f of selectedFiles) fd.append('files', f, f.name);
-      // Content-Type は手動で指定せず、ブラウザに自動で boundary を組み立てさせる
-      res = await fetch('/api/tickets', { method: 'POST', body: fd });
-    } else {
-      // 添付なしの単純パス (従来どおり JSON で送る)
-      res = await fetch('/api/tickets', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(data),
-      });
-    }
-
-    // 失敗時はエラー文言を表示して中断
-    if (!res.ok) {
-      const err = await res.json();
-      // 添付検証 (422 + issues に path:['files'] が入る) のメッセージも拾える
-      const issueMessage = Array.isArray(err.issues) ? err.issues[0]?.message : null;
-      setServerError(issueMessage ?? err.error ?? '登録に失敗しました');
+    // 送信前に、ブラウザ側で判定できる添付の違反 (件数・空・1 件あたりのサイズ) を先に弾く。
+    // 枠 (51MB) を超える送信はサーバーが本文を読まずに 413 を返すため、そのまま送ると接続断で
+    // fetch が reject し「通信状態をご確認ください」という的外れな案内しか出せない。
+    // 検証の本体はサーバー側 (validateUploadedFiles) のままで、これは体験のための先回り
+    const attachmentError = findAttachmentPreflightError(selectedFiles);
+    if (attachmentError) {
+      // 具体的な理由 (「1 ファイルあたり 10.0MB までです」等) をそのまま画面に出す
+      setServerError(attachmentError);
       return;
     }
 
-    // 成功時: 作成された行を読み取り、詳細ページへ遷移
-    const ticket = await res.json();
-    router.push(`/tickets/${ticket.id}`);
+    // 送信用のリクエスト本体を選択: hasFiles なら FormData、それ以外は JSON
+    let res: Response;
+    // 送信そのものが成立しないこと (オフライン・接続断・サーバーが本文を読まずに応答を返した等) が
+    // あるため fetch を try/catch で囲む。catch が無いと例外がそのまま浮いて画面に何も表示されない
+    try {
+      if (hasFiles) {
+        // multipart/form-data を組み立てる
+        const fd = new FormData();
+        // フォームの各フィールドを文字列として詰める (Zod は string を受け取る)
+        fd.set('title', data.title);
+        fd.set('body', data.body);
+        fd.set('priority', data.priority);
+        // optional フィールドは値があるときだけセットする
+        if (data.categoryId) fd.set('categoryId', data.categoryId);
+        if (data.dueDate) fd.set('dueDate', data.dueDate);
+        // 拠点 ID が選択されている場合にセットする (Phase 4 多拠点)
+        if (data.locationId) fd.set('locationId', data.locationId);
+        // ファイルは files キーに同名で複数 append する
+        for (const f of selectedFiles) fd.append('files', f, f.name);
+        // Content-Type は手動で指定せず、ブラウザに自動で boundary を組み立てさせる
+        res = await fetch('/api/tickets', { method: 'POST', body: fd });
+      } else {
+        // 添付なしの単純パス (従来どおり JSON で送る)
+        res = await fetch('/api/tickets', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(data),
+        });
+      }
+    } catch (fetchErr) {
+      // 何が起きたか (オフライン / 接続断 / 413 由来のリセット) を後から切り分けられるよう、
+      // 例外は捨てずにブラウザのコンソールへ文脈付きで残す (§6 エラーを握り潰さない)
+      console.error('[TicketForm] POST /api/tickets の送信に失敗しました', fetchErr);
+      // 応答を受け取れていないので、サーバーの文言ではなく共通の通信失敗文言を出す
+      setServerError(NETWORK_ERROR_MESSAGE);
+      return;
+    }
+
+    // 失敗時はエラー文言を表示して中断。
+    // 応答の読み取り (添付検証 422 の issues 優先・非 JSON へのフォールバック) は
+    // コメント投稿フォームと共通のヘルパーに委ねる (§6 DRY)
+    if (!res.ok) {
+      setServerError(
+        await readApiErrorMessage(res, {
+          fallbackMessage: '登録に失敗しました',
+          logPrefix: '[TicketForm]',
+        }),
+      );
+      return;
+    }
+
+    // 成功時: 作成された行を読み取り、詳細ページへ遷移。
+    // 200 系でも本文が JSON とは限らない (プロキシやキャッシュ層が差し込むことがある) ため、
+    // ここも解析失敗を捕まえる。捕まえないと Promise が rejected になるだけで画面には何も出ず、
+    // 利用者は登録できたのか分からないまま止まる
+    // 本文が JSON でない可能性に加え、**JSON の `null` も有効な本文**である点に注意
+    // (`ticket.id` と書くと null 参照で TypeError になり、例外が浮いて画面に何も出ない)
+    let ticket: { id?: string } | null = null;
+    try {
+      ticket = (await res.json()) as { id?: string } | null;
+    } catch (parseErr) {
+      // 解析できなかった理由をコンソールに残す (§6 エラーを握り潰さない)
+      console.error('[TicketForm] 成功応答を JSON として解析できませんでした', parseErr);
+    }
+    // ID が「使える文字列」なら詳細ページへ遷移する (通常はこちら)。
+    // typeof を確かめるのは、上のキャストが型注釈にすぎず、想定外の応答では
+    // オブジェクトが素通りして /tickets/[object Object] へ飛んでしまうため。
+    // encodeURIComponent は、ID に / や .. が混ざっていても別のパスへ化けないようにする
+    if (typeof ticket?.id === 'string' && ticket.id.length > 0) {
+      router.push(`/tickets/${encodeURIComponent(ticket.id)}`);
+      return;
+    }
+    // ID が読めなかった場合。**「2xx だから登録できた」とは判断しない**のが要点:
+    // このルートは成功時に必ず id を含む JSON を返すので、読み取れないということは
+    // 応答を返したのがこのアプリではない可能性が高い (社内プロキシやキャッシュ層が
+    // 差し込んだ 200 の HTML など)。つまり実際には登録されていない公算が大きい。
+    // ここで一覧へ遷移すると、入力した内容を失ったうえ何も表示されないまま終わる。
+    // フォームと入力値はそのまま残し、**確認してから再送**するよう促す
+    // (重複を避けたいので「もう一度お試しください」だけにはしない)
+    console.error('[TicketForm] 成功応答からチケット ID を読み取れませんでした', ticket);
+    setServerError(TICKET_RESULT_UNKNOWN_MESSAGE);
   }
 
   return (
@@ -258,10 +319,7 @@ export function TicketForm({ categories, locations, mode }: Props) {
         {/* カテゴリ (Pro モードのみ。Lite では非表示) */}
         {!isLite && (
           <div>
-            <label
-              htmlFor="categoryId"
-              className="mb-1.5 block text-sm font-medium text-slate-700"
-            >
+            <label htmlFor="categoryId" className="mb-1.5 block text-sm font-medium text-slate-700">
               カテゴリ
             </label>
             <select id="categoryId" {...register('categoryId')} className={fieldBaseClass}>

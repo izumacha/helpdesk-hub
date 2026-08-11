@@ -113,6 +113,39 @@ function buildMultipartRequest(fields: Record<string, string>, files: File[]): R
   });
 }
 
+// 実ブラウザと同じ生の multipart ボディを組み立てるヘルパー (未選択 file input の再現用)。
+// **buildMultipartRequest では再現できない**: undici の FormData は名前が空の File を append しても
+// Content-Disposition に filename を出力しないため、サーバー側では文字列エントリになってしまう。
+// 実ブラウザは filename="" のパートを送り、undici はこれを File (name: '', size: 0) として解析する。
+// 境界文字列はこのヘルパーが組み立てまで持つ (呼び出し側に書き写させると、値を変えたときに
+// パートが区切りとして働かなくなり、番兵を検査しないままテストが通り続ける)。
+function buildRawMultipartRequest(
+  fields: Record<string, string>,
+  extraPartHeadersAndBody: string[] = [],
+): Request {
+  const boundary = '----browserlike';
+  // 各テキストフィールドをパートに変換する
+  const parts = Object.entries(fields).map(
+    ([k, v]) => `Content-Disposition: form-data; name="${k}"\r\n\r\n${v}`,
+  );
+  // 呼び出し側が指定した追加パート (ファイル等) を続ける
+  parts.push(...extraPartHeadersAndBody);
+  // 境界行で連結し、終端境界で閉じる
+  const raw = parts.map((part) => `--${boundary}\r\n${part}\r\n`).join('') + `--${boundary}--\r\n`;
+  return new Request('http://localhost/api/tickets', {
+    method: 'POST',
+    body: new TextEncoder().encode(raw),
+    headers: {
+      'sec-fetch-site': 'same-origin',
+      'content-type': `multipart/form-data; boundary=${boundary}`,
+    },
+  });
+}
+
+// 未選択 file input が送るパート (filename="" + 空ボディ)。境界行はヘルパーが付ける
+const EMPTY_FILE_INPUT_PART =
+  'Content-Disposition: form-data; name="files"; filename=""\r\nContent-Type: application/octet-stream\r\n\r\n';
+
 beforeEach(async () => {
   // 毎回新しい context / storage を作って独立な状態にする
   const ctx = createMemoryContext();
@@ -127,6 +160,26 @@ beforeEach(async () => {
 });
 
 describe('POST /api/tickets (multipart with attachments)', () => {
+  // 回帰テスト: 添付を選ばずに multipart で起票しても 201 になること。
+  // ブラウザは未選択の <input type="file"> を filename="" のパートとして送り、undici はこれを
+  // File (name: '', size: 0) として解析するため instanceof File では落ちない。ルート側で
+  // 番兵を落とし損ねると validateUploadedFiles が 0 バイトとして拒否し、
+  // 添付なしの起票が 422「空のファイルは添付できません」で失敗する。
+  // (現状 TicketForm は添付があるときだけ multipart にするのでこの経路は通らないが、
+  //  フォームを new FormData(e.currentTarget) へ寄せた瞬間に番兵が届くようになる。
+  //  selectAttachmentFiles を素の instanceof File に戻すとこのテストが 422 で落ちる)
+  it('accepts a multipart ticket when the file input was left empty (browser sends filename="")', async () => {
+    const { POST } = await import('@/app/api/tickets/route');
+    const res = await POST(
+      buildRawMultipartRequest({ title: '添付なしの起票', body: '本文です', priority: 'Medium' }, [
+        EMPTY_FILE_INPUT_PART,
+      ]),
+    );
+    expect(res.status).toBe(201);
+    // 番兵が添付として保存されていないこと (0 バイトの添付が生えない)
+    expect(store.attachments.size).toBe(0);
+  });
+
   // Content-Type の大文字小文字を問わず multipart と判定される (Codex 指摘対応)
   it('detects multipart even when the Content-Type is mixed case', async () => {
     const { POST } = await import('@/app/api/tickets/route');
