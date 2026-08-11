@@ -199,7 +199,8 @@ export async function POST(req: Request) {
       locationId: form.get('locationId') ?? undefined,
     };
     // 実際に選ばれた添付だけを取り出す (未選択の file input が足す番兵はここで落ちる。
-    // 番兵の姿は実行環境で違う — 詳細は selectAttachmentFiles の docstring)
+    // 番兵はブラウザ・サーバーとも File (name/size とも空) なので instanceof File では
+    // 落ちない — 詳細は selectAttachmentFiles の docstring)
     uploadedFiles = selectAttachmentFiles(form.getAll('files'));
   } else {
     // JSON ボディもサイズ上限つきで読み出す。req.json() は multipart と同じく、Content-Length を

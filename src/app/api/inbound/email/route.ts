@@ -222,16 +222,16 @@ async function readInboundFields(req: Request): Promise<InboundReadResult> {
       Number.isFinite(attachmentCountRaw) && attachmentCountRaw > 0
         ? Math.min(attachmentCountRaw, ATTACHMENT_LOOKUP_MAX)
         : 0;
-    const attachments: File[] = [];
+    // attachment1..N のエントリを先に集める (該当キーが無ければ null が返るので除く)
+    const attachmentEntries: FormDataEntryValue[] = [];
     for (let i = 1; i <= attachmentCount; i++) {
       const entry = form.get(`attachment${i}`);
-      // 該当キーが無ければ null が返るので、その回は飛ばす
-      if (entry === null) continue;
-      // 実際に添付されたファイルだけを拾う (名前も中身も空の番兵は数えない。
-      // 素の instanceof File だと 0 バイトの番兵を拾い、後段の寛容版検証が落として
-      // 「添付を却下した」という偽の警告ログが残る)
-      attachments.push(...selectAttachmentFiles([entry]));
+      if (entry !== null) attachmentEntries.push(entry);
     }
+    // 実際に添付されたファイルだけを一度に取り出す (名前も中身も空の番兵は数えない。
+    // 素の instanceof File だと 0 バイトの番兵を拾い、後段の寛容版検証が落として
+    // 「添付を却下した」という偽の警告ログが残る)
+    const attachments: File[] = selectAttachmentFiles(attachmentEntries);
     // 宛先 (ルーティング): envelope の RCPT を優先する (ヘッダ To より実配送先として確実)。
     // 送信者 (本人特定): ヘッダ From を優先する (人間が送った差出人。envelope from=MAIL FROM は
     // 戻り先で本人性が弱い)。本人性は既知メンバー判定に加え、INBOUND_EMAIL_AUTH=enforce のとき

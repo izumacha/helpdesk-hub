@@ -186,12 +186,23 @@ function buildRequest(body: string, files: File[]): Request {
 // Content-Disposition に filename を出力しない (= サーバー側では文字列エントリになる) ため、
 // 未選択 file input の再現にならない。実ブラウザは filename="" のパートを送り、undici はこれを
 // File (name: '', size: 0) として解析する — つまり instanceof File では落ちない。
-function buildRawMultipartRequest(body: string, extraParts: string): Request {
+//
+// **境界文字列はこのヘルパーが組み立てまで持つ。** 呼び出し側に境界を書き写させると、
+// ここの値を変えた瞬間に呼び出し側の文字列が区切りとして働かなくなり、ファイルパートが
+// 直前のフィールド値へ吸い込まれる。テストは 201 のまま通り続けるが、**番兵を一切
+// 検査していない**状態に静かに変わってしまう (この回帰テストが唯一の防波堤なので致命的)。
+function buildRawMultipartRequest(
+  body: string,
+  // 追加パートの本体だけを渡す (Content-Disposition 以降。境界行は組み立て側が付ける)
+  extraPartHeadersAndBody: string[] = [],
+): Request {
   const boundary = '----browserlike';
-  const raw =
-    `--${boundary}\r\nContent-Disposition: form-data; name="body"\r\n\r\n${body}\r\n` +
-    extraParts +
-    `--${boundary}--\r\n`;
+  // 先頭は必ず body フィールド
+  const parts = [`Content-Disposition: form-data; name="body"\r\n\r\n${body}`];
+  // 呼び出し側が指定した追加パートを続ける
+  parts.push(...extraPartHeadersAndBody);
+  // 各パートを境界行で連結し、終端境界で閉じる
+  const raw = parts.map((part) => `--${boundary}\r\n${part}\r\n`).join('') + `--${boundary}--\r\n`;
   return new Request('http://localhost/api/tickets/x/comments', {
     method: 'POST',
     body: new TextEncoder().encode(raw),
@@ -201,6 +212,10 @@ function buildRawMultipartRequest(body: string, extraParts: string): Request {
     },
   });
 }
+
+// 未選択 file input が送るパート (filename="" + 空ボディ)。境界行はヘルパーが付ける
+const EMPTY_FILE_INPUT_PART =
+  'Content-Disposition: form-data; name="files"; filename=""\r\nContent-Type: application/octet-stream\r\n\r\n';
 
 // 動的セグメント params の Promise を作るヘルパー
 function makeParams(id: string) {
@@ -238,14 +253,14 @@ describe('POST /api/tickets/[id]/comments', () => {
     const { ticketId } = await seed();
     mockSession = buildSession(REQUESTER, 'requester', TENANT);
     const { POST } = await import('@/app/api/tickets/[id]/comments/route');
-    const emptyFilePart =
-      `------browserlike\r\nContent-Disposition: form-data; name="files"; filename=""\r\n` +
-      `Content-Type: application/octet-stream\r\n\r\n\r\n`;
     const res = await POST(
-      buildRawMultipartRequest('添付なしのコメント', emptyFilePart),
+      buildRawMultipartRequest('添付なしのコメント', [EMPTY_FILE_INPUT_PART]),
       makeParams(ticketId),
     );
     expect(res.status).toBe(201);
+    // 本文が正しく届いていること (境界の組み立てを間違えると body が壊れ、
+    // このテストが番兵を検査しないまま通ってしまうため一緒に固定する)
+    expect([...store.comments.values()][0]?.body).toBe('添付なしのコメント');
     // 番兵が添付として保存されていないことも確認する (0 バイトの添付が生えない)
     expect(store.attachments.size).toBe(0);
   });

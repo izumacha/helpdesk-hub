@@ -11,12 +11,10 @@ import { useRouter } from 'next/navigation';
 // チケット作成入力の Zod スキーマと型
 import { createTicketSchema, type CreateTicketFormValues } from '@/lib/validations/ticket';
 // PRIORITY_LABELS は優先度の日本語ラベル、NETWORK_ERROR_MESSAGE は「送信そのものが成立しなかった」
-// ときの共通文言 (コメント投稿フォームと共有)、最後は登録成功後に遷移だけ失敗したときの文言
-import {
-  NETWORK_ERROR_MESSAGE,
-  PRIORITY_LABELS,
-  TICKET_CREATED_BUT_NAVIGATION_FAILED_MESSAGE,
-} from '@/lib/constants';
+// ときの共通文言 (コメント投稿フォームと共有)
+import { NETWORK_ERROR_MESSAGE, PRIORITY_LABELS } from '@/lib/constants';
+// エラー応答から画面用のメッセージを取り出す共通ヘルパー (コメント投稿フォームと共有)
+import { readApiErrorMessage } from '@/lib/api-error-message';
 // テナントモード型 (lite | pro)。Lite では入力項目を 3 つに絞る
 import type { TenantMode } from '@/domain/types';
 // MAX_ATTACHMENTS_PER_UPLOAD は UI ヒント表示用、findAttachmentPreflightError は送信前の
@@ -157,21 +155,11 @@ export function TicketForm({ categories, locations, mode }: Props) {
       return;
     }
 
-    // 失敗時はエラー文言を表示して中断
+    // 失敗時はエラー文言を表示して中断。
+    // 応答の読み取り (添付検証 422 の issues 優先・非 JSON へのフォールバック) は
+    // コメント投稿フォームと共通のヘルパーに委ねる (§6 DRY)
     if (!res.ok) {
-      // エラー応答が JSON でないこともある (プロキシが返す 413 の HTML 等)。
-      // その場合は本文の解析に失敗するので、ステータスだけを添えた文言にフォールバックする
-      try {
-        // 応答の形は API のエラー契約 { error, issues } を明示する (any にしない / §6 TypeScript)
-        const err = (await res.json()) as { error?: string; issues?: Array<{ message?: string }> };
-        // 添付検証 (422 + issues に path:['files'] が入る) のメッセージも拾える
-        const issueMessage = Array.isArray(err.issues) ? err.issues[0]?.message : null;
-        setServerError(issueMessage ?? err.error ?? '登録に失敗しました');
-      } catch (parseErr) {
-        // JSON として読めなかった理由をコンソールに残す (§6 エラーを握り潰さない)
-        console.error('[TicketForm] エラー応答を JSON として解析できませんでした', parseErr);
-        setServerError(`登録に失敗しました (HTTP ${res.status})`);
-      }
+      setServerError(await readApiErrorMessage(res, '登録に失敗しました', '[TicketForm]'));
       return;
     }
 
@@ -179,22 +167,25 @@ export function TicketForm({ categories, locations, mode }: Props) {
     // 200 系でも本文が JSON とは限らない (プロキシやキャッシュ層が差し込むことがある) ため、
     // ここも解析失敗を捕まえる。捕まえないと Promise が rejected になるだけで画面には何も出ず、
     // 利用者は登録できたのか分からないまま止まる
-    let ticket: { id?: string };
+    // 本文が JSON でない可能性に加え、**JSON の `null` も有効な本文**である点に注意
+    // (`ticket.id` と書くと null 参照で TypeError になり、例外が浮いて画面に何も出ない)
+    let ticket: { id?: string } | null = null;
     try {
-      ticket = (await res.json()) as { id?: string };
+      ticket = (await res.json()) as { id?: string } | null;
     } catch (parseErr) {
       // 解析できなかった理由をコンソールに残す (§6 エラーを握り潰さない)
       console.error('[TicketForm] 成功応答を JSON として解析できませんでした', parseErr);
-      setServerError(TICKET_CREATED_BUT_NAVIGATION_FAILED_MESSAGE);
+    }
+    // ID が読めたら詳細ページへ遷移する (通常はこちら)
+    if (ticket?.id) {
+      router.push(`/tickets/${ticket.id}`);
       return;
     }
-    // id が無い応答で /tickets/undefined へ飛ばさない (存在しないページに着地させない)
-    if (!ticket.id) {
-      console.error('[TicketForm] 成功応答にチケット ID が含まれていません', ticket);
-      setServerError(TICKET_CREATED_BUT_NAVIGATION_FAILED_MESSAGE);
-      return;
-    }
-    router.push(`/tickets/${ticket.id}`);
+    // ID が読めなかった場合: 登録自体は成功している (2xx) ので、**一覧へ遷移する**。
+    // ここでフォームを残したままエラー文言だけ出すと、利用者がもう一度「登録する」を押して
+    // 同じ内容の重複チケットが生まれる。一覧へ送れば、作成済みのチケットがそこに見える
+    console.error('[TicketForm] 成功応答からチケット ID を読み取れませんでした', ticket);
+    router.push('/tickets');
   }
 
   return (

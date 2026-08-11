@@ -13,6 +13,8 @@ import {
 } from '@/domain/attachment';
 // 「送信そのものが成立しなかった」ときの共通文言 (新規起票フォームと共有)
 import { NETWORK_ERROR_MESSAGE } from '@/lib/constants';
+// エラー応答から画面用のメッセージを取り出す共通ヘルパー (新規起票フォームと共有)
+import { readApiErrorMessage } from '@/lib/api-error-message';
 
 // 受け取る props (どのチケットへのコメントか)
 interface Props {
@@ -94,17 +96,9 @@ export function CommentForm({ ticketId }: Props) {
         return;
       }
 
-      // 失敗時: Route Handler の error / issues[0].message を読み取って画面に出す
-      try {
-        const err = (await res.json()) as { error?: string; issues?: Array<{ message?: string }> };
-        const issueMessage = Array.isArray(err.issues) ? err.issues[0]?.message : null;
-        setError(issueMessage ?? err.error ?? '送信に失敗しました');
-      } catch (parseErr) {
-        // JSON として読めなかった理由をコンソールに残す (§6 エラーを握り潰さない)
-        console.error('[CommentForm] エラー応答を JSON として解析できませんでした', parseErr);
-        // JSON でないレスポンス (502 等) はステータスをそのまま伝える
-        setError(`送信に失敗しました (HTTP ${res.status})`);
-      }
+      // 失敗時: Route Handler の error / issues[0].message を読み取って画面に出す。
+      // 読み取り手順は新規起票フォームと共通のヘルパーに委ねる (§6 DRY)
+      setError(await readApiErrorMessage(res, '送信に失敗しました', '[CommentForm]'));
     });
   }
 

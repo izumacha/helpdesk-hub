@@ -160,7 +160,8 @@ export async function POST(req: Request, { params }: Params) {
 
   // 添付ファイルを抽出して件数 / MIME / サイズ / マジックバイトを検証する
   // 実際に選ばれた添付だけを取り出す (未選択の file input が足す番兵はここで落ちる。
-  // 番兵の姿は実行環境で違う — 詳細は selectAttachmentFiles の docstring)
+  // 番兵はブラウザ・サーバーとも File (name/size とも空) なので instanceof File では
+  // 落ちない — 詳細は selectAttachmentFiles の docstring)
   const files = selectAttachmentFiles(form.getAll('files'));
   const attachmentValidation = await validateUploadedFiles(files);
   if (!attachmentValidation.ok) {
