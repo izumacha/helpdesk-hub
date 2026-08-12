@@ -9,8 +9,8 @@
  * - Broadcast it over SSE.
  */
 
-// Next.js のキャッシュタグ無効化 API
-import { revalidateTag } from 'next/cache';
+// 未読件数キャッシュの失効ヘルパー (タグ名と失効の意味づけを一元管理している)
+import { expireUnreadCountCache } from '@/lib/notifications';
 // リポジトリ束 (未読件数取得に使用)
 import { repos } from '@/data';
 // SSE の送信関数
@@ -21,8 +21,8 @@ import type { NotificationType } from '@/domain/types';
 // 指定ユーザー × テナントの未読件数を再計算して配信する
 // 通知は必ずテナント単位なので、count 取得時も同じ tenantId スコープで集計する
 export async function broadcastUnreadCount(userId: string, tenantId: string): Promise<void> {
-  // キャッシュされた未読件数を無効化 (次の取得で再計算させる)
-  revalidateTag(`notification-count-${userId}`);
+  // キャッシュされた未読件数を即時失効させる (次の取得で再計算させる)
+  expireUnreadCountCache(userId);
   // 最新件数を直接 DB から数える (tenantId スコープ)
   const count = await repos.notifications.countUnread(userId, tenantId);
   // 取得した件数を SSE で即時配信

@@ -59,7 +59,7 @@ Phase 0 でマルチテナント基盤を入れた際に `prisma/migrations/` �
 
 ## 3. アーキテクチャ
 
-**スタック:** Next.js 15 App Router, React 19, Auth.js v5 (next-auth@beta, Credentials + bcryptjs), Prisma 5 + PostgreSQL, Zod, Tailwind v4, Vitest, Playwright。
+**スタック:** Next.js 16 App Router, React 19, Auth.js v5 (next-auth@beta, Credentials + bcryptjs), Prisma 5 + PostgreSQL, Zod, Tailwind v4, Vitest, Playwright。
 
 ### Prisma クライアントの出力先（重要）
 
@@ -328,7 +328,7 @@ Phase 0 でマルチテナント基盤を入れた際に `prisma/migrations/` �
 - API ルートに簡易レート制限（IP ベース、1 分あたり 20 リクエスト目安）。
 - API ルートのエラーは HTTP ステータスを使い分け: 400（JSON 破損・入力検証エラー・上流 Claude API の 400）/ 401（キー未設定/無効）/ 413（本文サイズ上限超過）/ 415（`Content-Type` が `application/json` でない。**レート制限より前に**検証し、第三者サイトの simple request で被害者 IP のレート枠が枯渇するのを防ぐ）/ 429（レート制限超過。`Retry-After` ヘッダ付き）/ 499（接続確立前のクライアント切断）/ 500（その他）。文言は `route.ts` の `ERROR_MESSAGES` に一元管理し、フロントはユーザーフレンドリーな日本語メッセージを表示。
 
-### D. helpdesk-hub（Next.js 15 / Prisma / Auth.js v5）
+### D. helpdesk-hub（Next.js 16 / Prisma / Auth.js v5）
 
 - 正本は `docs/smb-dx-pivot-plan.md`。Lite/Pro 二層・マルチテナント化・用語簡素化等の方針に反する変更をしない。Phase 0→1→2→3→4 の順序を尊重し、後フェーズ機能を前フェーズに混ぜない。
 - Prisma クライアントは `src/generated/prisma` に出力される。型/enum は必ず `@/generated/prisma` から import（`@prisma/client` ではない）。クローン後やスキーマ変更後は `npm run db:generate` を実行。

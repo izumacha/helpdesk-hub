@@ -65,8 +65,11 @@ test.describe('チケット登録', () => {
     // 詳細ページにリダイレクトされる
     // URL が /tickets/<id> 形式に変わっていること
     await expect(page).toHaveURL(/\/tickets\//);
-    // 入力した件名が詳細ページに表示されていること
-    await expect(page.getByText('E2Eテスト用チケット')).toBeVisible();
+    // 入力した件名が詳細ページの見出しとして表示されていること。
+    // 素の getByText では Next.js のルートアナウンサ (画面遷移をスクリーンリーダーへ読み上げる
+    // ための #__next-route-announcer__。同じ件名を持つ) にも一致してしまい、strict mode 違反で
+    // 落ちる。役割 (heading) まで指定して、見たい要素だけを 1 つに絞る
+    await expect(page.getByRole('heading', { name: 'E2Eテスト用チケット' })).toBeVisible();
   });
 });
 
