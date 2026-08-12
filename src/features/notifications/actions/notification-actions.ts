@@ -1,7 +1,9 @@
 'use server';
 
-// Next.js のキャッシュ無効化 API (ページ単位とタグ単位)
-import { revalidatePath, revalidateTag } from 'next/cache';
+// Next.js のキャッシュ無効化 API (ページ単位)
+import { revalidatePath } from 'next/cache';
+// 未読件数キャッシュの失効ヘルパー (タグ名と失効の意味づけを一元管理している)
+import { expireUnreadCountCache } from '@/lib/notifications';
 // データ層の Composition Root (Prisma 直叩きを避ける)
 import { repos } from '@/data';
 // 現在のセッション取得
@@ -32,8 +34,10 @@ export async function markAllRead() {
 
   // 通知一覧ページのキャッシュを無効化
   revalidatePath('/notifications');
-  // 未読件数キャッシュ (unstable_cache) を無効化
-  revalidateTag(`notification-count-${session.user.id}`);
+  // 未読件数キャッシュ (unstable_cache) を即時失効させる。
+  // 既読化した本人が直後の再描画で 0 を見られる必要があるため、
+  // stale-while-revalidate ではなく即時失効でなければならない (ヘルパー側の説明を参照)
+  expireUnreadCountCache(session.user.id);
   // 即時反映のため、未読 0 を SSE で配信
   broadcast(session.user.id, 0);
 }

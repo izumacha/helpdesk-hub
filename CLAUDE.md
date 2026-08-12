@@ -59,7 +59,7 @@ Phase 0 でマルチテナント基盤を入れた際に `prisma/migrations/` �
 
 ## 3. アーキテクチャ
 
-**スタック:** Next.js 15 App Router, React 19, Auth.js v5 (next-auth@beta, Credentials + bcryptjs), Prisma 5 + PostgreSQL, Zod, Tailwind v4, Vitest, Playwright。
+**スタック:** Next.js 16 App Router, React 19, Auth.js v5 (next-auth@beta, Credentials + bcryptjs), Prisma 5 + PostgreSQL, Zod, Tailwind v4, Vitest, Playwright。
 
 ### Prisma クライアントの出力先（重要）
 

@@ -71,7 +71,7 @@ HelpDesk Hub は、**問い合わせを「チケット」として一元化し�
 
 | レイヤー       | 技術                                                |
 | -------------- | --------------------------------------------------- |
-| フロントエンド | Next.js 15 (App Router), React 19, Tailwind CSS v4  |
+| フロントエンド | Next.js 16 (App Router), React 19, Tailwind CSS v4  |
 | 認証           | Auth.js v5 (next-auth@beta), Credentials プロバイダ |
 | ORM            | Prisma 5                                            |
 | DB             | PostgreSQL                                          |

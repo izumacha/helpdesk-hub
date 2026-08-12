@@ -4,7 +4,7 @@
 
 ## 概要
 
-Next.js 15 App Router をベースとしたフルスタック構成。Server Components でデータフェッチ、Server Actions でミューテーションを処理します。
+Next.js 16 App Router をベースとしたフルスタック構成。Server Components でデータフェッチ、Server Actions でミューテーションを処理します。
 
 ## システム構成
 
@@ -12,7 +12,7 @@ Next.js 15 App Router をベースとしたフルスタック構成。Server Com
 flowchart TB
     Browser["Browser<br/>React 19 (Client Components + useTransition)"]
 
-    subgraph NextJS["Next.js 15 (App Router)"]
+    subgraph NextJS["Next.js 16 (App Router)"]
         SC["Server Components<br/>(データ取得)"]
         SA["Server Actions<br/>(mutations + revalidate)"]
         Prisma["Prisma Client (ORM)"]
