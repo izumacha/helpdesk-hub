@@ -9,23 +9,48 @@
 // Vitest のテスト API を読み込む
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+// unstable_cache に渡されたオプション (tags など) を記録しておく箱。
+// キャッシュを「作る側」が登録するタグを観測して、「消す側」のタグと一致するか検証する
+const unstableCacheOptions: Array<{ tags?: string[]; revalidate?: number }> = [];
+
 // next/cache をモックする (実際のキャッシュ機構は起動せず、呼ばれ方だけを観測する)
 vi.mock('next/cache', () => ({
   // タグ単位の無効化 API。引数を記録するだけのスパイに差し替える
   revalidateTag: vi.fn(),
-  // unstable_cache は「渡された関数をそのまま返す」形にして素通しさせる
-  unstable_cache: (fn: unknown) => fn,
+  // unstable_cache は第 3 引数 (tags/revalidate) を記録したうえで、渡された関数を素通しさせる
+  unstable_cache: (
+    fn: unknown,
+    _keys: string[],
+    options: { tags?: string[]; revalidate?: number },
+  ) => {
+    // 生成側が登録したタグを後で照合できるよう控える
+    unstableCacheOptions.push(options);
+    // キャッシュを挟まずそのまま返す (このテストの関心はタグ文字列だけ)
+    return fn;
+  },
+}));
+
+// データ層 (@/data) をモックする。**これが無いと本物の PrismaClient を生成してしまう**:
+// @/lib/notifications → @/data → @/lib/prisma の連鎖で、gitignore 対象の生成物
+// (src/generated/prisma) をまだ作っていない fresh clone では import 解決に失敗し、
+// このファイルだけが `npm run test` を落とす。ユニットテストに DB を持ち込まない方針
+// (CLAUDE.md §3 テスト / §11) にも合わせて、他の 52 ファイルと同じくモックで断ち切る
+vi.mock('@/data', () => ({
+  // 未読件数の実カウントはこのテストでは呼ばないので、空の束で足りる
+  repos: { notifications: { countUnread: vi.fn() } },
 }));
 
 // モック済みの next/cache から revalidateTag を取り出す (呼ばれ方を検証するため)
 import { revalidateTag } from 'next/cache';
-// 検証対象のヘルパー
-import { expireUnreadCountCache } from '@/lib/notifications';
+// 検証対象のヘルパー (失効側と生成側の両方を突き合わせる)
+import { expireUnreadCountCache, getUnreadNotificationCount } from '@/lib/notifications';
 
 describe('expireUnreadCountCache', () => {
-  // 各テストの前にスパイの記録を消す (前のテストの呼び出しが混ざらないようにする)
+  // 各テストの前にスパイと記録を消す (前のテストの呼び出しが混ざらないようにする)
   beforeEach(() => {
     vi.mocked(revalidateTag).mockClear();
+    // 生成側のオプション記録も空に戻す
+    unstableCacheOptions.length = 0;
   });
 
   it('ユーザー ID から組み立てたタグを 1 回だけ失効させる', () => {
@@ -53,5 +78,16 @@ describe('expireUnreadCountCache', () => {
     // それぞれのタグが別物であること (タグ組み立てがユーザー ID を実際に使っている証明)
     expect(vi.mocked(revalidateTag).mock.calls[0][0]).toBe('notification-count-alice');
     expect(vi.mocked(revalidateTag).mock.calls[1][0]).toBe('notification-count-bob');
+  });
+
+  it('キャッシュを作る側と消す側が同じタグを使う', () => {
+    // 生成側: 未読件数の取得を 1 回走らせ、unstable_cache に登録されたタグを記録させる
+    void getUnreadNotificationCount('user-123', 'tenant-1');
+    // 失効側: 同じユーザーのキャッシュを消す
+    expireUnreadCountCache('user-123');
+    // 両者のタグが一致すること。**これが本ヘルパー抽出の目的そのもの**で、
+    // 片方だけ書き換えると無効化が空振りし、未読バッジが最大 60 秒古いまま残る。
+    // 失効側だけを検証していると、この取り違えを素通ししてしまう
+    expect(unstableCacheOptions[0]?.tags).toEqual([vi.mocked(revalidateTag).mock.calls[0][0]]);
   });
 });
