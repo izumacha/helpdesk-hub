@@ -2,10 +2,12 @@
  * Magic-link token helpers (pure crypto / URL building).
  *
  * Implemented with the Web Crypto API (`globalThis.crypto`) rather than
- * Node's `node:crypto` module so this file can be statically imported from
- * `src/lib/auth.ts` (which the Edge middleware bundles). Node 18+ exposes
- * the same Web Crypto interface globally, so behaviour is identical on the
- * server.
+ * Node's `node:crypto` module. This originally existed because `src/lib/auth.ts`
+ * was bundled into the Edge-runtime middleware, which cannot resolve `node:*`.
+ * Since issue #298 the request entry (`src/proxy.ts`) always runs on Node.js, so
+ * `node:crypto` would work too — but Web Crypto is kept because Node 18+ exposes
+ * the same interface globally, so behaviour is identical and there is nothing to
+ * gain from switching.
  */
 
 // HTML 本文に外部由来文字列を差し込む前のエスケープ (共有ヘルパーを再利用)

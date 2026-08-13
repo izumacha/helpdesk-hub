@@ -108,7 +108,7 @@
 ### Phase 0 — 基盤整備（2 週間）
 
 - [x] `Tenant` モデル追加 + 全関連テーブルへの `tenantId` 付与 + マイグレーション
-- [x] `auth.ts` の session 拡張（`tenantId` 載せる）と middleware でのスコープ強制
+- [x] `auth.ts` の session 拡張（`tenantId` 載せる）と proxy（旧 middleware）でのスコープ強制
 - [x] テナント作成 / 招待リンク発行画面（admin 用）
 - [x] 既存 E2E / Vitest をテナント前提に修正
 

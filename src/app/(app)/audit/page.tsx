@@ -63,10 +63,10 @@ export default async function AuditPage({ searchParams }: Props) {
       ? { createdAt: parsedBefore, kind: parsedBeforeKind, id: sp.beforeId }
       : undefined;
 
-  // セッション取得 (middleware で未ログインは弾かれている前提)
+  // セッション取得 (proxy で未ログインは弾かれている前提)
   const session = await auth();
   // 未ログイン or tenantId 不在はログインページへリダイレクトする
-  // (middleware が先に弾く想定だが、JWT 移行期間中などセッション破損ケースの防御的処理)
+  // (proxy が先に弾く想定だが、JWT 移行期間中などセッション破損ケースの防御的処理)
   if (!session?.user?.id || !session.user.tenantId) redirect('/login');
 
   // 管理者以外は権限なし表示を返す (RBAC はページ側で強制する)

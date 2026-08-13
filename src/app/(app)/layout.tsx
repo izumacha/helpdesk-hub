@@ -20,7 +20,7 @@ import { resolveTenantPlan } from '@/lib/tenant-plan';
 
 // (app) Route Group の共通レイアウト (認証後の画面骨格)
 export default async function AppLayout({ children }: { children: React.ReactNode }) {
-  // セッション取得 (middleware で未ログインは弾かれている前提)
+  // セッション取得 (proxy で未ログインは弾かれている前提)
   const session = await auth();
   // ロール (権限) を取得。万一未取得なら最弱権限の requester にフォールバック
   const role = session?.user?.role ?? ('requester' as const);

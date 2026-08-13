@@ -13,7 +13,7 @@ import { formatDateTimeJP } from '@/lib/format-date';
 export default async function NotificationsPage() {
   // セッション取得
   const session = await auth();
-  // 未ログイン or tenantId 不在なら何も描画しない (middleware が先に弾くはずの保険)
+  // 未ログイン or tenantId 不在なら何も描画しない (proxy が先に弾くはずの保険)
   if (!session?.user?.id || !session.user.tenantId) return null;
 
   // 自分宛の通知を最新 50 件取得 (チケットタイトル付き、tenantId スコープで port 経由)

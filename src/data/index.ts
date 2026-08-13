@@ -27,9 +27,12 @@ export const repos: Repos = buildPrismaRepos(prisma);
 // アプリ全体で共有する Prisma 版の UnitOfWork (トランザクション境界)
 export const uow: UnitOfWork = buildPrismaUow(prisma);
 
-// 注意: 添付ファイル本体の StoragePort (`storage`) は、Edge runtime (middleware) に
-// node:fs/promises / node:path が解決できないバンドルを混入させないために、
-// このモジュールでは公開しない。`@/data/storage` から個別に import すること。
+// 注意: 添付ファイル本体の StoragePort (`storage`) は、リクエスト入口 (`src/proxy.ts`) の
+// バンドルに node:fs/promises / node:path を持ち込まないために、このモジュールでは公開しない。
+// `@/data/storage` から個別に import すること。
+// (元々は「Edge runtime では node:* を解決できない」という強い制約が理由だったが、issue #298 で
+//  入口が常に Node.js ランタイムになったのでその制約は消えた。今は「全リクエストが通る入口に
+//  ファイル I/O のコードを載せない」という軽い理由で分離を維持している。)
 
 /**
  * Default notification broadcaster: single-process in-memory registry.

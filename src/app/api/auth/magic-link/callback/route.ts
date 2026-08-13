@@ -12,7 +12,7 @@
  *      calls `signIn()` to attach the session cookie.
  *
  *  - On success, NextAuth attaches the session cookie to the redirect Response and
- *    forwards the browser to /login. The middleware then re-routes the now-authenticated
+ *    forwards the browser to /login. The proxy then re-routes the now-authenticated
  *    request to /dashboard or /tickets depending on the user's role.
  *  - On failure (missing token, hash mismatch, expired, already consumed, user deleted),
  *    the user is redirected to /login?error=magic-link-invalid so the login page can
@@ -217,7 +217,7 @@ export async function POST(request: Request) {
 
   try {
     // signIn が成功した場合、内部で redirectTo へのリダイレクトを throw する。
-    // middleware が tenantId 持ちセッションを見て /dashboard or /tickets へ再リダイレクトする
+    // proxy が tenantId 持ちセッションを見て /dashboard or /tickets へ再リダイレクトする
     await signIn('magic-link', {
       token,
       redirectTo: '/login',

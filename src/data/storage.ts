@@ -3,7 +3,14 @@
  *
  * Kept in a separate module from `@/data/index.ts` so that the Local FS adapter
  * (which imports `node:fs/promises` / `node:path`) is never pulled into the
- * Next.js middleware / Edge runtime bundle through `src/lib/auth.ts → @/data`.
+ * request-entry (`src/proxy.ts`) bundle through `src/lib/auth.ts → @/data`.
+ *
+ * The original reason was a hard constraint: the entry point ran on the Edge
+ * runtime, which cannot resolve `node:*` builtins at all. Since issue #298 the
+ * entry point is `src/proxy.ts` and always runs on Node.js, so that constraint
+ * is gone. The split is kept for a weaker but still valid reason — the entry
+ * runs on *every* request, so there is no reason to load filesystem code into
+ * it. Do not treat this file as evidence that an Edge constraint still exists.
  *
  * Server Actions and API Route Handlers (Node runtime) should import the
  * `storage` singleton from this module directly.

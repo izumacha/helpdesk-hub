@@ -11,13 +11,13 @@ import { resolveTenantPlanDetail } from '@/lib/tenant-plan';
 
 // /settings/tenants/new : 新しい組織 (テナント) と初代管理者を作成するページ (管理者専用)
 export default async function NewTenantPage() {
-  // セッション取得 (middleware で未ログインは弾かれている前提)
+  // セッション取得 (proxy で未ログインは弾かれている前提)
   const session = await auth();
-  // 未ログイン or tenantId 不在なら何も描画しない (middleware が先に弾く想定の保険)
+  // 未ログイン or tenantId 不在なら何も描画しない (proxy が先に弾く想定の保険)
   if (!session?.user?.id || !session.user.tenantId) return null;
 
   // テナント作成は組織管理にあたるため管理者専用。admin 以外には権限なし表示を返す
-  // (middleware は認証のみを担当するため、RBAC はページ側で明示的に強制する)
+  // (proxy は認証のみを担当するため、RBAC はページ側で明示的に強制する)
   if (session.user.role !== 'admin') {
     return (
       <div className="rounded-2xl bg-white py-20 text-center text-slate-400 ring-1 ring-slate-200">

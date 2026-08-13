@@ -46,7 +46,7 @@ const UNLINK_RATE_LIMIT_WINDOW_MS = 10 * 60 * 1000; // 10 分
 function assertAuthenticated(session: Session | null): asserts session is Session {
   // ユーザー ID が無ければ未ログイン
   if (!session?.user?.id) throw new Error('ログインが必要です');
-  // tenantId 不在は middleware で弾く想定だが、Server Action でも防御的にチェック
+  // tenantId 不在は proxy で弾く想定だが、Server Action でも防御的にチェック
   if (!session.user.tenantId) throw new Error('ログインが必要です');
 }
 

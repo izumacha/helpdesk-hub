@@ -13,9 +13,9 @@ import { resolveTenantPlan } from '@/lib/tenant-plan';
 // テナント設定 (/settings) は管理者専用だが、このページは「自分の LINE を自分のアカウントに紐付ける」
 // 自己サービスなので requester を含む全ロールがアクセスできる (認証のみ要求)。
 export default async function LineLinkPage() {
-  // セッション取得 (middleware で未ログインは弾かれている前提)
+  // セッション取得 (proxy で未ログインは弾かれている前提)
   const session = await auth();
-  // 未ログイン or tenantId 不在なら何も描画しない (middleware が先に弾く想定の保険)
+  // 未ログイン or tenantId 不在なら何も描画しない (proxy が先に弾く想定の保険)
   if (!session?.user?.id || !session.user.tenantId) return null;
 
   // LINE 連携はプランゲート対象の機能 (Pro / Enterprise のみ)。テナントの現在プランを確認し、
