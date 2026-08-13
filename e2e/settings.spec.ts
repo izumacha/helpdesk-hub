@@ -67,7 +67,7 @@ test.describe('/settings 設定ページ', () => {
     await expect(page.getByRole('heading', { name: '動作モード' })).toHaveCount(0);
   });
 
-  // middleware は /settings を認証必須ページとして扱う (未認証は /login へリダイレクト)
+  // proxy は /settings を認証必須ページとして扱う (未認証は /login へリダイレクト)
   test('未認証で /settings にアクセスするとログインページへリダイレクトされる', async ({
     page,
   }) => {

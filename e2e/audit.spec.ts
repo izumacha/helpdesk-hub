@@ -59,7 +59,7 @@ test.describe('/audit 監査ログページ', () => {
     await expect(page.getByRole('table', { name: '変更履歴の一覧' })).toHaveCount(0);
   });
 
-  // middleware は /audit を認証必須ページとして扱う (未認証は /login へリダイレクト)
+  // proxy は /audit を認証必須ページとして扱う (未認証は /login へリダイレクト)
   test('未認証で /audit にアクセスするとログインページへリダイレクトされる', async ({ page }) => {
     await page.goto('/audit');
     await page.waitForURL(/\/login/);

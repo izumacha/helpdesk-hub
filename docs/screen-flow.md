@@ -4,7 +4,7 @@
 
 ```mermaid
 flowchart TD
-    Start([ブラウザアクセス]) --> MW{"middleware<br/>認証チェック"}
+    Start([ブラウザアクセス]) --> MW{"proxy<br/>認証チェック"}
     MW -- 未認証 --> Login["/login<br/>ログイン画面"]
     MW -- 認証済み agent/admin --> Dashboard["/dashboard<br/>ダッシュボード"]
     MW -- 認証済み requester --> TicketList["/tickets<br/>問い合わせ一覧"]

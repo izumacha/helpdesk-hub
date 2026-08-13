@@ -49,7 +49,7 @@ flowchart TB
 ```mermaid
 sequenceDiagram
     actor User as ブラウザ
-    participant MW as middleware
+    participant MW as proxy
     participant Login as /login
     participant Auth as Auth.js (Credentials)
     participant App as 保護ページ

@@ -8,7 +8,7 @@
 // 何度・いつ叩かれても二重送信/取りこぼしが起きないようにしてある
 // (src/lib/trial-reminder.ts の resolveTrialReminderMilestone 参照)。
 // ユーザー操作ではなく定期実行ジョブから呼ばれる想定のため、認証はセッションではなく
-// 共有シークレットで行う (src/middleware.ts の isApiInternal で通常のセッション認証ガードの
+// 共有シークレットで行う (src/proxy.ts の isApiInternal で通常のセッション認証ガードの
 // 対象外にしてある。webhook/inbound と同じ扱い)。
 //
 // セキュリティ:

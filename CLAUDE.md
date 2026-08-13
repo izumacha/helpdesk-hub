@@ -67,7 +67,7 @@ Phase 0 でマルチテナント基盤を入れた際に `prisma/migrations/` �
 
 ### レイヤ構成
 
-- `src/app/(app)/*` — 認証済みページの Route Group（`dashboard`, `tickets`, `faq`, `notifications`）。`(app)/layout.tsx` が `auth()` を読んで Sidebar/Header を描画。未認証は middleware が先にリダイレクト。
+- `src/app/(app)/*` — 認証済みページの Route Group（`dashboard`, `tickets`, `faq`, `notifications`）。`(app)/layout.tsx` が `auth()` を読んで Sidebar/Header を描画。未認証は proxy (`src/proxy.ts`) が先にリダイレクト。
 - `src/app/api/*` — REST エンドポイント（`POST /api/tickets`, SSE 用 `GET /api/notifications/stream`, `/api/auth/[...nextauth]`）。多くの mutation は Server Action。
 - `src/features/<domain>/{actions,components}` — 機能モジュール。`actions/*.ts` は `'use server'`、`components/*.tsx` は主に Client Component。
 - `src/domain/` — Prisma/Next 非依存の純粋ビジネスルール（現状 `ticket-status.ts` の遷移テーブル）。
@@ -77,9 +77,9 @@ Phase 0 でマルチテナント基盤を入れた際に `prisma/migrations/` �
 
 実質 2 ロール: **requester**（自分のチケットのみ閲覧・コメント）と **agent/admin**（フルアクセス）。`src/lib/role.ts` の `isAgent(role)` を使い、`role === 'admin'` を直接比較しない（admin 限定の意図がある場合を除く）。
 
-- `src/middleware.ts` は全リクエストで動作（matcher は静的アセットを除外）。未認証 `/api/*` は 401 JSON、未認証 HTML は `/login` リダイレクト、ログイン済みは `/login` から退避（agent→`/dashboard`、requester→`/tickets`）。
+- `src/proxy.ts` は全リクエストで動作（matcher は静的アセットを除外）。未認証 `/api/*` は 401 JSON、未認証 HTML は `/login` リダイレクト、ログイン済みは `/login` から退避（agent→`/dashboard`、requester→`/tickets`）。Next.js 16 の `proxy` file convention（旧 `middleware.ts` の後継。issue #298 で移行）で、エクスポート名は `proxy` 固定。**proxy は常に Node.js ランタイムで動く**（旧 `middleware` の既定は Edge。`export const runtime = ...` を書くとビルドエラー）。`auth` の `jwt` コールバックが Prisma で DB を引くため、**Node.js ランタイムであることは必須の前提**（Edge だった頃は、セッションが 30 分のロールリフレッシュ間隔を越えた時点で `PrismaClient is not configured to run in Edge Runtime` → `JWTSessionError` となり、ログイン中のユーザーが `/login` に弾き返されていた。issue #298 の移行で解消）。**この経路に Edge 専用の制約を持ち込まない。**
 - `src/lib/auth.ts` が JWT/session に `id` / `role` / `tenantId` を載せる（型拡張は `src/types/next-auth.d.ts`）。
-- Server Action は自前で RBAC を強制する（middleware はルーティングのみ）。`src/features/tickets/actions/update-ticket.ts` の `const session = await auth(); assertAgentRole(session); ...` パターンを再利用し、UI 非表示に頼らない。
+- Server Action は自前で RBAC を強制する（proxy はルーティングのみ）。`src/features/tickets/actions/update-ticket.ts` の `const session = await auth(); assertAgentRole(session); ...` パターンを再利用し、UI 非表示に頼らない。
 - 一覧/詳細クエリの RBAC は `!isAgent(role)` のとき `where.creatorId = session.user.id` を足す（`src/app/(app)/tickets/page.tsx`）。
 - **認証イベントの監査（否認防止）**: 認証イベントは `AuthAuditLog` に記録される。書き込みは必ず `recordAuthAudit`（`src/lib/auth-audit.ts`。email 切り詰め・失敗イベントの書き込み上限・fail-open を集約）経由で行い、`repos.authAudit` を直接呼ばない。記録箇所は `src/lib/password-authorize.ts`（パスワード成功/失敗）・`src/lib/magic-link-authorize.ts`（magic_link / sso ログイン成功、`magic_link_login_failure`）・SSO ACS ルート（`sso_assertion_accepted` / `sso_assertion_rejected` / `sso_assertion_replayed` / `sso_user_not_found`）。**成功・失敗とも全認証経路を記録する**。本人のメールを特定できない失敗（無効なマジックリンクトークン・署名検証に失敗した SAML アサーション）は `AUTH_AUDIT_UNKNOWN_EMAIL` を `email` に入れる。失敗イベントの書き込み上限（ストレージ枯渇 DoS 対策）の対象は `src/lib/auth-audit.ts` の `AUTH_AUDIT_EVENT_IS_FAILURE`（`Readonly<Record<AuthAuditEvent, boolean>>` の網羅的な分類表）が唯一の真実の源。予算は**イベント種別ごとに独立**（合計 `AUTH_AUDIT_FAILURE_MAX_PER_WINDOW` を種別数で等分した `AUTH_AUDIT_FAILURE_MAX_PER_EVENT_WINDOW`）で、未認証で安く叩ける経路（マジックリンクのコールバック・SSO ACS）へのノイズでパスワード失敗の記録を締め出す「監査の目潰し」を防ぐ。合計上限は据え置くのでストレージ許容量は増えない。イベント種別を追加すると分類表のキー不足で typecheck が落ちるため、分類の明示は機械的に強制される。`AuthAuditLog` / `SettingsAuditLog` / `TicketHistory` は DB トリガで**追記専用**（UPDATE は例外なく拒否、DELETE は `SET LOCAL helpdesk.allow_audit_delete = 'on'` を明示したトランザクション内のみ許可。`prisma/migrations/20260726000100_add_audit_log_immutability`）。E2E の後始末でテナントを消すときは `e2e/cleanup.ts` の `deleteTenantsForCleanup()` を使う。認証経路を追加・変更するときは監査記録の漏れがないか確認する。next-auth は v5 beta 固定 — 安定版への移行は `docs/next-auth-v5-migration.md` の計画に従う。
 
@@ -90,7 +90,7 @@ Phase 0 でマルチテナント基盤を入れた際に `prisma/migrations/` �
 - 全テーブル（`User` / `Category` / `Ticket` / `FaqCandidate` / `Notification`）が `tenantId String NOT NULL` を持つ。`TicketComment` / `TicketHistory` は親 `Ticket.tenantId` 経由で辿る。
 - `Tenant` モデルは `mode: lite | pro` と `industry?` を持つ。開発・初期投入は `id='default-tenant'` の単一テナント。
 - `session.user.tenantId` は JWT 経由で常に取得可能（旧 JWT は `jwt` callback で DB 補完）。
-- 全 Server Action / Query での `where.tenantId = session.user.tenantId` 強制・middleware でのスコープ必須化・テナント作成画面・マルチテナント E2E はいずれも実装済み（`issue-backlog.md` の Phase 0 チェック済み）。**新規 Server Action を書く際は冒頭で `session.user.tenantId` を取り出して `where` に必ず差し込む**（足し忘れはクロステナント漏洩）。
+- 全 Server Action / Query での `where.tenantId = session.user.tenantId` 強制・proxy でのスコープ必須化・テナント作成画面・マルチテナント E2E はいずれも実装済み（`issue-backlog.md` の Phase 0 チェック済み）。**新規 Server Action を書く際は冒頭で `session.user.tenantId` を取り出して `where` に必ず差し込む**（足し忘れはクロステナント漏洩）。
 
 ### Mutation パターン（Server Actions）
 
