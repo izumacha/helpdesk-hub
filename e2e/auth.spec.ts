@@ -64,7 +64,7 @@ test.describe('認証', () => {
     await expect(page.getByLabel(/パスワード|Password/i)).toBeVisible();
   });
 
-  // 未ログインで保護ページへ行くと middleware がログインへ飛ばす
+  // 未ログインで保護ページへ行くと proxy がログインへ飛ばす
   test('未認証でダッシュボードにアクセスするとログインページにリダイレクトされる', async ({
     page,
   }) => {

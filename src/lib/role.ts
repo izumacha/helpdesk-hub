@@ -1,6 +1,7 @@
 // ロール (権限) 型を正準のドメイン型 (@/domain/types) からインポート
 import type { Role } from '@/domain/types';
-// セッション型 (型のみ。middleware の Edge バンドルには実体を持ち込まない)
+// セッション型 (`import type` なので実行時の依存は増えない。全リクエストが通る
+// リクエスト入口 `src/proxy.ts` からも読まれるモジュールなので、型だけの取り込みに留める)
 import type { Session } from 'next-auth';
 
 // 渡されたロールが「担当者権限を持っている」と判定できるかを返す関数
@@ -17,7 +18,7 @@ export function isAgent(role: Role | string | null | undefined): boolean {
 export function assertAdminSession(session: Session | null): asserts session is Session {
   // 未ログイン (ユーザー ID 無し) は拒否
   if (!session?.user?.id) throw new Error('ログインが必要です');
-  // tenantId 不在は middleware で弾く想定だが、Server Action でも防御的にチェック
+  // tenantId 不在は proxy で弾く想定だが、Server Action でも防御的にチェック
   if (!session.user.tenantId) throw new Error('ログインが必要です');
   // admin 以外 (agent / requester) は拒否 (組織設定は管理者専用)
   if (session.user.role !== 'admin') {

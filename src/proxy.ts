@@ -1,3 +1,28 @@
+/**
+ * リクエスト入口の認証ガード (Next.js 16 `proxy` file convention / issue #298)。
+ *
+ * **ランタイムが Edge から Node.js に変わっている。** 15 までの `middleware` 規約は既定で
+ * Edge ランタイムだったが、proxy 規約は常に Node.js ランタイムで動く (Next.js 側の仕様で、
+ * `export const runtime = ...` を書くとビルドエラーになる)。この移行は規約に従っただけだが、
+ * 結果として**実在のバグが直っている**ので、再発防止のため経緯を残す:
+ *
+ *   `auth` (`@/lib/auth`) の `jwt` コールバックは、tenantId 欠落の旧 JWT 補完とロールの定期
+ *   リフレッシュ (30 分間隔) のために `repos.users.findById()` で DB を引く。この Prisma
+ *   クライアントは `prisma-client-js` (ネイティブの library engine) で生成されており、Edge
+ *   ランタイムでは動かない。そのため Edge 時代は、セッションが 30 分を超えて初めてリフレッシュ
+ *   経路に入った瞬間に `PrismaClient is not configured to run in Edge Runtime` が送出され、
+ *   next-auth がそれを `JWTSessionError` として扱い、**有効なセッションを持つログイン中の
+ *   ユーザーが /login に弾き返されていた** (旧 JWT の tenantId 補完経路も同様)。
+ *   ログイン直後の 30 分間は DB を引かないため、E2E も含めて表面化しにくい種類の不具合だった。
+ *
+ *   検証方法 (再現させたいとき): `ROLE_REFRESH_INTERVAL_MS` を一時的に 0 にして毎リクエストで
+ *   DB 経路を通し、ログイン後に保護ページを開く。Edge (旧 `middleware.ts`) では 307 → /login、
+ *   Node.js (本ファイル) では 200 になる。
+ *
+ * ガードの中身自体はこの移行で変更していない (未認証 API は 401 / 未認証 HTML は /login /
+ * tenantId 不在は再ログイン誘導 / ログイン済みの /login はロール別に退避)。
+ */
+
 import { auth } from '@/lib/auth';
 import { NextResponse } from 'next/server';
 import { isAgent } from '@/lib/role';
@@ -13,10 +38,14 @@ const INTERNAL_CRON_ROUTES = [
   '/api/internal/sla-reminders',
 ];
 
-// 認証ミドルウェア
+// 認証プロキシ (Next.js 16 の `proxy` file convention。15 までの `middleware` の後継 / issue #298)
 // - ログイン状態のチェック (未ログインは /login に飛ばす or API は 401 を返す)
 // - tenantId 不在セッションを強制的にリログインさせる (Phase 0 マルチテナント化の前提)
-export default auth((req) => {
+//
+// **エクスポート名は `proxy` 固定。** Next.js の proxy 用エントリテンプレートは
+// `mod.proxy || mod.default` の順に解決するため default export でも動くが、規約どおりの
+// 名前付きエクスポートにしておくと「この関数がリクエスト入口である」ことがファイル内で自明になる。
+export const proxy = auth((req) => {
   const isLoggedIn = !!req.auth;
   const isAuthPage = req.nextUrl.pathname.startsWith('/login');
   // 招待受諾ページは未認証で開ける公開ページ (トークン自体が認可の根拠)。
@@ -91,6 +120,10 @@ export default auth((req) => {
   return NextResponse.next();
 });
 
+// 適用範囲: 静的アセット (_next/static / _next/image / favicon.ico) 以外の全リクエスト。
+// **除外を増やすときは慎重に** — ここから外れたパスは認証ガードを一切通らない。
+// なお proxy 規約では `runtime` などの route segment config を書くとビルドエラーになる
+// (proxy は常に Node.js ランタイムで動くため、指定する余地がない)。matcher の指定は従来どおり。
 export const config = {
   matcher: ['/((?!_next/static|_next/image|favicon.ico).*)'],
 };

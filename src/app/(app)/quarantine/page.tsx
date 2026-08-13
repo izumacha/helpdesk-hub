@@ -45,7 +45,7 @@ export default async function QuarantinePage({ searchParams }: Props) {
       ? { createdAt: parsedBefore, id: sp.beforeId }
       : undefined;
 
-  // セッション取得 (middleware で未ログインは弾かれている前提)
+  // セッション取得 (proxy で未ログインは弾かれている前提)
   const session = await auth();
   if (!session?.user?.id || !session.user.tenantId) redirect('/login');
 

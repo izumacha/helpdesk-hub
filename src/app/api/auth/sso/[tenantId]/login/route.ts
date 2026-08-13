@@ -3,7 +3,7 @@
 //
 // GET /api/auth/sso/<tenantId>/login
 //   テナントの SSO が有効なら AuthnRequest を生成し IdP のログイン画面へリダイレクトする。
-//   未認証で到達する想定 (middleware は /api/auth/* を認証ガード対象外にしている)。
+//   未認証で到達する想定 (proxy は /api/auth/* を認証ガード対象外にしている)。
 //
 // node-saml は Node 専用ライブラリのため Node ランタイムで動かす。
 export const runtime = 'nodejs';

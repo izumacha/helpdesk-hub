@@ -194,7 +194,7 @@ src/
 │   ├── signup/             # セルフサーブサインアップ
 │   ├── invite/             # 招待受諾
 │   └── help/               # ヘルプセンター
-├── middleware.ts           # 認証チェック（未認証はリダイレクト / 401）
+├── proxy.ts                # 認証チェック（未認証はリダイレクト / 401。Next.js 16 の proxy 規約）
 ├── components/layout/      # 共通レイアウト
 ├── domain/                 # ビジネスロジック（ステータス遷移テーブル）
 ├── data/                   # Data 層（Ports & Adapters: ports/ + adapters/{prisma,memory,...}）

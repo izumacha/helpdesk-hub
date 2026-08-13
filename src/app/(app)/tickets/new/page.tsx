@@ -14,9 +14,9 @@ import { LOCATION_LIST_MATCHING_LIMIT } from '@/data/ports/location-repository';
 
 // /tickets/new : 新規チケット作成ページ (Server Component)
 export default async function NewTicketPage() {
-  // セッション取得 (middleware で認証済みのはずだが防御的に確認)
+  // セッション取得 (proxy で認証済みのはずだが防御的に確認)
   const session = await auth();
-  // 未ログイン or tenantId 不在は描画しない (middleware が先に弾く想定)
+  // 未ログイン or tenantId 不在は描画しない (proxy が先に弾く想定)
   if (!session?.user?.id || !session.user.tenantId) return null;
 
   // セッションから tenantId を取り出し以降の port 呼び出しに伝搬する

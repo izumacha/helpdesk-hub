@@ -50,7 +50,7 @@
   - `src/lib/auth.ts` — `NextAuth()` 初期化・Credentials ×2（パスワード / マジックリンク）・
     jwt/session コールバック・認証イベント監査（`repos.authAudit`）の配線
   - `src/lib/password-authorize.ts` — `User` 型 import
-  - `src/middleware.ts` — 認証判定とリダイレクト
+  - `src/proxy.ts` — 認証判定とリダイレクト
   - `src/types/next-auth.d.ts` — セッション/JWT の型拡張（`id` / `role` / `tenantId`）
   - `src/app/api/auth/[...nextauth]/route.ts` — handlers のエクスポート
 - [ ] セッション Cookie 名・JWT ペイロード形式の変更有無を確認（変更がある場合、デプロイ時に

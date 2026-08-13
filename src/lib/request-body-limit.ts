@@ -62,19 +62,21 @@
 // 書き込み 2 経路は `ticket-body-limits.ts`。いずれも route とテストが同じ定義を参照する
 // (片方だけ値を変えたら気付けるようにするため)。
 //
-// **middleware のセッション認証を素通りする POST は、上の未認証 5 経路で全部ではない。**
-// 正本は `src/middleware.ts` の除外条件で、下は「本モジュールの対象外である理由」の分類。
-// 網羅リストとして数え上げるのではなく、**経路を足すたびに middleware 側から数え直すこと**
+// **proxy のセッション認証を素通りする POST は、上の未認証 5 経路で全部ではない。**
+// 正本は `src/proxy.ts` の除外条件で、下は「本モジュールの対象外である理由」の分類。
+// 網羅リストとして数え上げるのではなく、**経路を足すたびに `src/proxy.ts` 側から数え直すこと**
 // (この一覧を信じて監査すると、増えた経路を見落とす)。
 //   - 自前ではボディを読まない選択をしている … `INTERNAL_CRON_ROUTES`
 //     (`api/internal/trial-reminders` / `api/internal/sla-reminders`) はヘッダだけを見て
 //     ボディに触れないので、上限を掛ける対象がそもそも無い。読むようになった時点で対象になる。
 //   - **フレームワークがボディを読むので差し替えられない** … `api/auth/[...nextauth]`
-//     (middleware の `isApiAuth` が `/api/auth` 配下を丸ごと通す) は next-auth のハンドラが、
+//     (`src/proxy.ts` の `isApiAuth` が `/api/auth` 配下を丸ごと通す) は next-auth のハンドラが、
 //     未認証で開いているページ (`/login` `/signup` `/invite` `/help`) に置いた Server Action
 //     (`requestMagicLink` / `requestSignup` / `completeSignup` / `acceptInvitation` など) は
 //     Next 自身が、それぞれボディを解析する。いずれも上限が掛かっておらず、塞ぐなら
-//     アプリの外側 (リバースプロキシ or middleware での事前検査) が必要になる既知のギャップ。
+//     アプリの外側 (nginx 等のリバースプロキシ) か `src/proxy.ts` での事前検査が必要になる
+//     既知のギャップ (Next.js 16 の入口も `proxy` という名前なので、前者は「アプリの手前に置く
+//     リバースプロキシ」、後者は「このリポジトリの `src/proxy.ts`」を指す)。
 //
 // **認証済みの経路も移行済み** (#290 フォローアップ)。`POST /api/tickets` と
 // `POST /api/tickets/[id]/comments` は `req.formData()` / `req.json()` を直接呼んでいて上限が

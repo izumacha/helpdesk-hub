@@ -7,7 +7,7 @@
 // 何度・いつ叩かれても二重送信/取りこぼしが起きないようにしてある
 // (src/lib/sla-reminder.ts の needsSlaDueSoonReminder 参照)。
 // ユーザー操作ではなく定期実行ジョブから呼ばれる想定のため、認証はセッションではなく
-// 共有シークレットで行う (src/middleware.ts の INTERNAL_CRON_ROUTES でセッション認証ガードの
+// 共有シークレットで行う (src/proxy.ts の INTERNAL_CRON_ROUTES でセッション認証ガードの
 // 対象外にしてある。trial-reminders と同じ扱い)。
 //
 // セキュリティ:

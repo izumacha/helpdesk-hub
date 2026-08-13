@@ -1,7 +1,7 @@
 // Playwright のテスト DSL と Page 型 (ページ操作の API)
 import { test, expect, Page } from '@playwright/test';
 
-// Issue #69: verify requester RBAC boundaries and middleware 401 behaviour.
+// Issue #69: verify requester RBAC boundaries and proxy 401 behaviour.
 // Seed data assumed: see `prisma/seed.ts`.
 //   - requester1@example.com owns `seed-t-01` (New)
 //   - requester3@example.com owns `seed-t-04` (InProgress)
@@ -65,9 +65,9 @@ test.describe('requester RBAC 境界', () => {
   });
 });
 
-// middleware が API ルートに対して 401 を返す動作の検証
-test.describe('middleware の API 401', () => {
-  // セッション無しで POST /api/tickets すると middleware が 401 JSON を返す
+// proxy (src/proxy.ts) が API ルートに対して 401 を返す動作の検証
+test.describe('proxy の API 401', () => {
+  // セッション無しで POST /api/tickets すると proxy が 401 JSON を返す
   test('未認証で POST /api/tickets すると 401 を返す', async ({ request }) => {
     // 認証ヘッダ無しで API を叩く
     const res = await request.post('/api/tickets', {

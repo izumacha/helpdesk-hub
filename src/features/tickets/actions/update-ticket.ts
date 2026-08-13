@@ -74,7 +74,7 @@ const TICKET_CONFLICT_MESSAGE =
 function assertAuthenticatedUser(session: Session | null): asserts session is Session {
   // ユーザー ID が無ければ未ログインとみなしてエラー
   if (!session?.user?.id) throw new Error('Unauthorized');
-  // tenantId 不在は middleware で弾く想定だが、Server Action でも防御的にチェック
+  // tenantId 不在は proxy で弾く想定だが、Server Action でも防御的にチェック
   if (!session.user.tenantId) throw new Error('Unauthorized');
 }
 
