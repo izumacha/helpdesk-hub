@@ -76,10 +76,10 @@ flowchart LR
 
 認証経路は 3 つあり、いずれも Auth.js（v5）のセッション（JWT）に合流します。
 
-| 経路 | 実装 | 備考 |
-| --- | --- | --- |
-| パスワード（Credentials） | `src/lib/password-authorize.ts` | bcrypt 検証 |
-| マジックリンク | `src/lib/magic-link-authorize.ts`・`/api/auth/magic-link/callback` | トークンは SHA-256 ハッシュ保存・15 分 TTL・単回使用。サインアップ（`SignupToken`）・招待（`Invitation`）も同方式 |
+| 経路                        | 実装                                                               | 備考                                                                                                                                     |
+| --------------------------- | ------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| パスワード（Credentials）   | `src/lib/password-authorize.ts`                                    | bcrypt 検証                                                                                                                              |
+| マジックリンク              | `src/lib/magic-link-authorize.ts`・`/api/auth/magic-link/callback` | トークンは SHA-256 ハッシュ保存・15 分 TTL・単回使用。サインアップ（`SignupToken`）・招待（`Invitation`）も同方式                        |
 | SAML SSO（Enterprise 限定） | `/api/auth/sso/[tenantId]/{login,acs,metadata}`・`src/lib/saml.ts` | 署名・Issuer・Audience・期限を検証し、`SamlAssertionRef` でリプレイを拒否。セッション引き渡しは `MagicLinkToken`（`purpose=ssoHandoff`） |
 
 - `NEXTAUTH_SECRET` は強い値を必ず設定してください（`.env.example` 参照）。
@@ -144,11 +144,18 @@ Next.js は proxy（`src/proxy.ts`）を置いているアプリでは、非 GET
 # 値はいずれも「経路自身の上限より少しだけ大きく」する — 同値にすると、上限をわずかに
 # 超えた本文が前段で切られてアプリ側の 413 とログに到達せず、運用者が
 # 「正規の送信者が上限をわずかに超えている」のか「桁違いで探られている」のかを見分けられない。
-client_max_body_size 1m;
+#
+# 既定値が 2m なのはこの規則の帰結。アプリ側で上限 1MB の経路（SSO ACS / Stripe Webhook）は
+# 個別の location を持たず、この既定を継承する。ここを 1m にすると**その 2 経路だけ同値**に
+# なり、上の理由でアプリ側の 413 とログが失われる — しかも SSO ACS は未認証で到達できる、
+# 記録が最も要る側の経路である。
+client_max_body_size 2m;                                   # 上限 1MB の経路（SSO ACS / Stripe）+ 1MB
 
 location /api/inbound/email { client_max_body_size 26m; }  # 経路の上限 25MB + 1MB
 location /api/tickets       { client_max_body_size 52m; }  # 経路の上限 51MB + 1MB
 ```
+
+上限がさらに小さい経路（LINE 取り込み 256KB / マジックリンクのコールバック 64KB）を前段でも絞りたい場合は、同じ規則（経路の上限 + 余裕）で `location` を足す。足さなければ既定の 2m を継承するだけで、アプリ側の 413 とログは働く。
 
 これは `src/lib/request-body-limit.ts` 冒頭が「塞ぐならアプリの外側」と書いている既知のギャップ（`/api/auth/[...nextauth]` は next-auth のハンドラが自前でボディを読むため、アプリ側から上限を差し替えられない）と同じ層の話で、同じリバースプロキシ設定でまとめて塞げる。
 

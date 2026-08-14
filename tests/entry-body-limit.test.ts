@@ -57,12 +57,14 @@ const REGISTRY_VARIABLE_NAME = 'ROUTE_MAX_BODY_BYTES';
 // **命名に乗っていることが検出の前提**で、`MAX_UPLOAD_BYTES` のように外れた名前は拾えない
 // (拾えないと入口の枠が追随せず、静かな切り詰めが戻る)。新しい経路上限はこの命名に揃えること
 const ROUTE_LIMIT_NAME_PATTERN = /^[A-Z0-9_]*_MAX_BODY_BYTES$/;
-// 上限つき読み取り関数の名前 (呼び出しと別名 import の両方で目印にする)
-const BOUNDED_READ_FUNCTION_NAMES = [
-  'readBodyWithinByteLimit',
-  'readFormWithinByteLimit',
-  'readTextWithinByteLimit',
-];
+// 上限つき読み取り関数の命名規約。`request-body-limit.ts` が export する関数のうち
+// この名前で終わるものを「上限つき読み取り関数」とみなす。
+// **手書きの一覧にしないのが要点。** 以前は 3 つを直接並べていたが、それだと読み取り関数を
+// 1 本足したときに呼び出し検査 (関数名が手掛かり) も別名検査もその関数を見なくなり、
+// `readXxxWithinByteLimit(req, 500 * 1024 * 1024)` のような直渡しが検出網を素通りする
+// (実測で再現)。`ROUTE_MAX_BODY_BYTES` の登録漏れを機械的に落としているのと同じ理由で、
+// ここも人手の約束をやめて定義元から導出する
+const BOUNDED_READ_FUNCTION_NAME_PATTERN = /WithinByteLimit$/;
 // 上限つき読み取り関数を提供するモジュールの指定子 (別名 import を探すときの目印)
 const BOUNDED_READ_MODULE_SPECIFIER = 'request-body-limit';
 // パス区切り (POSIX/Windows いずれの表記でも同じ判定になるようにする)
@@ -83,6 +85,10 @@ function isGeneratedPath(relativePath: string): boolean {
 // (テストごとに読み直すと同じ I/O と解析を 3 倍行ううえ、走査中にファイルが書き換わると
 //  テストごとに見ている対象がずれる)
 let parsedSources: { path: string; sourceFile: ts.SourceFile }[] = [];
+
+// 上限つき読み取り関数の名前。**定義元 (`request-body-limit.ts`) から導出する**ので、
+// 読み取り関数を足しても呼び出し検査・別名検査が自動で追随する (手書き一覧だと追随しない)
+let boundedReadFunctionNames: string[] = [];
 
 /**
  * 1 ファイルを読み込んで構文木にする。
@@ -229,6 +235,51 @@ function unregisteredRouteLimitNames(): string[] {
 }
 
 /**
+ * 定義元 (`request-body-limit.ts`) が export している上限つき読み取り関数の名前を返す。
+ *
+ * **手書きの一覧を置き換えるための導出。** 呼び出し検査も別名検査も「関数名」を手掛かりに
+ * するので、一覧から漏れた関数は検査そのものが素通りする (漏れは見逃す方向に倒れるため
+ * 気付けない)。定義元を読んで命名規約に合う export をすべて拾えば、読み取り関数を足しても
+ * 検出網が自動で追随する。
+ *
+ * 宣言形式 (`export async function readXWithinByteLimit`) と、宣言と分けた公開
+ * (`export { readXWithinByteLimit }`) の両方を見る。
+ */
+function exportedBoundedReadFunctionNames(): string[] {
+  // 定義元の構文木 (走査済みのものを使い回す)
+  const sourceFile = parsedSources.find(
+    (source) => source.path === BOUNDED_READ_MODULE_PATH,
+  )?.sourceFile;
+  // 見つからなければ空で返す (下の「空でない」テストが落ちて異常に気付ける)
+  if (!sourceFile) return [];
+  // 見つけた関数名を溜める入れ物 (同じ名前を 2 度持たないよう集合で持つ)
+  const names = new Set<string>();
+  // 構文木をたどって export を探す
+  visitNodes(sourceFile, (node) => {
+    // `export function X() {}` / `export async function X() {}` の形
+    if (ts.isFunctionDeclaration(node) && node.name) {
+      // export 修飾子が付いていなければ対象外 (公開されていない関数は呼び出し側から使えない)
+      const isExported = node.modifiers?.some((m) => m.kind === ts.SyntaxKind.ExportKeyword);
+      // 付いていて、命名規約に合えば拾う
+      if (isExported && BOUNDED_READ_FUNCTION_NAME_PATTERN.test(node.name.text))
+        names.add(node.name.text);
+      return;
+    }
+    // `export { X }` の形 (宣言と公開を分けた場合)
+    if (ts.isExportDeclaration(node) && node.exportClause && ts.isNamedExports(node.exportClause)) {
+      // 公開される名前 (別名があれば別名) を順に見る
+      for (const element of node.exportClause.elements) {
+        // 命名規約に合えば拾う
+        if (BOUNDED_READ_FUNCTION_NAME_PATTERN.test(element.name.text))
+          names.add(element.name.text);
+      }
+    }
+  });
+  // 失敗時のメッセージを安定させるため並べ替えて返す
+  return [...names].sort();
+}
+
+/**
  * 上限つき読み取り関数を**別名で import / re-export している**箇所を返す (空なら違反なし)。
  *
  * 呼び出し検査は関数名そのものを手掛かりにしているため、`readBounded(req, ...)` のように
@@ -257,7 +308,7 @@ function boundedReadAliasImports(): string[] {
         // 元の名前 (別名を付けていなければ undefined)
         const original = element.propertyName?.text;
         // 別名が無い、または元の名前が対象関数でなければ問題なし
-        if (!original || !BOUNDED_READ_FUNCTION_NAMES.includes(original)) continue;
+        if (!original || !boundedReadFunctionNames.includes(original)) continue;
         // 別名を付けているので違反として記録する
         offenders.push(`${path}: ${original} as ${element.name.text}`);
       }
@@ -301,7 +352,7 @@ function boundedReadCallsWithUnregisteredLimit(): string[] {
           ? callee.name.text
           : undefined;
       // 対象関数でなければ関係ない
-      if (!calleeName || !BOUNDED_READ_FUNCTION_NAMES.includes(calleeName)) return;
+      if (!calleeName || !boundedReadFunctionNames.includes(calleeName)) return;
       // 第 2 引数 (maxBytes) を取り出す。無ければ型エラーになる形だが、念のため違反扱いにする
       const maxBytesArgument = node.arguments[1];
       if (!maxBytesArgument) {
@@ -322,6 +373,16 @@ describe('入口 (proxy) のボディ複製上限', () => {
   // ソースの読み込みと構文解析は 1 回だけ行い、全テストで同じ対象を見る
   beforeAll(() => {
     parsedSources = parseSourceFiles();
+    // 読み取り関数の名前は解析済みの構文木から導出する (手書き一覧にしない)
+    boundedReadFunctionNames = exportedBoundedReadFunctionNames();
+  });
+
+  it('上限つき読み取り関数を定義元から拾えている', () => {
+    // **検出網が空になっていないことを先に確かめる。** 呼び出し検査も別名検査もこの一覧を
+    // 手掛かりにしているので、命名規約の変更などで 1 つも拾えなくなると、両検査が「違反ゼロ」を
+    // 返したまま**何も見ていない**状態になる (見逃す方向の失敗なので他のテストでは気付けない)。
+    // 具体的な関数名を書き並べないのは、それでは結局手書き一覧に戻ってしまうため
+    expect(boundedReadFunctionNames.length).toBeGreaterThan(0);
   });
 
   it('入口の枠が「経路別上限の最大値 + 余白」ちょうどで導出されている', () => {
@@ -340,9 +401,10 @@ describe('入口 (proxy) のボディ複製上限', () => {
   it('余白が、超過を観測できる最小サイズを下回っていない', () => {
     // 余白が小さすぎると、入口が捨てるチャンクの分だけルートが超過を観測できなくなり、
     // chunked 転送の超過が 413 ではなく 400 に化ける。
-    // **「以上」ではなく「超える」ことを求めるのが要点。** 余白がソケット読み取り 1 回分
-    // ちょうどだと、捨てられたチャンクがぴったり余白を食い尽くしてルートには上限ちょうどしか
-    // 届かず、超過判定 (累計 + 次のチャンク > 上限) が成立しない。
+    // **「以上」ではなく「超える」ことを求めるのは意図的な保守**。保証に必要なのは
+    // 「余白 ≧ ソケット読み取り 1 回分」だが (導出は `ENTRY_OVER_LIMIT_MARGIN_MIN_BYTES` の
+    // docstring)、境界ちょうどを許すと読み取り 1 回分の見積もりが 1 バイトでも甘かったときに
+    // 保証が崩れるため、1 段厳しい側で固定する。
     // 実際の値 (1MB) は「将来 highWaterMark が変わっても効く余裕」として厚めに取ってあるが、
     // リテラルまで固定すると余裕を見直すだけで落ちる変更検知になるので、下限だけを縛る
     expect(ENTRY_OVER_LIMIT_MARGIN_BYTES).toBeGreaterThan(ENTRY_OVER_LIMIT_MARGIN_MIN_BYTES);
@@ -368,11 +430,17 @@ describe('入口 (proxy) のボディ複製上限', () => {
     // typecheck もユニットテストも通ったまま `npm run build` だけが落ちる。
     // Next.js の transpile 手順をそのまま呼んで、その退行を速い検査で捕まえる
     const { transpileConfig } = await import('next/dist/build/next-config-ts/transpile-config');
-    // next.config.ts を Next.js と同じ方法で読み込む (失敗すれば例外でこのテストが落ちる)。
-    // 戻り値はモジュール名前空間の形なので、default export を取り出して中身を見る
+    // next.config.ts を Next.js と同じ方法で読み込む (失敗すれば例外でこのテストが落ちる)
     const loaded = await transpileConfig({ nextConfigPath: NEXT_CONFIG_PATH, dir: REPO_ROOT });
+    // **戻り値の形が 2 通りあるので Next.js と同じようにほどく。** 従来経路では
+    // モジュール名前空間 (`.default` を持つ) が返るが、ネイティブの TS ローダが有効な経路
+    // (`__NEXT_NODE_NATIVE_TS_LOADER_ENABLED`) では設定オブジェクトそのものが返る。
+    // Next.js 自身も `interopDefault` で両方を受けており (`next/dist/server/config.js`)、
+    // `.default` だけを見ると経路が切り替わった瞬間に「存在しない設定の不備」を指す
+    // 偽の赤になる。同じほどき方に揃えておく
+    const config = loaded.default ?? loaded;
     // 読み込めた設定が、導出した枠をそのまま渡していることまで確認する
-    expect(loaded.default?.experimental?.proxyClientMaxBodySize).toBe(ENTRY_MAX_BODY_BYTES);
+    expect(config?.experimental?.proxyClientMaxBodySize).toBe(ENTRY_MAX_BODY_BYTES);
   });
 
   it('src/ 配下の経路上限がすべて ROUTE_MAX_BODY_BYTES に登録されている', () => {
