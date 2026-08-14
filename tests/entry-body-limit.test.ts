@@ -26,8 +26,8 @@
 // Vitest の DSL
 import { beforeAll, describe, expect, it } from 'vitest';
 // ソースを走査して「上限の定義漏れ」を拾うため (Node 標準の同期 API で十分)
-import { readFileSync, readdirSync } from 'node:fs';
-import { join } from 'node:path';
+import { existsSync, readFileSync, readdirSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 // 構文木でソースを読むためのコンパイラ API (自前の字句解析をしないため)
 import ts from 'typescript';
 // 入口の枠と、その導出材料 (テスト側に書き写すと古びるので導出元から受け取る)
@@ -76,25 +76,44 @@ const ROUTE_LIMIT_NAME_PATTERN = /^[A-Z0-9_]*_MAX_BODY_BYTES$/;
 // (実測で再現)。`ROUTE_MAX_BODY_BYTES` の登録漏れを機械的に落としているのと同じ理由で、
 // ここも人手の約束をやめて定義元から導出する
 const BOUNDED_READ_FUNCTION_NAME_PATTERN = /WithinByteLimit$/;
-// 上限つき読み取り関数を提供するモジュールの指定子 (別名 import を探すときの目印)
-const BOUNDED_READ_MODULE_SPECIFIER = 'request-body-limit';
+// 注: 「読み取り関数を提供するモジュール」の判定に指定子の文字列一致は使わない。
+// 指定子を実ファイルへ解決し、定義元とその再公開バレルの集合と突き合わせる
+// (`collectBoundedReadModulePaths` / `isBoundedReadModuleSpecifier`)
 // 前段リバースプロキシの設定例を載せているドキュメント (値の陳腐化を機械的に落とす対象)
 const SECURITY_DOC_PATH = join(REPO_ROOT, 'docs', 'security.md');
-// nginx の `client_max_body_size 26m;` から値と単位を取り出すための走査パターン。
-// **単位は大文字小文字を問わず、k / m / g と単位なし (バイト) をすべて受ける** —
-// `1M` のように書かれた値を拾い損ねると、51 倍小さい設定が検査を素通りする (実測で再現)
-const NGINX_BODY_SIZE_PATTERN = /client_max_body_size\s+(\d+)\s*([kmg]?)\s*;/i;
-// nginx の location 行から経路を取り出すためのパターン
-const NGINX_LOCATION_PATTERN = /^\s*location\s+(\S+)\s*\{/;
-// nginx のサイズ表記の単位と倍率 (小文字に正規化してから引く)
+// nginx のサイズ表記の単位と倍率 (小文字に正規化してから引く)。
+// **走査パターンの単位クラスはこの表から作る** (下の `NGINX_BODY_SIZE_PATTERN`)。
+// 手書きの文字クラスと二重管理にすると、片方にだけ単位を足したときに
+// 「拾えるのに倍率が無い」か「倍率はあるのに拾えない」のどちらかへ静かに倒れる
 const NGINX_SIZE_UNIT_MULTIPLIERS: Record<string, number> = {
   '': 1,
   k: 1024,
   m: 1024 * 1024,
   g: 1024 * 1024 * 1024,
 };
-// 経路上限ごとに、設定例のどの枠が効くのかを書いた対応表。
-// `location: null` は「個別の location を持たず既定値を継承する」ことを表す。
+// 上の表に載っている単位文字だけを並べた文字クラス (空文字キーは「単位なし」なので除く)
+const NGINX_SIZE_UNIT_CLASS = Object.keys(NGINX_SIZE_UNIT_MULTIPLIERS)
+  .filter((unit) => unit !== '')
+  .join('');
+// nginx の `client_max_body_size 26m;` から値と単位を取り出すための走査パターン。
+// **単位は大文字小文字を問わず、表にある k / m / g と単位なし (バイト) をすべて受ける** —
+// `1M` のように書かれた値を拾い損ねると、51 倍小さい設定が検査を素通りする (実測で再現)。
+// 単位クラスを表から導出しているので、「拾える単位」と「倍率のある単位」は必ず一致する
+const NGINX_BODY_SIZE_PATTERN = new RegExp(
+  `client_max_body_size\\s+(\\d+)\\s*([${NGINX_SIZE_UNIT_CLASS}]?)\\s*;`,
+  'i',
+);
+// nginx の location 行から経路を取り出すためのパターン
+const NGINX_LOCATION_PATTERN = /^\s*location\s+(\S+)\s*\{/;
+// 経路上限ごとに、その上限が守っている**実際の URL パス**を書いた対応表。
+//
+// **「どの location が効くか」は書かない — パスから解決する。** 以前はここに
+// `location: '/api/tickets' | null` を直書きし、`null` を「既定値を継承する」の意味で使っていた。
+// しかしそれだと、`docs/security.md` §7 が末尾で勧めているとおり誰かが
+// `location /api/inbound/line { client_max_body_size 128k; }` を足しても、対応表は `null` のままなので
+// 検査は既定値 (2m) と比べ続け、**経路の上限 (256KB) の半分という設定を見逃す** (実測で再現)。
+// パスだけを書いて、効いている枠は nginx と同じ最長 prefix 一致で解決すれば、
+// location を足した瞬間からその値が検査対象になる。
 //
 // **値ではなく「どの定数と比べるか」だけを書く**ので、上限を変えてもここは古くならない。
 // **全経路を載せるのが要点**: 以前は個別 location を持つ 2 経路しか見ておらず、既定値を
@@ -103,38 +122,42 @@ const NGINX_SIZE_UNIT_MULTIPLIERS: Record<string, number> = {
 const NGINX_ROUTE_EXPECTATIONS: {
   limitName: string;
   limitBytes: number;
-  location: string | null;
+  routePath: string;
 }[] = [
   {
     limitName: 'INBOUND_EMAIL_MAX_BODY_BYTES',
     limitBytes: INBOUND_EMAIL_MAX_BODY_BYTES,
-    location: '/api/inbound/email',
+    routePath: '/api/inbound/email',
   },
   {
     limitName: 'ATTACHMENT_UPLOAD_MAX_BODY_BYTES',
     limitBytes: ATTACHMENT_UPLOAD_MAX_BODY_BYTES,
-    location: '/api/tickets',
+    routePath: '/api/tickets',
   },
   {
     limitName: 'TICKET_JSON_MAX_BODY_BYTES',
     limitBytes: TICKET_JSON_MAX_BODY_BYTES,
-    location: '/api/tickets',
+    routePath: '/api/tickets',
   },
   {
     limitName: 'LINE_WEBHOOK_MAX_BODY_BYTES',
     limitBytes: LINE_WEBHOOK_MAX_BODY_BYTES,
-    location: null,
+    routePath: '/api/inbound/line',
   },
   {
     limitName: 'STRIPE_WEBHOOK_MAX_BODY_BYTES',
     limitBytes: STRIPE_WEBHOOK_MAX_BODY_BYTES,
-    location: null,
+    routePath: '/api/webhooks/stripe',
   },
-  { limitName: 'SSO_ACS_MAX_BODY_BYTES', limitBytes: SSO_ACS_MAX_BODY_BYTES, location: null },
+  {
+    limitName: 'SSO_ACS_MAX_BODY_BYTES',
+    limitBytes: SSO_ACS_MAX_BODY_BYTES,
+    routePath: '/api/auth/sso',
+  },
   {
     limitName: 'MAGIC_LINK_CALLBACK_MAX_BODY_BYTES',
     limitBytes: MAGIC_LINK_CALLBACK_MAX_BODY_BYTES,
-    location: null,
+    routePath: '/api/auth/magic-link/callback',
   },
 ];
 // パス区切り (POSIX/Windows いずれの表記でも同じ判定になるようにする)
@@ -163,6 +186,12 @@ let boundedReadFunctionNames: string[] = [];
 // `ROUTE_MAX_BODY_BYTES` に登録済みの定数名。2 つの検査から参照されるので、
 // 構文木の走査と同じく beforeAll で 1 回だけ導出して使い回す
 let registeredRouteLimitNameList: string[] = [];
+
+// 上限つき読み取り関数を import できてしまうモジュールの絶対パス。**定義元だけでなく、
+// そこを再公開しているバレルも含む** (指定子の文字列一致で判定していた頃は、バレルを 1 枚
+// 挟むだけで名前空間 import 禁止と別名 import 禁止をまとめて迂回できた)。
+// 走査と同じく beforeAll で 1 回だけ組み立てる
+let boundedReadModulePaths = new Set<string>();
 
 /**
  * 1 ファイルを読み込んで構文木にする。
@@ -389,18 +418,17 @@ function exportedBoundedReadFunctionNames(): string[] {
 }
 
 /**
- * `docs/security.md` §7 の nginx 設定例が、経路側の上限を下回っている箇所を返す
- * (空なら全経路で「前段の枠 ≧ アプリの枠」が成立している)。
+ * `docs/security.md` §7 の nginx 設定例から `client_max_body_size` の値を読み取って返す。
  *
- * **ここだけが人手の約束のまま残っていたので機械化する。** 入口の枠はコードから導出されるが、
- * 前段プロキシの `client_max_body_size` はドキュメントへの直書きなので、経路上限を引き上げても
- * 追随しない。実際 `MAX_ATTACHMENT_SIZE_BYTES` を倍にしても全テストは緑のままで、
- * ドキュメントだけが古くなった。その状態で配備すると、上限内の正規リクエストが前段で切られ、
- * ブラウザには原因の分からない接続断として見える (`src/domain/attachment.ts` の事前検査が
- * 避けようとしている失敗そのもの)。
+ * **判定はしない — 読み取るだけ。** 経路の上限と突き合わせて違反を挙げるのは
+ * `staleNginxBodySizes()` の仕事で、ここはその入力を作る。
  *
- * 比較は「下回っていないこと」だけを見る。設定例は経路の上限に余裕を足した値なので、
- * 余裕の取り方 (現状 +1MB) まで固定すると、余裕を見直すだけで落ちる変更検知になってしまう。
+ * 返り値の意味:
+ *   - `defaultBytes` … `location` の外に書かれた既定値。**設定例に既定行が無ければ `undefined`**
+ *     (「違反が無い」ではない。個別 location を持たない経路が一切検査できない状態なので、
+ *     呼び出し側はこれを違反として報告する)。
+ *   - `byLocation` … `location` ブロックの中で明示された値を経路ごとに引ける表。
+ *     `location` はあるがサイズ行が無い経路はここに載らず、nginx と同じく既定値を継承する。
  */
 function parseNginxBodySizes(): {
   defaultBytes: number | undefined;
@@ -427,10 +455,11 @@ function parseNginxBodySizes(): {
     // サイズ指定が無ければ次の行へ
     const sizeMatch = line.match(NGINX_BODY_SIZE_PATTERN);
     if (!sizeMatch) continue;
-    // 単位 (k/m/g、無指定はバイト) を倍率に直す。大文字で書かれていても同じ扱いにする
+    // 単位 (k/m/g、無指定はバイト) を倍率に直す。大文字で書かれていても同じ扱いにする。
+    // 走査パターンの単位クラスを同じ表から作っているので、ここで表に無い単位が来ることはない
+    // (以前は届かない `?? 0` のフォールバックを置いていたが、効かない安全網は誤解のもとなので外した)
     const multiplier = NGINX_SIZE_UNIT_MULTIPLIERS[sizeMatch[2].toLowerCase()];
-    // 想定外の単位なら読み飛ばさず 0 として扱う (小さく倒して検査が落ちる側へ)
-    const bytes = Number(sizeMatch[1]) * (multiplier ?? 0);
+    const bytes = Number(sizeMatch[1]) * multiplier;
     // location の中なら経路ごとの値、外なら既定値として覚える
     if (currentLocation) byLocation.set(currentLocation, bytes);
     else defaultBytes = bytes;
@@ -450,9 +479,9 @@ function parseNginxBodySizes(): {
  * ブラウザには原因の分からない接続断として見える (`src/domain/attachment.ts` の事前検査が
  * 避けようとしている失敗そのもの)。
  *
- * **全経路を見る。** 個別の `location` を持つ経路はその値と、持たない経路は既定値と比べる
- * (nginx の継承と同じ考え方)。個別 location から `client_max_body_size` が消えた場合も
- * 既定値との比較に落ちるので、指定が丸ごと消える退行を取りこぼさない。
+ * **全経路を見る。** 効いている枠は `nginxFrameFor()` が nginx と同じ最長 prefix 一致で解決し、
+ * 一致する `location` が無い (または location はあるがサイズ行が無い) 経路は既定値に落ちる。
+ * そのため「個別 location を足した」「サイズ行が消えた」のどちらの向きの変更も取りこぼさない。
  *
  * 比較は「下回っていないこと」だけを見る。設定例は経路の上限に余裕を足した値なので、
  * 余裕の取り方 (現状 +1MB) まで固定すると、余裕を見直すだけで落ちる変更検知になってしまう。
@@ -467,20 +496,139 @@ function staleNginxBodySizes(): string[] {
     offenders.push('docs/security.md §7 に既定の client_max_body_size がありません');
   // 経路ごとに、効いている枠が上限を下回っていないか見る
   for (const expectation of NGINX_ROUTE_EXPECTATIONS) {
-    // 個別 location の値。無ければ nginx と同じく既定値を継承する
-    const effectiveBytes =
-      (expectation.location ? byLocation.get(expectation.location) : undefined) ?? defaultBytes;
+    // その経路に実際に効く枠を nginx と同じ規則 (最長 prefix 一致 → 無ければ既定) で解決する
+    const frame = nginxFrameFor(expectation.routePath, byLocation, defaultBytes);
     // 既定値も無ければ上で報告済みなので、ここでは次へ
-    if (effectiveBytes === undefined) continue;
-    // 上限を下回っていれば違反として記録する
-    if (effectiveBytes < expectation.limitBytes)
+    if (frame.bytes === undefined) continue;
+    // 上限を下回っていれば違反として記録する (どの location が効いたのかも出す)
+    if (frame.bytes < expectation.limitBytes)
       offenders.push(
-        `${expectation.location ?? '(既定)'}: docs は ${effectiveBytes} バイトだが ` +
+        `${expectation.routePath} (${frame.source}): docs は ${frame.bytes} バイトだが ` +
           `${expectation.limitName} は ${expectation.limitBytes} バイト`,
       );
   }
   // 失敗時のメッセージを安定させるため並べ替えて返す
   return offenders.sort();
+}
+
+/**
+ * ある URL パスに対して、nginx 設定例のどの `client_max_body_size` が効くのかを解決する。
+ *
+ * **nginx の prefix 一致と同じ規則にする。** nginx は要求 URI に前方一致する `location` のうち
+ * **最も長いもの**を選ぶので、`/api/tickets` の location は `/api/tickets/123/comments` にも効く。
+ * 一致する location が無い (または一致した location にサイズ行が無い) 場合は、外側に書かれた
+ * 既定値を継承する — これも nginx の挙動そのままである。
+ *
+ * ここを「対応表に書いた location 名で完全一致」にしていたのが以前の穴で、location を
+ * 足しても対応表を直さない限り既定値と比べ続けてしまっていた (`NGINX_ROUTE_EXPECTATIONS` 参照)。
+ *
+ * @returns 効いている枠のバイト数と、それがどこ由来か (失敗メッセージ用)
+ */
+function nginxFrameFor(
+  routePath: string,
+  byLocation: Map<string, number>,
+  defaultBytes: number | undefined,
+): { bytes: number | undefined; source: string } {
+  // これまでに見つかった最長の一致 location (未発見なら空文字)
+  let longestMatch = '';
+  // その location に書かれていた値
+  let matchedBytes: number | undefined;
+  // 設定例に出てきた location を順に見る
+  for (const [location, bytes] of byLocation) {
+    // 経路の先頭に一致しない location は効かない
+    if (!routePath.startsWith(location)) continue;
+    // より短い一致なら、すでに見つけている方が優先される (nginx は最長一致を選ぶ)
+    if (location.length < longestMatch.length) continue;
+    // 最長の一致として覚え直す
+    longestMatch = location;
+    matchedBytes = bytes;
+  }
+  // 一致する location があればその値、無ければ既定値を継承する
+  if (matchedBytes !== undefined)
+    return { bytes: matchedBytes, source: `location ${longestMatch}` };
+  return { bytes: defaultBytes, source: '既定' };
+}
+
+/**
+ * import / export 宣言の指定子を、`src/` 配下の絶対パスへ解決する (解決できなければ null)。
+ *
+ * 対応するのは本リポジトリで実際に使う 2 形だけ: `@/...` エイリアス (tsconfig の `@/*` → `src/*`)
+ * と相対パス。`next/...` のような外部パッケージは解決対象外なので null を返す。
+ * 拡張子なしで書かれるのが通例なので、`.ts` / `.tsx` / ディレクトリの `index` を順に試す。
+ */
+function resolveModuleSpecifier(specifier: string, fromPath: string): string | null {
+  // エイリアスなら src/ 起点、相対パスなら import 元のディレクトリ起点で組み立てる
+  const base = specifier.startsWith('@/')
+    ? join(SRC_DIR, specifier.slice('@/'.length))
+    : specifier.startsWith('.')
+      ? join(dirname(fromPath), specifier)
+      : null;
+  // どちらでもなければ外部パッケージなので解決しない
+  if (base === null) return null;
+  // 拡張子の付け方を順に試し、実在した最初のものを採用する
+  for (const candidate of [base, `${base}.ts`, `${base}.tsx`, join(base, 'index.ts')])
+    if (existsSync(candidate) && !candidate.endsWith('/')) return candidate;
+  // どれも実在しなければ解決できない
+  return null;
+}
+
+/**
+ * 上限つき読み取り関数を **import できてしまうモジュール**の絶対パスをすべて返す。
+ *
+ * **文字列一致をやめて、再公開の連鎖を追うための関数。** 以前は指定子に
+ * `'request-body-limit'` という文字列が含まれるかどうかだけで判定していたため、
+ * `src/lib/body.ts` に `export * from './request-body-limit';` と 1 行足すだけで
+ * 名前空間 import 禁止も別名 import 禁止も**まとめて**素通りできた
+ * (`import { readBodyWithinByteLimit as r } from '@/lib/body'` → 指定子に文字列が含まれないので
+ * どちらの検査も対象外になり、`r(req, 500 * 1024 * 1024)` が呼び出し検査からも消える。実測で再現)。
+ *
+ * そこで定義元から出発し、**そこを再公開しているモジュールを不動点になるまで集める**。
+ * こうしておけば、経由するモジュールを何段挟んでも同じ禁止が掛かる。
+ *
+ * @param sources 解析済みのソース一覧 (合成した構文木を渡せるよう引数で受ける)
+ */
+function collectBoundedReadModulePaths(
+  sources: { path: string; sourceFile: ts.SourceFile }[],
+): Set<string> {
+  // 定義元そのものを起点にする
+  const reachable = new Set<string>([BOUNDED_READ_MODULE_PATH]);
+  // 1 周で 1 段しか辿れないので、増えなくなるまで繰り返す (再公開が何段でも追える)
+  let grew = true;
+  while (grew) {
+    grew = false;
+    // 全ファイルの re-export 宣言を見る
+    for (const { path, sourceFile } of sources) {
+      // すでに対象なら調べ直す必要はない
+      if (reachable.has(path)) continue;
+      visitNodes(sourceFile, (node) => {
+        // `export ... from '...'` の形でなければ関係ない (`export *` と `export {}` の両方)
+        if (!ts.isExportDeclaration(node) || !node.moduleSpecifier) return;
+        if (!ts.isStringLiteral(node.moduleSpecifier)) return;
+        // 再公開元が対象集合に入っていれば、このファイルも「読み取り関数を配るモジュール」になる
+        const resolved = resolveModuleSpecifier(node.moduleSpecifier.text, path);
+        if (resolved !== null && reachable.has(resolved)) {
+          reachable.add(path);
+          grew = true;
+        }
+      });
+    }
+  }
+  // 集めた集合を返す
+  return reachable;
+}
+
+/**
+ * 指定子が「上限つき読み取り関数を配っているモジュール」を指しているかを判定する。
+ *
+ * 解決できない指定子 (外部パッケージなど) は対象外。**解決結果で判定するので、
+ * `@/lib/request-body-limit` と `../lib/request-body-limit` のような書き方の違いも、
+ * 再公開バレルを経由した迂回も同じように捕まえられる。**
+ */
+function isBoundedReadModuleSpecifier(specifier: string, fromPath: string): boolean {
+  // 指定子を実ファイルへ解決する
+  const resolved = resolveModuleSpecifier(specifier, fromPath);
+  // 解決できて、かつ対象集合に入っていれば真
+  return resolved !== null && boundedReadModulePaths.has(resolved);
 }
 
 /**
@@ -507,9 +655,9 @@ function boundedReadNamespaceImports(): string[] {
     visitNodes(sourceFile, (node) => {
       // import 宣言でなければ関係ない
       if (!ts.isImportDeclaration(node)) return;
-      // 読み取り関数のモジュールを指していなければ関係ない
+      // 読み取り関数のモジュール (再公開バレル経由も含む) を指していなければ関係ない
       if (!ts.isStringLiteral(node.moduleSpecifier)) return;
-      if (!node.moduleSpecifier.text.includes(BOUNDED_READ_MODULE_SPECIFIER)) return;
+      if (!isBoundedReadModuleSpecifier(node.moduleSpecifier.text, path)) return;
       // `import * as ns from '...'` の形だけを違反として拾う
       const bindings = node.importClause?.namedBindings;
       if (bindings && ts.isNamespaceImport(bindings))
@@ -536,10 +684,10 @@ function boundedReadAliasImports(): string[] {
       const isImport = ts.isImportDeclaration(node);
       const isExport = ts.isExportDeclaration(node);
       if (!isImport && !isExport) return;
-      // 読み取り関数のモジュールを指していなければ関係ない
+      // 読み取り関数のモジュール (再公開バレル経由も含む) を指していなければ関係ない
       const specifier = node.moduleSpecifier;
       if (!specifier || !ts.isStringLiteral(specifier)) return;
-      if (!specifier.text.includes(BOUNDED_READ_MODULE_SPECIFIER)) return;
+      if (!isBoundedReadModuleSpecifier(specifier.text, path)) return;
       // 名前付きの取り込み / 再公開の要素を取り出す
       const clause = isImport ? node.importClause?.namedBindings : node.exportClause;
       if (!clause) return;
@@ -717,6 +865,8 @@ describe('入口 (proxy) のボディ複製上限', () => {
     // 読み取り関数の名前は解析済みの構文木から導出する (手書き一覧にしない)
     boundedReadFunctionNames = exportedBoundedReadFunctionNames();
     registeredRouteLimitNameList = registeredRouteLimitNames();
+    // 読み取り関数を配るモジュール (定義元 + それを再公開しているバレル) を集める
+    boundedReadModulePaths = collectBoundedReadModulePaths(parsedSources);
   });
 
   it('上限つき読み取り関数を定義元から拾えている', () => {
@@ -818,6 +968,39 @@ describe('入口 (proxy) のボディ複製上限', () => {
   it('上限つき読み取り関数が別名で import されていない', () => {
     // 別名を付けられると呼び出し検査 (関数名が手掛かり) が丸ごと素通りする
     expect(boundedReadAliasImports()).toEqual([]);
+  });
+
+  it('再公開バレルを挟んでも「読み取り関数を配るモジュール」として追跡できる', () => {
+    // **この検査が守っているもの**: 名前空間 import 禁止も別名 import 禁止も「その指定子が
+    // 読み取り関数のモジュールを指しているか」で対象を絞る。以前はそれを指定子の**文字列一致**
+    // (`'request-body-limit'` を含むか) で判定していたため、`export * from './request-body-limit'`
+    // だけのバレルを 1 枚置いて、そこから別名 import すれば両方の禁止を同時に迂回できた。
+    // ここでは合成した構文木でその形を作り、追跡できることを確かめる。
+    //
+    // 合成ファイルの置き場所に**実在するパスを使う**のは、相対指定子の解決が実ファイルの
+    // 有無を見るため (`resolveModuleSpecifier`)。中身だけ差し替えて経路の形を再現する。
+    const barrelPath = join(SRC_DIR, 'lib', 'constants.ts');
+    const secondHopPath = join(SRC_DIR, 'lib', 'role.ts');
+    // 合成ソースを作る小さなヘルパー (テストの中だけで使う)
+    const synthetic = (path: string, code: string) => ({
+      path,
+      sourceFile: ts.createSourceFile(path, code, ts.ScriptTarget.Latest, true),
+    });
+    // 1 段目: 定義元をそのまま再公開するバレル。2 段目: そのバレルをさらに再公開するファイル
+    const reachable = collectBoundedReadModulePaths([
+      synthetic(barrelPath, "export * from './request-body-limit';"),
+      synthetic(secondHopPath, "export * from './constants';"),
+      // 無関係なファイルは巻き込まれないことも同時に見る
+      synthetic(join(SRC_DIR, 'lib', 'sla.ts'), "export * from './prisma';"),
+    ]);
+    // 定義元そのものは常に対象
+    expect(reachable.has(BOUNDED_READ_MODULE_PATH)).toBe(true);
+    // 1 段目のバレルも対象になる (ここが以前は抜けていた)
+    expect(reachable.has(barrelPath)).toBe(true);
+    // **何段挟んでも追える**ことを確かめる (不動点まで回している証拠)
+    expect(reachable.has(secondHopPath)).toBe(true);
+    // 再公開元が定義元へ繋がらないファイルは対象外のまま
+    expect(reachable.has(join(SRC_DIR, 'lib', 'sla.ts'))).toBe(false);
   });
 
   it('上限つき読み取り関数がローカル変数に捕まえられていない', () => {
