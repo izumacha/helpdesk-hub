@@ -22,7 +22,11 @@ import { describe, expect, it } from 'vitest';
 import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 // 入口の枠と、Next.js の既定値 (設定しないとどうなるかを示すための参照値)
-import { ENTRY_MAX_BODY_BYTES, NEXT_DEFAULT_ENTRY_MAX_BODY_BYTES } from '@/lib/entry-body-limit';
+import {
+  ENTRY_MAX_BODY_BYTES,
+  ENTRY_OVER_LIMIT_MARGIN_MIN_BYTES,
+  NEXT_DEFAULT_ENTRY_MAX_BODY_BYTES,
+} from '@/lib/entry-body-limit';
 // 実際に Next.js へ渡る設定オブジェクト (文字列一致ではなく値そのものを見る)
 import nextConfig from '../next.config';
 // 経路別の上限。**入口の枠と同じ導出元を再利用せず、各経路の置き場から個別に import する**
@@ -59,6 +63,27 @@ const SRC_DIR = join(REPO_ROOT, 'src');
 const ENTRY_MODULE_PATH = join(SRC_DIR, 'lib', 'entry-body-limit.ts');
 // 経路上限の命名規約。この名前で export されたものを「経路の上限」とみなす
 const ROUTE_LIMIT_EXPORT_PATTERN = /^export const ([A-Z0-9_]*_MAX_BODY_BYTES)\b/gm;
+// 導出元の一覧 (`const ROUTE_MAX_BODY_BYTES = [ ... ] as const;`) を切り出すためのパターン
+const REGISTRY_BLOCK_PATTERN = /const ROUTE_MAX_BODY_BYTES = \[([\s\S]*?)\] as const;/;
+// 一覧の中に 1 行ずつ並ぶ定数名 (末尾のカンマまでを 1 要素とみなす)
+const REGISTRY_ENTRY_PATTERN = /^\s*([A-Z0-9_]+),/gm;
+
+/**
+ * 導出元の `ROUTE_MAX_BODY_BYTES` に**実際に登録されている**定数名を返す。
+ *
+ * ソース全体への部分一致ではなく配列の中身だけを見るのが要点。全体一致にすると
+ * (a) 既存名の部分文字列 (`EMAIL_MAX_BODY_BYTES` が `INBOUND_EMAIL_MAX_BODY_BYTES` に一致) や
+ * (b) コメント中に名前が出てくるだけ、でも「登録済み」と誤判定してしまい、
+ * 下の登録漏れ検出がすり抜ける (どちらも実際にすり抜けることを確認済み)。
+ */
+function registeredRouteLimitNames(entrySource: string): string[] {
+  // 配列リテラルの中身だけを切り出す
+  const block = entrySource.match(REGISTRY_BLOCK_PATTERN);
+  // 一覧そのものが見つからない = 導出の形が変わったということなので、登録ゼロとして落とす
+  if (!block) return [];
+  // 各行の先頭に並ぶ定数名を拾う
+  return [...block[1].matchAll(REGISTRY_ENTRY_PATTERN)].map((m) => m[1]);
+}
 
 /**
  * `src/` 配下で `*_MAX_BODY_BYTES` として export されているのに、
@@ -68,10 +93,12 @@ const ROUTE_LIMIT_EXPORT_PATTERN = /^export const ([A-Z0-9_]*_MAX_BODY_BYTES)\b/
  * 将来重い依存 (Prisma 等) を持つモジュールが混ざったときにテストごと巻き添えになるため。
  */
 function unregisteredRouteLimitNames(): string[] {
-  // 導出元のソース。この中に名前が現れていれば「登録済み」とみなす
+  // 導出元のソース
   const entrySource = readFileSync(ENTRY_MODULE_PATH, 'utf8');
   // 導出元自身が export する枠 (ENTRY_MAX_BODY_BYTES 等) は経路の上限ではないので除外する
   const ownExports = [...entrySource.matchAll(ROUTE_LIMIT_EXPORT_PATTERN)].map((m) => m[1]);
+  // 一覧に登録済みの定数名 (完全一致で突き合わせる)
+  const registered = registeredRouteLimitNames(entrySource);
   // src/ 配下の .ts を再帰的に集める (生成物は対象外)
   const files = readdirSync(SRC_DIR, { recursive: true, encoding: 'utf8' })
     .filter((rel) => rel.endsWith('.ts') && !rel.startsWith('generated'))
@@ -88,8 +115,8 @@ function unregisteredRouteLimitNames(): string[] {
       const name = match[1];
       // 導出元自身の export は経路の上限ではないので飛ばす
       if (ownExports.includes(name)) continue;
-      // 導出元のソースに名前が出てこなければ登録漏れ
-      if (!entrySource.includes(name)) missing.push(name);
+      // 一覧に完全一致で載っていなければ登録漏れ
+      if (!registered.includes(name)) missing.push(name);
     }
   }
   // 失敗時のメッセージを安定させるため並べ替えて返す
@@ -101,6 +128,17 @@ describe('入口 (proxy) のボディ複製上限', () => {
   it.each(ROUTE_LIMITS)('%s の上限 (%d バイト) を下回らない', (_route, limit) => {
     // 入口の枠が経路の枠以上であることを確認する (下回ると本文が静かに切り詰められる)
     expect(ENTRY_MAX_BODY_BYTES).toBeGreaterThanOrEqual(limit);
+  });
+
+  it('最大の経路上限に対して、超過を観測できるだけの余白を残している', () => {
+    // 経路別上限の最大値 (入口の枠はこれを基準に余白を足したものになる)
+    const largestRouteLimit = Math.max(...ROUTE_LIMITS.map(([, limit]) => limit));
+    // 余白が消えると「入口の枠 ≧ 各経路の枠」は成立したままなのに、ルート側が上限超過を
+    // 観測できなくなり 413 が返せなくなる (chunked 転送の超過が 400 に化ける)。
+    // 経路ごとの比較では捕まえられない退行なので、余白そのものをここで固定する
+    expect(ENTRY_MAX_BODY_BYTES - largestRouteLimit).toBeGreaterThanOrEqual(
+      ENTRY_OVER_LIMIT_MARGIN_MIN_BYTES,
+    );
   });
 
   it('Next.js の既定 (10MB) では足りないことを明示する', () => {

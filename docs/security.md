@@ -112,3 +112,39 @@ flowchart LR
 - **メール取り込み**（`POST /api/inbound/email`）: テナント特定は宛先アドレスの `inboundToken`。送信元は SPF/DKIM/DMARC を確認し、未登録送信者・認証失敗などは起票せず隔離（`QuarantinedEmail`、`/quarantine` で admin が確認）。
 - **LINE 取り込み**（`POST /api/inbound/line`）: `X-Line-Signature` を各テナントの `channelSecret` で HMAC-SHA256 検証。Webhook 再送は `LineMessageRef` で冪等化。
 - **Stripe Webhook**（`POST /api/webhooks/stripe`）: 署名検証＋`stripeEventProcessedAt` による順序逆転（古いイベントでの巻き戻し）防止。
+
+---
+
+## 7. リクエストボディのサイズ上限（入口 / 経路 / リバースプロキシの三層）
+
+ボディのサイズ上限は 3 つの層で決まる。**それぞれ守れる範囲が違うので、1 層だけでは足りない。**
+
+| 層 | 決める場所 | 守れる範囲 |
+|---|---|---|
+| 入口（proxy のボディ複製） | `next.config.ts` の `experimental.proxyClientMaxBodySize`（値の導出は `src/lib/entry-body-limit.ts`） | アプリ全体で 1 つ。**経路ごとには絞れない** |
+| 経路 | `readBodyWithinByteLimit` 系に渡す `maxBytes`（`webhook-body-limits.ts` / `ticket-body-limits.ts` / `sso-rate-limit.ts` / `magic-link.ts`） | 経路ごとに厳密。超過は 413 |
+| リバースプロキシ | アプリの手前（nginx なら `location` ごとの `client_max_body_size`） | 経路ごと。**アプリのプロセスに届く前**に切れる |
+
+### 入口の枠を経路の最大値に合わせている理由と、その代償
+
+Next.js は proxy（`src/proxy.ts`）を置いているアプリでは、非 GET/HEAD のボディを入口で複製してメモリにバッファする（proxy が本文を読むかどうかに関係なく走る）。`proxyClientMaxBodySize` 未設定だとこの複製は既定 10MB で頭打ちになり、**超過分はエラーにならず黙って切り捨てられて**ルートハンドラへ渡る。メール取り込み（25MB）・添付付きチケット書き込み（51MB）は 10MB を超えるため、既定のままだと正規のリクエストが壊れる（詳細は `src/lib/entry-body-limit.ts`）。
+
+そのため入口の枠は経路別上限の最大値（＋超過を検知させる余白）に合わせてある。**代償として、上限が小さい未認証経路にも同じ枠が適用される。**
+
+- 入口の複製は **proxy の認証判定より前**に走り、ルート側のレート制限・署名検証にはさらに手前で到達するため、アプリ層のゲートでは減らせない。
+- したがって `POST /api/inbound/line`（経路の上限 256KB）や `POST /api/auth/magic-link/callback`（同 64KB）でも、入口では枠いっぱいまで滞留しうる。
+- 加えて、入口の滞留には `request-body-limit.ts` の無通信（10 秒）／全体（120 秒）の期限が効かない（ルートは本文が届き切ってから起動するため）。ここを縛るのは入口の枠と Node の既定 `requestTimeout`（300 秒）だけ。
+
+### 本番デプロイの要件
+
+**アプリの手前にリバースプロキシを置き、経路ごとに本文サイズを絞ること。** 上記のとおりアプリ単体では経路別に絞れないため、これはアプリ側の設定漏れではなくデプロイ構成側の責務になる。nginx の例:
+
+```nginx
+# 既定は小さく。大きい本文を要する経路だけ個別に開ける
+client_max_body_size 1m;
+
+location /api/inbound/email { client_max_body_size 25m; }
+location /api/tickets       { client_max_body_size 52m; }
+```
+
+これは `src/lib/request-body-limit.ts` 冒頭が「塞ぐならアプリの外側」と書いている既知のギャップ（`/api/auth/[...nextauth]` と Server Action の本文にアプリ側から上限を掛けられない件）と同じ層の話で、同じリバースプロキシ設定でまとめて塞げる。
