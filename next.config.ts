@@ -1,7 +1,9 @@
 // Next.js 設定ファイルの型 (補完と型安全のため)
 import type { NextConfig } from 'next';
 
-// 入口 (proxy) でボディを複製・バッファするときの上限 (51MB)。
+// 入口 (proxy) でボディを複製・バッファするときの上限 (経路別上限の最大 51MB ＋ 余白 1MB)。
+// 余白は「経路の上限を踏み越えたこと」をルート側に観測させるためのもの (これが無いと
+// chunked 転送の超過が 413 ではなく 400 になる)。導出は `src/lib/entry-body-limit.ts`。
 //
 // **未設定だと既定 10MB で本文が黙って切り詰められる** (エラーにならず、ルートハンドラが
 // 欠けた本文を完全な本文として受け取る)。本リポジトリにはメール取り込み (25MB)・添付付きの
@@ -14,7 +16,7 @@ import type { NextConfig } from 'next';
 // 解決されない (実測: `Cannot find module './src/lib/webhook-body-limits'` でビルドが失敗する)。
 // 経路別上限からの導出は `src/lib/entry-body-limit.ts` に残し、ここに書き写した値との一致は
 // `tests/entry-body-limit.test.ts` が機械的に固定する (片方だけ変えたら CI で落ちる)。
-const ENTRY_MAX_BODY_BYTES = 51 * 1024 * 1024;
+const ENTRY_MAX_BODY_BYTES = 52 * 1024 * 1024;
 
 // Next.js のビルド/実行時の挙動を切り替える設定オブジェクト
 const nextConfig: NextConfig = {

@@ -13,9 +13,14 @@
 //   (a) `next.config.ts` から設定が消える / 別の値に書き換わる退行。
 //   (b) どこかの経路の上限を引き上げたのに入口の枠が追随していない状態
 //       (導出をやめて直書きに戻した場合に起きる)。
+//   (c) 新しい経路の上限を足したのに `ROUTE_MAX_BODY_BYTES` へ登録し忘れた状態
+//       (登録が人手の約束のままだと、静かな切り詰めがそのまま再発する)。
 
 // Vitest の DSL
 import { describe, expect, it } from 'vitest';
+// ソースを走査して「上限の定義漏れ」を拾うため (Node 標準の同期 API で十分)
+import { readFileSync, readdirSync } from 'node:fs';
+import { join } from 'node:path';
 // 入口の枠と、Next.js の既定値 (設定しないとどうなるかを示すための参照値)
 import { ENTRY_MAX_BODY_BYTES, NEXT_DEFAULT_ENTRY_MAX_BODY_BYTES } from '@/lib/entry-body-limit';
 // 実際に Next.js へ渡る設定オブジェクト (文字列一致ではなく値そのものを見る)
@@ -46,6 +51,51 @@ const ROUTE_LIMITS: ReadonlyArray<readonly [string, number]> = [
   ['POST /api/auth/magic-link/callback', MAGIC_LINK_CALLBACK_MAX_BODY_BYTES],
 ];
 
+// リポジトリのルート (このテストファイルは <root>/tests/ にあるので 1 つ上)
+const REPO_ROOT = join(__dirname, '..');
+// 走査対象のソースディレクトリ
+const SRC_DIR = join(REPO_ROOT, 'src');
+// 導出元 (この一覧に登録されていない上限を落としたい)
+const ENTRY_MODULE_PATH = join(SRC_DIR, 'lib', 'entry-body-limit.ts');
+// 経路上限の命名規約。この名前で export されたものを「経路の上限」とみなす
+const ROUTE_LIMIT_EXPORT_PATTERN = /^export const ([A-Z0-9_]*_MAX_BODY_BYTES)\b/gm;
+
+/**
+ * `src/` 配下で `*_MAX_BODY_BYTES` として export されているのに、
+ * `ROUTE_MAX_BODY_BYTES` へ登録されていない定数名を返す (空なら登録漏れ無し)。
+ *
+ * 値ではなく**名前**を突き合わせるのは、各モジュールを動的 import すると
+ * 将来重い依存 (Prisma 等) を持つモジュールが混ざったときにテストごと巻き添えになるため。
+ */
+function unregisteredRouteLimitNames(): string[] {
+  // 導出元のソース。この中に名前が現れていれば「登録済み」とみなす
+  const entrySource = readFileSync(ENTRY_MODULE_PATH, 'utf8');
+  // 導出元自身が export する枠 (ENTRY_MAX_BODY_BYTES 等) は経路の上限ではないので除外する
+  const ownExports = [...entrySource.matchAll(ROUTE_LIMIT_EXPORT_PATTERN)].map((m) => m[1]);
+  // src/ 配下の .ts を再帰的に集める (生成物は対象外)
+  const files = readdirSync(SRC_DIR, { recursive: true, encoding: 'utf8' })
+    .filter((rel) => rel.endsWith('.ts') && !rel.startsWith('generated'))
+    .map((rel) => join(SRC_DIR, rel));
+  // 登録漏れの定数名を溜める入れ物
+  const missing: string[] = [];
+  // 1 ファイルずつ、経路上限の export を拾って登録状況を見る
+  for (const file of files) {
+    // ファイルの中身を文字列として読む
+    const source = readFileSync(file, 'utf8');
+    // 命名規約に合う export をすべて拾う
+    for (const match of source.matchAll(ROUTE_LIMIT_EXPORT_PATTERN)) {
+      // 拾った定数名
+      const name = match[1];
+      // 導出元自身の export は経路の上限ではないので飛ばす
+      if (ownExports.includes(name)) continue;
+      // 導出元のソースに名前が出てこなければ登録漏れ
+      if (!entrySource.includes(name)) missing.push(name);
+    }
+  }
+  // 失敗時のメッセージを安定させるため並べ替えて返す
+  return missing.sort();
+}
+
 describe('入口 (proxy) のボディ複製上限', () => {
   // 経路ごとに 1 ケース立てる (まとめて 1 ケースにすると、失敗時に溢れた経路が特定しづらい)
   it.each(ROUTE_LIMITS)('%s の上限 (%d バイト) を下回らない', (_route, limit) => {
@@ -63,5 +113,11 @@ describe('入口 (proxy) のボディ複製上限', () => {
   it('next.config.ts が入口の枠をそのまま Next.js へ渡している', () => {
     // 設定漏れ・書き換えを検出する。文字列一致ではなく、実際に export される値を見る
     expect(nextConfig.experimental?.proxyClientMaxBodySize).toBe(ENTRY_MAX_BODY_BYTES);
+  });
+
+  it('src/ 配下の経路上限がすべて ROUTE_MAX_BODY_BYTES に登録されている', () => {
+    // 導出元の一覧に載っていない上限があると、その経路だけ入口で切り詰められる。
+    // 「足したら登録する」を人手の約束にせず、ここで機械的に落とす
+    expect(unregisteredRouteLimitNames()).toEqual([]);
   });
 });
