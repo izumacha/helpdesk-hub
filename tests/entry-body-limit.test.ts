@@ -26,7 +26,7 @@
 // Vitest の DSL
 import { beforeAll, describe, expect, it } from 'vitest';
 // ソースを走査して「上限の定義漏れ」を拾うため (Node 標準の同期 API で十分)
-import { existsSync, readFileSync, readdirSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 // 構文木でソースを読むためのコンパイラ API (自前の字句解析をしないため)
 import ts from 'typescript';
@@ -455,10 +455,19 @@ function parseNginxBodySizes(): {
     // サイズ指定が無ければ次の行へ
     const sizeMatch = line.match(NGINX_BODY_SIZE_PATTERN);
     if (!sizeMatch) continue;
-    // 単位 (k/m/g、無指定はバイト) を倍率に直す。大文字で書かれていても同じ扱いにする。
-    // 走査パターンの単位クラスを同じ表から作っているので、ここで表に無い単位が来ることはない
-    // (以前は届かない `?? 0` のフォールバックを置いていたが、効かない安全網は誤解のもとなので外した)
+    // 単位 (k/m/g、無指定はバイト) を倍率に直す。大文字で書かれていても同じ扱いにする
     const multiplier = NGINX_SIZE_UNIT_MULTIPLIERS[sizeMatch[2].toLowerCase()];
+    // **表に無い単位なら黙って進めず、その場で落とす。** 走査パターンの単位クラスは同じ表から
+    // 作っているので通常ここには来ないが、成り立つのは「表のキーがすべて小文字」である間だけで、
+    // 例えば `'K'` を小文字の対を持たずに足すと文字クラスは `K` を受けるのに引きは外れる。
+    // そのとき掛け算は NaN になり、`NaN < 上限` は false なので**違反ゼロで緑のまま通ってしまう**
+    // (検査が緩む方向の失敗)。以前あった `?? 0` は厳しい側へ倒す受けだったので、
+    // 削るのではなく「明示的に落ちる」形へ置き換える
+    if (multiplier === undefined)
+      throw new Error(
+        `NGINX_SIZE_UNIT_MULTIPLIERS に単位 '${sizeMatch[2]}' がありません ` +
+          '(表のキーはすべて小文字にすること)',
+      );
     const bytes = Number(sizeMatch[1]) * multiplier;
     // location の中なら経路ごとの値、外なら既定値として覚える
     if (currentLocation) byLocation.set(currentLocation, bytes);
@@ -519,7 +528,15 @@ function staleNginxBodySizes(): string[] {
  * 一致する location が無い (または一致した location にサイズ行が無い) 場合は、外側に書かれた
  * 既定値を継承する — これも nginx の挙動そのままである。
  *
- * ここを「対応表に書いた location 名で完全一致」にしていたのが以前の穴で、location を
+ * **対応表の `routePath` は「その経路を代表するパス」であって URL そのものとは限らない**
+ * (例: SSO ACS の実際の URL は `/api/auth/sso/{tenantId}/acs` だが、表には `/api/auth/sso` と書く)。
+ * そのため「location が routePath の prefix か」だけで判定すると、routePath より**深い**
+ * location — `/api/inbound/line/` のような末尾スラッシュ形 (nginx では慣用) や下位パス — を
+ * 取りこぼし、より大きい既定値に落ちてしまう。それは検査が緩む方向の失敗なので、
+ * **どちらの向きの前方一致も「この経路に効きうる」とみなし、効きうる枠のうち最小を採る**
+ * (fail-closed。一つでも経路の上限を下回る枠があれば報告する)。
+ *
+ * ここを「対応表に書いた location 名で完全一致」にしていたのが最初の穴で、location を
  * 足しても対応表を直さない限り既定値と比べ続けてしまっていた (`NGINX_ROUTE_EXPECTATIONS` 参照)。
  *
  * @returns 効いている枠のバイト数と、それがどこ由来か (失敗メッセージ用)
@@ -529,23 +546,23 @@ function nginxFrameFor(
   byLocation: Map<string, number>,
   defaultBytes: number | undefined,
 ): { bytes: number | undefined; source: string } {
-  // これまでに見つかった最長の一致 location (未発見なら空文字)
-  let longestMatch = '';
-  // その location に書かれていた値
-  let matchedBytes: number | undefined;
+  // この経路に効きうる枠のうち、最も小さかったもの
+  let smallestBytes: number | undefined;
+  // それがどの location 由来か
+  let smallestLocation = '';
   // 設定例に出てきた location を順に見る
   for (const [location, bytes] of byLocation) {
-    // 経路の先頭に一致しない location は効かない
-    if (!routePath.startsWith(location)) continue;
-    // より短い一致なら、すでに見つけている方が優先される (nginx は最長一致を選ぶ)
-    if (location.length < longestMatch.length) continue;
-    // 最長の一致として覚え直す
-    longestMatch = location;
-    matchedBytes = bytes;
+    // どちらの向きにも前方一致しない location は、この経路とは無関係
+    if (!routePath.startsWith(location) && !location.startsWith(routePath)) continue;
+    // すでに見つけたものの方が小さければ、そちらを厳しい側として残す
+    if (smallestBytes !== undefined && smallestBytes <= bytes) continue;
+    // より小さい枠として覚え直す
+    smallestBytes = bytes;
+    smallestLocation = location;
   }
-  // 一致する location があればその値、無ければ既定値を継承する
-  if (matchedBytes !== undefined)
-    return { bytes: matchedBytes, source: `location ${longestMatch}` };
+  // 効きうる location があればその値、無ければ既定値を継承する
+  if (smallestBytes !== undefined)
+    return { bytes: smallestBytes, source: `location ${smallestLocation}` };
   return { bytes: defaultBytes, source: '既定' };
 }
 
@@ -565,9 +582,19 @@ function resolveModuleSpecifier(specifier: string, fromPath: string): string | n
       : null;
   // どちらでもなければ外部パッケージなので解決しない
   if (base === null) return null;
-  // 拡張子の付け方を順に試し、実在した最初のものを採用する
-  for (const candidate of [base, `${base}.ts`, `${base}.tsx`, join(base, 'index.ts')])
-    if (existsSync(candidate) && !candidate.endsWith('/')) return candidate;
+  // 拡張子の付け方を順に試し、**実在するファイル**だった最初のものを採用する。
+  // **ディレクトリを弾くのが要点**: `@/data` のようなディレクトリ import では `base` 自体が
+  // 実在してしまい、そこで確定すると `src/data/index.ts` へ辿り着けない。すると
+  // 「index.ts はバレルとして集合に入っているのに、`@/data` と書いた側は集合外」という
+  // ねじれが起き、両方の import 禁止をすり抜ける (`@/data` 形式はこのリポジトリで実際に多用されている)
+  for (const candidate of [
+    base,
+    `${base}.ts`,
+    `${base}.tsx`,
+    join(base, 'index.ts'),
+    join(base, 'index.tsx'),
+  ])
+    if (existsSync(candidate) && statSync(candidate).isFile()) return candidate;
   // どれも実在しなければ解決できない
   return null;
 }
@@ -600,17 +627,21 @@ function collectBoundedReadModulePaths(
     for (const { path, sourceFile } of sources) {
       // すでに対象なら調べ直す必要はない
       if (reachable.has(path)) continue;
-      visitNodes(sourceFile, (node) => {
+      // **トップレベルの文だけを見る** (再公開宣言は関数の中などには置けないので、
+      // 構文木全体を再帰する意味が無い。不動点まで何周もするぶん差が出る)
+      for (const statement of sourceFile.statements) {
         // `export ... from '...'` の形でなければ関係ない (`export *` と `export {}` の両方)
-        if (!ts.isExportDeclaration(node) || !node.moduleSpecifier) return;
-        if (!ts.isStringLiteral(node.moduleSpecifier)) return;
+        if (!ts.isExportDeclaration(statement) || !statement.moduleSpecifier) continue;
+        if (!ts.isStringLiteral(statement.moduleSpecifier)) continue;
         // 再公開元が対象集合に入っていれば、このファイルも「読み取り関数を配るモジュール」になる
-        const resolved = resolveModuleSpecifier(node.moduleSpecifier.text, path);
+        const resolved = resolveModuleSpecifier(statement.moduleSpecifier.text, path);
         if (resolved !== null && reachable.has(resolved)) {
           reachable.add(path);
           grew = true;
+          // このファイルは対象と決まったので、残りの文を見る必要はない
+          break;
         }
-      });
+      }
     }
   }
   // 集めた集合を返す
@@ -674,6 +705,35 @@ function boundedReadNamespaceImports(): string[] {
  * 呼び出し検査は関数名そのものを手掛かりにしているため、`readBounded(req, ...)` のように
  * 別名を付けられると呼び出しごと検出網から消える。名前を変えられないようにして手掛かりを守る。
  */
+/**
+ * 名前付きの取り込み / 再公開の要素から、**読み取り関数を改名しているもの**を違反文字列にして返す。
+ *
+ * `import { A as B }` / `export { A as B } from '...'` / `export { A as B }` の 3 形で同じ判定が
+ * 要るので 1 か所にまとめてある (§6 DRY)。改名だけを見るのは、名前が保たれていれば
+ * 呼び出し検査 (関数名が手掛かり) が引き続き効くため。
+ */
+function aliasedBoundedReadNames(
+  clause: ts.NamedImportBindings | ts.NamedExportBindings | undefined,
+  path: string,
+): string[] {
+  // 名前付きの要素を持つ形でなければ何も返さない (`import * as ns` は別の検査の担当)
+  if (!clause) return [];
+  if (!ts.isNamedImports(clause) && !ts.isNamedExports(clause)) return [];
+  // 違反を溜める入れ物
+  const offenders: string[] = [];
+  // 要素を順に見る
+  for (const element of clause.elements) {
+    // 元の名前 (別名を付けていなければ undefined)
+    const original = element.propertyName?.text;
+    // 別名が無い、または元の名前が対象関数でなければ問題なし
+    if (!original || !boundedReadFunctionNames.includes(original)) continue;
+    // 別名を付けているので違反として記録する
+    offenders.push(`${path}: ${original} as ${element.name.text}`);
+  }
+  // 集めた違反を返す
+  return offenders;
+}
+
 function boundedReadAliasImports(): string[] {
   // 違反 (ファイルと別名) を溜める入れ物
   const offenders: string[] = [];
@@ -688,19 +748,21 @@ function boundedReadAliasImports(): string[] {
       const specifier = node.moduleSpecifier;
       if (!specifier || !ts.isStringLiteral(specifier)) return;
       if (!isBoundedReadModuleSpecifier(specifier.text, path)) return;
-      // 名前付きの取り込み / 再公開の要素を取り出す
+      // 名前付きの取り込み / 再公開の要素から、改名しているものを拾う
       const clause = isImport ? node.importClause?.namedBindings : node.exportClause;
-      if (!clause) return;
-      if (!ts.isNamedImports(clause) && !ts.isNamedExports(clause)) return;
-      // 「元の名前 as 別名」になっている要素だけを違反として拾う
-      for (const element of clause.elements) {
-        // 元の名前 (別名を付けていなければ undefined)
-        const original = element.propertyName?.text;
-        // 別名が無い、または元の名前が対象関数でなければ問題なし
-        if (!original || !boundedReadFunctionNames.includes(original)) continue;
-        // 別名を付けているので違反として記録する
-        offenders.push(`${path}: ${original} as ${element.name.text}`);
-      }
+      offenders.push(...aliasedBoundedReadNames(clause, path));
+    });
+    // **指定子を持たない `export { x as y };` も見る。**
+    // 上のループは `from '...'` がある宣言しか見ないので、
+    // `import { readBodyWithinByteLimit } from './request-body-limit';` と
+    // `export { readBodyWithinByteLimit as readAny };` の 2 文に分けて書かれると素通りしていた
+    // (`export * from` を塞いだのと同じ迂回が、綴りを変えるだけで復活していた)。
+    // 名前を保ったままの再公開は呼び出し検査が引き続き効くので、**改名だけ**を違反にする
+    visitNodes(sourceFile, (node) => {
+      // 再公開でない、または `from '...'` を持つものは上のループの担当
+      if (!ts.isExportDeclaration(node) || node.moduleSpecifier) return;
+      // 改名している要素だけを拾う
+      offenders.push(...aliasedBoundedReadNames(node.exportClause, path));
     });
   }
   // 失敗時のメッセージを安定させるため並べ替えて返す
