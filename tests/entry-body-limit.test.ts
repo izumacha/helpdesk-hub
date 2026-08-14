@@ -11,17 +11,26 @@
 //
 // 何を防ぐか:
 //   (a) `next.config.ts` から設定が消える / 別の値に書き換わる退行。
-//   (b) どこかの経路の上限を引き上げたのに入口の枠が追随していない状態
-//       (導出をやめて直書きに戻した場合に起きる)。
+//   (b) 導出をやめて数値を直書きし、入口の枠が経路の上限に追随しなくなった状態。
 //   (c) 新しい経路の上限を足したのに `ROUTE_MAX_BODY_BYTES` へ登録し忘れた状態
 //       (登録が人手の約束のままだと、静かな切り詰めがそのまま再発する)。
+//   (d) `entry-body-limit.ts` の連鎖に `@/` エイリアスが混じり、`npm run build` だけが
+//       落ちる状態 (typecheck とユニットテストは通ってしまう)。
+//
+// **ソースの走査は TypeScript のパーサで行う。** 以前は正規表現と自前の 1 文字走査で
+// コメント除去・引数の切り出しをしていたが、文字列リテラル中の `//` や正規表現リテラル中の
+// `/*` を取り違えて**検査対象が黙って消える**穴が繰り返し見つかった (見逃す方向の失敗なので
+// 気付けない)。リポジトリは既に typescript に依存しているので、構文木から
+// 「export された定数」「呼び出しの第 2 引数」を正確に取り出す。
 
 // Vitest の DSL
-import { describe, expect, it } from 'vitest';
+import { beforeAll, describe, expect, it } from 'vitest';
 // ソースを走査して「上限の定義漏れ」を拾うため (Node 標準の同期 API で十分)
 import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
-// 入口の枠と、Next.js の既定値 (設定しないとどうなるかを示すための参照値)
+// 構文木でソースを読むためのコンパイラ API (自前の字句解析をしないため)
+import ts from 'typescript';
+// 入口の枠と、その導出材料 (テスト側に書き写すと古びるので導出元から受け取る)
 import {
   ENTRY_MAX_BODY_BYTES,
   ENTRY_OVER_LIMIT_MARGIN_BYTES,
@@ -31,165 +40,31 @@ import {
 } from '@/lib/entry-body-limit';
 // 実際に Next.js へ渡る設定オブジェクト (文字列一致ではなく値そのものを見る)
 import nextConfig from '../next.config';
+
 // リポジトリのルート (このテストファイルは <root>/tests/ にあるので 1 つ上)
 const REPO_ROOT = join(__dirname, '..');
 // 走査対象のソースディレクトリ
 const SRC_DIR = join(REPO_ROOT, 'src');
 // 導出元 (この一覧に登録されていない上限を落としたい)
 const ENTRY_MODULE_PATH = join(SRC_DIR, 'lib', 'entry-body-limit.ts');
-// Next.js 自身の手順で読み込めるか試す設定ファイル
-const NEXT_CONFIG_PATH = join(REPO_ROOT, 'next.config.ts');
 // 上限つき読み取り関数の定義元 (呼び出し側の検査では対象外にする)
 const BOUNDED_READ_MODULE_PATH = join(SRC_DIR, 'lib', 'request-body-limit.ts');
+// Next.js 自身の手順で読み込めるか試す設定ファイル
+const NEXT_CONFIG_PATH = join(REPO_ROOT, 'next.config.ts');
+// 導出元が持つ登録一覧の変数名 (構文木から中身を取り出すときの目印)
+const REGISTRY_VARIABLE_NAME = 'ROUTE_MAX_BODY_BYTES';
 // 経路上限の命名規約。この名前で export されたものを「経路の上限」とみなす。
-// **`*_MAX_BODY_BYTES` という命名に乗っていることが検出の前提**で、`MAX_UPLOAD_BYTES` のように
-// 規約から外れた名前は拾えない (拾えないと入口の枠が追随せず、静かな切り詰めが戻る)。
-// 新しい経路上限はこの命名に揃えること。
-const ROUTE_LIMIT_DECLARATION_PATTERN = /^export const ([A-Z0-9_]*_MAX_BODY_BYTES)\b/gm;
-// 宣言と分けて公開する形 (`export { FOO_MAX_BODY_BYTES }` / バレル経由の再 export) も拾う。
-// 宣言だけを見ていると、この形で足された上限が検出網を素通りする
-const ROUTE_LIMIT_EXPORT_BLOCK_PATTERN = /export\s*\{([^}]*)\}/g;
-// export ブロックの中に並ぶ名前のうち、経路上限の命名に合うもの
-const ROUTE_LIMIT_NAME_PATTERN = /\b([A-Z0-9_]*_MAX_BODY_BYTES)\b/g;
-
-/**
- * コメントを取り除いたソースを返す (中身は同じ長さの空白に置き換える)。
- *
- * **本リポジトリではコメントを外さないと誤検知する。** CLAUDE.md §5 が 1 行ごとの日本語
- * コメントを求めているため、`readFormWithinByteLimit()` のような字面が解説文に出てくるのは
- * 普通のこと (実際 src/ 配下に 7 箇所ある)。それを呼び出しとして拾うと、引数が無いので
- * 「解析できなかった」= 違反として報告され、**コメントを書いただけでテストが落ちる**。
- *
- * **正規表現ではなく 1 文字ずつ状態を持って走査する。** 単純な正規表現だと
- * `'http://localhost:3000'` の `//` をコメント開始と誤認して行末までを消してしまい、
- * 同じ行にある宣言や呼び出しごと検出網から落ちる (実際に `app-url.ts` と `saml.ts` の
- * 2 箇所が壊れていた)。文字列・テンプレートリテラルの中は消さないようにする。
- * 長さを保つために空白へ置き換えるのは、元のソースと位置がずれないようにするため。
- *
- * 正規表現リテラル (`/.../`) までは区別しない。ただし `/*` を見つけたときは**閉じ記号が
- * 存在する場合だけ**コメントとして扱う — そうしないと `/[/*]+/` のような文字クラスを
- * コメント開始と誤認し、ファイル末尾まで塗り潰して以降の検出を黙って落としてしまう。
- * 閉じ記号がある形で誤認した場合は、カッコの対応が崩れて「解析できない」= 失敗側に倒れる。
- */
-function stripComments(source: string): string {
-  // 出力を 1 文字ずつ組み立てる入れ物
-  const out: string[] = [];
-  // 今どの構文の中にいるか
-  let state: 'code' | 'line-comment' | 'block-comment' | 'single' | 'double' | 'template' = 'code';
-  // 文字列の中でバックスラッシュ直後かどうか (エスケープされた引用符で抜けないため)
-  let escaped = false;
-  // 先頭から 1 文字ずつ見る
-  for (let i = 0; i < source.length; i++) {
-    // 今の 1 文字と次の 1 文字 (2 文字の記号を判定するため)
-    const char = source[i];
-    const next = source[i + 1] ?? '';
-    // コメントの中にいるなら、改行と閉じ記号だけを見て空白を書く
-    if (state === 'line-comment') {
-      // 改行でコメントは終わり (改行自体は残す)
-      if (char === '\n') {
-        state = 'code';
-        out.push(char);
-      } else out.push(' ');
-      continue;
-    }
-    if (state === 'block-comment') {
-      // `*/` で終わり。2 文字とも空白にするため i を 1 つ進める
-      if (char === '*' && next === '/') {
-        state = 'code';
-        out.push('  ');
-        i++;
-      } else out.push(char === '\n' ? char : ' ');
-      continue;
-    }
-    // 文字列・テンプレートの中にいるなら、そのまま書き写して閉じ記号だけ見る
-    if (state === 'single' || state === 'double' || state === 'template') {
-      // 直前がバックスラッシュならエスケープなので閉じ判定をしない
-      if (escaped) escaped = false;
-      else if (char === '\\') escaped = true;
-      else if (
-        (state === 'single' && char === "'") ||
-        (state === 'double' && char === '"') ||
-        (state === 'template' && char === '`')
-      ) {
-        state = 'code';
-      }
-      out.push(char);
-      continue;
-    }
-    // ここから下はコード部分。コメント・文字列の開始を見る
-    if (char === '/' && next === '/') {
-      state = 'line-comment';
-      out.push('  ');
-      i++;
-      continue;
-    }
-    if (char === '/' && next === '*') {
-      // **閉じ記号が無いなら、ブロックコメントではないとみなす。** 正規表現リテラルの
-      // 文字クラス (`/[/*]+/` など) にも `/` `*` の並びは現れる。これをコメント開始と
-      // 誤認すると、閉じ記号が見つからないままファイル末尾まで空白で塗り潰され、
-      // **以降の宣言も呼び出しも検出網から黙って消える** (実際にその形で退行を作れた)。
-      // 見逃しは最も避けたい失敗なので、閉じ記号の有無で先に切り分ける
-      if (source.indexOf('*/', i + 2) === -1) {
-        out.push(char);
-        continue;
-      }
-      state = 'block-comment';
-      out.push('  ');
-      i++;
-      continue;
-    }
-    if (char === "'") state = 'single';
-    else if (char === '"') state = 'double';
-    else if (char === '`') state = 'template';
-    // コードはそのまま書き写す
-    out.push(char);
-  }
-  // 組み立てた文字列を返す
-  return out.join('');
-}
-
-/**
- * 1 ファイルのソースから、経路上限として公開されている定数名をすべて拾う。
- *
- * 宣言 (`export const X = ...`) と、宣言と分けた公開 (`export { X }`) の 2 形式を見る。
- * 同じ名前が両方で出てくることがあるので呼び出し側で重複を許す前提にしてある。
- */
-function exportedRouteLimitNames(rawSource: string): string[] {
-  // 解説コメントに書かれた同じ字面を宣言・公開と取り違えないよう、先にコメントを落とす
-  // (これを怠ると、コメント 1 行で未登録の上限が「登録済み」に化けたり、逆にコメントを
-  //  書いただけでテストが落ちたりする。どちらも実際に起きることを確認済み)
-  const source = stripComments(rawSource);
-  // 宣言形式で公開されている名前
-  const declared = [...source.matchAll(ROUTE_LIMIT_DECLARATION_PATTERN)].map((m) => m[1]);
-  // export ブロック形式で公開されている名前 (ブロックの中身だけを対象にする)
-  const reExported = [...source.matchAll(ROUTE_LIMIT_EXPORT_BLOCK_PATTERN)].flatMap((block) =>
-    [...block[1].matchAll(ROUTE_LIMIT_NAME_PATTERN)].map((m) => m[1]),
-  );
-  // 両方をまとめて返す
-  return [...declared, ...reExported];
-}
-// 導出元の一覧 (`const ROUTE_MAX_BODY_BYTES = [ ... ] as const;`) を切り出すためのパターン
-const REGISTRY_BLOCK_PATTERN = /const ROUTE_MAX_BODY_BYTES = \[([\s\S]*?)\] as const;/;
-// 一覧の中に 1 行ずつ並ぶ定数名 (末尾のカンマまでを 1 要素とみなす)
-const REGISTRY_ENTRY_PATTERN = /^\s*([A-Z0-9_]+),/gm;
-
-/**
- * 導出元の `ROUTE_MAX_BODY_BYTES` に**実際に登録されている**定数名を返す。
- *
- * ソース全体への部分一致ではなく配列の中身だけを見るのが要点。全体一致にすると
- * (a) 既存名の部分文字列 (`EMAIL_MAX_BODY_BYTES` が `INBOUND_EMAIL_MAX_BODY_BYTES` に一致) や
- * (b) コメント中に名前が出てくるだけ、でも「登録済み」と誤判定してしまい、
- * 下の登録漏れ検出がすり抜ける (どちらも実際にすり抜けることを確認済み)。
- */
-function registeredRouteLimitNames(entrySource: string): string[] {
-  // 配列リテラルの中身だけを切り出す
-  const block = entrySource.match(REGISTRY_BLOCK_PATTERN);
-  // 一覧そのものが見つからない = 導出の形が変わったということなので、登録ゼロとして落とす
-  if (!block) return [];
-  // 各行の先頭に並ぶ定数名を拾う
-  return [...block[1].matchAll(REGISTRY_ENTRY_PATTERN)].map((m) => m[1]);
-}
-
+// **命名に乗っていることが検出の前提**で、`MAX_UPLOAD_BYTES` のように外れた名前は拾えない
+// (拾えないと入口の枠が追随せず、静かな切り詰めが戻る)。新しい経路上限はこの命名に揃えること
+const ROUTE_LIMIT_NAME_PATTERN = /^[A-Z0-9_]*_MAX_BODY_BYTES$/;
+// 上限つき読み取り関数の名前 (呼び出しと別名 import の両方で目印にする)
+const BOUNDED_READ_FUNCTION_NAMES = [
+  'readBodyWithinByteLimit',
+  'readFormWithinByteLimit',
+  'readTextWithinByteLimit',
+];
+// 上限つき読み取り関数を提供するモジュールの指定子 (別名 import を探すときの目印)
+const BOUNDED_READ_MODULE_SPECIFIER = 'request-body-limit';
 // パス区切り (POSIX/Windows いずれの表記でも同じ判定になるようにする)
 const PATH_SEGMENT_SEPARATORS = ['/', '\\'];
 
@@ -204,171 +79,142 @@ function isGeneratedPath(relativePath: string): boolean {
   return PATH_SEGMENT_SEPARATORS.some((sep) => relativePath.startsWith(`generated${sep}`));
 }
 
+// 走査したソースファイルのパスと構文木。**1 回だけ読んで全テストで使い回す**
+// (テストごとに読み直すと同じ I/O と解析を 3 倍行ううえ、走査中にファイルが書き換わると
+//  テストごとに見ている対象がずれる)
+let parsedSources: { path: string; sourceFile: ts.SourceFile }[] = [];
+
 /**
- * 走査対象のソースファイル (`src/` 配下の .ts / .tsx。生成物は除く) を絶対パスで返す。
+ * 1 ファイルを読み込んで構文木にする。
+ *
+ * 親ノードへの参照は使わないので `setParentNodes` は false にしてある (その分だけ軽い)。
+ */
+function parseFile(path: string): ts.SourceFile {
+  // 拡張子に合わせた方言 (.tsx は JSX を含む) で解析する
+  return ts.createSourceFile(
+    path,
+    readFileSync(path, 'utf8'),
+    ts.ScriptTarget.Latest,
+    false,
+    path.endsWith('.tsx') ? ts.ScriptKind.TSX : ts.ScriptKind.TS,
+  );
+}
+
+/**
+ * `src/` 配下の .ts / .tsx を読み込み、構文木にして返す。
  *
  * `.tsx` も見るのは、上限がコンポーネント側 (フォームの事前検査など) に置かれても
  * 検出網から外れないようにするため。
  */
-function sourceFiles(): string[] {
-  // src/ 配下を再帰的にたどり、対象拡張子だけを絶対パスにして返す
-  return readdirSync(SRC_DIR, { recursive: true, encoding: 'utf8' })
+function parseSourceFiles(): { path: string; sourceFile: ts.SourceFile }[] {
+  // src/ 配下を再帰的にたどり、対象拡張子だけを絶対パスにする (生成物は対象外)
+  const files = readdirSync(SRC_DIR, { recursive: true, encoding: 'utf8' })
     .filter((rel) => (rel.endsWith('.ts') || rel.endsWith('.tsx')) && !isGeneratedPath(rel))
     .map((rel) => join(SRC_DIR, rel));
+  // 1 ファイルずつ構文木にして返す
+  return files.map((path) => ({ path, sourceFile: parseFile(path) }));
 }
 
-// 上限つき読み取りの呼び出し位置を見つけるためのパターン (引数の切り出しは下の関数が行う)
-const BOUNDED_READ_CALL_PATTERN = /read(?:Body|Form|Text)WithinByteLimit\(/g;
-// 解析できなかった呼び出しに付ける印。**規約違反と同じ扱いで報告する** (§9 fail-closed:
-// 読めなかったものを「問題なし」に倒すと、検出網に穴が開いたことに気付けない)
-const UNPARSABLE_CALL_MARKER = '<引数を解析できませんでした>';
+/**
+ * 構文木を深さ優先でたどり、各ノードを訪問する。
+ *
+ * `ts.forEachChild` は子ノードだけを渡すので、入れ子の奥まで見るには自前で再帰する。
+ */
+function visitNodes(node: ts.Node, visit: (node: ts.Node) => void): void {
+  // 今のノードを訪問する
+  visit(node);
+  // 子ノードへ降りる
+  ts.forEachChild(node, (child) => visitNodes(child, visit));
+}
 
 /**
- * 呼び出しの第 2 引数 (maxBytes) として書かれている式を、そのままの文字列で返す。
+ * 1 ファイルから、経路上限として **export されている** 定数名をすべて拾う。
  *
- * 正規表現で引数を切り出すのはやめて、カッコの対応を数えて切り出す。正規表現だと
- * 第 1 引数の形に依存してしまい、`readBodyWithinByteLimit(req.clone(), 200 * 1024 * 1024)` の
- * ように**カッコを含む式**が来た瞬間に呼び出しごとマッチしなくなる = 検出網から丸ごと消える
- * (実際にこの形ですり抜けることを確認済み)。
- *
- * 文字列リテラルやコメントの中のカッコまでは区別しないが、その場合は対応が崩れて
- * 「解析できなかった」側に倒れるので、見逃しではなく失敗として表に出る。
+ * 宣言形式 (`export const X = ...`) と、宣言と分けた公開 (`export { X }` /
+ * `export { X } from '...'`) の両方を見る。後者を見ないと、バレル経由で足された上限が
+ * 検出網を素通りする。
  */
-function boundedReadMaxBytesArguments(rawSource: string): string[] {
-  // 解説コメントに書かれた同じ字面を呼び出しと取り違えないよう、先にコメントを落とす
-  const source = stripComments(rawSource);
-  // 見つけた第 2 引数の式を溜める入れ物
-  const args: string[] = [];
-  // 呼び出しの開始位置を順に見ていく
-  for (const match of source.matchAll(BOUNDED_READ_CALL_PATTERN)) {
-    // 開きカッコの位置 (マッチの末尾が `(` なので 1 文字戻る)
-    const openIndex = (match.index ?? 0) + match[0].length - 1;
-    // カッコの深さ (開きカッコで +1、閉じカッコで -1)
-    let depth = 0;
-    // 引数の区切りになる「深さ 1 のカンマ」の位置
-    const separators: number[] = [];
-    // 呼び出しを閉じるカッコの位置 (見つからなければ -1 のまま)
-    let closeIndex = -1;
-    // 開きカッコから順に 1 文字ずつ見て、対応する閉じカッコを探す
-    for (let i = openIndex; i < source.length; i++) {
-      // 今見ている 1 文字
-      const char = source[i];
-      // 開きカッコ類なら深さを 1 つ増やす
-      if (char === '(' || char === '[' || char === '{') depth++;
-      // 閉じカッコ類なら深さを 1 つ減らし、0 に戻ったらそこが呼び出しの終わり
-      else if (char === ')' || char === ']' || char === '}') {
-        depth--;
-        if (depth === 0) {
-          closeIndex = i;
-          break;
-        }
+function exportedRouteLimitNames(sourceFile: ts.SourceFile): string[] {
+  // 見つけた定数名を溜める入れ物
+  const names: string[] = [];
+  // 構文木をたどって export を探す
+  visitNodes(sourceFile, (node) => {
+    // `export const X = ...` の形
+    if (ts.isVariableStatement(node)) {
+      // export 修飾子が付いていなければ対象外 (公開されていない定数はここでは見ない)
+      const isExported = node.modifiers?.some((m) => m.kind === ts.SyntaxKind.ExportKeyword);
+      // 付いていなければ何もしない
+      if (!isExported) return;
+      // 宣言された名前を順に見る
+      for (const declaration of node.declarationList.declarations) {
+        // 名前が識別子で、命名規約に合えば拾う
+        const name = declaration.name;
+        if (ts.isIdentifier(name) && ROUTE_LIMIT_NAME_PATTERN.test(name.text))
+          names.push(name.text);
       }
-      // 深さ 1 のカンマだけが引数の区切り (入れ子の中のカンマは数えない)
-      else if (char === ',' && depth === 1) separators.push(i);
+      return;
     }
-    // 閉じカッコが見つからない / 引数が 1 つしかない場合は解析できなかったものとして報告する
-    if (closeIndex === -1 || separators.length === 0) {
-      args.push(UNPARSABLE_CALL_MARKER);
-      continue;
-    }
-    // 第 2 引数は「1 つ目のカンマの次」から「2 つ目のカンマ (無ければ閉じカッコ)」まで
-    const end = separators.length > 1 ? separators[1] : closeIndex;
-    // 前後の空白・改行を落として式そのものを取り出す
-    args.push(source.slice(separators[0] + 1, end).trim());
-  }
-  // 見つかった式をそのまま返す
-  return args;
-}
-
-/**
- * `readBodyWithinByteLimit` 系へ、**導出元に登録済みの定数以外**を上限として渡している
- * 呼び出しを返す (空なら全呼び出しが登録済みの定数を使っている)。
- *
- * 登録漏れ検出 (下) は export された定数しか見られないため、
- * (a) `readFormWithinByteLimit(req, 100 * 1024 * 1024)` のような数値リテラル直渡し、
- * (b) ルート内に置いた **export しないローカル定数** (命名規約は満たすので名前検査も素通りする)
- * のどちらも、あちらでは捕まらない。**「呼び出しで使ってよいのは登録済みの名前だけ」**という
- * 形にすれば両方まとめて塞げる (どちらも実際にすり抜けることを確認済み)。
- */
-function boundedReadCallsWithUnregisteredLimit(files: string[], registered: string[]): string[] {
-  // 規約から外れた呼び出しの「渡された式」を溜める入れ物
-  const offenders = new Set<string>();
-  // 1 ファイルずつ呼び出しを走査する
-  for (const file of files) {
-    // 読み取り関数そのものを定義しているモジュールは対象外。ここでの `maxBytes` は
-    // 呼び出し元から受け取った引数を転送しているだけで、経路の上限ではない
-    // (関数シグネチャ自体もこのパターンに一致してしまう)
-    if (file === BOUNDED_READ_MODULE_PATH) continue;
-    // ファイルの中身を文字列として読む
-    const source = readFileSync(file, 'utf8');
-    // 呼び出しごとに、上限として渡された式を見る
-    for (const maxBytesArgument of boundedReadMaxBytesArguments(source)) {
-      // 導出元に登録済みの定数名そのものであればよい
-      if (registered.includes(maxBytesArgument)) continue;
-      // それ以外は、ファイル名を添えて報告する
-      offenders.add(`${file}: ${maxBytesArgument}`);
-    }
-  }
-  // 失敗時のメッセージを安定させるため並べ替えて返す
-  return [...offenders].sort();
-}
-
-// 上限つき読み取り関数を別名で import している箇所を見つけるためのパターン
-// (`import { readTextWithinByteLimit as readBounded } from '...'` と、バレル経由の
-// `export { readTextWithinByteLimit as readBounded } from '...'` の両方を見る)
-const BOUNDED_READ_ALIAS_IMPORT_PATTERN =
-  /(?:im|ex)port\s*\{([^}]*)\}\s*from\s*['"][^'"]*request-body-limit['"]/g;
-// import ブロックの中の「元の名前 as 別名」表記
-const IMPORT_RENAME_PATTERN = /\b(read(?:Body|Form|Text)WithinByteLimit)\s+as\s+(\w+)/g;
-
-/**
- * 上限つき読み取り関数を**別名で import している**箇所を返す (空なら違反なし)。
- *
- * 呼び出し検査は関数名そのものを手掛かりにしているため、`readBounded(req, 200 * 1024 * 1024)`
- * のように別名を付けられると呼び出しごと検出網から消える。名前を変えられないようにして
- * 手掛かりを守る (別名が必要になったら、まずこの検査の作り直しから考えること)。
- */
-function boundedReadAliasImports(files: string[]): string[] {
-  // 違反 (ファイルと別名) を溜める入れ物
-  const offenders: string[] = [];
-  // 1 ファイルずつ import 文を見る
-  for (const file of files) {
-    // コメント中の例示を拾わないよう、ここでもコメントを落としてから読む
-    const source = stripComments(readFileSync(file, 'utf8'));
-    // request-body-limit からの import ブロックを順に見る
-    for (const block of source.matchAll(BOUNDED_READ_ALIAS_IMPORT_PATTERN)) {
-      // ブロックの中に「元の名前 as 別名」があれば違反
-      for (const rename of block[1].matchAll(IMPORT_RENAME_PATTERN)) {
-        offenders.push(`${file}: ${rename[1]} as ${rename[2]}`);
+    // `export { X }` / `export { X as Y } from '...'` の形
+    if (ts.isExportDeclaration(node) && node.exportClause && ts.isNamedExports(node.exportClause)) {
+      // 公開される名前 (別名があれば別名) を順に見る
+      for (const element of node.exportClause.elements) {
+        // 命名規約に合えば拾う
+        if (ROUTE_LIMIT_NAME_PATTERN.test(element.name.text)) names.push(element.name.text);
       }
     }
-  }
-  // 失敗時のメッセージを安定させるため並べ替えて返す
-  return offenders.sort();
+  });
+  // 見つかった名前を返す
+  return names;
 }
 
 /**
- * `src/` 配下で `*_MAX_BODY_BYTES` として export されているのに、
- * `ROUTE_MAX_BODY_BYTES` へ登録されていない定数名を返す (空なら登録漏れ無し)。
+ * 導出元の `ROUTE_MAX_BODY_BYTES` に**実際に登録されている**定数名を返す。
  *
- * 値ではなく**名前**を突き合わせるのは、各モジュールを動的 import すると
- * 将来重い依存 (Prisma 等) を持つモジュールが混ざったときにテストごと巻き添えになるため。
+ * 値ではなく名前で突き合わせるのは、各モジュールを動的 import すると将来重い依存
+ * (Prisma 等) を持つモジュールが混ざったときにテストごと巻き添えになるため。
  */
-function unregisteredRouteLimitNames(files: string[]): string[] {
-  // 導出元のソース
-  const entrySource = readFileSync(ENTRY_MODULE_PATH, 'utf8');
-  // 導出元自身が export する枠 (ENTRY_MAX_BODY_BYTES 等) は経路の上限ではないので除外する
-  const ownExports = exportedRouteLimitNames(entrySource);
+function registeredRouteLimitNames(): string[] {
+  // 導出元だけを構文木にする
+  const sourceFile = parseFile(ENTRY_MODULE_PATH);
+  // 登録されている名前を溜める入れ物
+  const names: string[] = [];
+  // 目印の変数宣言を探し、その配列リテラルの要素名を拾う
+  visitNodes(sourceFile, (node) => {
+    // 変数宣言でなければ関係ない
+    if (!ts.isVariableDeclaration(node)) return;
+    // 名前が目印と一致しなければ関係ない
+    if (!ts.isIdentifier(node.name) || node.name.text !== REGISTRY_VARIABLE_NAME) return;
+    // 初期化式が無ければ何も拾えない
+    const initializer = node.initializer;
+    if (!initializer) return;
+    // `as const` が付いていれば中の式を取り出す
+    const array = ts.isAsExpression(initializer) ? initializer.expression : initializer;
+    // 配列リテラルでなければ形が変わったということなので、登録ゼロとして扱う (落ちる方に倒す)
+    if (!ts.isArrayLiteralExpression(array)) return;
+    // 要素として並んでいる識別子を拾う
+    for (const element of array.elements) {
+      if (ts.isIdentifier(element)) names.push(element.text);
+    }
+  });
+  // 見つかった名前を返す
+  return names;
+}
+
+/**
+ * `src/` 配下で経路上限として export されているのに、`ROUTE_MAX_BODY_BYTES` へ
+ * 登録されていない定数名を返す (空なら登録漏れ無し)。
+ */
+function unregisteredRouteLimitNames(): string[] {
   // 一覧に登録済みの定数名 (完全一致で突き合わせる)
-  const registered = registeredRouteLimitNames(entrySource);
+  const registered = registeredRouteLimitNames();
+  // 導出元自身が export する枠 (ENTRY_MAX_BODY_BYTES 等) は経路の上限ではないので除外する
+  const entry = parsedSources.find((source) => source.path === ENTRY_MODULE_PATH);
+  const ownExports = entry ? exportedRouteLimitNames(entry.sourceFile) : [];
   // 登録漏れの定数名を溜める入れ物 (同じ名前を 2 度報告しないよう集合で持つ)
   const missing = new Set<string>();
-  // 1 ファイルずつ、経路上限の export を拾って登録状況を見る
-  for (const file of files) {
-    // ファイルの中身を文字列として読む
-    const source = readFileSync(file, 'utf8');
-    // 命名規約に合う export をすべて拾う (宣言形式・export ブロック形式の両方)
-    for (const name of exportedRouteLimitNames(source)) {
+  // 1 ファイルずつ、公開されている経路上限を見る
+  for (const { sourceFile } of parsedSources) {
+    for (const name of exportedRouteLimitNames(sourceFile)) {
       // 導出元自身の export は経路の上限ではないので飛ばす
       if (ownExports.includes(name)) continue;
       // 一覧に完全一致で載っていなければ登録漏れ
@@ -379,7 +225,93 @@ function unregisteredRouteLimitNames(files: string[]): string[] {
   return [...missing].sort();
 }
 
+/**
+ * 上限つき読み取り関数を**別名で import / re-export している**箇所を返す (空なら違反なし)。
+ *
+ * 呼び出し検査は関数名そのものを手掛かりにしているため、`readBounded(req, ...)` のように
+ * 別名を付けられると呼び出しごと検出網から消える。名前を変えられないようにして手掛かりを守る。
+ */
+function boundedReadAliasImports(): string[] {
+  // 違反 (ファイルと別名) を溜める入れ物
+  const offenders: string[] = [];
+  // 1 ファイルずつ import / export 宣言を見る
+  for (const { path, sourceFile } of parsedSources) {
+    visitNodes(sourceFile, (node) => {
+      // import / export のどちらでもなければ関係ない
+      const isImport = ts.isImportDeclaration(node);
+      const isExport = ts.isExportDeclaration(node);
+      if (!isImport && !isExport) return;
+      // 読み取り関数のモジュールを指していなければ関係ない
+      const specifier = node.moduleSpecifier;
+      if (!specifier || !ts.isStringLiteral(specifier)) return;
+      if (!specifier.text.includes(BOUNDED_READ_MODULE_SPECIFIER)) return;
+      // 名前付きの取り込み / 再公開の要素を取り出す
+      const clause = isImport ? node.importClause?.namedBindings : node.exportClause;
+      if (!clause) return;
+      if (!ts.isNamedImports(clause) && !ts.isNamedExports(clause)) return;
+      // 「元の名前 as 別名」になっている要素だけを違反として拾う
+      for (const element of clause.elements) {
+        // 元の名前 (別名を付けていなければ undefined)
+        const original = element.propertyName?.text;
+        // 別名が無い、または元の名前が対象関数でなければ問題なし
+        if (!original || !BOUNDED_READ_FUNCTION_NAMES.includes(original)) continue;
+        // 別名を付けているので違反として記録する
+        offenders.push(`${path}: ${original} as ${element.name.text}`);
+      }
+    });
+  }
+  // 失敗時のメッセージを安定させるため並べ替えて返す
+  return offenders.sort();
+}
+
+/**
+ * `readBodyWithinByteLimit` 系へ、**導出元に登録済みの定数以外**を上限として渡している
+ * 呼び出しを返す (空なら全呼び出しが登録済みの定数を使っている)。
+ *
+ * 登録漏れ検出は export された定数しか見られないため、
+ * (a) `readFormWithinByteLimit(req, 100 * 1024 * 1024)` のような数値リテラル直渡し、
+ * (b) ルート内に置いた **export しないローカル定数** (命名規約は満たすので名前検査も素通りする)
+ * のどちらも、あちらでは捕まらない。**「呼び出しで使ってよいのは登録済みの名前だけ」**という
+ * 形にすれば両方まとめて塞げる。
+ */
+function boundedReadCallsWithUnregisteredLimit(): string[] {
+  // 一覧に登録済みの定数名
+  const registered = registeredRouteLimitNames();
+  // 違反 (ファイルと渡された式) を溜める入れ物
+  const offenders = new Set<string>();
+  // 1 ファイルずつ呼び出しを見る
+  for (const { path, sourceFile } of parsedSources) {
+    // 読み取り関数そのものを定義しているモジュールは対象外。ここでの `maxBytes` は
+    // 呼び出し元から受け取った引数を転送しているだけで、経路の上限ではない
+    if (path === BOUNDED_READ_MODULE_PATH) continue;
+    visitNodes(sourceFile, (node) => {
+      // 呼び出し式でなければ関係ない
+      if (!ts.isCallExpression(node)) return;
+      // 呼び出している名前が対象関数でなければ関係ない
+      const callee = node.expression;
+      if (!ts.isIdentifier(callee) || !BOUNDED_READ_FUNCTION_NAMES.includes(callee.text)) return;
+      // 第 2 引数 (maxBytes) を取り出す。無ければ型エラーになる形だが、念のため違反扱いにする
+      const maxBytesArgument = node.arguments[1];
+      if (!maxBytesArgument) {
+        offenders.add(`${path}: ${callee.text}(...) に上限が渡されていません`);
+        return;
+      }
+      // 識別子で、かつ登録済みの名前ならよい
+      if (ts.isIdentifier(maxBytesArgument) && registered.includes(maxBytesArgument.text)) return;
+      // それ以外は、書かれている式をそのまま添えて報告する
+      offenders.add(`${path}: ${maxBytesArgument.getText(sourceFile)}`);
+    });
+  }
+  // 失敗時のメッセージを安定させるため並べ替えて返す
+  return [...offenders].sort();
+}
+
 describe('入口 (proxy) のボディ複製上限', () => {
+  // ソースの読み込みと構文解析は 1 回だけ行い、全テストで同じ対象を見る
+  beforeAll(() => {
+    parsedSources = parseSourceFiles();
+  });
+
   it('入口の枠が「経路別上限の最大値 + 余白」ちょうどで導出されている', () => {
     // 経路別上限の最大値 (導出元が公開している一覧から計算する)
     const largestRouteLimit = Math.max(...ROUTE_MAX_BODY_BYTES);
@@ -395,8 +327,9 @@ describe('入口 (proxy) のボディ複製上限', () => {
 
   it('余白が、超過を観測できる最小サイズを下回っていない', () => {
     // 余白が小さすぎると、入口が捨てるチャンクの分だけルートが超過を観測できなくなり、
-    // chunked 転送の超過が 413 ではなく 400 に化ける。値そのものは上のケースが固定するので、
-    // ここは「その値が満たすべき下限」を独立に押さえる
+    // chunked 転送の超過が 413 ではなく 400 に化ける。**固定するのは下限だけ**で、
+    // 実際の値 (1MB) は「将来 highWaterMark が変わっても効く余裕」として厚めに取ってある
+    // — リテラルまで固定すると、余裕を見直すだけで落ちる単なる変更検知になる
     expect(ENTRY_OVER_LIMIT_MARGIN_BYTES).toBeGreaterThanOrEqual(ENTRY_OVER_LIMIT_MARGIN_MIN_BYTES);
   });
 
@@ -410,12 +343,6 @@ describe('入口 (proxy) のボディ複製上限', () => {
   it('next.config.ts が入口の枠をそのまま Next.js へ渡している', () => {
     // 設定漏れ・書き換えを検出する。文字列一致ではなく、実際に export される値を見る
     expect(nextConfig.experimental?.proxyClientMaxBodySize).toBe(ENTRY_MAX_BODY_BYTES);
-  });
-
-  it('src/ 配下の経路上限がすべて ROUTE_MAX_BODY_BYTES に登録されている', () => {
-    // 導出元の一覧に載っていない上限があると、その経路だけ入口で切り詰められる。
-    // 「足したら登録する」を人手の約束にせず、ここで機械的に落とす
-    expect(unregisteredRouteLimitNames(sourceFiles())).toEqual([]);
   });
 
   it('Next.js 自身の手順で next.config.ts を読み込める', async () => {
@@ -433,16 +360,21 @@ describe('入口 (proxy) のボディ複製上限', () => {
     expect(loaded.default?.experimental?.proxyClientMaxBodySize).toBe(ENTRY_MAX_BODY_BYTES);
   });
 
+  it('src/ 配下の経路上限がすべて ROUTE_MAX_BODY_BYTES に登録されている', () => {
+    // 導出元の一覧に載っていない上限があると、その経路だけ入口で切り詰められる。
+    // 「足したら登録する」を人手の約束にせず、ここで機械的に落とす
+    expect(unregisteredRouteLimitNames()).toEqual([]);
+  });
+
   it('上限つき読み取り関数が別名で import されていない', () => {
     // 別名を付けられると呼び出し検査 (関数名が手掛かり) が丸ごと素通りする
-    expect(boundedReadAliasImports(sourceFiles())).toEqual([]);
+    expect(boundedReadAliasImports()).toEqual([]);
   });
 
   it('上限つき読み取りの呼び出しが登録済みの定数だけを上限に使っている', () => {
     // 数値リテラルの直渡しや、export しないローカル定数を上限にすると、上の登録漏れ検出
     // (export された名前が手掛かり) に引っかからず、その経路だけ入口の枠が追随しないまま
     // 静かに切り詰められる。「使ってよいのは登録済みの名前だけ」の形にして両方を塞ぐ
-    const registered = registeredRouteLimitNames(readFileSync(ENTRY_MODULE_PATH, 'utf8'));
-    expect(boundedReadCallsWithUnregisteredLimit(sourceFiles(), registered)).toEqual([]);
+    expect(boundedReadCallsWithUnregisteredLimit()).toEqual([]);
   });
 });

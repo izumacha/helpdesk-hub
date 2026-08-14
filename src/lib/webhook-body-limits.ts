@@ -5,11 +5,18 @@
 // Next.js の Route Handler は既知のエクスポート名 (GET/POST/runtime 等) しか許さないため、
 // route.ts から定数を export できない。route とテストが同じ定義を参照する (= 片方だけ値を
 // 変えたら気付ける) ようにするには、両者から import できる場所へ出す必要がある。
-// SSO ACS (`SSO_ACS_MAX_BODY_BYTES` in sso-rate-limit.ts) とマジックリンクのコールバック
-// (`MAGIC_LINK_CALLBACK_MAX_BODY_BYTES` in magic-link.ts) は、その経路の他の共有定数と
-// 同居できる置き場が既にあったのでそちらに置いている。ここは「置き場が無かった 3 経路」を
-// まとめる場所で、3 つを並べておくと値の妥当性 (この経路だけ極端に緩くないか) を
-// 見比べて確認できる利点もある。
+// SSO ACS (`SSO_ACS_MAX_BODY_BYTES`) とマジックリンクのコールバック
+// (`MAGIC_LINK_CALLBACK_MAX_BODY_BYTES`) は `auth-body-limits.ts` にある。元はそれぞれの
+// 経路の共有定数と同居させていたが、`entry-body-limit.ts` が入口の枠を導出するために読む
+// ようになり、実行時コードを持つモジュール (`magic-link.ts` など) が `next.config.ts` の
+// 読み込みグラフに入ってしまったため、定数だけのファイルへ分けた (経緯はあちらの冒頭)。
+// **経路上限を新しく足すときも、こうした定数だけのファイルに置くこと。**
+// ここに 3 つを並べておくと、値の妥当性 (この経路だけ極端に緩くないか) を見比べられる。
+//
+// **このファイルは `next.config.ts` の読み込みグラフに入っている。** Next.js の config
+// transpile は next.config.ts 自身の import しか tsconfig の `paths` を書き換えないため、
+// ここへ `@/...` の import を足すと `npm run build` だけが落ちる (typecheck とユニット
+// テストは通ってしまう)。新しい import は相対パスで書くこと。
 //
 // 実際の読み取り (ストリームを上限つきで読み、超えた時点で打ち切る) は
 // `request-body-limit.ts` の `readBodyWithinByteLimit` / `readFormWithinByteLimit` が担う。
