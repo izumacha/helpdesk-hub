@@ -133,7 +133,7 @@ Next.js は proxy（`src/proxy.ts`）を置いているアプリでは、非 GET
 
 - 入口の複製は **proxy の認証判定より前**に走り、ルート側のレート制限・署名検証にはさらに手前で到達するため、アプリ層のゲートでは減らせない。
 - したがって `POST /api/inbound/line`（経路の上限 256KB）や `POST /api/auth/magic-link/callback`（同 64KB）でも、入口では枠いっぱいまで滞留しうる。
-- 加えて、入口の滞留には `request-body-limit.ts` の無通信（10 秒）／全体（120 秒）の期限が効かない（ルートは本文が届き切ってから起動するため）。ここを縛るのは入口の枠と Node の既定 `requestTimeout`（300 秒）だけ。
+- 加えて、入口の滞留には `request-body-limit.ts` の無通信（10 秒）／全体（120 秒）の期限が効かない（ルートは本文が届き切ってから起動するため）。**アプリ側に残る天井は Node の既定 `requestTimeout`（300 秒）だけ**なので、だらだら送りを短い時間で切るのも前段の責務になる（下の設定例の `client_body_timeout` / `client_header_timeout`）。
 
 ### 本番デプロイの要件
 
@@ -161,6 +161,13 @@ nginx の例:
 # なり、上の理由でアプリ側の 413 とログが失われる — しかも SSO ACS は未認証で到達できる、
 # 記録が最も要る側の経路である。
 client_max_body_size 2m;  # 上限 1MB の経路（SSO ACS / Stripe）+ 1MB
+
+# **サイズだけでなく時間も前段で縛る。** 上記のとおりアプリ側の無通信（10 秒）／全体（120〜240 秒）の
+# 期限は、入口のバッファを読む区間しか測っておらず、送信そのものには掛かっていない。前段を
+# 置かない場合の天井は Node の既定 `requestTimeout`（300 秒）だけになり、1 バイトずつだらだら
+# 送る接続を 5 分間保持できてしまう（slow loris）。ここを絞るのも前段の責務。
+client_body_timeout 30s;    # 本文のチャンク間隔がこれを超えたら切る
+client_header_timeout 15s;  # ヘッダ送出が遅い接続を早めに切る
 
 location / {
     include proxy_params;
