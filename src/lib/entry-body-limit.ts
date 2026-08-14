@@ -77,12 +77,14 @@
 // **next.config.ts 自身の import だけ**で、しかも書き換え先が baseUrl 基準の `./src/lib/x` に
 // なる。そこから先のモジュールが `@/...` を持っていると、書き換えられないまま Node の
 // 解決に回って `Cannot find module` でビルドが落ちる (相対パスならそのまま解決される)。
-// **連鎖に入れるのは「定数だけのファイル」に限る。** 実行時コードを持つモジュールを
+// **連鎖はできるだけ「定数だけのファイル」に留める。** 実行時コードを持つモジュールを
 // 引き込むと、そちらにまで「相対 import のままにすること」という制約が伝播してしまう
 // (元は `magic-link.ts` / `sso-rate-limit.ts` / `html-escape.ts` がそうなっていたので、
 // 認証系 2 経路の上限を `auth-body-limits.ts` へ切り出して連鎖から外した)。
-// 現在の連鎖は `webhook-body-limits.ts` / `auth-body-limits.ts` /
-// `ticket-body-limits.ts` → `domain/attachment` の 4 ファイルで、いずれも定数だけを持つ。
+// 現在の連鎖は `webhook-body-limits.ts` / `auth-body-limits.ts` / `ticket-body-limits.ts` →
+// `domain/attachment` の 4 ファイル。**このうち `domain/attachment` だけは例外で、
+// 添付の検証関数も持つ実行時モジュール**である (上限がドメイン定数から導出されるため
+// 切り離せない)。あちらにも「config の読み込みグラフに入っている」旨を注記してある。
 // **経路上限の import をここへ足すときは、その先の連鎖まで相対パスに揃えること。**
 // 揃えないと `npm run build` が落ちる (typecheck とユニットテストは通るので気付きにくい)。
 // この不変条件は `tests/entry-body-limit.test.ts` が Next.js 自身の transpile 手順で

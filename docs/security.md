@@ -119,11 +119,11 @@ flowchart LR
 
 ボディのサイズ上限は 3 つの層で決まる。**それぞれ守れる範囲が違うので、1 層だけでは足りない。**
 
-| 層 | 決める場所 | 守れる範囲 |
-|---|---|---|
-| 入口（proxy のボディ複製） | `next.config.ts` の `experimental.proxyClientMaxBodySize`（値の導出は `src/lib/entry-body-limit.ts`） | アプリ全体で 1 つ。**経路ごとには絞れない** |
-| 経路 | `readBodyWithinByteLimit` 系に渡す `maxBytes`（`webhook-body-limits.ts` / `ticket-body-limits.ts` / `sso-rate-limit.ts` / `magic-link.ts`） | 経路ごとに厳密。超過は 413 |
-| リバースプロキシ | アプリの手前（nginx なら `location` ごとの `client_max_body_size`） | 経路ごと。**アプリのプロセスに届く前**に切れる |
+| 層                         | 決める場所                                                                                                                  | 守れる範囲                                     |
+| -------------------------- | --------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------- |
+| 入口（proxy のボディ複製） | `next.config.ts` の `experimental.proxyClientMaxBodySize`（値の導出は `src/lib/entry-body-limit.ts`）                       | アプリ全体で 1 つ。**経路ごとには絞れない**    |
+| 経路                       | `readBodyWithinByteLimit` 系に渡す `maxBytes`（`webhook-body-limits.ts` / `ticket-body-limits.ts` / `auth-body-limits.ts`） | 経路ごとに厳密。超過は 413                     |
+| リバースプロキシ           | アプリの手前（nginx なら `location` ごとの `client_max_body_size`）                                                         | 経路ごと。**アプリのプロセスに届く前**に切れる |
 
 ### 入口の枠を経路の最大値に合わせている理由と、その代償
 

@@ -1,5 +1,17 @@
 // 添付ファイルに関する純ドメイン定数とドメイン型をまとめたモジュール。
 // UI 層・Server Action 層・データ層から共有して同じ閾値・メッセージを使うための単一の真実源。
+//
+// **注意 — このファイルは `next.config.ts` の読み込みグラフに入っている。**
+// `ticket-body-limits.ts` が下の `MAX_ATTACHMENTS_PER_UPLOAD` / `MAX_ATTACHMENT_SIZE_BYTES` から
+// 添付付きアップロードの枠を導出し、それを `entry-body-limit.ts` 経由で `next.config.ts` が読む。
+// Next.js は next.config.ts を独自に transpile して `require` し、その際 tsconfig の `paths` を
+// 書き換えるのは next.config.ts 自身の import だけなので、**この連鎖の中に `@/...` があると
+// `npm run build` が落ちうる** (typecheck とユニットテストは通ってしまう)。
+// 実測では `src/lib/` 側の 2 本 (`ticket-body-limits.ts` / `webhook-body-limits.ts`) に `@/` を
+// 混ぜると config のロードが失敗する。このファイルに足した場合は現行の Next.js では落ちなかったが、
+// **解決のされ方に依存する挙動なので当てにしない** — 新しい import は相対パスで書くこと。
+// 正否の判定は `tests/entry-body-limit.test.ts` が Next.js 自身の手順で config を読み込んで行う
+// (経緯は `src/lib/entry-body-limit.ts`)。
 
 // 添付として受け付ける MIME 種別 (画像のみ。PDF などは現段階では対象外)
 // docs/smb-dx-pivot-plan.md Phase 1 で「スマホで撮った写真を添付」がスコープのため画像に限定する

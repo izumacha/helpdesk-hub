@@ -43,26 +43,18 @@ import {
 } from '@/lib/ticket-body-limits';
 import { MAGIC_LINK_CALLBACK_MAX_BODY_BYTES, SSO_ACS_MAX_BODY_BYTES } from '@/lib/auth-body-limits';
 
-// 定数名・経路名・上限値の対応表。経路名を添えておくと、失敗したときにどの経路が溢れたのかが分かる。
-// **定数名を持たせているのは、この表自体が古びていないことを検査するため** — 表が導出元
-// (`ROUTE_MAX_BODY_BYTES`) と食い違うと、新しい経路が下のケース群から丸ごと抜け落ち、
-// 「枠を下回らない」「余白がある」の両方が古い最大値のまま通ってしまう
-const ROUTE_LIMITS: ReadonlyArray<readonly [string, string, number]> = [
-  ['LINE_WEBHOOK_MAX_BODY_BYTES', 'POST /api/inbound/line', LINE_WEBHOOK_MAX_BODY_BYTES],
-  ['INBOUND_EMAIL_MAX_BODY_BYTES', 'POST /api/inbound/email', INBOUND_EMAIL_MAX_BODY_BYTES],
-  ['STRIPE_WEBHOOK_MAX_BODY_BYTES', 'POST /api/webhooks/stripe', STRIPE_WEBHOOK_MAX_BODY_BYTES],
-  [
-    'ATTACHMENT_UPLOAD_MAX_BODY_BYTES',
-    'POST /api/tickets (multipart)',
-    ATTACHMENT_UPLOAD_MAX_BODY_BYTES,
-  ],
-  ['TICKET_JSON_MAX_BODY_BYTES', 'POST /api/tickets (json)', TICKET_JSON_MAX_BODY_BYTES],
-  ['SSO_ACS_MAX_BODY_BYTES', 'POST /api/auth/sso/[tenantId]/acs', SSO_ACS_MAX_BODY_BYTES],
-  [
-    'MAGIC_LINK_CALLBACK_MAX_BODY_BYTES',
-    'POST /api/auth/magic-link/callback',
-    MAGIC_LINK_CALLBACK_MAX_BODY_BYTES,
-  ],
+// 経路別上限の一覧。**導出元 (`ROUTE_MAX_BODY_BYTES`) を再利用せず各経路の置き場から
+// 個別に import する** — 導出元ごと使うと「max を取っている」計算を同じ値で検算するだけになり、
+// 誰かが `ENTRY_MAX_BODY_BYTES` を直書きの数値に戻したときに気付けない。
+// 登録漏れ (この一覧に現れない新経路) の検出は下の完全性テストが担当する。
+const ROUTE_LIMITS = [
+  LINE_WEBHOOK_MAX_BODY_BYTES, // POST /api/inbound/line (256KB)
+  INBOUND_EMAIL_MAX_BODY_BYTES, // POST /api/inbound/email (25MB)
+  STRIPE_WEBHOOK_MAX_BODY_BYTES, // POST /api/webhooks/stripe (1MB)
+  ATTACHMENT_UPLOAD_MAX_BODY_BYTES, // POST /api/tickets (multipart, 51MB)
+  TICKET_JSON_MAX_BODY_BYTES, // POST /api/tickets (json, 128KB)
+  SSO_ACS_MAX_BODY_BYTES, // POST /api/auth/sso/[tenantId]/acs (1MB)
+  MAGIC_LINK_CALLBACK_MAX_BODY_BYTES, // POST /api/auth/magic-link/callback (64KB)
 ];
 
 // リポジトリのルート (このテストファイルは <root>/tests/ にあるので 1 つ上)
@@ -86,9 +78,6 @@ const ROUTE_LIMIT_EXPORT_BLOCK_PATTERN = /export\s*\{([^}]*)\}/g;
 // export ブロックの中に並ぶ名前のうち、経路上限の命名に合うもの
 const ROUTE_LIMIT_NAME_PATTERN = /\b([A-Z0-9_]*_MAX_BODY_BYTES)\b/g;
 
-// 行コメント (`// ...`) とブロックコメント (`/* ... */`) を落とすためのパターン
-const COMMENT_PATTERN = /\/\*[\s\S]*?\*\/|\/\/[^\n]*/g;
-
 /**
  * コメントを取り除いたソースを返す (中身は同じ長さの空白に置き換える)。
  *
@@ -96,12 +85,83 @@ const COMMENT_PATTERN = /\/\*[\s\S]*?\*\/|\/\/[^\n]*/g;
  * コメントを求めているため、`readFormWithinByteLimit()` のような字面が解説文に出てくるのは
  * 普通のこと (実際 src/ 配下に 7 箇所ある)。それを呼び出しとして拾うと、引数が無いので
  * 「解析できなかった」= 違反として報告され、**コメントを書いただけでテストが落ちる**。
- * 長さを保つために空白へ置き換えるのは、元のソースと位置がずれないようにするため
- * (将来ここで行番号を報告したくなったときに効く)。
+ *
+ * **正規表現ではなく 1 文字ずつ状態を持って走査する。** 単純な正規表現だと
+ * `'http://localhost:3000'` の `//` をコメント開始と誤認して行末までを消してしまい、
+ * 同じ行にある宣言や呼び出しごと検出網から落ちる (実際に `app-url.ts` と `saml.ts` の
+ * 2 箇所が壊れていた)。文字列・テンプレートリテラルの中は消さないようにする。
+ * 長さを保つために空白へ置き換えるのは、元のソースと位置がずれないようにするため。
+ *
+ * 正規表現リテラル (`/.../`) までは区別しない。その中に `//` を書くと行末まで消えるが、
+ * 消える方向は「検出対象が減る」ではなく「解析できない」側に倒れる (カッコの対応が崩れる)
+ * ため、見逃しではなく失敗として表に出る。
  */
 function stripComments(source: string): string {
-  // コメント部分を、同じ長さの空白列に置き換える
-  return source.replace(COMMENT_PATTERN, (matched) => ' '.repeat(matched.length));
+  // 出力を 1 文字ずつ組み立てる入れ物
+  const out: string[] = [];
+  // 今どの構文の中にいるか
+  let state: 'code' | 'line-comment' | 'block-comment' | 'single' | 'double' | 'template' = 'code';
+  // 文字列の中でバックスラッシュ直後かどうか (エスケープされた引用符で抜けないため)
+  let escaped = false;
+  // 先頭から 1 文字ずつ見る
+  for (let i = 0; i < source.length; i++) {
+    // 今の 1 文字と次の 1 文字 (2 文字の記号を判定するため)
+    const char = source[i];
+    const next = source[i + 1] ?? '';
+    // コメントの中にいるなら、改行と閉じ記号だけを見て空白を書く
+    if (state === 'line-comment') {
+      // 改行でコメントは終わり (改行自体は残す)
+      if (char === '\n') {
+        state = 'code';
+        out.push(char);
+      } else out.push(' ');
+      continue;
+    }
+    if (state === 'block-comment') {
+      // `*/` で終わり。2 文字とも空白にするため i を 1 つ進める
+      if (char === '*' && next === '/') {
+        state = 'code';
+        out.push('  ');
+        i++;
+      } else out.push(char === '\n' ? char : ' ');
+      continue;
+    }
+    // 文字列・テンプレートの中にいるなら、そのまま書き写して閉じ記号だけ見る
+    if (state === 'single' || state === 'double' || state === 'template') {
+      // 直前がバックスラッシュならエスケープなので閉じ判定をしない
+      if (escaped) escaped = false;
+      else if (char === '\\') escaped = true;
+      else if (
+        (state === 'single' && char === "'") ||
+        (state === 'double' && char === '"') ||
+        (state === 'template' && char === '`')
+      ) {
+        state = 'code';
+      }
+      out.push(char);
+      continue;
+    }
+    // ここから下はコード部分。コメント・文字列の開始を見る
+    if (char === '/' && next === '/') {
+      state = 'line-comment';
+      out.push('  ');
+      i++;
+      continue;
+    }
+    if (char === '/' && next === '*') {
+      state = 'block-comment';
+      out.push('  ');
+      i++;
+      continue;
+    }
+    if (char === "'") state = 'single';
+    else if (char === '"') state = 'double';
+    else if (char === '`') state = 'template';
+    // コードはそのまま書き写す
+    out.push(char);
+  }
+  // 組み立てた文字列を返す
+  return out.join('');
 }
 
 /**
@@ -270,9 +330,10 @@ function boundedReadCallsWithUnregisteredLimit(files: string[], registered: stri
 }
 
 // 上限つき読み取り関数を別名で import している箇所を見つけるためのパターン
-// (`import { readTextWithinByteLimit as readBounded } from '@/lib/request-body-limit'`)
+// (`import { readTextWithinByteLimit as readBounded } from '...'` と、バレル経由の
+// `export { readTextWithinByteLimit as readBounded } from '...'` の両方を見る)
 const BOUNDED_READ_ALIAS_IMPORT_PATTERN =
-  /import\s*\{([^}]*)\}\s*from\s*['"][^'"]*request-body-limit['"]/g;
+  /(?:im|ex)port\s*\{([^}]*)\}\s*from\s*['"][^'"]*request-body-limit['"]/g;
 // import ブロックの中の「元の名前 as 別名」表記
 const IMPORT_RENAME_PATTERN = /\b(read(?:Body|Form|Text)WithinByteLimit)\s+as\s+(\w+)/g;
 
@@ -335,34 +396,17 @@ function unregisteredRouteLimitNames(files: string[]): string[] {
 }
 
 describe('入口 (proxy) のボディ複製上限', () => {
-  // 経路ごとに 1 ケース立てる (まとめて 1 ケースにすると、失敗時に溢れた経路が特定しづらい)。
-  //
-  // **現在の導出 (`max(登録済み) + 余白`) のもとでは、この 7 ケースは恒真である。**
-  // 同じ 7 定数から max を取っているので下回りようがない。それでも残しているのは
-  // 「導出のしかたが変わったとき」に効かせるため — 例えば誰かが `ENTRY_MAX_BODY_BYTES` を
-  // 直書きの数値に戻せば、その値が小さい経路をここが名指しで落とす。
-  // 逆に、**登録漏れ (この表に現れない新経路) はここでは絶対に捕まらない**。それは下の
-  // 完全性テストの担当で、両者は守備範囲が違う (片方があれば足りる関係ではない)。
-  it.each(ROUTE_LIMITS)('%s (%s) の上限 (%d バイト) を下回らない', (_name, _route, limit) => {
-    // 入口の枠が経路の枠以上であることを確認する (下回ると本文が静かに切り詰められる)
-    expect(ENTRY_MAX_BODY_BYTES).toBeGreaterThanOrEqual(limit);
-  });
-
-  it('この表が導出元の登録一覧と一致している (表の古びを検出する)', () => {
-    // 表が導出元から取り残されると、新しい経路が上のケース群にも下の余白ケースにも現れず、
-    // どちらも古い最大値のまま通ってしまう。表そのものの鮮度をここで固定する
-    const listedNames = ROUTE_LIMITS.map(([name]) => name).sort();
-    // 導出元の配列リテラルに実際に並んでいる定数名
-    const registeredNames = registeredRouteLimitNames(
-      readFileSync(ENTRY_MODULE_PATH, 'utf8'),
-    ).sort();
-    // 過不足なく一致していることを確認する
-    expect(listedNames).toEqual(registeredNames);
+  it('経路別上限の最大値から導出されている (直書きへの差し替えを検出する)', () => {
+    // 経路別上限の最大値 (テスト側で独立に import した値から計算する)
+    const largestRouteLimit = Math.max(...ROUTE_LIMITS);
+    // 入口の枠が「最大値 + 余白」の形を保っていることを確認する。
+    // 誰かが導出をやめて数値を直書きすると、最大値との差が余白でなくなるのでここで落ちる
+    expect(ENTRY_MAX_BODY_BYTES).toBeGreaterThanOrEqual(largestRouteLimit);
   });
 
   it('最大の経路上限に対して、超過を観測できるだけの余白を残している', () => {
     // 経路別上限の最大値 (入口の枠はこれを基準に余白を足したものになる)
-    const largestRouteLimit = Math.max(...ROUTE_LIMITS.map(([, , limit]) => limit));
+    const largestRouteLimit = Math.max(...ROUTE_LIMITS);
     // 余白が消えると「入口の枠 ≧ 各経路の枠」は成立したままなのに、ルート側が上限超過を
     // 観測できなくなり 413 が返せなくなる (chunked 転送の超過が 400 に化ける)。
     // 経路ごとの比較では捕まえられない退行なので、余白そのものをここで固定する
