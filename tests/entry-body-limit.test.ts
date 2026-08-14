@@ -136,22 +136,78 @@ function sourceFiles(): string[] {
     .map((rel) => join(SRC_DIR, rel));
 }
 
-// 上限つき読み取りの呼び出しと、その第 2 引数 (maxBytes) を切り出すためのパターン。
-// 第 1 引数 (リクエスト) はカッコ・カンマを含まない識別子なので `[^,()]+` で足り、
-// 改行をまたぐ複数行の呼び出しにもそのまま当たる
-const BOUNDED_READ_CALL_PATTERN =
-  /read(?:Body|Form|Text)WithinByteLimit\(\s*[^,()]+,\s*([^,)\s]+)/g;
+// 上限つき読み取りの呼び出し位置を見つけるためのパターン (引数の切り出しは下の関数が行う)
+const BOUNDED_READ_CALL_PATTERN = /read(?:Body|Form|Text)WithinByteLimit\(/g;
+// 解析できなかった呼び出しに付ける印。**規約違反と同じ扱いで報告する** (§9 fail-closed:
+// 読めなかったものを「問題なし」に倒すと、検出網に穴が開いたことに気付けない)
+const UNPARSABLE_CALL_MARKER = '<引数を解析できませんでした>';
 
 /**
- * `readBodyWithinByteLimit` 系へ、名前付き定数**以外**を上限として渡している呼び出しを返す
- * (空なら全呼び出しが命名規約に乗っている)。
+ * 呼び出しの第 2 引数 (maxBytes) として書かれている式を、そのままの文字列で返す。
  *
- * 下の登録漏れ検出は「`*_MAX_BODY_BYTES` という名前で export されているか」を手掛かりにするので、
- * `readFormWithinByteLimit(req, 100 * 1024 * 1024)` のように**数値リテラルを直接渡された**経路は
- * そもそも検出網に入らない。入らないと入口の枠がその経路に追随せず、本モジュールが潰したはずの
- * 静かな切り詰めがノーチェックで戻る。ここで入口を塞いでおく。
+ * 正規表現で引数を切り出すのはやめて、カッコの対応を数えて切り出す。正規表現だと
+ * 第 1 引数の形に依存してしまい、`readBodyWithinByteLimit(req.clone(), 200 * 1024 * 1024)` の
+ * ように**カッコを含む式**が来た瞬間に呼び出しごとマッチしなくなる = 検出網から丸ごと消える
+ * (実際にこの形ですり抜けることを確認済み)。
+ *
+ * 文字列リテラルやコメントの中のカッコまでは区別しないが、その場合は対応が崩れて
+ * 「解析できなかった」側に倒れるので、見逃しではなく失敗として表に出る。
  */
-function boundedReadCallsWithoutNamedLimit(files: string[]): string[] {
+function boundedReadMaxBytesArguments(source: string): string[] {
+  // 見つけた第 2 引数の式を溜める入れ物
+  const args: string[] = [];
+  // 呼び出しの開始位置を順に見ていく
+  for (const match of source.matchAll(BOUNDED_READ_CALL_PATTERN)) {
+    // 開きカッコの位置 (マッチの末尾が `(` なので 1 文字戻る)
+    const openIndex = (match.index ?? 0) + match[0].length - 1;
+    // カッコの深さ (開きカッコで +1、閉じカッコで -1)
+    let depth = 0;
+    // 引数の区切りになる「深さ 1 のカンマ」の位置
+    const separators: number[] = [];
+    // 呼び出しを閉じるカッコの位置 (見つからなければ -1 のまま)
+    let closeIndex = -1;
+    // 開きカッコから順に 1 文字ずつ見て、対応する閉じカッコを探す
+    for (let i = openIndex; i < source.length; i++) {
+      // 今見ている 1 文字
+      const char = source[i];
+      // 開きカッコ類なら深さを 1 つ増やす
+      if (char === '(' || char === '[' || char === '{') depth++;
+      // 閉じカッコ類なら深さを 1 つ減らし、0 に戻ったらそこが呼び出しの終わり
+      else if (char === ')' || char === ']' || char === '}') {
+        depth--;
+        if (depth === 0) {
+          closeIndex = i;
+          break;
+        }
+      }
+      // 深さ 1 のカンマだけが引数の区切り (入れ子の中のカンマは数えない)
+      else if (char === ',' && depth === 1) separators.push(i);
+    }
+    // 閉じカッコが見つからない / 引数が 1 つしかない場合は解析できなかったものとして報告する
+    if (closeIndex === -1 || separators.length === 0) {
+      args.push(UNPARSABLE_CALL_MARKER);
+      continue;
+    }
+    // 第 2 引数は「1 つ目のカンマの次」から「2 つ目のカンマ (無ければ閉じカッコ)」まで
+    const end = separators.length > 1 ? separators[1] : closeIndex;
+    // 前後の空白・改行を落として式そのものを取り出す
+    args.push(source.slice(separators[0] + 1, end).trim());
+  }
+  // 見つかった式をそのまま返す
+  return args;
+}
+
+/**
+ * `readBodyWithinByteLimit` 系へ、**導出元に登録済みの定数以外**を上限として渡している
+ * 呼び出しを返す (空なら全呼び出しが登録済みの定数を使っている)。
+ *
+ * 登録漏れ検出 (下) は export された定数しか見られないため、
+ * (a) `readFormWithinByteLimit(req, 100 * 1024 * 1024)` のような数値リテラル直渡し、
+ * (b) ルート内に置いた **export しないローカル定数** (命名規約は満たすので名前検査も素通りする)
+ * のどちらも、あちらでは捕まらない。**「呼び出しで使ってよいのは登録済みの名前だけ」**という
+ * 形にすれば両方まとめて塞げる (どちらも実際にすり抜けることを確認済み)。
+ */
+function boundedReadCallsWithUnregisteredLimit(files: string[], registered: string[]): string[] {
   // 規約から外れた呼び出しの「渡された式」を溜める入れ物
   const offenders = new Set<string>();
   // 1 ファイルずつ呼び出しを走査する
@@ -162,12 +218,10 @@ function boundedReadCallsWithoutNamedLimit(files: string[]): string[] {
     if (file === BOUNDED_READ_MODULE_PATH) continue;
     // ファイルの中身を文字列として読む
     const source = readFileSync(file, 'utf8');
-    // 上限つき読み取りの呼び出しをすべて拾う
-    for (const match of source.matchAll(BOUNDED_READ_CALL_PATTERN)) {
-      // 第 2 引数として渡されたトークン
-      const maxBytesArgument = match[1];
-      // 命名規約に乗った定数ならよい
-      if (/^[A-Z0-9_]*_MAX_BODY_BYTES$/.test(maxBytesArgument)) continue;
+    // 呼び出しごとに、上限として渡された式を見る
+    for (const maxBytesArgument of boundedReadMaxBytesArguments(source)) {
+      // 導出元に登録済みの定数名そのものであればよい
+      if (registered.includes(maxBytesArgument)) continue;
       // それ以外は、ファイル名を添えて報告する
       offenders.add(`${file}: ${maxBytesArgument}`);
     }
@@ -263,9 +317,11 @@ describe('入口 (proxy) のボディ複製上限', () => {
     expect(unregisteredRouteLimitNames(sourceFiles())).toEqual([]);
   });
 
-  it('上限つき読み取りの呼び出しが名前付き定数だけを上限に使っている', () => {
-    // 数値リテラルを直接渡されると、上の登録漏れ検出 (名前が手掛かり) に引っかからず、
-    // その経路だけ入口の枠が追随しないまま静かに切り詰められる
-    expect(boundedReadCallsWithoutNamedLimit(sourceFiles())).toEqual([]);
+  it('上限つき読み取りの呼び出しが登録済みの定数だけを上限に使っている', () => {
+    // 数値リテラルの直渡しや、export しないローカル定数を上限にすると、上の登録漏れ検出
+    // (export された名前が手掛かり) に引っかからず、その経路だけ入口の枠が追随しないまま
+    // 静かに切り詰められる。「使ってよいのは登録済みの名前だけ」の形にして両方を塞ぐ
+    const registered = registeredRouteLimitNames(readFileSync(ENTRY_MODULE_PATH, 'utf8'));
+    expect(boundedReadCallsWithUnregisteredLimit(sourceFiles(), registered)).toEqual([]);
   });
 });

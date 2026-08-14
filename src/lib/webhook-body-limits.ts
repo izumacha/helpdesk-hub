@@ -42,6 +42,13 @@ export const INBOUND_EMAIL_MAX_BODY_BYTES = 25 * 1024 * 1024;
 // 一方で「無制限」にはしない (だらだら送りでハンドラを保持され続けるため)。Node の既定
 // requestTimeout が 300 秒で、それを超える値を設定してもサーバー側で先に切られて無意味なので、
 // その内側に収まる 4 分を上限とする。
+//
+// **注意 — proxy がある現状では、この期限は送信時間を覆っていない。** Next.js は
+// `src/proxy.ts` を置いているアプリでは本文を入口で全量バッファし、その完了を待ってから
+// ルートハンドラを起動する (`src/lib/entry-body-limit.ts` の「タイムアウトが効かない」節)。
+// つまりこの 240 秒が測るのは**メモリ上のストリームを読む区間**だけで、上に書いた
+// 「送信途中で打ち切られて 400」を防ぐ役割は実際には Node の `requestTimeout` (300 秒) 側が
+// 担っている。値を見直すときはこの前提で考えること (proxy を外せば元の説明どおりに戻る)。
 export const INBOUND_EMAIL_BODY_TOTAL_TIMEOUT_MS = 240_000;
 
 // Stripe Webhook (`POST /api/webhooks/stripe`) の上限 (1MB)。

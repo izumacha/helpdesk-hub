@@ -69,6 +69,14 @@ export const ATTACHMENT_UPLOAD_MAX_BODY_BYTES =
 // 送り切れる時間の枠は別物で、後者は Node の 300 秒が天井になる点に注意。
 //
 // 一方で「無制限」にはしない (だらだら送りでハンドラを保持され続けるため)。
+//
+// **注意 — proxy がある現状では、この期限は送信時間を覆っていない。** Next.js は
+// `src/proxy.ts` を置いているアプリでは本文を入口で全量バッファし、その完了を待ってから
+// ルートハンドラを起動する (`src/lib/entry-body-limit.ts` の「タイムアウトが効かない」節)。
+// つまりこの 240 秒が測るのは**メモリ上のストリームを読む区間**だけで、上の「上り 1Mbps で
+// 4 分」という見立ては送信区間には掛からない。遅い回線に対する実際の天井は Node の既定
+// `requestTimeout` (300 秒) 側にある。値を見直すときはこの前提で考えること
+// (proxy を外せば元の見立てに戻る)。
 export const ATTACHMENT_UPLOAD_BODY_TOTAL_TIMEOUT_MS = 240_000;
 
 // 添付なしの新規起票 (`application/json` 経路) の上限 (128KB)。

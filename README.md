@@ -166,8 +166,10 @@ npm run dev
 バッファ枠をその最大値に合わせています（`next.config.ts` の `proxyClientMaxBodySize`。
 未設定だと本文が既定 10MB で黙って切り詰められるため必須の設定）。この枠は**アプリ全体で 1 つ
 しか持てず経路ごとには絞れない**ので、上限の小さい未認証経路（LINE 取り込み 256KB 等）にも
-同じ枠が適用されます。経路別の絞り込みと、アプリ側では上限を掛けられない経路
-（`/api/auth/[...nextauth]`・Server Action）の保護は、前段のリバースプロキシの責務です。
+同じ枠が適用されます。経路別の絞り込みと、アプリ側では上限を掛けられない `/api/auth/[...nextauth]`
+（next-auth が自前でボディを読むため差し替えられない）の保護は、前段のリバースプロキシの責務です。
+なお Server Action は Next.js が `experimental.serverActions.bodySizeLimit`（既定 1MB）を
+413 で強制するので、アプリ側に上限があります。
 nginx の設定例と背景は **[`docs/security.md` §7](docs/security.md)** を参照してください。
 `docker-compose.yml` はローカル開発用でこの前段を含みません。
 

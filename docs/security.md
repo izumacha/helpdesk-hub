@@ -147,4 +147,6 @@ location /api/inbound/email { client_max_body_size 25m; }
 location /api/tickets       { client_max_body_size 52m; }
 ```
 
-これは `src/lib/request-body-limit.ts` 冒頭が「塞ぐならアプリの外側」と書いている既知のギャップ（`/api/auth/[...nextauth]` と Server Action の本文にアプリ側から上限を掛けられない件）と同じ層の話で、同じリバースプロキシ設定でまとめて塞げる。
+これは `src/lib/request-body-limit.ts` 冒頭が「塞ぐならアプリの外側」と書いている既知のギャップ（`/api/auth/[...nextauth]` は next-auth のハンドラが自前でボディを読むため、アプリ側から上限を差し替えられない）と同じ層の話で、同じリバースプロキシ設定でまとめて塞げる。
+
+**Server Action は例外で、アプリ側に上限がある。** Next.js が `experimental.serverActions.bodySizeLimit`（未設定時の既定 **1MB**）を強制し、超過分は `413 Body exceeded ... limit` になる（`next/dist/server/app-render/action-handler.js`）。本リポジトリは未設定なので既定の 1MB が効いており、現状の最大ペイロード（CSV インポート／招待一括発行の `MAX_CSV_BYTES` = 512KB）はその内側に収まる。**1MB を超える本文を扱う Server Action を足すときは、リバースプロキシではなくこの設定を調整すること**（前段だけ広げても Next.js 側で 413 になる）。

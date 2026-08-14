@@ -84,10 +84,15 @@
 //     (`src/proxy.ts` の `isApiAuth` が `/api/auth` 配下を丸ごと通す) は next-auth のハンドラが、
 //     未認証で開いているページ (`/login` `/signup` `/invite` `/help`) に置いた Server Action
 //     (`requestMagicLink` / `requestSignup` / `completeSignup` / `acceptInvitation` など) は
-//     Next 自身が、それぞれボディを解析する。いずれも上限が掛かっておらず、塞ぐなら
-//     アプリの外側 (nginx 等のリバースプロキシ) か `src/proxy.ts` での事前検査が必要になる
-//     既知のギャップ (Next.js 16 の入口も `proxy` という名前なので、前者は「アプリの手前に置く
-//     リバースプロキシ」、後者は「このリポジトリの `src/proxy.ts`」を指す)。
+//     Next 自身が、それぞれボディを解析する。ただし**上限の有無はこの 2 者で違う**:
+//       - `api/auth/[...nextauth]` … 上限が無い。塞ぐならアプリの外側 (nginx 等のリバース
+//         プロキシ) が必要になる既知のギャップ (Next.js 16 の入口も `proxy` という名前なので、
+//         ここでの「外側」は「アプリの手前に置くリバースプロキシ」を指す)。
+//       - Server Action … **Next.js が既定 1MB を強制する** (`experimental.serverActions.
+//         bodySizeLimit` 未設定時の既定。超過は `413 Body exceeded ... limit`)。現状の
+//         最大ペイロード (`MAX_CSV_BYTES` = 512KB) はその内側なので追加の手当ては要らないが、
+//         1MB を超える本文を扱う Server Action を足すときは**この設定を上げる**こと
+//         (前段のリバースプロキシだけ広げても Next.js 側で 413 になる)。
 //
 // **認証済みの経路も移行済み** (#290 フォローアップ)。`POST /api/tickets` と
 // `POST /api/tickets/[id]/comments` は `req.formData()` / `req.json()` を直接呼んでいて上限が
