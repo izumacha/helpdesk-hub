@@ -90,6 +90,10 @@ let parsedSources: { path: string; sourceFile: ts.SourceFile }[] = [];
 // 読み取り関数を足しても呼び出し検査・別名検査が自動で追随する (手書き一覧だと追随しない)
 let boundedReadFunctionNames: string[] = [];
 
+// `ROUTE_MAX_BODY_BYTES` に登録済みの定数名。2 つの検査から参照されるので、
+// 構文木の走査と同じく beforeAll で 1 回だけ導出して使い回す
+let registeredRouteLimitNameList: string[] = [];
+
 /**
  * 1 ファイルを読み込んで構文木にする。
  *
@@ -215,7 +219,7 @@ function registeredRouteLimitNames(): string[] {
  */
 function unregisteredRouteLimitNames(): string[] {
   // 一覧に登録済みの定数名 (完全一致で突き合わせる)
-  const registered = registeredRouteLimitNames();
+  const registered = registeredRouteLimitNameList;
   // 導出元自身が export する枠 (ENTRY_MAX_BODY_BYTES 等) は経路の上限ではないので除外する
   const entry = parsedSources.find((source) => source.path === ENTRY_MODULE_PATH);
   const ownExports = entry ? exportedRouteLimitNames(entry.sourceFile) : [];
@@ -351,6 +355,75 @@ function boundedReadAliasImports(): string[] {
 }
 
 /**
+ * ファイル内で **import によって束縛されているローカル名**をすべて返す。
+ *
+ * 上限として渡された識別子が「よそから持ち込んだ定数」なのか「その場で作ったローカル変数」なのかを
+ * 見分けるために使う。名前だけを登録一覧と突き合わせると、
+ * `const STRIPE_WEBHOOK_MAX_BODY_BYTES = 500 * 1024 * 1024;` のように**登録済みの名前を
+ * 借りたローカル定数**が素通りしてしまう (export していないので登録漏れ検出にも掛からない。
+ * 実測で再現した)。import 由来であることまで求めれば、その借用を塞げる。
+ */
+function importedBindingNames(sourceFile: ts.SourceFile): Set<string> {
+  // 束縛されたローカル名を溜める入れ物
+  const names = new Set<string>();
+  // 構文木をたどって import 宣言を探す
+  visitNodes(sourceFile, (node) => {
+    // import 宣言でなければ関係ない
+    if (!ts.isImportDeclaration(node) || !node.importClause) return;
+    // `import X from '...'` の既定 import
+    if (node.importClause.name) names.add(node.importClause.name.text);
+    // 名前付き / 名前空間の取り込み
+    const bindings = node.importClause.namedBindings;
+    // 無ければここまで
+    if (!bindings) return;
+    // `import * as ns from '...'` の形
+    if (ts.isNamespaceImport(bindings)) names.add(bindings.name.text);
+    // `import { A, B as C } from '...'` の形 (束縛されるのはローカル側の名前)
+    else for (const element of bindings.elements) names.add(element.name.text);
+  });
+  // 集めた名前を返す
+  return names;
+}
+
+/**
+ * 上限つき読み取り関数を**ローカル変数へ捕まえている**箇所を返す (空なら違反なし)。
+ *
+ * 呼び出し検査は「呼び出している名前」を手掛かりにするので、
+ * `const read = rbl.readBodyWithinByteLimit;` と一度受けてから `read(req, 500 * 1024 * 1024)` と
+ * 書かれると、呼び出し側の識別子が `read` になって検査を素通りする (別名 import の検査も
+ * `X as Y` の形しか見ないので掛からない。実測で再現した)。
+ * 別名 import を禁じているのと同じ理由で、変数への捕捉も禁じて手掛かりを守る。
+ */
+function boundedReadCapturedIntoLocals(): string[] {
+  // 違反 (ファイルと書かれている式) を溜める入れ物
+  const offenders: string[] = [];
+  // 1 ファイルずつ変数宣言を見る
+  for (const { path, sourceFile } of parsedSources) {
+    // 定義元自身は対象外 (内部で自分の関数を参照するのは当然のため)
+    if (path === BOUNDED_READ_MODULE_PATH) continue;
+    visitNodes(sourceFile, (node) => {
+      // 変数宣言でなければ関係ない
+      if (!ts.isVariableDeclaration(node) || !node.initializer) return;
+      // 初期化式が「読み取り関数そのものへの参照」かどうかを見る
+      const initializer = node.initializer;
+      // 素の識別子 (`const read = readBodyWithinByteLimit;`)
+      const referencedName = ts.isIdentifier(initializer)
+        ? initializer.text
+        : // 名前空間経由 (`const read = rbl.readBodyWithinByteLimit;`)
+          ts.isPropertyAccessExpression(initializer) && ts.isIdentifier(initializer.name)
+          ? initializer.name.text
+          : undefined;
+      // 読み取り関数を指していなければ問題なし
+      if (!referencedName || !boundedReadFunctionNames.includes(referencedName)) return;
+      // 捕捉しているので違反として記録する
+      offenders.push(`${path}: ${node.getText(sourceFile)}`);
+    });
+  }
+  // 失敗時のメッセージを安定させるため並べ替えて返す
+  return offenders.sort();
+}
+
+/**
  * `readBodyWithinByteLimit` 系へ、**導出元に登録済みの定数以外**を上限として渡している
  * 呼び出しを返す (空なら全呼び出しが登録済みの定数を使っている)。
  *
@@ -359,10 +432,14 @@ function boundedReadAliasImports(): string[] {
  * (b) ルート内に置いた **export しないローカル定数** (命名規約は満たすので名前検査も素通りする)
  * のどちらも、あちらでは捕まらない。**「呼び出しで使ってよいのは登録済みの名前だけ」**という
  * 形にすれば両方まとめて塞げる。
+ *
+ * **名前の一致だけでは足りず、import 由来であることまで求める。** 登録済みの名前を借りた
+ * ローカル定数 (`const STRIPE_WEBHOOK_MAX_BODY_BYTES = 500 * 1024 * 1024;`) を書かれると、
+ * 名前の突き合わせは通ってしまい (b) がそのまま復活する (実測で再現)。
  */
 function boundedReadCallsWithUnregisteredLimit(): string[] {
   // 一覧に登録済みの定数名
-  const registered = registeredRouteLimitNames();
+  const registered = registeredRouteLimitNameList;
   // 違反 (ファイルと渡された式) を溜める入れ物
   const offenders = new Set<string>();
   // 1 ファイルずつ呼び出しを見る
@@ -370,6 +447,8 @@ function boundedReadCallsWithUnregisteredLimit(): string[] {
     // 読み取り関数そのものを定義しているモジュールは対象外。ここでの `maxBytes` は
     // 呼び出し元から受け取った引数を転送しているだけで、経路の上限ではない
     if (path === BOUNDED_READ_MODULE_PATH) continue;
+    // このファイルが import で束縛しているローカル名 (上限がよそ由来かの判定に使う)
+    const imported = importedBindingNames(sourceFile);
     visitNodes(sourceFile, (node) => {
       // 呼び出し式でなければ関係ない
       if (!ts.isCallExpression(node)) return;
@@ -391,8 +470,14 @@ function boundedReadCallsWithUnregisteredLimit(): string[] {
         offenders.add(`${path}: ${calleeName}(...) に上限が渡されていません`);
         return;
       }
-      // 識別子で、かつ登録済みの名前ならよい
-      if (ts.isIdentifier(maxBytesArgument) && registered.includes(maxBytesArgument.text)) return;
+      // 識別子で、登録済みの名前で、**かつ import 由来**ならよい
+      // (import を求めるのは、登録済みの名前を借りたローカル定数を弾くため)
+      if (
+        ts.isIdentifier(maxBytesArgument) &&
+        registered.includes(maxBytesArgument.text) &&
+        imported.has(maxBytesArgument.text)
+      )
+        return;
       // それ以外は、書かれている式をそのまま添えて報告する
       offenders.add(`${path}: ${maxBytesArgument.getText(sourceFile)}`);
     });
@@ -407,6 +492,7 @@ describe('入口 (proxy) のボディ複製上限', () => {
     parsedSources = parseSourceFiles();
     // 読み取り関数の名前は解析済みの構文木から導出する (手書き一覧にしない)
     boundedReadFunctionNames = exportedBoundedReadFunctionNames();
+    registeredRouteLimitNameList = registeredRouteLimitNames();
   });
 
   it('上限つき読み取り関数を定義元から拾えている', () => {
@@ -484,6 +570,12 @@ describe('入口 (proxy) のボディ複製上限', () => {
   it('上限つき読み取り関数が別名で import されていない', () => {
     // 別名を付けられると呼び出し検査 (関数名が手掛かり) が丸ごと素通りする
     expect(boundedReadAliasImports()).toEqual([]);
+  });
+
+  it('上限つき読み取り関数がローカル変数に捕まえられていない', () => {
+    // 一度変数で受けてから呼ぶと、呼び出し側の識別子が別名になって呼び出し検査を素通りする。
+    // 別名 import を禁じているのと同じ理由で、変数への捕捉も禁じる
+    expect(boundedReadCapturedIntoLocals()).toEqual([]);
   });
 
   it('上限つき読み取りの呼び出しが登録済みの定数だけを上限に使っている', () => {

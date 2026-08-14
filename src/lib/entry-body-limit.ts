@@ -114,18 +114,23 @@ import { MAGIC_LINK_CALLBACK_MAX_BODY_BYTES, SSO_ACS_MAX_BODY_BYTES } from './au
  * 「入口だけが古い枠のまま」= 本ファイル冒頭に書いた静かな切り詰めがそのまま再発するため
  * (命名規約 `*_MAX_BODY_BYTES` に乗せることが、その検出の前提になる点に注意)。
  *
+ * **各行に具体的なバイト数を書かない。** ここは参照するだけの集約なので、数値を書き添えると
+ * 定義元を変えたときにこの注釈だけが古くなる — 本ファイルが「値の書き写しをしない」と
+ * 言っている当の失敗そのものになる (`ATTACHMENT_UPLOAD_MAX_BODY_BYTES` のように
+ * ドメイン定数から導出される値は特に気付きにくい)。実際の値は各定義元で確認すること。
+ *
  * **公開しているのはテストが導出そのものを検算するため。** テスト側に同じ一覧を書き写すと、
  * 経路を足したときにそちらだけ古くなり、「新しい経路が検査から丸ごと抜けているのに緑」という
  * 状態になる (実際にその形で退行を作れることを確認した)。写さずにここを参照させる。
  */
 export const ROUTE_MAX_BODY_BYTES = [
-  LINE_WEBHOOK_MAX_BODY_BYTES, // LINE Webhook (256KB)
-  INBOUND_EMAIL_MAX_BODY_BYTES, // メール取り込み (25MB)
-  STRIPE_WEBHOOK_MAX_BODY_BYTES, // Stripe Webhook (1MB)
-  ATTACHMENT_UPLOAD_MAX_BODY_BYTES, // 添付付きチケット起票・コメント投稿 (51MB)
-  TICKET_JSON_MAX_BODY_BYTES, // 添付なしチケット起票 (128KB)
-  SSO_ACS_MAX_BODY_BYTES, // SSO ACS (1MB)
-  MAGIC_LINK_CALLBACK_MAX_BODY_BYTES, // マジックリンクのコールバック (64KB)
+  LINE_WEBHOOK_MAX_BODY_BYTES, // LINE Webhook
+  INBOUND_EMAIL_MAX_BODY_BYTES, // メール取り込み
+  STRIPE_WEBHOOK_MAX_BODY_BYTES, // Stripe Webhook
+  ATTACHMENT_UPLOAD_MAX_BODY_BYTES, // 添付付きチケット起票・コメント投稿
+  TICKET_JSON_MAX_BODY_BYTES, // 添付なしチケット起票
+  SSO_ACS_MAX_BODY_BYTES, // SSO ACS
+  MAGIC_LINK_CALLBACK_MAX_BODY_BYTES, // マジックリンクのコールバック
 ] as const;
 
 /**
