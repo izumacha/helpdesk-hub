@@ -5,11 +5,18 @@
 // Next.js の Route Handler は既知のエクスポート名 (GET/POST/runtime 等) しか許さないため、
 // route.ts から定数を export できない。route とテストが同じ定義を参照する (= 片方だけ値を
 // 変えたら気付ける) ようにするには、両者から import できる場所へ出す必要がある。
-// SSO ACS (`SSO_ACS_MAX_BODY_BYTES` in sso-rate-limit.ts) とマジックリンクのコールバック
-// (`MAGIC_LINK_CALLBACK_MAX_BODY_BYTES` in magic-link.ts) は、その経路の他の共有定数と
-// 同居できる置き場が既にあったのでそちらに置いている。ここは「置き場が無かった 3 経路」を
-// まとめる場所で、3 つを並べておくと値の妥当性 (この経路だけ極端に緩くないか) を
-// 見比べて確認できる利点もある。
+// SSO ACS (`SSO_ACS_MAX_BODY_BYTES`) とマジックリンクのコールバック
+// (`MAGIC_LINK_CALLBACK_MAX_BODY_BYTES`) は `auth-body-limits.ts` にある。元はそれぞれの
+// 経路の共有定数と同居させていたが、`entry-body-limit.ts` が入口の枠を導出するために読む
+// ようになり、実行時コードを持つモジュール (`magic-link.ts` など) が `next.config.ts` の
+// 読み込みグラフに入ってしまったため、定数だけのファイルへ分けた (経緯はあちらの冒頭)。
+// **経路上限を新しく足すときも、こうした定数だけのファイルに置くこと。**
+// ここに 3 つを並べておくと、値の妥当性 (この経路だけ極端に緩くないか) を見比べられる。
+//
+// **このファイルは `next.config.ts` の読み込みグラフに入っている。新しい import は相対パスで
+// 書くこと** (`@/...` を足すと `npm run build` だけが落ちる)。理由と検証方法は
+// `src/lib/entry-body-limit.ts` の import 直前のコメントに 1 か所だけ書いてある — 説明を
+// ここへ写すと制約が変わったときに片方だけ古くなるので、参照に留める。
 //
 // 実際の読み取り (ストリームを上限つきで読み、超えた時点で打ち切る) は
 // `request-body-limit.ts` の `readBodyWithinByteLimit` / `readFormWithinByteLimit` が担う。
@@ -42,6 +49,13 @@ export const INBOUND_EMAIL_MAX_BODY_BYTES = 25 * 1024 * 1024;
 // 一方で「無制限」にはしない (だらだら送りでハンドラを保持され続けるため)。Node の既定
 // requestTimeout が 300 秒で、それを超える値を設定してもサーバー側で先に切られて無意味なので、
 // その内側に収まる 4 分を上限とする。
+//
+// **注意 — proxy がある現状では、この期限は送信時間を覆っていない。** Next.js は
+// `src/proxy.ts` を置いているアプリでは本文を入口で全量バッファし、その完了を待ってから
+// ルートハンドラを起動する (`src/lib/entry-body-limit.ts` の「タイムアウトが効かない」節)。
+// つまりこの 240 秒が測るのは**メモリ上のストリームを読む区間**だけで、上に書いた
+// 「送信途中で打ち切られて 400」を防ぐ役割は実際には Node の `requestTimeout` (300 秒) 側が
+// 担っている。値を見直すときはこの前提で考えること (proxy を外せば元の説明どおりに戻る)。
 export const INBOUND_EMAIL_BODY_TOTAL_TIMEOUT_MS = 240_000;
 
 // Stripe Webhook (`POST /api/webhooks/stripe`) の上限 (1MB)。

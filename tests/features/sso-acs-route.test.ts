@@ -15,7 +15,7 @@ import type { Repos } from '@/data/ports/unit-of-work';
 import { AUTH_AUDIT_UNKNOWN_EMAIL, __resetAuthAuditThrottle } from '@/lib/auth-audit';
 // ボディサイズ上限はルートと同じ定義を参照する (テストに閾値を直書きすると、
 // 上限を変えたときにテストが境界を突かなくなったことに気付けない §6)
-import { SSO_ACS_MAX_BODY_BYTES } from '@/lib/sso-rate-limit';
+import { SSO_ACS_MAX_BODY_BYTES } from '@/lib/auth-body-limits';
 import { expectRateLimitTripsAfter } from './sso-rate-limit-assertions';
 
 const TENANT_ID = 'tenant-1';

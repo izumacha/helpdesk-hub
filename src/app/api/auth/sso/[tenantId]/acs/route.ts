@@ -40,8 +40,9 @@ import {
   SSO_UNAUTHENTICATED_RATE_LIMIT,
   SSO_TENANT_RATE_LIMIT,
   SSO_RATE_LIMIT_MESSAGE,
-  SSO_ACS_MAX_BODY_BYTES,
 } from '@/lib/sso-rate-limit';
+// この経路が受け付けるボディの上限 (入口の枠の導出元にもなるため定数だけのファイルに分けてある)
+import { SSO_ACS_MAX_BODY_BYTES } from '@/lib/auth-body-limits';
 // ボディをストリームで読みつつバイト数上限で打ち切ってからフォームにする共通ヘルパー
 // (§9 リクエストサイズの上限。req.formData() を直接呼ぶとボディ全体がメモリに載る)
 import {

@@ -40,6 +40,17 @@
 //      フィールド値のコピー 1 倍。Response がコピーを取ることの確認方法: 元の Uint8Array を
 //      Response 生成後に書き換えてから arrayBuffer() を読むと、書き換え前の値が返る)
 //   本文を読むだけの経路 (readTextWithinByteLimit) は解析側の山が無いので 2 倍未満で収まる。
+// **入口 (proxy) の複製ぶんが上記に上乗せされる。** Next.js は `src/proxy.ts` を置いている
+// アプリでは、非 GET/HEAD のボディを入口で複製してバッファする (proxy が本文を読むかどうかに
+// 関係なく走る)。本モジュールが読み始める前に本文サイズの 1〜2 倍が既に積まれているので、
+// 上限値を決めるときはここの 3 倍と足し合わせて見積もること。複製の上限は
+// `src/lib/entry-body-limit.ts` が経路別上限の最大値から導出しており、**未設定だと既定 10MB で
+// 本文が黙って切り詰められる** (経緯と実測はあちらのファイル冒頭)。
+// **本モジュールの時間制限は入口の滞留には効かない。** Next.js は proxy 実行後の `finally` で
+// 複製を `finalize()` し、これが元リクエストの 'end' を待つため、**クライアントが送り終わるまで
+// ルートハンドラは起動しない**。下の無通信 (10 秒) / 全体 (120 秒) の期限は「ルートが読み始めて
+// から」しか数えないので、上のだらだら送りの分析もその区間に限った話として読むこと
+// (入口で滞留している間を縛るのは、入口の枠と Node の既定 `requestTimeout` 300 秒だけ)。
 //
 // 関連: `webhook-fetch.ts` の `readBodyCapped` と `line-content.ts` の `readBodyCappedBytes` も
 // 「ストリームを上限つきで読む」同種の処理だが、あちらは外向き fetch の **Response** が対象で
@@ -73,10 +84,15 @@
 //     (`src/proxy.ts` の `isApiAuth` が `/api/auth` 配下を丸ごと通す) は next-auth のハンドラが、
 //     未認証で開いているページ (`/login` `/signup` `/invite` `/help`) に置いた Server Action
 //     (`requestMagicLink` / `requestSignup` / `completeSignup` / `acceptInvitation` など) は
-//     Next 自身が、それぞれボディを解析する。いずれも上限が掛かっておらず、塞ぐなら
-//     アプリの外側 (nginx 等のリバースプロキシ) か `src/proxy.ts` での事前検査が必要になる
-//     既知のギャップ (Next.js 16 の入口も `proxy` という名前なので、前者は「アプリの手前に置く
-//     リバースプロキシ」、後者は「このリポジトリの `src/proxy.ts`」を指す)。
+//     Next 自身が、それぞれボディを解析する。ただし**上限の有無はこの 2 者で違う**:
+//       - `api/auth/[...nextauth]` … 上限が無い。塞ぐならアプリの外側 (nginx 等のリバース
+//         プロキシ) が必要になる既知のギャップ (Next.js 16 の入口も `proxy` という名前なので、
+//         ここでの「外側」は「アプリの手前に置くリバースプロキシ」を指す)。
+//       - Server Action … **Next.js が既定 1MB を強制する** (`experimental.serverActions.
+//         bodySizeLimit` 未設定時の既定。超過は `413 Body exceeded ... limit`)。現状の
+//         最大ペイロード (`MAX_CSV_BYTES` = 512KB) はその内側なので追加の手当ては要らないが、
+//         1MB を超える本文を扱う Server Action を足すときは**この設定を上げる**こと
+//         (前段のリバースプロキシだけ広げても Next.js 側で 413 になる)。
 //
 // **認証済みの経路も移行済み** (#290 フォローアップ)。`POST /api/tickets` と
 // `POST /api/tickets/[id]/comments` は `req.formData()` / `req.json()` を直接呼んでいて上限が
@@ -322,7 +338,9 @@ export function logBodyReject(
  * リクエストボディを最大 `maxBytes` バイトまで読み取る。
  *
  * 四段構え:
- *   1. Content-Length の申告が上限超過なら、本文を一切読み進めずに打ち切る。
+ *   1. Content-Length の申告が上限超過なら、**本モジュールとしては**本文を読み進めずに打ち切る
+ *      (proxy を置いている現状では、入口の複製が既に本文を受け取り終えている。節約できるのは
+ *      本モジュール側のバッファ確保だけで、通信とメモリはこの段では減らない。§入口の複製)。
  *   2. 申告が無い/過少申告でも、ストリームの累計バイト数が上限を超えた時点で打ち切る。
  *   3. 次のチャンクが `idleTimeoutMs` 待っても届かなければ打ち切る (送るのをやめた接続)。
  *   4. 3 を満たし続けても、開始から `totalTimeoutMs` を超えたら打ち切る
@@ -346,7 +364,8 @@ export async function readBodyWithinByteLimit(
   // (?? は null/undefined しか補填せず空文字列を拾えないため || を使う)。
   // -1 は上限より小さいのでこの事前検査は通過し、後段のストリーム検査に委ねられる
   const declaredLength = Number(req.headers.get('content-length') || '-1');
-  // 数値として読めて上限を超えているなら、本文を読まずにここで打ち切る (一番安い拒否)
+  // 数値として読めて上限を超えているなら、本文を読まずにここで打ち切る
+  // (本モジュールの中では一番安い拒否。ただし入口の複製は既に済んでいる。冒頭の注記を参照)
   if (Number.isFinite(declaredLength) && declaredLength > maxBytes) {
     return { ok: false, reason: 'too-large', declaredLength };
   }

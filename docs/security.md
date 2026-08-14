@@ -112,3 +112,82 @@ flowchart LR
 - **メール取り込み**（`POST /api/inbound/email`）: テナント特定は宛先アドレスの `inboundToken`。送信元は SPF/DKIM/DMARC を確認し、未登録送信者・認証失敗などは起票せず隔離（`QuarantinedEmail`、`/quarantine` で admin が確認）。
 - **LINE 取り込み**（`POST /api/inbound/line`）: `X-Line-Signature` を各テナントの `channelSecret` で HMAC-SHA256 検証。Webhook 再送は `LineMessageRef` で冪等化。
 - **Stripe Webhook**（`POST /api/webhooks/stripe`）: 署名検証＋`stripeEventProcessedAt` による順序逆転（古いイベントでの巻き戻し）防止。
+
+---
+
+## 7. リクエストボディのサイズ上限（入口 / 経路 / リバースプロキシの三層）
+
+ボディのサイズ上限は 3 つの層で決まる。**それぞれ守れる範囲が違うので、1 層だけでは足りない。**
+
+| 層                         | 決める場所                                                                                                                  | 守れる範囲                                     |
+| -------------------------- | --------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------- |
+| 入口（proxy のボディ複製） | `next.config.ts` の `experimental.proxyClientMaxBodySize`（値の導出は `src/lib/entry-body-limit.ts`）                       | アプリ全体で 1 つ。**経路ごとには絞れない**    |
+| 経路                       | `readBodyWithinByteLimit` 系に渡す `maxBytes`（`webhook-body-limits.ts` / `ticket-body-limits.ts` / `auth-body-limits.ts`） | 経路ごとに厳密。超過は 413                     |
+| リバースプロキシ           | アプリの手前（nginx なら `location` ごとの `client_max_body_size`）                                                         | 経路ごと。**アプリのプロセスに届く前**に切れる |
+
+### 入口の枠を経路の最大値に合わせている理由と、その代償
+
+Next.js は proxy（`src/proxy.ts`）を置いているアプリでは、非 GET/HEAD のボディを入口で複製してメモリにバッファする（proxy が本文を読むかどうかに関係なく走る）。`proxyClientMaxBodySize` 未設定だとこの複製は既定 10MB で頭打ちになり、**超過分はエラーにならず黙って切り捨てられて**ルートハンドラへ渡る。メール取り込み（25MB）・添付付きチケット書き込み（51MB）は 10MB を超えるため、既定のままだと正規のリクエストが壊れる（詳細は `src/lib/entry-body-limit.ts`）。
+
+そのため入口の枠は経路別上限の最大値（＋超過を検知させる余白）に合わせてある。**代償として、上限が小さい未認証経路にも同じ枠が適用される。**
+
+- 入口の複製は **proxy の認証判定より前**に走り、ルート側のレート制限・署名検証にはさらに手前で到達するため、アプリ層のゲートでは減らせない。
+- したがって `POST /api/inbound/line`（経路の上限 256KB）や `POST /api/auth/magic-link/callback`（同 64KB）でも、入口では枠いっぱいまで滞留しうる。
+- 加えて、入口の滞留には `request-body-limit.ts` の無通信（10 秒）／全体（120 秒）の期限が効かない（ルートは本文が届き切ってから起動するため）。**アプリ側に残る天井は Node の既定 `requestTimeout`（300 秒）だけ**なので、だらだら送りを短い時間で切るのも前段の責務になる（下の設定例の `client_body_timeout` / `client_header_timeout`）。
+
+### 本番デプロイの要件
+
+**アプリの手前にリバースプロキシを置き、経路ごとに本文サイズを絞ること。** 上記のとおりアプリ単体では経路別に絞れないため、これはアプリ側の設定漏れではなくデプロイ構成側の責務になる。
+
+> **⚠️ 以下の数値は経路上限からの手動転記であり、自動追随しない。** 入口の枠（`ENTRY_MAX_BODY_BYTES`）はコードから導出されるが、ここの `client_max_body_size` は直書きである。経路上限（`ATTACHMENT_UPLOAD_MAX_BODY_BYTES` やその導出元の `MAX_ATTACHMENT_SIZE_BYTES` 等）を変更したら、**同じ PR でこの節と README の値も更新すること**。更新し忘れると、上限内の正規リクエストが前段で切られてアプリに届かず、原因の分かりにくい接続断になる（まさに `src/domain/attachment.ts` の事前検査が避けようとしている失敗）。
+
+nginx の例:
+
+```nginx
+# アプリへの転送設定は 1 か所にまとめ、各 location から include する。
+# **これを省いて `client_max_body_size` だけの location を足すと、その経路が転送されなくなる** —
+# nginx はより具体的な prefix の location を選ぶので、`location / { proxy_pass ... }` があっても
+# `/api/tickets` 側には proxy_pass が無く、静的ファイル配信に落ちて 404/403 になる。
+# （症状がアプリ側の不具合に見えるので、コピーして使うときは特に注意する）
+# proxy_params の例: proxy_pass http://app; proxy_set_header Host $host; ...
+
+# 既定は小さく。大きい本文を要する経路だけ個別に開ける。
+# 値はいずれも「経路自身の上限より少しだけ大きく」する — 同値にすると、上限をわずかに
+# 超えた本文が前段で切られてアプリ側の 413 とログに到達せず、運用者が
+# 「正規の送信者が上限をわずかに超えている」のか「桁違いで探られている」のかを見分けられない。
+#
+# 既定値が 2m なのはこの規則の帰結。アプリ側で上限 1MB の経路（SSO ACS / Stripe Webhook）は
+# 個別の location を持たず、この既定を継承する。ここを 1m にすると**その 2 経路だけ同値**に
+# なり、上の理由でアプリ側の 413 とログが失われる — しかも SSO ACS は未認証で到達できる、
+# 記録が最も要る側の経路である。
+client_max_body_size 2m;  # 上限 1MB の経路（SSO ACS / Stripe）+ 1MB
+
+# **サイズだけでなく時間も前段で縛る。** 上記のとおりアプリ側の無通信（10 秒）／全体（120〜240 秒）の
+# 期限は、入口のバッファを読む区間しか測っておらず、送信そのものには掛かっていない。前段を
+# 置かない場合の天井は Node の既定 `requestTimeout`（300 秒）だけになり、1 バイトずつだらだら
+# 送る接続を 5 分間保持できてしまう（slow loris）。ここを絞るのも前段の責務。
+client_body_timeout 30s;    # 本文のチャンク間隔がこれを超えたら切る
+client_header_timeout 15s;  # ヘッダ送出が遅い接続を早めに切る
+
+location / {
+    include proxy_params;
+}
+
+# 経路の上限 25MB + 1MB
+location /api/inbound/email {
+    include proxy_params;
+    client_max_body_size 26m;
+}
+
+# 経路の上限 51MB + 1MB
+location /api/tickets {
+    include proxy_params;
+    client_max_body_size 52m;
+}
+```
+
+上限がさらに小さい経路（LINE 取り込み 256KB / マジックリンクのコールバック 64KB）を前段でも絞りたい場合は、同じ規則（経路の上限 + 余裕）で `location` を足す。足さなければ既定の 2m を継承するだけで、アプリ側の 413 とログは働く。
+
+これは `src/lib/request-body-limit.ts` 冒頭が「塞ぐならアプリの外側」と書いている既知のギャップ（`/api/auth/[...nextauth]` は next-auth のハンドラが自前でボディを読むため、アプリ側から上限を差し替えられない）と同じ層の話で、同じリバースプロキシ設定でまとめて塞げる。
+
+**Server Action は例外で、アプリ側に上限がある。** Next.js が `experimental.serverActions.bodySizeLimit`（未設定時の既定 **1MB**）を強制し、超過分は `413 Body exceeded ... limit` になる（`next/dist/server/app-render/action-handler.js`）。本リポジトリは未設定なので既定の 1MB が効いており、現状の最大ペイロード（CSV インポート／招待一括発行の `MAX_CSV_BYTES` = 512KB）はその内側に収まる。**1MB を超える本文を扱う Server Action を足すときは、リバースプロキシではなくこの設定を調整すること**（前段だけ広げても Next.js 側で 413 になる）。
