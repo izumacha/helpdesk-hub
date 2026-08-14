@@ -40,6 +40,12 @@
 //      フィールド値のコピー 1 倍。Response がコピーを取ることの確認方法: 元の Uint8Array を
 //      Response 生成後に書き換えてから arrayBuffer() を読むと、書き換え前の値が返る)
 //   本文を読むだけの経路 (readTextWithinByteLimit) は解析側の山が無いので 2 倍未満で収まる。
+// **入口 (proxy) の複製ぶんが上記に上乗せされる。** Next.js は `src/proxy.ts` を置いている
+// アプリでは、非 GET/HEAD のボディを入口で複製してバッファする (proxy が本文を読むかどうかに
+// 関係なく走る)。本モジュールが読み始める前に本文サイズの 1〜2 倍が既に積まれているので、
+// 上限値を決めるときはここの 3 倍と足し合わせて見積もること。複製の上限は
+// `src/lib/entry-body-limit.ts` が経路別上限の最大値から導出しており、**未設定だと既定 10MB で
+// 本文が黙って切り詰められる** (経緯と実測はあちらのファイル冒頭)。
 //
 // 関連: `webhook-fetch.ts` の `readBodyCapped` と `line-content.ts` の `readBodyCappedBytes` も
 // 「ストリームを上限つきで読む」同種の処理だが、あちらは外向き fetch の **Response** が対象で
