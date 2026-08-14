@@ -140,11 +140,14 @@ Next.js は proxy（`src/proxy.ts`）を置いているアプリでは、非 GET
 **アプリの手前にリバースプロキシを置き、経路ごとに本文サイズを絞ること。** 上記のとおりアプリ単体では経路別に絞れないため、これはアプリ側の設定漏れではなくデプロイ構成側の責務になる。nginx の例:
 
 ```nginx
-# 既定は小さく。大きい本文を要する経路だけ個別に開ける
+# 既定は小さく。大きい本文を要する経路だけ個別に開ける。
+# 値はいずれも「経路自身の上限より少しだけ大きく」する — 同値にすると、上限をわずかに
+# 超えた本文が前段で切られてアプリ側の 413 とログに到達せず、運用者が
+# 「正規の送信者が上限をわずかに超えている」のか「桁違いで探られている」のかを見分けられない。
 client_max_body_size 1m;
 
-location /api/inbound/email { client_max_body_size 25m; }
-location /api/tickets       { client_max_body_size 52m; }
+location /api/inbound/email { client_max_body_size 26m; }  # 経路の上限 25MB + 1MB
+location /api/tickets       { client_max_body_size 52m; }  # 経路の上限 51MB + 1MB
 ```
 
 これは `src/lib/request-body-limit.ts` 冒頭が「塞ぐならアプリの外側」と書いている既知のギャップ（`/api/auth/[...nextauth]` は next-auth のハンドラが自前でボディを読むため、アプリ側から上限を差し替えられない）と同じ層の話で、同じリバースプロキシ設定でまとめて塞げる。

@@ -174,8 +174,11 @@ function exportedRouteLimitNames(sourceFile: ts.SourceFile): string[] {
  * (Prisma 等) を持つモジュールが混ざったときにテストごと巻き添えになるため。
  */
 function registeredRouteLimitNames(): string[] {
-  // 導出元だけを構文木にする
-  const sourceFile = parseFile(ENTRY_MODULE_PATH);
+  // 導出元の構文木 (走査済みのものを使い回す。読み直すと、走査中にファイルが変わったときに
+  // 検査ごとに見ている対象がずれる)
+  const sourceFile = parsedSources.find((source) => source.path === ENTRY_MODULE_PATH)?.sourceFile;
+  // 見つからなければ登録ゼロとして扱う (落ちる方に倒す)
+  if (!sourceFile) return [];
   // 登録されている名前を溜める入れ物
   const names: string[] = [];
   // 目印の変数宣言を探し、その配列リテラルの要素名を拾う
@@ -287,13 +290,22 @@ function boundedReadCallsWithUnregisteredLimit(): string[] {
     visitNodes(sourceFile, (node) => {
       // 呼び出し式でなければ関係ない
       if (!ts.isCallExpression(node)) return;
-      // 呼び出している名前が対象関数でなければ関係ない
+      // 呼び出している名前を取り出す。**`ns.readBodyWithinByteLimit(...)` の形も見る** —
+      // 名前空間 import (`import * as ns from '...'`) 経由だと呼び出しが
+      // `PropertyAccessExpression` になり、識別子だけを見ていると丸ごと素通りする
+      // (実際にその形で 500MB の直渡しが検出網を抜けることを確認した)
       const callee = node.expression;
-      if (!ts.isIdentifier(callee) || !BOUNDED_READ_FUNCTION_NAMES.includes(callee.text)) return;
+      const calleeName = ts.isIdentifier(callee)
+        ? callee.text
+        : ts.isPropertyAccessExpression(callee) && ts.isIdentifier(callee.name)
+          ? callee.name.text
+          : undefined;
+      // 対象関数でなければ関係ない
+      if (!calleeName || !BOUNDED_READ_FUNCTION_NAMES.includes(calleeName)) return;
       // 第 2 引数 (maxBytes) を取り出す。無ければ型エラーになる形だが、念のため違反扱いにする
       const maxBytesArgument = node.arguments[1];
       if (!maxBytesArgument) {
-        offenders.add(`${path}: ${callee.text}(...) に上限が渡されていません`);
+        offenders.add(`${path}: ${calleeName}(...) に上限が渡されていません`);
         return;
       }
       // 識別子で、かつ登録済みの名前ならよい
@@ -327,10 +339,13 @@ describe('入口 (proxy) のボディ複製上限', () => {
 
   it('余白が、超過を観測できる最小サイズを下回っていない', () => {
     // 余白が小さすぎると、入口が捨てるチャンクの分だけルートが超過を観測できなくなり、
-    // chunked 転送の超過が 413 ではなく 400 に化ける。**固定するのは下限だけ**で、
-    // 実際の値 (1MB) は「将来 highWaterMark が変わっても効く余裕」として厚めに取ってある
-    // — リテラルまで固定すると、余裕を見直すだけで落ちる単なる変更検知になる
-    expect(ENTRY_OVER_LIMIT_MARGIN_BYTES).toBeGreaterThanOrEqual(ENTRY_OVER_LIMIT_MARGIN_MIN_BYTES);
+    // chunked 転送の超過が 413 ではなく 400 に化ける。
+    // **「以上」ではなく「超える」ことを求めるのが要点。** 余白がソケット読み取り 1 回分
+    // ちょうどだと、捨てられたチャンクがぴったり余白を食い尽くしてルートには上限ちょうどしか
+    // 届かず、超過判定 (累計 + 次のチャンク > 上限) が成立しない。
+    // 実際の値 (1MB) は「将来 highWaterMark が変わっても効く余裕」として厚めに取ってあるが、
+    // リテラルまで固定すると余裕を見直すだけで落ちる変更検知になるので、下限だけを縛る
+    expect(ENTRY_OVER_LIMIT_MARGIN_BYTES).toBeGreaterThan(ENTRY_OVER_LIMIT_MARGIN_MIN_BYTES);
   });
 
   it('Next.js の既定 (10MB) では足りないことを明示する', () => {
