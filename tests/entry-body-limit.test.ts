@@ -20,7 +20,7 @@
 import { describe, expect, it } from 'vitest';
 // ソースを走査して「上限の定義漏れ」を拾うため (Node 標準の同期 API で十分)
 import { readFileSync, readdirSync } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 // 入口の枠と、Next.js の既定値 (設定しないとどうなるかを示すための参照値)
 import {
   ENTRY_MAX_BODY_BYTES,
@@ -136,6 +136,24 @@ function sourceFiles(): string[] {
     .map((rel) => join(SRC_DIR, rel));
 }
 
+// 行コメント (`// ...`) とブロックコメント (`/* ... */`) を落とすためのパターン
+const COMMENT_PATTERN = /\/\*[\s\S]*?\*\/|\/\/[^\n]*/g;
+
+/**
+ * コメントを取り除いたソースを返す (中身は同じ長さの空白に置き換える)。
+ *
+ * **本リポジトリではコメントを外さないと誤検知する。** CLAUDE.md §5 が 1 行ごとの日本語
+ * コメントを求めているため、`readFormWithinByteLimit()` のような字面が解説文に出てくるのは
+ * 普通のこと (実際 src/ 配下に 7 箇所ある)。それを呼び出しとして拾うと、引数が無いので
+ * 「解析できなかった」= 違反として報告され、**コメントを書いただけでテストが落ちる**。
+ * 長さを保つために空白へ置き換えるのは、元のソースと位置がずれないようにするため
+ * (将来ここで行番号を報告したくなったときに効く)。
+ */
+function stripComments(source: string): string {
+  // コメント部分を、同じ長さの空白列に置き換える
+  return source.replace(COMMENT_PATTERN, (matched) => ' '.repeat(matched.length));
+}
+
 // 上限つき読み取りの呼び出し位置を見つけるためのパターン (引数の切り出しは下の関数が行う)
 const BOUNDED_READ_CALL_PATTERN = /read(?:Body|Form|Text)WithinByteLimit\(/g;
 // 解析できなかった呼び出しに付ける印。**規約違反と同じ扱いで報告する** (§9 fail-closed:
@@ -153,7 +171,9 @@ const UNPARSABLE_CALL_MARKER = '<引数を解析できませんでした>';
  * 文字列リテラルやコメントの中のカッコまでは区別しないが、その場合は対応が崩れて
  * 「解析できなかった」側に倒れるので、見逃しではなく失敗として表に出る。
  */
-function boundedReadMaxBytesArguments(source: string): string[] {
+function boundedReadMaxBytesArguments(rawSource: string): string[] {
+  // 解説コメントに書かれた同じ字面を呼び出しと取り違えないよう、先にコメントを落とす
+  const source = stripComments(rawSource);
   // 見つけた第 2 引数の式を溜める入れ物
   const args: string[] = [];
   // 呼び出しの開始位置を順に見ていく
@@ -228,6 +248,57 @@ function boundedReadCallsWithUnregisteredLimit(files: string[], registered: stri
   }
   // 失敗時のメッセージを安定させるため並べ替えて返す
   return [...offenders].sort();
+}
+
+// import / re-export の指定子 (`from '...'`) を拾うためのパターン
+const IMPORT_SPECIFIER_PATTERN = /(?:^|\s)(?:import|export)\b[^;]*?from\s+['"]([^'"]+)['"]/gm;
+
+/**
+ * `next.config.ts` から `entry-body-limit.ts` を辿って読まれるモジュールのうち、
+ * `@/` エイリアスを使っているものを `ファイル: 指定子` の形で返す (空なら違反なし)。
+ *
+ * **これは `npm run build` でしか落ちない種類の退行を、その手前で落とすための検査。**
+ * Next.js は next.config.ts を独自に transpile して `require` するが、tsconfig の `paths` を
+ * 書き換えるのは next.config.ts 自身の import だけで、そこから先の `@/...` は解決されない。
+ * ところが `npm run typecheck` は tsconfig の `paths` があるので通り、`npm run test` も
+ * vitest の alias 解決で通ってしまう。**速い検査を全部すり抜けて重い e2e ジョブのビルドで
+ * 初めて落ちる**ため、ここで機械的に押さえる (実測: `magic-link.ts` の 1 行を `@/` に
+ * 戻すと typecheck とユニットテストは通ったまま、config のロードだけが失敗する)。
+ */
+function aliasImportsInEntryClosure(): string[] {
+  // 違反 (ファイルと指定子の組) を溜める入れ物
+  const offenders: string[] = [];
+  // これから辿るファイルの待ち行列 (起点は導出元モジュール)
+  const queue = [ENTRY_MODULE_PATH];
+  // 一度辿ったファイルを覚えておく (循環 import で無限ループしないため)
+  const visited = new Set<string>();
+  // 待ち行列が空になるまで辿る
+  while (queue.length > 0) {
+    // 次に見るファイル
+    const file = queue.pop() as string;
+    // すでに見たファイルは飛ばす
+    if (visited.has(file)) continue;
+    // 見たことを記録する
+    visited.add(file);
+    // コメント中の `from '@/...'` を拾わないよう、ここでもコメントを落としてから読む
+    const source = stripComments(readFileSync(file, 'utf8'));
+    // このファイルが持つ import / re-export の指定子を順に見る
+    for (const match of source.matchAll(IMPORT_SPECIFIER_PATTERN)) {
+      // 指定子 (`./foo` や `@/lib/foo` など)
+      const specifier = match[1];
+      // エイリアスを使っていたら違反として記録し、その先は辿らない
+      if (specifier.startsWith('@/')) {
+        offenders.push(`${file}: ${specifier}`);
+        continue;
+      }
+      // 相対指定子でなければ外部パッケージなので辿らない
+      if (!specifier.startsWith('.')) continue;
+      // 相対指定子を絶対パスの .ts ファイルに直して待ち行列へ積む
+      queue.push(join(dirname(file), `${specifier}.ts`));
+    }
+  }
+  // 失敗時のメッセージを安定させるため並べ替えて返す
+  return offenders.sort();
 }
 
 /**
@@ -315,6 +386,12 @@ describe('入口 (proxy) のボディ複製上限', () => {
     // 導出元の一覧に載っていない上限があると、その経路だけ入口で切り詰められる。
     // 「足したら登録する」を人手の約束にせず、ここで機械的に落とす
     expect(unregisteredRouteLimitNames(sourceFiles())).toEqual([]);
+  });
+
+  it('next.config.ts から辿るモジュールに `@/` エイリアスが混じっていない', () => {
+    // 混じると `npm run build` だけが落ちる (typecheck もユニットテストも通ってしまう)。
+    // 速い検査ですり抜ける退行なので、ここで押さえる
+    expect(aliasImportsInEntryClosure()).toEqual([]);
   });
 
   it('上限つき読み取りの呼び出しが登録済みの定数だけを上限に使っている', () => {

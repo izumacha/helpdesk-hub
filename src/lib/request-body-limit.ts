@@ -338,7 +338,9 @@ export function logBodyReject(
  * リクエストボディを最大 `maxBytes` バイトまで読み取る。
  *
  * 四段構え:
- *   1. Content-Length の申告が上限超過なら、本文を一切読み進めずに打ち切る。
+ *   1. Content-Length の申告が上限超過なら、**本モジュールとしては**本文を読み進めずに打ち切る
+ *      (proxy を置いている現状では、入口の複製が既に本文を受け取り終えている。節約できるのは
+ *      本モジュール側のバッファ確保だけで、通信とメモリはこの段では減らない。§入口の複製)。
  *   2. 申告が無い/過少申告でも、ストリームの累計バイト数が上限を超えた時点で打ち切る。
  *   3. 次のチャンクが `idleTimeoutMs` 待っても届かなければ打ち切る (送るのをやめた接続)。
  *   4. 3 を満たし続けても、開始から `totalTimeoutMs` を超えたら打ち切る
@@ -362,7 +364,8 @@ export async function readBodyWithinByteLimit(
   // (?? は null/undefined しか補填せず空文字列を拾えないため || を使う)。
   // -1 は上限より小さいのでこの事前検査は通過し、後段のストリーム検査に委ねられる
   const declaredLength = Number(req.headers.get('content-length') || '-1');
-  // 数値として読めて上限を超えているなら、本文を読まずにここで打ち切る (一番安い拒否)
+  // 数値として読めて上限を超えているなら、本文を読まずにここで打ち切る
+  // (本モジュールの中では一番安い拒否。ただし入口の複製は既に済んでいる。冒頭の注記を参照)
   if (Number.isFinite(declaredLength) && declaredLength > maxBytes) {
     return { ok: false, reason: 'too-large', declaredLength };
   }
