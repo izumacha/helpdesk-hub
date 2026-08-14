@@ -137,11 +137,14 @@ export function selectAttachmentFiles(entries: FormDataEntryValue[]): File[] {
  * 違反が見つかれば利用者向けの文言を、無ければ null を返す。
  *
  * **なぜフォーム側にも検査が要るのか**: 合計サイズがボディの受け入れ枠
- * (`ticket-body-limits.ts` の `ATTACHMENT_UPLOAD_MAX_BODY_BYTES`) を超えると、サーバーは
- * Content-Length の申告だけで判断して**本文を 1 バイトも読まずに 413 を返す**
- * (`request-body-limit.ts`)。このとき送信途中の接続が未消費のまま閉じるため、ブラウザが
- * 応答より先に接続断を観測して fetch が reject し、画面には「通信状態をご確認ください」という
- * 的外れな案内しか出せない (本来出したいのは「1 ファイルあたり 10.0MB までです」)。
+ * (`ticket-body-limits.ts` の `ATTACHMENT_UPLOAD_MAX_BODY_BYTES`) を超えると、**アプリの手前の
+ * リバースプロキシ**が本文を受け切らずに切る (`docs/security.md` §7 の `client_max_body_size`)。
+ * このとき送信途中の接続が未消費のまま閉じるため、ブラウザが応答より先に接続断を観測して
+ * fetch が reject し、画面には「通信状態をご確認ください」という的外れな案内しか出せない
+ * (本来出したいのは「1 ファイルあたり 10.0MB までです」)。
+ * なお `request-body-limit.ts` にも Content-Length だけで打ち切る事前検査はあるが、
+ * `src/proxy.ts` がある現状では入口の複製が本文を受け取り終えてからルートが起動するので
+ * (`src/lib/entry-body-limit.ts`)、**そちらは未消費の本文を残さない**。
  * 件数上限 × 1 件あたりの上限は枠の内側に収まるので、**ここで弾いておけば正規の入力が
  * 413 に到達することはなくなり**、違反したときは具体的な理由が画面に出る。
  *
