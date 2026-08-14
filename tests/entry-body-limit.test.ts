@@ -242,8 +242,11 @@ function unregisteredRouteLimitNames(): string[] {
  * 気付けない)。定義元を読んで命名規約に合う export をすべて拾えば、読み取り関数を足しても
  * 検出網が自動で追随する。
  *
- * 宣言形式 (`export async function readXWithinByteLimit`) と、宣言と分けた公開
- * (`export { readXWithinByteLimit }`) の両方を見る。
+ * **書き方を問わず拾う。** 関数宣言 (`export async function readXWithinByteLimit`)、
+ * 変数への代入 (`export const readXWithinByteLimit = async () => {}`)、宣言と分けた公開
+ * (`export { readXWithinByteLimit }`) のいずれも見る。関数宣言だけを見ていると、
+ * アロー関数で書かれたヘルパーが一覧に入らず、その呼び出しが検出網を素通りする
+ * (実測で再現。名前の付け方だけで検査対象から外れるのは、この導出の目的に反する)。
  */
 function exportedBoundedReadFunctionNames(): string[] {
   // 定義元の構文木 (走査済みのものを使い回す)
@@ -263,6 +266,35 @@ function exportedBoundedReadFunctionNames(): string[] {
       // 付いていて、命名規約に合えば拾う
       if (isExported && BOUNDED_READ_FUNCTION_NAME_PATTERN.test(node.name.text))
         names.add(node.name.text);
+      return;
+    }
+    // `export const X = async () => {}` / `export const X = function () {}` の形。
+    // 関数宣言と等価に扱う (書き方の違いで検査対象から外れないようにする)
+    if (ts.isVariableStatement(node)) {
+      // export 修飾子が付いていなければ対象外
+      const isExported = node.modifiers?.some((m) => m.kind === ts.SyntaxKind.ExportKeyword);
+      // 付いていなければ何もしない
+      if (!isExported) return;
+      // 宣言された名前を順に見る
+      for (const declaration of node.declarationList.declarations) {
+        // 名前が識別子でなければ (分割代入など) 関数名として扱えない
+        if (!ts.isIdentifier(declaration.name)) continue;
+        // 命名規約に合わなければ関係ない
+        if (!BOUNDED_READ_FUNCTION_NAME_PATTERN.test(declaration.name.text)) continue;
+        // 中身が関数かどうかを見る。`as` などで包まれていても中の式まで辿る
+        let initializer = declaration.initializer;
+        while (
+          initializer &&
+          (ts.isAsExpression(initializer) || ts.isParenthesizedExpression(initializer))
+        )
+          initializer = initializer.expression;
+        // 関数式・アロー関数なら読み取り関数とみなして拾う
+        if (
+          initializer &&
+          (ts.isArrowFunction(initializer) || ts.isFunctionExpression(initializer))
+        )
+          names.add(declaration.name.text);
+      }
       return;
     }
     // `export { X }` の形 (宣言と公開を分けた場合)

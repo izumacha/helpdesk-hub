@@ -76,10 +76,10 @@ flowchart LR
 
 認証経路は 3 つあり、いずれも Auth.js（v5）のセッション（JWT）に合流します。
 
-| 経路                        | 実装                                                               | 備考                                                                                                                                     |
-| --------------------------- | ------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------- |
-| パスワード（Credentials）   | `src/lib/password-authorize.ts`                                    | bcrypt 検証                                                                                                                              |
-| マジックリンク              | `src/lib/magic-link-authorize.ts`・`/api/auth/magic-link/callback` | トークンは SHA-256 ハッシュ保存・15 分 TTL・単回使用。サインアップ（`SignupToken`）・招待（`Invitation`）も同方式                        |
+| 経路 | 実装 | 備考 |
+| --- | --- | --- |
+| パスワード（Credentials） | `src/lib/password-authorize.ts` | bcrypt 検証 |
+| マジックリンク | `src/lib/magic-link-authorize.ts`・`/api/auth/magic-link/callback` | トークンは SHA-256 ハッシュ保存・15 分 TTL・単回使用。サインアップ（`SignupToken`）・招待（`Invitation`）も同方式 |
 | SAML SSO（Enterprise 限定） | `/api/auth/sso/[tenantId]/{login,acs,metadata}`・`src/lib/saml.ts` | 署名・Issuer・Audience・期限を検証し、`SamlAssertionRef` でリプレイを拒否。セッション引き渡しは `MagicLinkToken`（`purpose=ssoHandoff`） |
 
 - `NEXTAUTH_SECRET` は強い値を必ず設定してください（`.env.example` 参照）。
@@ -140,6 +140,13 @@ Next.js は proxy（`src/proxy.ts`）を置いているアプリでは、非 GET
 **アプリの手前にリバースプロキシを置き、経路ごとに本文サイズを絞ること。** 上記のとおりアプリ単体では経路別に絞れないため、これはアプリ側の設定漏れではなくデプロイ構成側の責務になる。nginx の例:
 
 ```nginx
+# アプリへの転送設定は 1 か所にまとめ、各 location から include する。
+# **これを省いて `client_max_body_size` だけの location を足すと、その経路が転送されなくなる** —
+# nginx はより具体的な prefix の location を選ぶので、`location / { proxy_pass ... }` があっても
+# `/api/tickets` 側には proxy_pass が無く、静的ファイル配信に落ちて 404/403 になる。
+# （症状がアプリ側の不具合に見えるので、コピーして使うときは特に注意する）
+# proxy_params の例: proxy_pass http://app; proxy_set_header Host $host; ...
+
 # 既定は小さく。大きい本文を要する経路だけ個別に開ける。
 # 値はいずれも「経路自身の上限より少しだけ大きく」する — 同値にすると、上限をわずかに
 # 超えた本文が前段で切られてアプリ側の 413 とログに到達せず、運用者が
@@ -149,10 +156,23 @@ Next.js は proxy（`src/proxy.ts`）を置いているアプリでは、非 GET
 # 個別の location を持たず、この既定を継承する。ここを 1m にすると**その 2 経路だけ同値**に
 # なり、上の理由でアプリ側の 413 とログが失われる — しかも SSO ACS は未認証で到達できる、
 # 記録が最も要る側の経路である。
-client_max_body_size 2m;                                   # 上限 1MB の経路（SSO ACS / Stripe）+ 1MB
+client_max_body_size 2m;  # 上限 1MB の経路（SSO ACS / Stripe）+ 1MB
 
-location /api/inbound/email { client_max_body_size 26m; }  # 経路の上限 25MB + 1MB
-location /api/tickets       { client_max_body_size 52m; }  # 経路の上限 51MB + 1MB
+location / {
+    include proxy_params;
+}
+
+# 経路の上限 25MB + 1MB
+location /api/inbound/email {
+    include proxy_params;
+    client_max_body_size 26m;
+}
+
+# 経路の上限 51MB + 1MB
+location /api/tickets {
+    include proxy_params;
+    client_max_body_size 52m;
+}
 ```
 
 上限がさらに小さい経路（LINE 取り込み 256KB / マジックリンクのコールバック 64KB）を前段でも絞りたい場合は、同じ規則（経路の上限 + 余裕）で `location` を足す。足さなければ既定の 2m を継承するだけで、アプリ側の 413 とログは働く。
