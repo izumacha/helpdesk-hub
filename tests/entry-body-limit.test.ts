@@ -29,9 +29,9 @@ import {
 } from '@/lib/entry-body-limit';
 // 実際に Next.js へ渡る設定オブジェクト (文字列一致ではなく値そのものを見る)
 import nextConfig from '../next.config';
-// 経路別の上限。**入口の枠と同じ導出元を再利用せず、各経路の置き場から個別に import する**
-// — 導出元ごと import すると「max を取っている」という同じ計算を検算することになり、
-// 経路の追加漏れも取りこぼす
+// 経路別の上限。導出元 (`ROUTE_MAX_BODY_BYTES`) を再利用せず各経路の置き場から個別に import する
+// のは、**この対応表そのものを「今どの経路にいくつの枠があるか」の読める一覧として残す**ため。
+// 検出力の分担は下の describe を参照 (登録漏れの検出はこの表ではなく完全性テストが担う)
 import {
   INBOUND_EMAIL_MAX_BODY_BYTES,
   LINE_WEBHOOK_MAX_BODY_BYTES,
@@ -61,8 +61,33 @@ const REPO_ROOT = join(__dirname, '..');
 const SRC_DIR = join(REPO_ROOT, 'src');
 // 導出元 (この一覧に登録されていない上限を落としたい)
 const ENTRY_MODULE_PATH = join(SRC_DIR, 'lib', 'entry-body-limit.ts');
-// 経路上限の命名規約。この名前で export されたものを「経路の上限」とみなす
-const ROUTE_LIMIT_EXPORT_PATTERN = /^export const ([A-Z0-9_]*_MAX_BODY_BYTES)\b/gm;
+// 経路上限の命名規約。この名前で export されたものを「経路の上限」とみなす。
+// **`*_MAX_BODY_BYTES` という命名に乗っていることが検出の前提**で、`MAX_UPLOAD_BYTES` のように
+// 規約から外れた名前は拾えない (拾えないと入口の枠が追随せず、静かな切り詰めが戻る)。
+// 新しい経路上限はこの命名に揃えること。
+const ROUTE_LIMIT_DECLARATION_PATTERN = /^export const ([A-Z0-9_]*_MAX_BODY_BYTES)\b/gm;
+// 宣言と分けて公開する形 (`export { FOO_MAX_BODY_BYTES }` / バレル経由の再 export) も拾う。
+// 宣言だけを見ていると、この形で足された上限が検出網を素通りする
+const ROUTE_LIMIT_EXPORT_BLOCK_PATTERN = /export\s*\{([^}]*)\}/g;
+// export ブロックの中に並ぶ名前のうち、経路上限の命名に合うもの
+const ROUTE_LIMIT_NAME_PATTERN = /\b([A-Z0-9_]*_MAX_BODY_BYTES)\b/g;
+
+/**
+ * 1 ファイルのソースから、経路上限として公開されている定数名をすべて拾う。
+ *
+ * 宣言 (`export const X = ...`) と、宣言と分けた公開 (`export { X }`) の 2 形式を見る。
+ * 同じ名前が両方で出てくることがあるので呼び出し側で重複を許す前提にしてある。
+ */
+function exportedRouteLimitNames(source: string): string[] {
+  // 宣言形式で公開されている名前
+  const declared = [...source.matchAll(ROUTE_LIMIT_DECLARATION_PATTERN)].map((m) => m[1]);
+  // export ブロック形式で公開されている名前 (ブロックの中身だけを対象にする)
+  const reExported = [...source.matchAll(ROUTE_LIMIT_EXPORT_BLOCK_PATTERN)].flatMap((block) =>
+    [...block[1].matchAll(ROUTE_LIMIT_NAME_PATTERN)].map((m) => m[1]),
+  );
+  // 両方をまとめて返す
+  return [...declared, ...reExported];
+}
 // 導出元の一覧 (`const ROUTE_MAX_BODY_BYTES = [ ... ] as const;`) を切り出すためのパターン
 const REGISTRY_BLOCK_PATTERN = /const ROUTE_MAX_BODY_BYTES = \[([\s\S]*?)\] as const;/;
 // 一覧の中に 1 行ずつ並ぶ定数名 (末尾のカンマまでを 1 要素とみなす)
@@ -96,35 +121,42 @@ function unregisteredRouteLimitNames(): string[] {
   // 導出元のソース
   const entrySource = readFileSync(ENTRY_MODULE_PATH, 'utf8');
   // 導出元自身が export する枠 (ENTRY_MAX_BODY_BYTES 等) は経路の上限ではないので除外する
-  const ownExports = [...entrySource.matchAll(ROUTE_LIMIT_EXPORT_PATTERN)].map((m) => m[1]);
+  const ownExports = exportedRouteLimitNames(entrySource);
   // 一覧に登録済みの定数名 (完全一致で突き合わせる)
   const registered = registeredRouteLimitNames(entrySource);
-  // src/ 配下の .ts を再帰的に集める (生成物は対象外)
+  // src/ 配下の .ts / .tsx を再帰的に集める (生成物は対象外)。
+  // .tsx も見るのは、上限がコンポーネント側 (フォームの事前検査など) に置かれても
+  // 検出網から外れないようにするため
   const files = readdirSync(SRC_DIR, { recursive: true, encoding: 'utf8' })
-    .filter((rel) => rel.endsWith('.ts') && !rel.startsWith('generated'))
+    .filter((rel) => (rel.endsWith('.ts') || rel.endsWith('.tsx')) && !rel.startsWith('generated'))
     .map((rel) => join(SRC_DIR, rel));
-  // 登録漏れの定数名を溜める入れ物
-  const missing: string[] = [];
+  // 登録漏れの定数名を溜める入れ物 (同じ名前を 2 度報告しないよう集合で持つ)
+  const missing = new Set<string>();
   // 1 ファイルずつ、経路上限の export を拾って登録状況を見る
   for (const file of files) {
     // ファイルの中身を文字列として読む
     const source = readFileSync(file, 'utf8');
-    // 命名規約に合う export をすべて拾う
-    for (const match of source.matchAll(ROUTE_LIMIT_EXPORT_PATTERN)) {
-      // 拾った定数名
-      const name = match[1];
+    // 命名規約に合う export をすべて拾う (宣言形式・export ブロック形式の両方)
+    for (const name of exportedRouteLimitNames(source)) {
       // 導出元自身の export は経路の上限ではないので飛ばす
       if (ownExports.includes(name)) continue;
       // 一覧に完全一致で載っていなければ登録漏れ
-      if (!registered.includes(name)) missing.push(name);
+      if (!registered.includes(name)) missing.add(name);
     }
   }
   // 失敗時のメッセージを安定させるため並べ替えて返す
-  return missing.sort();
+  return [...missing].sort();
 }
 
 describe('入口 (proxy) のボディ複製上限', () => {
-  // 経路ごとに 1 ケース立てる (まとめて 1 ケースにすると、失敗時に溢れた経路が特定しづらい)
+  // 経路ごとに 1 ケース立てる (まとめて 1 ケースにすると、失敗時に溢れた経路が特定しづらい)。
+  //
+  // **現在の導出 (`max(登録済み) + 余白`) のもとでは、この 7 ケースは恒真である。**
+  // 同じ 7 定数から max を取っているので下回りようがない。それでも残しているのは
+  // 「導出のしかたが変わったとき」に効かせるため — 例えば誰かが `ENTRY_MAX_BODY_BYTES` を
+  // 直書きの数値に戻せば、その値が小さい経路をここが名指しで落とす。
+  // 逆に、**登録漏れ (この表に現れない新経路) はここでは絶対に捕まらない**。それは下の
+  // 完全性テストの担当で、両者は守備範囲が違う (片方があれば足りる関係ではない)。
   it.each(ROUTE_LIMITS)('%s の上限 (%d バイト) を下回らない', (_route, limit) => {
     // 入口の枠が経路の枠以上であることを確認する (下回ると本文が静かに切り詰められる)
     expect(ENTRY_MAX_BODY_BYTES).toBeGreaterThanOrEqual(limit);
