@@ -11,11 +11,7 @@
  */
 
 // HTML 本文に外部由来文字列を差し込む前のエスケープ (共有ヘルパーを再利用)
-// **ここだけ `@/` エイリアスではなく相対パス**: 本モジュールは `entry-body-limit.ts` 経由で
-// `next.config.ts` から読まれる (`MAGIC_LINK_CALLBACK_MAX_BODY_BYTES` の参照元)。Next.js の
-// config transpile は next.config.ts 自身の import しか `paths` を書き換えないため、この連鎖の
-// 中に `@/...` が残るとビルドが落ちる (詳細は `entry-body-limit.ts` の import 直前のコメント)
-import { escapeHtml } from './html-escape';
+import { escapeHtml } from '@/lib/html-escape';
 
 // マジックリンクの既定 TTL (15 分)。秒ではなくミリ秒で持つ
 export const MAGIC_LINK_TTL_MS = 15 * 60 * 1000;
@@ -42,12 +38,9 @@ export const MAGIC_LINK_REQUEST_GLOBAL_RATE_LIMIT = { limit: 30, windowMs: 60_00
 // 「テナント/ユーザーに紐づく前の固定キー制限」)。
 export const MAGIC_LINK_CALLBACK_RATE_LIMIT = { limit: 60, windowMs: 60_000 } as const;
 
-// コールバック (POST /api/auth/magic-link/callback) が受け付けるリクエストボディの最大バイト数 (64KB)。
-// このフォームが運ぶのはトークン 1 つ (43 文字の base64url) だけなので 64KB でも桁違いに余裕がある。
-// 上限を置くのは、この経路が未認証で到達でき、フォームのパースがボディ全体をメモリに載せるため
-// (§9)。レート制限は毎分のリクエスト数しか数えないので、1 本あたりのサイズは別に縛る必要がある。
-// SSO ACS の SSO_ACS_MAX_BODY_BYTES と同じ考え方で、実際の読み取りは request-body-limit.ts が担う
-export const MAGIC_LINK_CALLBACK_MAX_BODY_BYTES = 64 * 1024;
+// ボディの最大バイト数 (`MAGIC_LINK_CALLBACK_MAX_BODY_BYTES`) は `auth-body-limits.ts` へ移した。
+// 理由は SSO ACS の分と同じ (`next.config.ts` の読み込みグラフに入るモジュールへ `@/` 禁止の
+// 制約が伝播するのを避けるため。経緯は `auth-body-limits.ts` 冒頭)。
 
 // 32 byte (256 bit) のランダム値を URL 安全な base64url 文字列にして返す
 // base64url なので URL に直接入れても percent-encode が要らない

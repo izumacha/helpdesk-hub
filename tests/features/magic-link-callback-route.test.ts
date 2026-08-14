@@ -9,7 +9,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { __resetRateLimits } from '@/lib/rate-limit';
 // ボディサイズ上限はルートと同じ定義を参照する (テストに閾値を直書きすると、
 // 上限を変えたときにテストが境界を突かなくなったことに気付けない §6)
-import { MAGIC_LINK_CALLBACK_MAX_BODY_BYTES } from '@/lib/magic-link';
+import { MAGIC_LINK_CALLBACK_MAX_BODY_BYTES } from '@/lib/auth-body-limits';
 
 // signIn をスパイに差し替える。「上限超過の本文はトークン消費 (DB 参照) まで到達しない」ことを
 // 表明するために必要で、これが無いと上限を撤去してもリダイレクト先は同じ magic-link-invalid の

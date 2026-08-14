@@ -40,10 +40,9 @@ import { redirect } from 'next/navigation';
 // HTML に外部由来文字列を安全に差し込むためのエスケープ関数 (XSS 対策)
 import { escapeHtml } from '@/lib/html-escape';
 // トークン消費 (POST) 側の固定キーレート制限値 (監査で発見したギャップ対応)
-import {
-  MAGIC_LINK_CALLBACK_RATE_LIMIT,
-  MAGIC_LINK_CALLBACK_MAX_BODY_BYTES,
-} from '@/lib/magic-link';
+import { MAGIC_LINK_CALLBACK_RATE_LIMIT } from '@/lib/magic-link';
+// この経路が受け付けるボディの上限 (入口の枠の導出元にもなるため定数だけのファイルに分けてある)
+import { MAGIC_LINK_CALLBACK_MAX_BODY_BYTES } from '@/lib/auth-body-limits';
 // ボディをストリームで読みつつバイト数上限で打ち切ってからフォームにする共通ヘルパー
 // (§9 リクエストサイズの上限。SSO ACS と同じものを使う)
 import {

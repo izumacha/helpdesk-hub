@@ -20,7 +20,7 @@
 import { describe, expect, it } from 'vitest';
 // ソースを走査して「上限の定義漏れ」を拾うため (Node 標準の同期 API で十分)
 import { readFileSync, readdirSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { join } from 'node:path';
 // 入口の枠と、Next.js の既定値 (設定しないとどうなるかを示すための参照値)
 import {
   ENTRY_MAX_BODY_BYTES,
@@ -41,8 +41,7 @@ import {
   ATTACHMENT_UPLOAD_MAX_BODY_BYTES,
   TICKET_JSON_MAX_BODY_BYTES,
 } from '@/lib/ticket-body-limits';
-import { SSO_ACS_MAX_BODY_BYTES } from '@/lib/sso-rate-limit';
-import { MAGIC_LINK_CALLBACK_MAX_BODY_BYTES } from '@/lib/magic-link';
+import { MAGIC_LINK_CALLBACK_MAX_BODY_BYTES, SSO_ACS_MAX_BODY_BYTES } from '@/lib/auth-body-limits';
 
 // 定数名・経路名・上限値の対応表。経路名を添えておくと、失敗したときにどの経路が溢れたのかが分かる。
 // **定数名を持たせているのは、この表自体が古びていないことを検査するため** — 表が導出元
@@ -72,6 +71,8 @@ const REPO_ROOT = join(__dirname, '..');
 const SRC_DIR = join(REPO_ROOT, 'src');
 // 導出元 (この一覧に登録されていない上限を落としたい)
 const ENTRY_MODULE_PATH = join(SRC_DIR, 'lib', 'entry-body-limit.ts');
+// Next.js 自身の手順で読み込めるか試す設定ファイル
+const NEXT_CONFIG_PATH = join(REPO_ROOT, 'next.config.ts');
 // 上限つき読み取り関数の定義元 (呼び出し側の検査では対象外にする)
 const BOUNDED_READ_MODULE_PATH = join(SRC_DIR, 'lib', 'request-body-limit.ts');
 // 経路上限の命名規約。この名前で export されたものを「経路の上限」とみなす。
@@ -85,13 +86,35 @@ const ROUTE_LIMIT_EXPORT_BLOCK_PATTERN = /export\s*\{([^}]*)\}/g;
 // export ブロックの中に並ぶ名前のうち、経路上限の命名に合うもの
 const ROUTE_LIMIT_NAME_PATTERN = /\b([A-Z0-9_]*_MAX_BODY_BYTES)\b/g;
 
+// 行コメント (`// ...`) とブロックコメント (`/* ... */`) を落とすためのパターン
+const COMMENT_PATTERN = /\/\*[\s\S]*?\*\/|\/\/[^\n]*/g;
+
+/**
+ * コメントを取り除いたソースを返す (中身は同じ長さの空白に置き換える)。
+ *
+ * **本リポジトリではコメントを外さないと誤検知する。** CLAUDE.md §5 が 1 行ごとの日本語
+ * コメントを求めているため、`readFormWithinByteLimit()` のような字面が解説文に出てくるのは
+ * 普通のこと (実際 src/ 配下に 7 箇所ある)。それを呼び出しとして拾うと、引数が無いので
+ * 「解析できなかった」= 違反として報告され、**コメントを書いただけでテストが落ちる**。
+ * 長さを保つために空白へ置き換えるのは、元のソースと位置がずれないようにするため
+ * (将来ここで行番号を報告したくなったときに効く)。
+ */
+function stripComments(source: string): string {
+  // コメント部分を、同じ長さの空白列に置き換える
+  return source.replace(COMMENT_PATTERN, (matched) => ' '.repeat(matched.length));
+}
+
 /**
  * 1 ファイルのソースから、経路上限として公開されている定数名をすべて拾う。
  *
  * 宣言 (`export const X = ...`) と、宣言と分けた公開 (`export { X }`) の 2 形式を見る。
  * 同じ名前が両方で出てくることがあるので呼び出し側で重複を許す前提にしてある。
  */
-function exportedRouteLimitNames(source: string): string[] {
+function exportedRouteLimitNames(rawSource: string): string[] {
+  // 解説コメントに書かれた同じ字面を宣言・公開と取り違えないよう、先にコメントを落とす
+  // (これを怠ると、コメント 1 行で未登録の上限が「登録済み」に化けたり、逆にコメントを
+  //  書いただけでテストが落ちたりする。どちらも実際に起きることを確認済み)
+  const source = stripComments(rawSource);
   // 宣言形式で公開されている名前
   const declared = [...source.matchAll(ROUTE_LIMIT_DECLARATION_PATTERN)].map((m) => m[1]);
   // export ブロック形式で公開されている名前 (ブロックの中身だけを対象にする)
@@ -123,6 +146,20 @@ function registeredRouteLimitNames(entrySource: string): string[] {
   return [...block[1].matchAll(REGISTRY_ENTRY_PATTERN)].map((m) => m[1]);
 }
 
+// パス区切り (POSIX/Windows いずれの表記でも同じ判定になるようにする)
+const PATH_SEGMENT_SEPARATORS = ['/', '\\'];
+
+/**
+ * 生成物ディレクトリ (`src/generated/`) 配下かどうかを、**パス区切り単位**で判定する。
+ *
+ * 単純な前方一致にすると `generated-reports/limits.ts` のような別ディレクトリまで
+ * 走査対象から外れ、そこに置かれた上限が検出網に入らなくなる。
+ */
+function isGeneratedPath(relativePath: string): boolean {
+  // ディレクトリ名がちょうど `generated` で、その直後が区切り文字であることを求める
+  return PATH_SEGMENT_SEPARATORS.some((sep) => relativePath.startsWith(`generated${sep}`));
+}
+
 /**
  * 走査対象のソースファイル (`src/` 配下の .ts / .tsx。生成物は除く) を絶対パスで返す。
  *
@@ -132,26 +169,8 @@ function registeredRouteLimitNames(entrySource: string): string[] {
 function sourceFiles(): string[] {
   // src/ 配下を再帰的にたどり、対象拡張子だけを絶対パスにして返す
   return readdirSync(SRC_DIR, { recursive: true, encoding: 'utf8' })
-    .filter((rel) => (rel.endsWith('.ts') || rel.endsWith('.tsx')) && !rel.startsWith('generated'))
+    .filter((rel) => (rel.endsWith('.ts') || rel.endsWith('.tsx')) && !isGeneratedPath(rel))
     .map((rel) => join(SRC_DIR, rel));
-}
-
-// 行コメント (`// ...`) とブロックコメント (`/* ... */`) を落とすためのパターン
-const COMMENT_PATTERN = /\/\*[\s\S]*?\*\/|\/\/[^\n]*/g;
-
-/**
- * コメントを取り除いたソースを返す (中身は同じ長さの空白に置き換える)。
- *
- * **本リポジトリではコメントを外さないと誤検知する。** CLAUDE.md §5 が 1 行ごとの日本語
- * コメントを求めているため、`readFormWithinByteLimit()` のような字面が解説文に出てくるのは
- * 普通のこと (実際 src/ 配下に 7 箇所ある)。それを呼び出しとして拾うと、引数が無いので
- * 「解析できなかった」= 違反として報告され、**コメントを書いただけでテストが落ちる**。
- * 長さを保つために空白へ置き換えるのは、元のソースと位置がずれないようにするため
- * (将来ここで行番号を報告したくなったときに効く)。
- */
-function stripComments(source: string): string {
-  // コメント部分を、同じ長さの空白列に置き換える
-  return source.replace(COMMENT_PATTERN, (matched) => ' '.repeat(matched.length));
 }
 
 // 上限つき読み取りの呼び出し位置を見つけるためのパターン (引数の切り出しは下の関数が行う)
@@ -250,51 +269,33 @@ function boundedReadCallsWithUnregisteredLimit(files: string[], registered: stri
   return [...offenders].sort();
 }
 
-// import / re-export の指定子 (`from '...'`) を拾うためのパターン
-const IMPORT_SPECIFIER_PATTERN = /(?:^|\s)(?:import|export)\b[^;]*?from\s+['"]([^'"]+)['"]/gm;
+// 上限つき読み取り関数を別名で import している箇所を見つけるためのパターン
+// (`import { readTextWithinByteLimit as readBounded } from '@/lib/request-body-limit'`)
+const BOUNDED_READ_ALIAS_IMPORT_PATTERN =
+  /import\s*\{([^}]*)\}\s*from\s*['"][^'"]*request-body-limit['"]/g;
+// import ブロックの中の「元の名前 as 別名」表記
+const IMPORT_RENAME_PATTERN = /\b(read(?:Body|Form|Text)WithinByteLimit)\s+as\s+(\w+)/g;
 
 /**
- * `next.config.ts` から `entry-body-limit.ts` を辿って読まれるモジュールのうち、
- * `@/` エイリアスを使っているものを `ファイル: 指定子` の形で返す (空なら違反なし)。
+ * 上限つき読み取り関数を**別名で import している**箇所を返す (空なら違反なし)。
  *
- * **これは `npm run build` でしか落ちない種類の退行を、その手前で落とすための検査。**
- * Next.js は next.config.ts を独自に transpile して `require` するが、tsconfig の `paths` を
- * 書き換えるのは next.config.ts 自身の import だけで、そこから先の `@/...` は解決されない。
- * ところが `npm run typecheck` は tsconfig の `paths` があるので通り、`npm run test` も
- * vitest の alias 解決で通ってしまう。**速い検査を全部すり抜けて重い e2e ジョブのビルドで
- * 初めて落ちる**ため、ここで機械的に押さえる (実測: `magic-link.ts` の 1 行を `@/` に
- * 戻すと typecheck とユニットテストは通ったまま、config のロードだけが失敗する)。
+ * 呼び出し検査は関数名そのものを手掛かりにしているため、`readBounded(req, 200 * 1024 * 1024)`
+ * のように別名を付けられると呼び出しごと検出網から消える。名前を変えられないようにして
+ * 手掛かりを守る (別名が必要になったら、まずこの検査の作り直しから考えること)。
  */
-function aliasImportsInEntryClosure(): string[] {
-  // 違反 (ファイルと指定子の組) を溜める入れ物
+function boundedReadAliasImports(files: string[]): string[] {
+  // 違反 (ファイルと別名) を溜める入れ物
   const offenders: string[] = [];
-  // これから辿るファイルの待ち行列 (起点は導出元モジュール)
-  const queue = [ENTRY_MODULE_PATH];
-  // 一度辿ったファイルを覚えておく (循環 import で無限ループしないため)
-  const visited = new Set<string>();
-  // 待ち行列が空になるまで辿る
-  while (queue.length > 0) {
-    // 次に見るファイル
-    const file = queue.pop() as string;
-    // すでに見たファイルは飛ばす
-    if (visited.has(file)) continue;
-    // 見たことを記録する
-    visited.add(file);
-    // コメント中の `from '@/...'` を拾わないよう、ここでもコメントを落としてから読む
+  // 1 ファイルずつ import 文を見る
+  for (const file of files) {
+    // コメント中の例示を拾わないよう、ここでもコメントを落としてから読む
     const source = stripComments(readFileSync(file, 'utf8'));
-    // このファイルが持つ import / re-export の指定子を順に見る
-    for (const match of source.matchAll(IMPORT_SPECIFIER_PATTERN)) {
-      // 指定子 (`./foo` や `@/lib/foo` など)
-      const specifier = match[1];
-      // エイリアスを使っていたら違反として記録し、その先は辿らない
-      if (specifier.startsWith('@/')) {
-        offenders.push(`${file}: ${specifier}`);
-        continue;
+    // request-body-limit からの import ブロックを順に見る
+    for (const block of source.matchAll(BOUNDED_READ_ALIAS_IMPORT_PATTERN)) {
+      // ブロックの中に「元の名前 as 別名」があれば違反
+      for (const rename of block[1].matchAll(IMPORT_RENAME_PATTERN)) {
+        offenders.push(`${file}: ${rename[1]} as ${rename[2]}`);
       }
-      // 相対指定子でなければ外部パッケージなので辿らない
-      if (!specifier.startsWith('.')) continue;
-      // 相対指定子を絶対パスの .ts ファイルに直して待ち行列へ積む
-      queue.push(join(dirname(file), `${specifier}.ts`));
     }
   }
   // 失敗時のメッセージを安定させるため並べ替えて返す
@@ -388,10 +389,24 @@ describe('入口 (proxy) のボディ複製上限', () => {
     expect(unregisteredRouteLimitNames(sourceFiles())).toEqual([]);
   });
 
-  it('next.config.ts から辿るモジュールに `@/` エイリアスが混じっていない', () => {
-    // 混じると `npm run build` だけが落ちる (typecheck もユニットテストも通ってしまう)。
-    // 速い検査ですり抜ける退行なので、ここで押さえる
-    expect(aliasImportsInEntryClosure()).toEqual([]);
+  it('Next.js 自身の手順で next.config.ts を読み込める', async () => {
+    // **ここは近似ではなく実物を通す。** `import nextConfig from '../next.config'` は
+    // vitest のエイリアス解決を通るので、Next.js が config を読むときの制約
+    // (自身の import しか `paths` を書き換えない = 連鎖の先の `@/...` は解決できない) を
+    // 再現しない。実際 `entry-body-limit.ts` の連鎖に `@/` を 1 本混ぜると
+    // typecheck もユニットテストも通ったまま `npm run build` だけが落ちる。
+    // Next.js の transpile 手順をそのまま呼んで、その退行を速い検査で捕まえる
+    const { transpileConfig } = await import('next/dist/build/next-config-ts/transpile-config');
+    // next.config.ts を Next.js と同じ方法で読み込む (失敗すれば例外でこのテストが落ちる)。
+    // 戻り値はモジュール名前空間の形なので、default export を取り出して中身を見る
+    const loaded = await transpileConfig({ nextConfigPath: NEXT_CONFIG_PATH, dir: REPO_ROOT });
+    // 読み込めた設定が、導出した枠をそのまま渡していることまで確認する
+    expect(loaded.default?.experimental?.proxyClientMaxBodySize).toBe(ENTRY_MAX_BODY_BYTES);
+  });
+
+  it('上限つき読み取り関数が別名で import されていない', () => {
+    // 別名を付けられると呼び出し検査 (関数名が手掛かり) が丸ごと素通りする
+    expect(boundedReadAliasImports(sourceFiles())).toEqual([]);
   });
 
   it('上限つき読み取りの呼び出しが登録済みの定数だけを上限に使っている', () => {

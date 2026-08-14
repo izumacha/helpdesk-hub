@@ -77,10 +77,16 @@
 // **next.config.ts 自身の import だけ**で、しかも書き換え先が baseUrl 基準の `./src/lib/x` に
 // なる。そこから先のモジュールが `@/...` を持っていると、書き換えられないまま Node の
 // 解決に回って `Cannot find module` でビルドが落ちる (相対パスならそのまま解決される)。
-// この連鎖の内側にあるのは `ticket-body-limits.ts` → `domain/attachment`、
-// `magic-link.ts` → `html-escape` の 2 本で、そちらにも同じ理由の注記がある。
+// **連鎖に入れるのは「定数だけのファイル」に限る。** 実行時コードを持つモジュールを
+// 引き込むと、そちらにまで「相対 import のままにすること」という制約が伝播してしまう
+// (元は `magic-link.ts` / `sso-rate-limit.ts` / `html-escape.ts` がそうなっていたので、
+// 認証系 2 経路の上限を `auth-body-limits.ts` へ切り出して連鎖から外した)。
+// 現在の連鎖は `webhook-body-limits.ts` / `auth-body-limits.ts` /
+// `ticket-body-limits.ts` → `domain/attachment` の 4 ファイルで、いずれも定数だけを持つ。
 // **経路上限の import をここへ足すときは、その先の連鎖まで相対パスに揃えること。**
 // 揃えないと `npm run build` が落ちる (typecheck とユニットテストは通るので気付きにくい)。
+// この不変条件は `tests/entry-body-limit.test.ts` が Next.js 自身の transpile 手順で
+// config を読み込んで機械的に確認する。
 //
 // 受信 Webhook 3 経路 (LINE / メール取り込み / Stripe) の上限
 import {
@@ -90,17 +96,15 @@ import {
 } from './webhook-body-limits';
 // 認証済みのチケット書き込み 2 経路 (添付付き multipart / 添付なし JSON) の上限
 import { ATTACHMENT_UPLOAD_MAX_BODY_BYTES, TICKET_JSON_MAX_BODY_BYTES } from './ticket-body-limits';
-// SSO ACS (SAML アサーション POST) の上限
-import { SSO_ACS_MAX_BODY_BYTES } from './sso-rate-limit';
-// マジックリンクのコールバック (POST) の上限
-import { MAGIC_LINK_CALLBACK_MAX_BODY_BYTES } from './magic-link';
+// 未認証で到達できる認証系 2 経路 (SSO ACS / マジックリンクのコールバック) の上限
+import { MAGIC_LINK_CALLBACK_MAX_BODY_BYTES, SSO_ACS_MAX_BODY_BYTES } from './auth-body-limits';
 
 /**
  * 経路ごとに決めてあるボディ上限の一覧。
  *
  * **入口の上限を導出するためだけの集約で、ここを経路の「正本」にしない。** 各経路の値は
- * それぞれの置き場 (`webhook-body-limits.ts` / `ticket-body-limits.ts` / `sso-rate-limit.ts` /
- * `magic-link.ts`) が持ち、ここは参照するだけ。
+ * それぞれの置き場 (`webhook-body-limits.ts` / `ticket-body-limits.ts` /
+ * `auth-body-limits.ts`) が持ち、ここは参照するだけ。
  *
  * **登録漏れはテストが機械的に落とす。** `tests/entry-body-limit.test.ts` が `src/` 配下から
  * `export const *_MAX_BODY_BYTES` を全部拾い、この配列に載っていないものがあれば失敗する。
