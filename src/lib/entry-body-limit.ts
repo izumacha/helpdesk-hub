@@ -55,21 +55,29 @@
 // 入口で滞留している間は掛からない。ここを縛るのは本設定の枠と、Node の
 // サーバー既定 `requestTimeout` (300 秒) だけである。
 
+// **以下の import だけ `@/` エイリアスではなく相対パスで書く (このファイルの特例)。**
+// `next.config.ts` が本モジュールを import するため。Next.js は next.config.ts を独自に
+// transpile して `require` するが、そのとき tsconfig の `paths` を書き換えるのは
+// **next.config.ts 自身の import だけ**で、しかも書き換え先が baseUrl 基準の `./src/lib/x` に
+// なる。そこから先のモジュールが `@/...` を持っていると、書き換えられないまま Node の
+// 解決に回って `Cannot find module` でビルドが落ちる (相対パスならそのまま解決される)。
+// この連鎖の内側にあるのは `ticket-body-limits.ts` → `domain/attachment`、
+// `magic-link.ts` → `html-escape` の 2 本で、そちらにも同じ理由の注記がある。
+// **経路上限の import をここへ足すときは、その先の連鎖まで相対パスに揃えること。**
+// 揃えないと `npm run build` が落ちる (typecheck とユニットテストは通るので気付きにくい)。
+//
 // 受信 Webhook 3 経路 (LINE / メール取り込み / Stripe) の上限
 import {
   INBOUND_EMAIL_MAX_BODY_BYTES,
   LINE_WEBHOOK_MAX_BODY_BYTES,
   STRIPE_WEBHOOK_MAX_BODY_BYTES,
-} from '@/lib/webhook-body-limits';
+} from './webhook-body-limits';
 // 認証済みのチケット書き込み 2 経路 (添付付き multipart / 添付なし JSON) の上限
-import {
-  ATTACHMENT_UPLOAD_MAX_BODY_BYTES,
-  TICKET_JSON_MAX_BODY_BYTES,
-} from '@/lib/ticket-body-limits';
+import { ATTACHMENT_UPLOAD_MAX_BODY_BYTES, TICKET_JSON_MAX_BODY_BYTES } from './ticket-body-limits';
 // SSO ACS (SAML アサーション POST) の上限
-import { SSO_ACS_MAX_BODY_BYTES } from '@/lib/sso-rate-limit';
+import { SSO_ACS_MAX_BODY_BYTES } from './sso-rate-limit';
 // マジックリンクのコールバック (POST) の上限
-import { MAGIC_LINK_CALLBACK_MAX_BODY_BYTES } from '@/lib/magic-link';
+import { MAGIC_LINK_CALLBACK_MAX_BODY_BYTES } from './magic-link';
 
 /**
  * 経路ごとに決めてあるボディ上限の一覧。
@@ -129,12 +137,8 @@ export const ENTRY_OVER_LIMIT_MARGIN_MIN_BYTES = 64 * 1024;
  * `next.config.ts` の `experimental.proxyClientMaxBodySize` が取るべき値。ここが経路の上限より
  * 小さいと、その経路は「ルートが受け付けるつもりのサイズ」を入口で切り詰められる。
  *
- * **next.config.ts はこの定数を import できない。** Next.js は next.config.ts を独自に
- * transpile して `require` するが、tsconfig の `paths` を書き換えるのは next.config.ts 自身の
- * import だけで、そこから先のモジュールが持つ `@/...` は解決されない (実測: 本モジュールを
- * import させると `Cannot find module './src/lib/webhook-body-limits'` でビルドが落ちる)。
- * そのため向こうには同じ値を数値で書き、一致は `tests/entry-body-limit.test.ts` が固定する
- * — 導出の根拠 (どの経路の上限を数えているか) はこちらに 1 つだけ置いたままにできる。
+ * `next.config.ts` はこの定数を**そのまま import する**ので、値の書き写しは無い
+ * (そのために本モジュールと連鎖するモジュールだけ相対パス import にしてある。上の注記を参照)。
  */
 export const ENTRY_MAX_BODY_BYTES =
   Math.max(...ROUTE_MAX_BODY_BYTES) + ENTRY_OVER_LIMIT_MARGIN_BYTES;

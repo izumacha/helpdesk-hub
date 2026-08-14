@@ -44,15 +44,26 @@ import {
 import { SSO_ACS_MAX_BODY_BYTES } from '@/lib/sso-rate-limit';
 import { MAGIC_LINK_CALLBACK_MAX_BODY_BYTES } from '@/lib/magic-link';
 
-// 経路名と上限の対応表。名前を添えておくと、失敗したときにどの経路が溢れたのかが分かる
-const ROUTE_LIMITS: ReadonlyArray<readonly [string, number]> = [
-  ['POST /api/inbound/line', LINE_WEBHOOK_MAX_BODY_BYTES],
-  ['POST /api/inbound/email', INBOUND_EMAIL_MAX_BODY_BYTES],
-  ['POST /api/webhooks/stripe', STRIPE_WEBHOOK_MAX_BODY_BYTES],
-  ['POST /api/tickets (multipart)', ATTACHMENT_UPLOAD_MAX_BODY_BYTES],
-  ['POST /api/tickets (json)', TICKET_JSON_MAX_BODY_BYTES],
-  ['POST /api/auth/sso/[tenantId]/acs', SSO_ACS_MAX_BODY_BYTES],
-  ['POST /api/auth/magic-link/callback', MAGIC_LINK_CALLBACK_MAX_BODY_BYTES],
+// 定数名・経路名・上限値の対応表。経路名を添えておくと、失敗したときにどの経路が溢れたのかが分かる。
+// **定数名を持たせているのは、この表自体が古びていないことを検査するため** — 表が導出元
+// (`ROUTE_MAX_BODY_BYTES`) と食い違うと、新しい経路が下のケース群から丸ごと抜け落ち、
+// 「枠を下回らない」「余白がある」の両方が古い最大値のまま通ってしまう
+const ROUTE_LIMITS: ReadonlyArray<readonly [string, string, number]> = [
+  ['LINE_WEBHOOK_MAX_BODY_BYTES', 'POST /api/inbound/line', LINE_WEBHOOK_MAX_BODY_BYTES],
+  ['INBOUND_EMAIL_MAX_BODY_BYTES', 'POST /api/inbound/email', INBOUND_EMAIL_MAX_BODY_BYTES],
+  ['STRIPE_WEBHOOK_MAX_BODY_BYTES', 'POST /api/webhooks/stripe', STRIPE_WEBHOOK_MAX_BODY_BYTES],
+  [
+    'ATTACHMENT_UPLOAD_MAX_BODY_BYTES',
+    'POST /api/tickets (multipart)',
+    ATTACHMENT_UPLOAD_MAX_BODY_BYTES,
+  ],
+  ['TICKET_JSON_MAX_BODY_BYTES', 'POST /api/tickets (json)', TICKET_JSON_MAX_BODY_BYTES],
+  ['SSO_ACS_MAX_BODY_BYTES', 'POST /api/auth/sso/[tenantId]/acs', SSO_ACS_MAX_BODY_BYTES],
+  [
+    'MAGIC_LINK_CALLBACK_MAX_BODY_BYTES',
+    'POST /api/auth/magic-link/callback',
+    MAGIC_LINK_CALLBACK_MAX_BODY_BYTES,
+  ],
 ];
 
 // リポジトリのルート (このテストファイルは <root>/tests/ にあるので 1 つ上)
@@ -61,6 +72,8 @@ const REPO_ROOT = join(__dirname, '..');
 const SRC_DIR = join(REPO_ROOT, 'src');
 // 導出元 (この一覧に登録されていない上限を落としたい)
 const ENTRY_MODULE_PATH = join(SRC_DIR, 'lib', 'entry-body-limit.ts');
+// 上限つき読み取り関数の定義元 (呼び出し側の検査では対象外にする)
+const BOUNDED_READ_MODULE_PATH = join(SRC_DIR, 'lib', 'request-body-limit.ts');
 // 経路上限の命名規約。この名前で export されたものを「経路の上限」とみなす。
 // **`*_MAX_BODY_BYTES` という命名に乗っていることが検出の前提**で、`MAX_UPLOAD_BYTES` のように
 // 規約から外れた名前は拾えない (拾えないと入口の枠が追随せず、静かな切り詰めが戻る)。
@@ -111,25 +124,72 @@ function registeredRouteLimitNames(entrySource: string): string[] {
 }
 
 /**
+ * 走査対象のソースファイル (`src/` 配下の .ts / .tsx。生成物は除く) を絶対パスで返す。
+ *
+ * `.tsx` も見るのは、上限がコンポーネント側 (フォームの事前検査など) に置かれても
+ * 検出網から外れないようにするため。
+ */
+function sourceFiles(): string[] {
+  // src/ 配下を再帰的にたどり、対象拡張子だけを絶対パスにして返す
+  return readdirSync(SRC_DIR, { recursive: true, encoding: 'utf8' })
+    .filter((rel) => (rel.endsWith('.ts') || rel.endsWith('.tsx')) && !rel.startsWith('generated'))
+    .map((rel) => join(SRC_DIR, rel));
+}
+
+// 上限つき読み取りの呼び出しと、その第 2 引数 (maxBytes) を切り出すためのパターン。
+// 第 1 引数 (リクエスト) はカッコ・カンマを含まない識別子なので `[^,()]+` で足り、
+// 改行をまたぐ複数行の呼び出しにもそのまま当たる
+const BOUNDED_READ_CALL_PATTERN =
+  /read(?:Body|Form|Text)WithinByteLimit\(\s*[^,()]+,\s*([^,)\s]+)/g;
+
+/**
+ * `readBodyWithinByteLimit` 系へ、名前付き定数**以外**を上限として渡している呼び出しを返す
+ * (空なら全呼び出しが命名規約に乗っている)。
+ *
+ * 下の登録漏れ検出は「`*_MAX_BODY_BYTES` という名前で export されているか」を手掛かりにするので、
+ * `readFormWithinByteLimit(req, 100 * 1024 * 1024)` のように**数値リテラルを直接渡された**経路は
+ * そもそも検出網に入らない。入らないと入口の枠がその経路に追随せず、本モジュールが潰したはずの
+ * 静かな切り詰めがノーチェックで戻る。ここで入口を塞いでおく。
+ */
+function boundedReadCallsWithoutNamedLimit(files: string[]): string[] {
+  // 規約から外れた呼び出しの「渡された式」を溜める入れ物
+  const offenders = new Set<string>();
+  // 1 ファイルずつ呼び出しを走査する
+  for (const file of files) {
+    // 読み取り関数そのものを定義しているモジュールは対象外。ここでの `maxBytes` は
+    // 呼び出し元から受け取った引数を転送しているだけで、経路の上限ではない
+    // (関数シグネチャ自体もこのパターンに一致してしまう)
+    if (file === BOUNDED_READ_MODULE_PATH) continue;
+    // ファイルの中身を文字列として読む
+    const source = readFileSync(file, 'utf8');
+    // 上限つき読み取りの呼び出しをすべて拾う
+    for (const match of source.matchAll(BOUNDED_READ_CALL_PATTERN)) {
+      // 第 2 引数として渡されたトークン
+      const maxBytesArgument = match[1];
+      // 命名規約に乗った定数ならよい
+      if (/^[A-Z0-9_]*_MAX_BODY_BYTES$/.test(maxBytesArgument)) continue;
+      // それ以外は、ファイル名を添えて報告する
+      offenders.add(`${file}: ${maxBytesArgument}`);
+    }
+  }
+  // 失敗時のメッセージを安定させるため並べ替えて返す
+  return [...offenders].sort();
+}
+
+/**
  * `src/` 配下で `*_MAX_BODY_BYTES` として export されているのに、
  * `ROUTE_MAX_BODY_BYTES` へ登録されていない定数名を返す (空なら登録漏れ無し)。
  *
  * 値ではなく**名前**を突き合わせるのは、各モジュールを動的 import すると
  * 将来重い依存 (Prisma 等) を持つモジュールが混ざったときにテストごと巻き添えになるため。
  */
-function unregisteredRouteLimitNames(): string[] {
+function unregisteredRouteLimitNames(files: string[]): string[] {
   // 導出元のソース
   const entrySource = readFileSync(ENTRY_MODULE_PATH, 'utf8');
   // 導出元自身が export する枠 (ENTRY_MAX_BODY_BYTES 等) は経路の上限ではないので除外する
   const ownExports = exportedRouteLimitNames(entrySource);
   // 一覧に登録済みの定数名 (完全一致で突き合わせる)
   const registered = registeredRouteLimitNames(entrySource);
-  // src/ 配下の .ts / .tsx を再帰的に集める (生成物は対象外)。
-  // .tsx も見るのは、上限がコンポーネント側 (フォームの事前検査など) に置かれても
-  // 検出網から外れないようにするため
-  const files = readdirSync(SRC_DIR, { recursive: true, encoding: 'utf8' })
-    .filter((rel) => (rel.endsWith('.ts') || rel.endsWith('.tsx')) && !rel.startsWith('generated'))
-    .map((rel) => join(SRC_DIR, rel));
   // 登録漏れの定数名を溜める入れ物 (同じ名前を 2 度報告しないよう集合で持つ)
   const missing = new Set<string>();
   // 1 ファイルずつ、経路上限の export を拾って登録状況を見る
@@ -157,14 +217,26 @@ describe('入口 (proxy) のボディ複製上限', () => {
   // 直書きの数値に戻せば、その値が小さい経路をここが名指しで落とす。
   // 逆に、**登録漏れ (この表に現れない新経路) はここでは絶対に捕まらない**。それは下の
   // 完全性テストの担当で、両者は守備範囲が違う (片方があれば足りる関係ではない)。
-  it.each(ROUTE_LIMITS)('%s の上限 (%d バイト) を下回らない', (_route, limit) => {
+  it.each(ROUTE_LIMITS)('%s (%s) の上限 (%d バイト) を下回らない', (_name, _route, limit) => {
     // 入口の枠が経路の枠以上であることを確認する (下回ると本文が静かに切り詰められる)
     expect(ENTRY_MAX_BODY_BYTES).toBeGreaterThanOrEqual(limit);
   });
 
+  it('この表が導出元の登録一覧と一致している (表の古びを検出する)', () => {
+    // 表が導出元から取り残されると、新しい経路が上のケース群にも下の余白ケースにも現れず、
+    // どちらも古い最大値のまま通ってしまう。表そのものの鮮度をここで固定する
+    const listedNames = ROUTE_LIMITS.map(([name]) => name).sort();
+    // 導出元の配列リテラルに実際に並んでいる定数名
+    const registeredNames = registeredRouteLimitNames(
+      readFileSync(ENTRY_MODULE_PATH, 'utf8'),
+    ).sort();
+    // 過不足なく一致していることを確認する
+    expect(listedNames).toEqual(registeredNames);
+  });
+
   it('最大の経路上限に対して、超過を観測できるだけの余白を残している', () => {
     // 経路別上限の最大値 (入口の枠はこれを基準に余白を足したものになる)
-    const largestRouteLimit = Math.max(...ROUTE_LIMITS.map(([, limit]) => limit));
+    const largestRouteLimit = Math.max(...ROUTE_LIMITS.map(([, , limit]) => limit));
     // 余白が消えると「入口の枠 ≧ 各経路の枠」は成立したままなのに、ルート側が上限超過を
     // 観測できなくなり 413 が返せなくなる (chunked 転送の超過が 400 に化ける)。
     // 経路ごとの比較では捕まえられない退行なので、余白そのものをここで固定する
@@ -188,6 +260,12 @@ describe('入口 (proxy) のボディ複製上限', () => {
   it('src/ 配下の経路上限がすべて ROUTE_MAX_BODY_BYTES に登録されている', () => {
     // 導出元の一覧に載っていない上限があると、その経路だけ入口で切り詰められる。
     // 「足したら登録する」を人手の約束にせず、ここで機械的に落とす
-    expect(unregisteredRouteLimitNames()).toEqual([]);
+    expect(unregisteredRouteLimitNames(sourceFiles())).toEqual([]);
+  });
+
+  it('上限つき読み取りの呼び出しが名前付き定数だけを上限に使っている', () => {
+    // 数値リテラルを直接渡されると、上の登録漏れ検出 (名前が手掛かり) に引っかからず、
+    // その経路だけ入口の枠が追随しないまま静かに切り詰められる
+    expect(boundedReadCallsWithoutNamedLimit(sourceFiles())).toEqual([]);
   });
 });

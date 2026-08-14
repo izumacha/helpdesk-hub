@@ -11,7 +11,11 @@
  */
 
 // HTML 本文に外部由来文字列を差し込む前のエスケープ (共有ヘルパーを再利用)
-import { escapeHtml } from '@/lib/html-escape';
+// **ここだけ `@/` エイリアスではなく相対パス**: 本モジュールは `entry-body-limit.ts` 経由で
+// `next.config.ts` から読まれる (`MAGIC_LINK_CALLBACK_MAX_BODY_BYTES` の参照元)。Next.js の
+// config transpile は next.config.ts 自身の import しか `paths` を書き換えないため、この連鎖の
+// 中に `@/...` が残るとビルドが落ちる (詳細は `entry-body-limit.ts` の import 直前のコメント)
+import { escapeHtml } from './html-escape';
 
 // マジックリンクの既定 TTL (15 分)。秒ではなくミリ秒で持つ
 export const MAGIC_LINK_TTL_MS = 15 * 60 * 1000;
