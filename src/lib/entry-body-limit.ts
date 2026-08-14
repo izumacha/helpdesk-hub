@@ -113,8 +113,12 @@ import { MAGIC_LINK_CALLBACK_MAX_BODY_BYTES, SSO_ACS_MAX_BODY_BYTES } from './au
  * 登録を人手の約束にしておくと、新しい経路の上限がここの最大値を超えたときに
  * 「入口だけが古い枠のまま」= 本ファイル冒頭に書いた静かな切り詰めがそのまま再発するため
  * (命名規約 `*_MAX_BODY_BYTES` に乗せることが、その検出の前提になる点に注意)。
+ *
+ * **公開しているのはテストが導出そのものを検算するため。** テスト側に同じ一覧を書き写すと、
+ * 経路を足したときにそちらだけ古くなり、「新しい経路が検査から丸ごと抜けているのに緑」という
+ * 状態になる (実際にその形で退行を作れることを確認した)。写さずにここを参照させる。
  */
-const ROUTE_MAX_BODY_BYTES = [
+export const ROUTE_MAX_BODY_BYTES = [
   LINE_WEBHOOK_MAX_BODY_BYTES, // LINE Webhook (256KB)
   INBOUND_EMAIL_MAX_BODY_BYTES, // メール取り込み (25MB)
   STRIPE_WEBHOOK_MAX_BODY_BYTES, // Stripe Webhook (1MB)
@@ -139,8 +143,12 @@ const ROUTE_MAX_BODY_BYTES = [
  * (`ENTRY_OVER_LIMIT_MARGIN_MIN_BYTES` = 64KB) 単位で、捨てられる「枠を跨ぐチャンク」が必ず
  * この中に収まるため (64KB でも足りるが、将来 highWaterMark が変わっても効くよう桁で余裕を取る)。
  * 経路の上限 51MB に対して約 2% で、メモリの見積もりを実質的に動かさない。
+ *
+ * **公開しているのはテストが「この値ちょうどで導出されていること」を固定するため。**
+ * 下限 (`ENTRY_OVER_LIMIT_MARGIN_MIN_BYTES`) だけを検査すると、余白を 64KB まで削っても
+ * テストが通ってしまい、上に書いた「highWaterMark が変わっても効く桁の余裕」が黙って消える。
  */
-const ENTRY_OVER_LIMIT_MARGIN_BYTES = 1024 * 1024;
+export const ENTRY_OVER_LIMIT_MARGIN_BYTES = 1024 * 1024;
 
 /**
  * 上の余白が最低限満たすべき大きさ (= Node のソケット読み取り 1 回ぶん / highWaterMark 64KB)。

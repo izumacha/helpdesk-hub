@@ -24,39 +24,13 @@ import { join } from 'node:path';
 // 入口の枠と、Next.js の既定値 (設定しないとどうなるかを示すための参照値)
 import {
   ENTRY_MAX_BODY_BYTES,
+  ENTRY_OVER_LIMIT_MARGIN_BYTES,
   ENTRY_OVER_LIMIT_MARGIN_MIN_BYTES,
   NEXT_DEFAULT_ENTRY_MAX_BODY_BYTES,
+  ROUTE_MAX_BODY_BYTES,
 } from '@/lib/entry-body-limit';
 // 実際に Next.js へ渡る設定オブジェクト (文字列一致ではなく値そのものを見る)
 import nextConfig from '../next.config';
-// 経路別の上限。導出元 (`ROUTE_MAX_BODY_BYTES`) を再利用せず各経路の置き場から個別に import する
-// のは、**この対応表そのものを「今どの経路にいくつの枠があるか」の読める一覧として残す**ため。
-// 検出力の分担は下の describe を参照 (登録漏れの検出はこの表ではなく完全性テストが担う)
-import {
-  INBOUND_EMAIL_MAX_BODY_BYTES,
-  LINE_WEBHOOK_MAX_BODY_BYTES,
-  STRIPE_WEBHOOK_MAX_BODY_BYTES,
-} from '@/lib/webhook-body-limits';
-import {
-  ATTACHMENT_UPLOAD_MAX_BODY_BYTES,
-  TICKET_JSON_MAX_BODY_BYTES,
-} from '@/lib/ticket-body-limits';
-import { MAGIC_LINK_CALLBACK_MAX_BODY_BYTES, SSO_ACS_MAX_BODY_BYTES } from '@/lib/auth-body-limits';
-
-// 経路別上限の一覧。**導出元 (`ROUTE_MAX_BODY_BYTES`) を再利用せず各経路の置き場から
-// 個別に import する** — 導出元ごと使うと「max を取っている」計算を同じ値で検算するだけになり、
-// 誰かが `ENTRY_MAX_BODY_BYTES` を直書きの数値に戻したときに気付けない。
-// 登録漏れ (この一覧に現れない新経路) の検出は下の完全性テストが担当する。
-const ROUTE_LIMITS = [
-  LINE_WEBHOOK_MAX_BODY_BYTES, // POST /api/inbound/line (256KB)
-  INBOUND_EMAIL_MAX_BODY_BYTES, // POST /api/inbound/email (25MB)
-  STRIPE_WEBHOOK_MAX_BODY_BYTES, // POST /api/webhooks/stripe (1MB)
-  ATTACHMENT_UPLOAD_MAX_BODY_BYTES, // POST /api/tickets (multipart, 51MB)
-  TICKET_JSON_MAX_BODY_BYTES, // POST /api/tickets (json, 128KB)
-  SSO_ACS_MAX_BODY_BYTES, // POST /api/auth/sso/[tenantId]/acs (1MB)
-  MAGIC_LINK_CALLBACK_MAX_BODY_BYTES, // POST /api/auth/magic-link/callback (64KB)
-];
-
 // リポジトリのルート (このテストファイルは <root>/tests/ にあるので 1 つ上)
 const REPO_ROOT = join(__dirname, '..');
 // 走査対象のソースディレクトリ
@@ -92,9 +66,10 @@ const ROUTE_LIMIT_NAME_PATTERN = /\b([A-Z0-9_]*_MAX_BODY_BYTES)\b/g;
  * 2 箇所が壊れていた)。文字列・テンプレートリテラルの中は消さないようにする。
  * 長さを保つために空白へ置き換えるのは、元のソースと位置がずれないようにするため。
  *
- * 正規表現リテラル (`/.../`) までは区別しない。その中に `//` を書くと行末まで消えるが、
- * 消える方向は「検出対象が減る」ではなく「解析できない」側に倒れる (カッコの対応が崩れる)
- * ため、見逃しではなく失敗として表に出る。
+ * 正規表現リテラル (`/.../`) までは区別しない。ただし `/*` を見つけたときは**閉じ記号が
+ * 存在する場合だけ**コメントとして扱う — そうしないと `/[/*]+/` のような文字クラスを
+ * コメント開始と誤認し、ファイル末尾まで塗り潰して以降の検出を黙って落としてしまう。
+ * 閉じ記号がある形で誤認した場合は、カッコの対応が崩れて「解析できない」= 失敗側に倒れる。
  */
 function stripComments(source: string): string {
   // 出力を 1 文字ずつ組み立てる入れ物
@@ -149,6 +124,15 @@ function stripComments(source: string): string {
       continue;
     }
     if (char === '/' && next === '*') {
+      // **閉じ記号が無いなら、ブロックコメントではないとみなす。** 正規表現リテラルの
+      // 文字クラス (`/[/*]+/` など) にも `/` `*` の並びは現れる。これをコメント開始と
+      // 誤認すると、閉じ記号が見つからないままファイル末尾まで空白で塗り潰され、
+      // **以降の宣言も呼び出しも検出網から黙って消える** (実際にその形で退行を作れた)。
+      // 見逃しは最も避けたい失敗なので、閉じ記号の有無で先に切り分ける
+      if (source.indexOf('*/', i + 2) === -1) {
+        out.push(char);
+        continue;
+      }
       state = 'block-comment';
       out.push('  ');
       i++;
@@ -396,23 +380,24 @@ function unregisteredRouteLimitNames(files: string[]): string[] {
 }
 
 describe('入口 (proxy) のボディ複製上限', () => {
-  it('経路別上限の最大値から導出されている (直書きへの差し替えを検出する)', () => {
-    // 経路別上限の最大値 (テスト側で独立に import した値から計算する)
-    const largestRouteLimit = Math.max(...ROUTE_LIMITS);
-    // 入口の枠が「最大値 + 余白」の形を保っていることを確認する。
-    // 誰かが導出をやめて数値を直書きすると、最大値との差が余白でなくなるのでここで落ちる
-    expect(ENTRY_MAX_BODY_BYTES).toBeGreaterThanOrEqual(largestRouteLimit);
+  it('入口の枠が「経路別上限の最大値 + 余白」ちょうどで導出されている', () => {
+    // 経路別上限の最大値 (導出元が公開している一覧から計算する)
+    const largestRouteLimit = Math.max(...ROUTE_MAX_BODY_BYTES);
+    // **不等号ではなく厳密等価で見るのが要点。** `>=` だと、導出をやめて数値を直書きした
+    // うえで新しい経路上限 (例: 200MB) を足したときに、入口の枠が追随していないのに
+    // 通ってしまう (実際にその形で退行を作れることを確認した)。厳密等価なら落ちる。
+    // なお「今の値と同じ数値を直書きしただけ」は等価なので通るが、それは現時点で害が無く、
+    // どこかの経路上限が動いた瞬間にここで落ちる。
+    // 一覧をテスト側に書き写さないのも同じ理由 — 写すと経路を足したときにそちらが古くなり、
+    // 「新しい経路が検査から丸ごと抜けているのに緑」になる
+    expect(ENTRY_MAX_BODY_BYTES).toBe(largestRouteLimit + ENTRY_OVER_LIMIT_MARGIN_BYTES);
   });
 
-  it('最大の経路上限に対して、超過を観測できるだけの余白を残している', () => {
-    // 経路別上限の最大値 (入口の枠はこれを基準に余白を足したものになる)
-    const largestRouteLimit = Math.max(...ROUTE_LIMITS);
-    // 余白が消えると「入口の枠 ≧ 各経路の枠」は成立したままなのに、ルート側が上限超過を
-    // 観測できなくなり 413 が返せなくなる (chunked 転送の超過が 400 に化ける)。
-    // 経路ごとの比較では捕まえられない退行なので、余白そのものをここで固定する
-    expect(ENTRY_MAX_BODY_BYTES - largestRouteLimit).toBeGreaterThanOrEqual(
-      ENTRY_OVER_LIMIT_MARGIN_MIN_BYTES,
-    );
+  it('余白が、超過を観測できる最小サイズを下回っていない', () => {
+    // 余白が小さすぎると、入口が捨てるチャンクの分だけルートが超過を観測できなくなり、
+    // chunked 転送の超過が 413 ではなく 400 に化ける。値そのものは上のケースが固定するので、
+    // ここは「その値が満たすべき下限」を独立に押さえる
+    expect(ENTRY_OVER_LIMIT_MARGIN_BYTES).toBeGreaterThanOrEqual(ENTRY_OVER_LIMIT_MARGIN_MIN_BYTES);
   });
 
   it('Next.js の既定 (10MB) では足りないことを明示する', () => {
