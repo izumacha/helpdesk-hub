@@ -38,6 +38,9 @@ import {
   NEXT_DEFAULT_ENTRY_MAX_BODY_BYTES,
   ROUTE_MAX_BODY_BYTES,
 } from '@/lib/entry-body-limit';
+// 前段プロキシの設定例が下回っていないか検算するための、経路側の実際の上限値
+import { INBOUND_EMAIL_MAX_BODY_BYTES } from '@/lib/webhook-body-limits';
+import { ATTACHMENT_UPLOAD_MAX_BODY_BYTES } from '@/lib/ticket-body-limits';
 // 実際に Next.js へ渡る設定オブジェクト (文字列一致ではなく値そのものを見る)
 import nextConfig from '../next.config';
 
@@ -67,6 +70,30 @@ const ROUTE_LIMIT_NAME_PATTERN = /^[A-Z0-9_]*_MAX_BODY_BYTES$/;
 const BOUNDED_READ_FUNCTION_NAME_PATTERN = /WithinByteLimit$/;
 // 上限つき読み取り関数を提供するモジュールの指定子 (別名 import を探すときの目印)
 const BOUNDED_READ_MODULE_SPECIFIER = 'request-body-limit';
+// 前段リバースプロキシの設定例を載せているドキュメント (値の陳腐化を機械的に落とす対象)
+const SECURITY_DOC_PATH = join(REPO_ROOT, 'docs', 'security.md');
+// nginx の `client_max_body_size 26m;` から経路と値を取り出すための走査パターン。
+// `location <path> { ... client_max_body_size <n>m; ... }` と、location の外に置いた既定値の
+// 両方を拾えるよう、行単位で素朴に見る (対象は自リポジトリの短い設定例だけなので十分)
+const NGINX_BODY_SIZE_PATTERN = /client_max_body_size\s+(\d+)m\s*;/;
+// nginx の location 行から経路を取り出すためのパターン
+const NGINX_LOCATION_PATTERN = /^\s*location\s+(\S+)\s*\{/;
+// ドキュメントの経路と、それが満たすべきアプリ側の上限の対応。
+// **値ではなく「どの定数と比べるか」だけを書く**ので、上限を変えてもここは古くならない
+const NGINX_ROUTE_EXPECTATIONS: { location: string; limitName: string; limitBytes: number }[] = [
+  {
+    location: '/api/inbound/email',
+    limitName: 'INBOUND_EMAIL_MAX_BODY_BYTES',
+    limitBytes: INBOUND_EMAIL_MAX_BODY_BYTES,
+  },
+  {
+    location: '/api/tickets',
+    limitName: 'ATTACHMENT_UPLOAD_MAX_BODY_BYTES',
+    limitBytes: ATTACHMENT_UPLOAD_MAX_BODY_BYTES,
+  },
+];
+// 1MB のバイト数 (nginx の `m` 表記との換算に使う)
+const BYTES_PER_MEGABYTE = 1024 * 1024;
 // パス区切り (POSIX/Windows いずれの表記でも同じ判定になるようにする)
 const PATH_SEGMENT_SEPARATORS = ['/', '\\'];
 
@@ -316,6 +343,101 @@ function exportedBoundedReadFunctionNames(): string[] {
 }
 
 /**
+ * `docs/security.md` §7 の nginx 設定例が、経路側の上限を下回っている箇所を返す
+ * (空なら全経路で「前段の枠 ≧ アプリの枠」が成立している)。
+ *
+ * **ここだけが人手の約束のまま残っていたので機械化する。** 入口の枠はコードから導出されるが、
+ * 前段プロキシの `client_max_body_size` はドキュメントへの直書きなので、経路上限を引き上げても
+ * 追随しない。実際 `MAX_ATTACHMENT_SIZE_BYTES` を倍にしても全テストは緑のままで、
+ * ドキュメントだけが古くなった。その状態で配備すると、上限内の正規リクエストが前段で切られ、
+ * ブラウザには原因の分からない接続断として見える (`src/domain/attachment.ts` の事前検査が
+ * 避けようとしている失敗そのもの)。
+ *
+ * 比較は「下回っていないこと」だけを見る。設定例は経路の上限に余裕を足した値なので、
+ * 余裕の取り方 (現状 +1MB) まで固定すると、余裕を見直すだけで落ちる変更検知になってしまう。
+ */
+function staleNginxBodySizes(): string[] {
+  // ドキュメントを 1 行ずつ読む (対象は §7 の短い設定例だけなので素朴な走査で足りる)
+  const lines = readFileSync(SECURITY_DOC_PATH, 'utf8').split('\n');
+  // 違反を溜める入れ物
+  const offenders: string[] = [];
+  // いま読んでいる行がどの location の中にいるか (location の外なら undefined)
+  let currentLocation: string | undefined;
+  // 1 行ずつ見る
+  for (const line of lines) {
+    // location の開始行なら、以降の client_max_body_size はその経路のものとして扱う
+    const locationMatch = line.match(NGINX_LOCATION_PATTERN);
+    if (locationMatch) currentLocation = locationMatch[1];
+    // サイズ指定が無ければ次の行へ
+    const sizeMatch = line.match(NGINX_BODY_SIZE_PATTERN);
+    if (!sizeMatch) {
+      // 閉じ括弧だけの行なら location を抜けたとみなす
+      if (line.trim() === '}') currentLocation = undefined;
+      continue;
+    }
+    // 期待値の表にこの経路が載っていなければ検査対象外 (既定値の行など)
+    const expectation = NGINX_ROUTE_EXPECTATIONS.find((e) => e.location === currentLocation);
+    if (!expectation) continue;
+    // `26m` をバイト数へ直す
+    const documentedBytes = Number(sizeMatch[1]) * BYTES_PER_MEGABYTE;
+    // 経路の上限を下回っていれば違反として記録する
+    if (documentedBytes < expectation.limitBytes)
+      offenders.push(
+        `${expectation.location}: docs は ${sizeMatch[1]}m だが ${expectation.limitName} は ${expectation.limitBytes} バイト`,
+      );
+  }
+  // 期待した経路が設定例から消えていたら、それも検査が空回りする合図なので違反にする
+  for (const expectation of NGINX_ROUTE_EXPECTATIONS) {
+    // 設定例に location 行があるか見る
+    const found = lines.some(
+      (line) => line.match(NGINX_LOCATION_PATTERN)?.[1] === expectation.location,
+    );
+    // 無ければ違反として記録する
+    if (!found)
+      offenders.push(`${expectation.location}: docs/security.md §7 に location がありません`);
+  }
+  // 失敗時のメッセージを安定させるため並べ替えて返す
+  return offenders.sort();
+}
+
+/**
+ * 読み取り関数のモジュールを**名前空間として取り込んでいる**箇所を返す (空なら違反なし)。
+ *
+ * **個別の抜け道を潰し続けるのをやめるための、構造的な封じ手。**
+ * 呼び出し検査は「呼び出している関数名」を手掛かりにするので、名前空間オブジェクトを一度
+ * 手元に持たれると、そこから名前を付け替える方法がいくらでも生える:
+ *   - `const read = rbl.readBodyWithinByteLimit;`（プロパティアクセスでの捕捉）
+ *   - `const { readFormWithinByteLimit: readForm } = rbl;`（分割代入での改名）
+ *   - `const read = rbl['readBodyWithinByteLimit'];`（要素アクセス）
+ * いずれも呼び出し側の識別子が別名になるため検査を素通りする (実測で 3 形とも再現した)。
+ * 形ごとに検査を足していくと同じ種類の穴が出続けるので、**入口である名前空間 import 自体を
+ * 禁じて**手掛かりが失われる経路をまとめて断つ。名前付き import (`import { readX }`) は
+ * 別名禁止と併せて名前が保たれるので、そちらだけを使う。
+ */
+function boundedReadNamespaceImports(): string[] {
+  // 違反 (ファイルと束縛名) を溜める入れ物
+  const offenders: string[] = [];
+  // 1 ファイルずつ import 宣言を見る
+  for (const { path, sourceFile } of parsedSources) {
+    // 定義元自身は対象外
+    if (path === BOUNDED_READ_MODULE_PATH) continue;
+    visitNodes(sourceFile, (node) => {
+      // import 宣言でなければ関係ない
+      if (!ts.isImportDeclaration(node)) return;
+      // 読み取り関数のモジュールを指していなければ関係ない
+      if (!ts.isStringLiteral(node.moduleSpecifier)) return;
+      if (!node.moduleSpecifier.text.includes(BOUNDED_READ_MODULE_SPECIFIER)) return;
+      // `import * as ns from '...'` の形だけを違反として拾う
+      const bindings = node.importClause?.namedBindings;
+      if (bindings && ts.isNamespaceImport(bindings))
+        offenders.push(`${path}: import * as ${bindings.name.text}`);
+    });
+  }
+  // 失敗時のメッセージを安定させるため並べ替えて返す
+  return offenders.sort();
+}
+
+/**
  * 上限つき読み取り関数を**別名で import / re-export している**箇所を返す (空なら違反なし)。
  *
  * 呼び出し検査は関数名そのものを手掛かりにしているため、`readBounded(req, ...)` のように
@@ -404,6 +526,21 @@ function boundedReadCapturedIntoLocals(): string[] {
     visitNodes(sourceFile, (node) => {
       // 変数宣言でなければ関係ない
       if (!ts.isVariableDeclaration(node) || !node.initializer) return;
+      // 分割代入 (`const { readFormWithinByteLimit: readForm } = rbl;`) の形。
+      // 取り出し元が何であれ、読み取り関数の名前を取り出していれば捕捉とみなす
+      if (ts.isObjectBindingPattern(node.name)) {
+        // 取り出している要素を順に見る
+        for (const element of node.name.elements) {
+          // 元のプロパティ名 (改名していなければ束縛名がそのまま元の名前)
+          const propertyName = element.propertyName ?? element.name;
+          // 識別子でなければ判定できない
+          if (!ts.isIdentifier(propertyName)) continue;
+          // 読み取り関数を取り出していれば違反として記録する
+          if (boundedReadFunctionNames.includes(propertyName.text))
+            offenders.push(`${path}: ${node.getText(sourceFile)}`);
+        }
+        return;
+      }
       // 初期化式が「読み取り関数そのものへの参照」かどうかを見る
       const initializer = node.initializer;
       // 素の識別子 (`const read = readBodyWithinByteLimit;`)
@@ -412,7 +549,11 @@ function boundedReadCapturedIntoLocals(): string[] {
         : // 名前空間経由 (`const read = rbl.readBodyWithinByteLimit;`)
           ts.isPropertyAccessExpression(initializer) && ts.isIdentifier(initializer.name)
           ? initializer.name.text
-          : undefined;
+          : // 要素アクセス経由 (`const read = rbl['readBodyWithinByteLimit'];`)
+            ts.isElementAccessExpression(initializer) &&
+              ts.isStringLiteral(initializer.argumentExpression)
+            ? initializer.argumentExpression.text
+            : undefined;
       // 読み取り関数を指していなければ問題なし
       if (!referencedName || !boundedReadFunctionNames.includes(referencedName)) return;
       // 捕捉しているので違反として記録する
@@ -565,6 +706,18 @@ describe('入口 (proxy) のボディ複製上限', () => {
     // 導出元の一覧に載っていない上限があると、その経路だけ入口で切り詰められる。
     // 「足したら登録する」を人手の約束にせず、ここで機械的に落とす
     expect(unregisteredRouteLimitNames()).toEqual([]);
+  });
+
+  it('docs/security.md の前段プロキシ設定が経路の上限を下回っていない', () => {
+    // 前段の枠がアプリの枠より小さいと、上限内の正規リクエストがアプリに届く前に切られる。
+    // ここが唯一の手書き転記なので、比較だけは機械的に固定しておく
+    expect(staleNginxBodySizes()).toEqual([]);
+  });
+
+  it('読み取り関数のモジュールが名前空間 import されていない', () => {
+    // 名前空間オブジェクトを手元に持たれると、そこから名前を付け替える手が無数に生える
+    // (プロパティアクセス / 分割代入 / 要素アクセス)。入口ごと禁じてまとめて断つ
+    expect(boundedReadNamespaceImports()).toEqual([]);
   });
 
   it('上限つき読み取り関数が別名で import されていない', () => {

@@ -13,10 +13,10 @@
 // **経路上限を新しく足すときも、こうした定数だけのファイルに置くこと。**
 // ここに 3 つを並べておくと、値の妥当性 (この経路だけ極端に緩くないか) を見比べられる。
 //
-// **このファイルは `next.config.ts` の読み込みグラフに入っている。** Next.js の config
-// transpile は next.config.ts 自身の import しか tsconfig の `paths` を書き換えないため、
-// ここへ `@/...` の import を足すと `npm run build` だけが落ちる (typecheck とユニット
-// テストは通ってしまう)。新しい import は相対パスで書くこと。
+// **このファイルは `next.config.ts` の読み込みグラフに入っている。新しい import は相対パスで
+// 書くこと** (`@/...` を足すと `npm run build` だけが落ちる)。理由と検証方法は
+// `src/lib/entry-body-limit.ts` の import 直前のコメントに 1 か所だけ書いてある — 説明を
+// ここへ写すと制約が変わったときに片方だけ古くなるので、参照に留める。
 //
 // 実際の読み取り (ストリームを上限つきで読み、超えた時点で打ち切る) は
 // `request-body-limit.ts` の `readBodyWithinByteLimit` / `readFormWithinByteLimit` が担う。

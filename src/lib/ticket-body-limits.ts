@@ -24,9 +24,8 @@
 
 // 1 回のアップロードで許す添付の件数・1 件あたりのサイズ上限 (ドメイン定数が唯一の源)
 // **ここだけ `@/` エイリアスではなく相対パス**: 本モジュールは `entry-body-limit.ts` 経由で
-// `next.config.ts` から読まれる。Next.js の config transpile は next.config.ts 自身の import しか
-// `paths` を書き換えないため、この連鎖の中に `@/...` が残るとビルドが落ちる (理由の詳細は
-// `entry-body-limit.ts` の import 直前のコメント)
+// `next.config.ts` の読み込みグラフに入っているため (理由と検証方法は
+// `entry-body-limit.ts` の import 直前のコメントに 1 か所だけ書いてある)
 import { MAX_ATTACHMENTS_PER_UPLOAD, MAX_ATTACHMENT_SIZE_BYTES } from '../domain/attachment';
 
 // multipart の「ファイルバイト列以外」に見込む余裕 (1MB)。
