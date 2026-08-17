@@ -162,16 +162,16 @@ npm run dev
 - `EMAIL_ALLOW_CONSOLE_IN_PROD=true` を併設するとそのチェックを迂回して `console` adapter（stdout + `.magic-link-outbox.jsonl` ファイルへの追記）が使えますが、これは **CI/E2E でテスト用 outbox を読みたい場合専用** です。本番デプロイ環境の `.env` / hosting の環境変数設定にこの値が混入しないよう、構成管理時に明示的に除外してください。
 
 **本番ではアプリの手前にリバースプロキシを置き、経路ごとに本文サイズを絞ること。**
-アプリは添付付きチケット投稿（51MB）とメール取り込み（25MB）を受け付けるため、リクエスト入口の
+アプリは添付付きチケット投稿（51MB<!--size:ATTACHMENT_UPLOAD_MAX_BODY_BYTES-->）とメール取り込み（25MB<!--size:INBOUND_EMAIL_MAX_BODY_BYTES-->）を受け付けるため、リクエスト入口の
 バッファ枠を**その最大値＋余白**に合わせています（`next.config.ts` の `proxyClientMaxBodySize`。
-未設定だと本文が既定 10MB で黙って切り詰められるため必須の設定）。余白は省略できません
+未設定だと本文が既定 10MB<!--size:NEXT_DEFAULT_ENTRY_MAX_BODY_BYTES--> で黙って切り詰められるため必須の設定）。余白は省略できません
 ——枠を最大値ちょうどにすると入口が「枠を跨ぐチャンク」をまるごと捨てて閉じるため、
 ルート側には常に上限以下しか届かず**ルート側の 413 が到達不能になります**
 （`src/lib/entry-body-limit.ts` の `ENTRY_OVER_LIMIT_MARGIN_BYTES`）。この枠は**アプリ全体で 1 つ
-しか持てず経路ごとには絞れない**ので、上限の小さい未認証経路（LINE 取り込み 256KB 等）にも
+しか持てず経路ごとには絞れない**ので、上限の小さい未認証経路（LINE 取り込み 256KB<!--size:LINE_WEBHOOK_MAX_BODY_BYTES--> 等）にも
 同じ枠が適用されます。経路別の絞り込みと、アプリ側では上限を掛けられない `/api/auth/[...nextauth]`
 （next-auth が自前でボディを読むため差し替えられない）の保護は、前段のリバースプロキシの責務です。
-なお Server Action は Next.js が `experimental.serverActions.bodySizeLimit`（既定 1MB）を
+なお Server Action は Next.js が `experimental.serverActions.bodySizeLimit`（既定 1MB<!--size:upstream-->）を
 413 で強制するので、アプリ側に上限があります。
 nginx の設定例と背景は **[`docs/security.md` §7](docs/security.md)** を参照してください。
 `docker-compose.yml` はローカル開発用でこの前段を含みません。
