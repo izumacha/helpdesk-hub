@@ -6,7 +6,9 @@
 // Vitest の DSL とフック
 import { describe, beforeAll, afterAll, beforeEach, expect, it } from 'vitest';
 // Prisma クライアント本体 (生成物)
-import { PrismaClient } from '@/generated/prisma';
+import type { PrismaClient } from '@/generated/prisma';
+// Prisma 7 はドライバアダプタ必須。生成は共通ファクトリへ寄せる
+import { createPrismaClient } from '@/lib/prisma-client';
 // 本番 Prisma 実装の repos 束 / UnitOfWork を組み立てる関数
 import { buildPrismaRepos, buildPrismaUow } from '@/data/adapters/prisma';
 
@@ -23,7 +25,7 @@ describe.runIf(SHOULD_RUN)('LineMessageRef prisma adapter', () => {
 
   // スイート開始時に 1 度だけ接続する
   beforeAll(async () => {
-    prisma = new PrismaClient();
+    prisma = createPrismaClient();
     await prisma.$connect();
   });
 

@@ -1,10 +1,11 @@
 // Playwright のテスト DSL と Page 型
 import { test, expect, Page } from '@playwright/test';
 // E2E 後始末で作成ユーザー/招待を消すため Prisma Client を使う
-import { PrismaClient } from '../src/generated/prisma';
+// Prisma 7 はドライバアダプタ必須。生成は共通ファクトリへ寄せる
+import { createPrismaClient } from '../src/lib/prisma-client';
 
 // DB 直接操作用 Prisma Client (後始末専用)
-const prisma = new PrismaClient();
+const prisma = createPrismaClient();
 
 // 既存 seed の管理者 (招待を発行する側)
 const ADMIN_EMAIL = 'admin@example.com';

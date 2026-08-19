@@ -3,7 +3,10 @@
 # next-auth v5 (Auth.js) 安定版への移行計画
 
 - 作成日: 2026-07-26（課題棚卸し「next-auth beta 依存」ギャップ対応）
-- 現在の依存: `next-auth@^5.0.0-beta.30`（package.json / package-lock.json で beta.30 に固定）
+- 現在の依存: `next-auth@^5.0.0-beta.32`（package.json / package-lock.json で固定）
+  - 2026-08-19 に beta.30 → beta.32 へ更新した。beta.30 を含む `<= 5.0.0-beta.31` は
+    「設定エラー時に存在チェックが fail-open しうる」CRITICAL 勧告の対象なので、
+    **beta.30 以前へは戻さない**（戻すと勧告に再び該当する）。
 
 ## 1. リリース状況の調査結果（2026-07-26 時点）
 
@@ -36,14 +39,32 @@
 2. **バージョンはロックファイルで固定**し、更新は Dependabot の PR 経由で明示的に取り込む。
    beta 更新 PR ではリリースノートの breaking changes を必ず確認する。
 3. **`5.0.0` 安定版が公開されたら Dependabot の PR を契機に §4 のチェックリストで移行**する。
-   beta.30 → 安定版の差分は小さいことが見込まれるが、無検証では取り込まない。
+   現行 beta → 安定版の差分は小さいことが見込まれるが、無検証では取り込まない。
 4. 安定版の公開が長期化しても、認証ライブラリの乗り換え（別ライブラリへの移行）は影響範囲が
    大きいため現段階では行わない。**半年ごと（次回 2027-01）にリリース状況を再確認**し、
    本書の §1 を更新する。
 
+## 3.5 nodemailer の override について（2026-08-19 追加）
+
+`package.json` の `overrides` で `next-auth` が使う `nodemailer` をルートの解決
+（9.x）に一致させている。理由と前提は次のとおり:
+
+- `nodemailer <= 9.0.0` は `envelope.size` 未サニタイズによる SMTP コマンド
+  インジェクション（HIGH）の対象で、9.0.5 へ上げる必要があった。
+- 一方 `next-auth@5.0.0-beta.32` の optional peer は `nodemailer` を
+  `^7.0.7 || ^8.0.5` に制限しており、override 無しでは `npm ci` が ERESOLVE で失敗する。
+- **前提**: 本アプリは `next-auth` から Credentials プロバイダしか使わず、メール送信は
+  自前の `src/lib/email/nodemailer-email-sender.ts` が直接 `nodemailer` を呼ぶため、
+  `@auth/core` 側の Nodemailer プロバイダは読み込まれない。
+
+したがって **`next-auth` の Email / Nodemailer プロバイダを有効化しない**こと。
+有効にする場合は、上流が対応する `nodemailer` のメジャーを確認し、override を外せるか
+（あるいは別経路で送信するか）をこの節と併せて見直す。override があるため npm の
+peer 警告は出ない点に注意。
+
 ## 4. 安定版リリース時の移行チェックリスト
 
-- [ ] `next-auth@5.0.0`（安定版）のリリースノート・移行ガイドを読み、beta.30 以降の
+- [ ] `next-auth@5.0.0`（安定版）のリリースノート・移行ガイドを読み、現行 beta 以降の
       breaking changes を洗い出す
 - [ ] `package.json` / `package-lock.json` を更新（`npm install next-auth@5`）
 - [ ] 影響範囲の確認（本リポジトリで next-auth に依存しているのは以下）:
@@ -59,4 +80,5 @@
 - [ ] E2E（`npm run test:e2e`）でログイン・ロール別リダイレクト・マジックリンク・SSO
       ハンドオフの動作を確認する
 - [ ] ロールバック手順の確認: 問題発生時は package.json / package-lock.json の revert で
-      beta.30 に戻せる（DB スキーマ変更を伴わないため revert のみで完結する）
+      **直前の beta（現行は beta.32）** に戻せる（DB スキーマ変更を伴わないため revert のみで
+      完結する）。**beta.31 以前へは戻さない**（上記 CRITICAL 勧告の対象になるため）

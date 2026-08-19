@@ -16,23 +16,21 @@
     "test": "vitest run",
     "test:contract": "vitest run --no-file-parallelism tests/data/*.contract.prisma.test.ts",
     "test:e2e": "playwright test",
-    "db:seed": "tsx prisma/seed.ts",
+    "db:seed": "prisma db seed",
     "db:migrate": "prisma migrate dev",
     "db:generate": "prisma generate",
     "db:backup": "bash scripts/backup-db.sh",
     "db:restore": "bash scripts/restore-db.sh"
   },
-  "prisma": {
-    "seed": "tsx prisma/seed.ts"
-  },
   "dependencies": {
     "@hookform/resolvers": "^5.7.1",
     "@node-saml/node-saml": "^5.1.0",
-    "@prisma/client": "^5.22.0",
+    "@prisma/adapter-pg": "^7.9.1",
+    "@prisma/client": "^7.9.1",
     "bcryptjs": "^3.0.3",
     "next": "^16.3.0",
-    "next-auth": "^5.0.0-beta.30",
-    "nodemailer": "^7.0.13",
+    "next-auth": "^5.0.0-beta.32",
+    "nodemailer": "^9.0.5",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
     "react-hook-form": "^7.85.0",
@@ -50,15 +48,21 @@
     "@types/react-dom": "^19.2.4",
     "@typescript-eslint/eslint-plugin": "^8.67.0",
     "@typescript-eslint/parser": "^8.66.0",
+    "dotenv": "^17.4.2",
     "eslint": "^9.39.4",
     "eslint-config-next": "^16.3.0",
     "postcss": "^8.5.26",
     "prettier": "^3.9.6",
     "prettier-plugin-tailwindcss": "^0.8.1",
-    "prisma": "^5.22.0",
+    "prisma": "^7.9.1",
     "tailwindcss": "^4.2.2",
     "tsx": "^4.23.12",
     "typescript": "^5.9.3",
     "vitest": "^3.2.4"
+  },
+  "overrides": {
+    "next-auth": {
+      "nodemailer": "$nodemailer"
+    }
   }
 }

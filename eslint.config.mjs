@@ -33,10 +33,10 @@ const config = [
   // TypeScript 向けルールを展開してマージ
   ...nextTypescript,
   {
-    // 適用対象: src 配下の TypeScript / TSX ファイル全体
+    // 適用対象: src 配下の TypeScript / TSX ファイル全体 (除外なし)。
+    // no-restricted-imports の例外リスト (下のブロック) と同居させると、そこに載せたファイルが
+    // この未使用変数ルールの緩和 (_ プレフィックス) からも同時に外れてしまうため、ブロックを分ける。
     files: ['src/**/*.{ts,tsx}'],
-    // 例外: Prisma アダプタ層と Prisma クライアント生成箇所 (composition root) だけは生成物の直接 import を許可する
-    ignores: ['src/data/adapters/prisma/**', 'src/lib/prisma.ts'],
     rules: {
       // _ プレフィックスの変数・引数は意図的な未使用として警告しない (TypeScript 慣習)
       '@typescript-eslint/no-unused-vars': [
@@ -47,6 +47,15 @@ const config = [
           destructuredArrayIgnorePattern: '^_', // 分割代入の _ プレフィックスを無視
         },
       ],
+    },
+  },
+  {
+    // 適用対象: src 配下の TypeScript / TSX ファイル全体
+    files: ['src/**/*.{ts,tsx}'],
+    // 例外: Prisma アダプタ層と Prisma クライアント生成箇所 (composition root) だけは生成物の直接 import を許可する
+    // prisma-client.ts は Prisma 7 で必須になったドライバアダプタの結線を 1 か所に集約したファクトリ
+    ignores: ['src/data/adapters/prisma/**', 'src/lib/prisma.ts', 'src/lib/prisma-client.ts'],
+    rules: {
       // 指定したモジュールへの import をエラー化するルール
       'no-restricted-imports': [
         'error',

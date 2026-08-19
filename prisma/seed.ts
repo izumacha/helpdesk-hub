@@ -1,10 +1,17 @@
+// .env を読み込む副作用付き import。tsx は .env を自動で読まず、Prisma 7 のクライアントも
+// (Prisma 5 の生成クライアントと違い) 接続文字列を自力で探さない。README / CLAUDE.md が案内する
+// `cp .env.example .env` → `npm run db:seed` のローカル手順を従来どおり動かすために先頭で読む。
+// 既に環境変数がある場合は dotenv が上書きしないので、CI の DATABASE_URL 指定が優先される。
+import 'dotenv/config';
 // Prisma の生成クライアントと Role / SubscriptionPlan 列挙型を取り込む
-import { PrismaClient, Role, SubscriptionPlan } from '../src/generated/prisma';
+import { Role, SubscriptionPlan } from '../src/generated/prisma';
+// Prisma 7 はドライバアダプタ必須。生成は共通ファクトリへ寄せる
+import { createPrismaClient } from '../src/lib/prisma-client';
 // パスワードをハッシュ化するためのライブラリ (平文で DB に保存しないため)
 import { hash } from 'bcryptjs';
 
 // DB へ接続するクライアントのインスタンスを作成
-const prisma = new PrismaClient();
+const prisma = createPrismaClient();
 
 // 投入するチケット用カテゴリの一覧 (画面の選択肢になる)
 const CATEGORIES = [

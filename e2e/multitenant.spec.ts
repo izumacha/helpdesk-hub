@@ -1,7 +1,9 @@
 // Playwright のテスト DSL と Page 型
 import { test, expect, Page } from '@playwright/test';
 // E2E 用に DB へ直接 fixture を投入するため Prisma Client を使う
-import { PrismaClient, Role } from '../src/generated/prisma';
+import { Role } from '../src/generated/prisma';
+// Prisma 7 はドライバアダプタ必須。生成は共通ファクトリへ寄せる
+import { createPrismaClient } from '../src/lib/prisma-client';
 // ログイン可能なテストユーザーを作るためパスワードをハッシュ化する
 import { hash } from 'bcryptjs';
 
@@ -26,7 +28,7 @@ const DEFAULT_REQUESTER_EMAIL = 'requester1@example.com';
 const DEFAULT_TENANT_TICKET_TITLE = 'VPN に接続できない';
 
 // DB 直接投入用 Prisma Client
-const prisma = new PrismaClient();
+const prisma = createPrismaClient();
 
 // 共通ログイン手順
 async function login(page: Page, email: string) {

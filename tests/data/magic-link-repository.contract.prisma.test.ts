@@ -14,7 +14,9 @@
 // TRUNCATE するため **開発 DB を指さない** こと (CLAUDE.md §テスト)。
 
 import { describe, beforeAll, afterAll, beforeEach, expect, it } from 'vitest';
-import { PrismaClient } from '@/generated/prisma';
+import type { PrismaClient } from '@/generated/prisma';
+// Prisma 7 はドライバアダプタ必須。生成は共通ファクトリへ寄せる
+import { createPrismaClient } from '@/lib/prisma-client';
 import { buildPrismaRepos } from '@/data/adapters/prisma';
 
 // 「経過時間」を表現するための定数 (テスト内で読みやすくするため)
@@ -27,7 +29,7 @@ describe.runIf(SHOULD_RUN)('MagicLinkRepository (prisma adapter)', () => {
 
   beforeAll(async () => {
     // Prisma クライアントを生成する
-    prisma = new PrismaClient();
+    prisma = createPrismaClient();
     // DB へ接続する
     await prisma.$connect();
   });

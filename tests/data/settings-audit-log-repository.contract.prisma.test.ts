@@ -7,7 +7,9 @@
 // TRUNCATE するため **開発 DB を指さない** こと (CLAUDE.md §テスト)。
 
 import { describe, beforeAll, afterAll, beforeEach, expect, it } from 'vitest';
-import { PrismaClient } from '@/generated/prisma';
+import type { PrismaClient } from '@/generated/prisma';
+// Prisma 7 はドライバアダプタ必須。生成は共通ファクトリへ寄せる
+import { createPrismaClient } from '@/lib/prisma-client';
 import { buildPrismaRepos } from '@/data/adapters/prisma';
 import { SETTINGS_AUDIT_SYSTEM_ACTOR_NAME } from '@/lib/constants';
 
@@ -21,7 +23,7 @@ describe.runIf(SHOULD_RUN)('SettingsAuditLogRepository (prisma adapter)', () => 
   let prisma: PrismaClient;
 
   beforeAll(async () => {
-    prisma = new PrismaClient();
+    prisma = createPrismaClient();
     await prisma.$connect();
   });
 
