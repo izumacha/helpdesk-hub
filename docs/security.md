@@ -127,12 +127,12 @@ flowchart LR
 
 ### 入口の枠を経路の最大値に合わせている理由と、その代償
 
-Next.js は proxy（`src/proxy.ts`）を置いているアプリでは、非 GET/HEAD のボディを入口で複製してメモリにバッファする（proxy が本文を読むかどうかに関係なく走る）。`proxyClientMaxBodySize` 未設定だとこの複製は既定 10MB で頭打ちになり、**超過分はエラーにならず黙って切り捨てられて**ルートハンドラへ渡る。メール取り込み（25MB）・添付付きチケット書き込み（51MB）は 10MB を超えるため、既定のままだと正規のリクエストが壊れる（詳細は `src/lib/entry-body-limit.ts`）。
+Next.js は proxy（`src/proxy.ts`）を置いているアプリでは、非 GET/HEAD のボディを入口で複製してメモリにバッファする（proxy が本文を読むかどうかに関係なく走る）。`proxyClientMaxBodySize` 未設定だとこの複製は既定 10MB<!--size:NEXT_DEFAULT_ENTRY_MAX_BODY_BYTES--> で頭打ちになり、**超過分はエラーにならず黙って切り捨てられて**ルートハンドラへ渡る。メール取り込み（25MB<!--size:INBOUND_EMAIL_MAX_BODY_BYTES-->）・添付付きチケット書き込み（51MB<!--size:ATTACHMENT_UPLOAD_MAX_BODY_BYTES-->）は 10MB<!--size:NEXT_DEFAULT_ENTRY_MAX_BODY_BYTES--> を超えるため、既定のままだと正規のリクエストが壊れる（詳細は `src/lib/entry-body-limit.ts`）。
 
 そのため入口の枠は経路別上限の最大値（＋超過を検知させる余白）に合わせてある。**代償として、上限が小さい未認証経路にも同じ枠が適用される。**
 
 - 入口の複製は **proxy の認証判定より前**に走り、ルート側のレート制限・署名検証にはさらに手前で到達するため、アプリ層のゲートでは減らせない。
-- したがって `POST /api/inbound/line`（経路の上限 256KB）や `POST /api/auth/magic-link/callback`（同 64KB）でも、入口では枠いっぱいまで滞留しうる。
+- したがって `POST /api/inbound/line`（経路の上限 256KB<!--size:LINE_WEBHOOK_MAX_BODY_BYTES-->）や `POST /api/auth/magic-link/callback`（同 64KB<!--size:MAGIC_LINK_CALLBACK_MAX_BODY_BYTES-->）でも、入口では枠いっぱいまで滞留しうる。
 - 加えて、入口の滞留には `request-body-limit.ts` の無通信（10 秒）／全体（120 秒）の期限が効かない（ルートは本文が届き切ってから起動するため）。**アプリ側に残る天井は Node の既定 `requestTimeout`（300 秒）だけ**なので、だらだら送りを短い時間で切るのも前段の責務になる（下の設定例の `client_body_timeout` / `client_header_timeout`）。
 
 ### 本番デプロイの要件
@@ -140,6 +140,13 @@ Next.js は proxy（`src/proxy.ts`）を置いているアプリでは、非 GET
 **アプリの手前にリバースプロキシを置き、経路ごとに本文サイズを絞ること。** 上記のとおりアプリ単体では経路別に絞れないため、これはアプリ側の設定漏れではなくデプロイ構成側の責務になる。
 
 > **⚠️ 以下の数値は経路上限からの手動転記であり、自動追随しない。** 入口の枠（`ENTRY_MAX_BODY_BYTES`）はコードから導出されるが、ここの `client_max_body_size` は直書きである。経路上限（`ATTACHMENT_UPLOAD_MAX_BODY_BYTES` やその導出元の `MAX_ATTACHMENT_SIZE_BYTES` 等）を変更したら、**同じ PR でこの節と README の値も更新すること**。更新し忘れると、上限内の正規リクエストが前段で切られてアプリに届かず、原因の分かりにくい接続断になる（まさに `src/domain/attachment.ts` の事前検査が避けようとしている失敗）。
+>
+> 転記漏れは 2 つのテストが機械的に落とす（人の記憶に頼らない）。**担当が分かれている点に注意**:
+>
+> - 下の設定例（コードフェンス内）の `client_max_body_size` … `tests/entry-body-limit.test.ts`。「経路の上限を下回っていないこと」だけを見て、**上乗せする余裕の大きさは意図的に固定しない**（固定すると、余裕を見直すだけで落ちる変更検知になる）。
+> - 上記およびこの節の**散文**に出てくるサイズ表記 … `tests/doc-body-size-drift.test.ts`。各数値の直後に不可視の HTML コメントで出典の定数名（`<数値><!--size:定数名-->` の形）を書いておき、定数の現在値と一致することを要求する。**注記の無いサイズ表記や、直前の数値を表記として拾えていない注記は落ちる**ので、新しく数値を書くときは出典も併せて書くこと。
+>
+> このため**散文には nginx 形式の小文字サフィックス（`<数値>k` / `<数値>m` / `<数値>g` の形）を書かない。** 走査の単位表は `KB` / `MB` / `GB` / `バイト` しか持たず、小文字サフィックスは表記として拾えないので注記も要求できず、上記 2 つのテストの隙間に落ちる。その書式の値の正本は下の設定例（フェンス内）なので、散文からは数値を出さず設定例を参照させる。**この規則自体もテストが強制する**（散文に該当する表記があれば落ちる）。
 
 nginx の例:
 
@@ -186,8 +193,8 @@ location /api/tickets {
 }
 ```
 
-上限がさらに小さい経路（LINE 取り込み 256KB / マジックリンクのコールバック 64KB）を前段でも絞りたい場合は、同じ規則（経路の上限 + 余裕）で `location` を足す。足さなければ既定の 2m を継承するだけで、アプリ側の 413 とログは働く。
+上限がさらに小さい経路（LINE 取り込み 256KB<!--size:LINE_WEBHOOK_MAX_BODY_BYTES--> / マジックリンクのコールバック 64KB<!--size:MAGIC_LINK_CALLBACK_MAX_BODY_BYTES-->）を前段でも絞りたい場合は、同じ規則（経路の上限 + 余裕）で `location` を足す。足さなければ上の設定例の既定値を継承するだけで、アプリ側の 413 とログは働く。
 
 これは `src/lib/request-body-limit.ts` 冒頭が「塞ぐならアプリの外側」と書いている既知のギャップ（`/api/auth/[...nextauth]` は next-auth のハンドラが自前でボディを読むため、アプリ側から上限を差し替えられない）と同じ層の話で、同じリバースプロキシ設定でまとめて塞げる。
 
-**Server Action は例外で、アプリ側に上限がある。** Next.js が `experimental.serverActions.bodySizeLimit`（未設定時の既定 **1MB**）を強制し、超過分は `413 Body exceeded ... limit` になる（`next/dist/server/app-render/action-handler.js`）。本リポジトリは未設定なので既定の 1MB が効いており、現状の最大ペイロード（CSV インポート／招待一括発行の `MAX_CSV_BYTES` = 512KB）はその内側に収まる。**1MB を超える本文を扱う Server Action を足すときは、リバースプロキシではなくこの設定を調整すること**（前段だけ広げても Next.js 側で 413 になる）。
+**Server Action は例外で、アプリ側に上限がある。** Next.js が `experimental.serverActions.bodySizeLimit`（未設定時の既定 **1MB<!--size:upstream-->**）を強制し、超過分は `413 Body exceeded ... limit` になる（`next/dist/server/app-render/action-handler.js`）。本リポジトリは未設定なので既定の 1MB<!--size:upstream--> が効いており、現状の最大ペイロード（CSV インポート／招待一括発行の `MAX_CSV_BYTES` = 512KB<!--size:MAX_CSV_BYTES-->）はその内側に収まる。**1MB<!--size:upstream--> を超える本文を扱う Server Action を足すときは、リバースプロキシではなくこの設定を調整すること**（前段だけ広げても Next.js 側で 413 になる）。
