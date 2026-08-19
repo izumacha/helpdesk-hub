@@ -72,12 +72,16 @@ export function resolveModuleSpecifier(
   // 実在してしまい、そこで確定すると `src/data/index.ts` へ辿り着けない。すると
   // 「index.ts はバレルとして集合に入っているのに、`@/data` と書いた側は集合外」という
   // ねじれが起き、両方の import 禁止をすり抜ける (`@/data` 形式はこのリポジトリで実際に多用されている)
+  // `.js` / `index.js` を **後ろに** 置くのが要点: 生成物 (`@/generated/prisma` は .js と .d.ts
+  // しか持たない) も解決できるようにしつつ、.ts が併存する場合は従来どおり .ts を優先する
   for (const candidate of [
     base,
     `${base}.ts`,
     `${base}.tsx`,
     join(base, 'index.ts'),
     join(base, 'index.tsx'),
+    `${base}.js`,
+    join(base, 'index.js'),
   ])
     if (existsSync(candidate) && statSync(candidate).isFile()) return candidate;
   // どれも実在しなければ解決できない

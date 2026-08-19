@@ -44,6 +44,14 @@ const SEED_ENTRY = join(REPO_ROOT, 'prisma/seed.ts');
 const HAND_PICKED_DIR = 'src/lib';
 // `src/` の絶対パス (import 解決の起点として共有ヘルパーへ渡す)
 const SRC_DIR = join(REPO_ROOT, 'src');
+// Prisma の生成物ディレクトリ。中は自動生成の .js / .d.ts で、Dockerfile も丸ごとコピーするため、
+// 依存として「このディレクトリが要る」ことだけ記録し、中身までは辿らない (数千ファイルある)
+const GENERATED_DIR = 'src/generated';
+// import グラフには現れないが runner ステージに必要なファイル。
+// 依存として書かれていないので走査では拾えず、抜けると本番でだけ壊れるため明示的に列挙する:
+//   prisma.config.ts … 接続先と seed コマンドの定義。無いと migrate deploy / db seed が動かない
+//   tsconfig.json    … tsx が `@/generated/prisma` を解決するためのパスエイリアス定義
+const EXTRA_RUNNER_FILES = ['prisma.config.ts', 'tsconfig.json'];
 
 // seed から辿れる `src/` 配下のファイル一覧 (リポジトリルートからの相対パス) を集める
 function collectSeedSourceFiles(): Set<string> {
@@ -61,8 +69,13 @@ function collectSeedSourceFiles(): Set<string> {
     if (visited.has(current)) continue;
     // 見たことにする
     visited.add(current);
-    // このファイルが `src/` 配下なら結果に加える (起点の prisma/seed.ts は対象外)
+    // 生成物に入ったらディレクトリ単位で要求し、中身は辿らない (自動生成なので追う意味が無い)
     const relativePath = relative(REPO_ROOT, current);
+    if (relativePath.startsWith(`${GENERATED_DIR}/`)) {
+      sourceFiles.add(GENERATED_DIR);
+      continue;
+    }
+    // このファイルが `src/` 配下なら結果に加える (起点の prisma/seed.ts は対象外)
     if (relativePath.startsWith('src/')) sourceFiles.add(relativePath);
     // このファイルの import 先をすべて解決して待ち行列へ積む
     for (const specifier of collectModuleSpecifiers(parseSourceFile(current))) {
@@ -74,7 +87,7 @@ function collectSeedSourceFiles(): Set<string> {
   return sourceFiles;
 }
 
-// Dockerfile が実行イメージ (runner ステージ) へ入れる `src/` 配下のパスを集める
+// Dockerfile が実行イメージ (runner ステージ) へ入れるリポジトリ内のパスを集める
 function collectRunnerCopiedSourcePaths(): string[] {
   // Dockerfile を 1 行ずつに分ける
   const lines = readFileSync(join(REPO_ROOT, 'Dockerfile'), 'utf8').split('\n');
@@ -89,8 +102,8 @@ function collectRunnerCopiedSourcePaths(): string[] {
     if (stageMatch) inRunnerStage = stageMatch[1] === 'runner';
     // runner ステージ以外の COPY は実行イメージに残らないので見ない
     if (!inRunnerStage) continue;
-    // `COPY --from=builder /app/src/... <dest>` のコピー元を拾う
-    const copyMatch = line.match(/^\s*COPY\s+.*--from=builder\s+(?:--\S+\s+)*\/app\/(src\/\S*)/);
+    // `COPY --from=builder /app/<path> <dest>` のコピー元を拾う (src 配下に限らない)
+    const copyMatch = line.match(/^\s*COPY\s+.*--from=builder\s+(?:--\S+\s+)*\/app\/(\S+)/);
     if (copyMatch) copiedPaths.push(copyMatch[1].replace(/\/$/, ''));
   }
   // 集めたパスを返す
@@ -108,6 +121,13 @@ describe('Dockerfile の runner ステージが seed 用ソースを過不足な
     expect(requiredFiles.size).toBeGreaterThan(0);
     // Dockerfile 側も同様に、1 つも拾えていない状態を弾く
     expect(copiedPaths.length).toBeGreaterThan(0);
+  });
+
+  it('import には現れないが seed に必要なファイルもコピーされる', () => {
+    // prisma.config.ts / tsconfig.json は依存グラフに出てこないので、明示リストと突き合わせる
+    const missing = EXTRA_RUNNER_FILES.filter((file) => !copiedPaths.includes(file));
+    // 1 つも無いことを求める (欠けるとコンテナ内の migrate deploy / db seed が動かない)
+    expect(missing).toEqual([]);
   });
 
   it('seed が import する src 配下のファイルはすべて実行イメージへコピーされる', () => {

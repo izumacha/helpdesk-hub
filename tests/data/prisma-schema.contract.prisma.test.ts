@@ -120,6 +120,30 @@ describe.runIf(SHOULD_RUN)('接続文字列の ?schema= (prisma adapter)', () =>
     }
   });
 
+  it('DSN 側の options があっても search_path の固定は生き残る', async () => {
+    // 接続先プロバイダが独自の options を載せてくる形 (Neon の endpoint 指定など) を模す。
+    // node-postgres は接続文字列側の options を設定オブジェクトへ後勝ちで被せるため、
+    // 素朴に渡すと search_path の固定だけが消える (= ORM と生 SQL が別スキーマを向く)
+    const url = new URL(originalDatabaseUrl as string);
+    url.searchParams.set('schema', SCHEMA_NAMES[0]);
+    url.searchParams.set('options', '-c statement_timeout=9000');
+    process.env.DATABASE_URL = url.toString();
+
+    // 差し替えた接続文字列でクライアントを作る
+    const merged = createPrismaClient();
+    try {
+      // 両方の設定が効いていることを確かめる (DSN 側の指定も、こちらの search_path も)
+      const [row] = await merged.$queryRawUnsafe<{ sp: string; timeout: string }[]>(
+        "SELECT current_setting('search_path') AS sp, current_setting('statement_timeout') AS timeout",
+      );
+      expect(row.sp).toBe(`"${SCHEMA_NAMES[0]}"`);
+      expect(row.timeout).toBe('9s');
+    } finally {
+      // 接続を必ず閉じる
+      await merged.$disconnect();
+    }
+  });
+
   it('?schema= 未指定でも search_path は public に固定される', async () => {
     // 既定の DSN (schema パラメータなし) をそのまま使う
     process.env.DATABASE_URL = originalDatabaseUrl;

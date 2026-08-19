@@ -35,6 +35,29 @@ function parseConnectionString(connectionString: string): URL {
 }
 
 /**
+ * Reads Prisma 5's `?connection_limit=` and maps it to node-postgres's `max`.
+ *
+ * The query engine used to size its pool from that parameter; the driver
+ * adapter ignores it and node-postgres defaults to 10. Without this, upgrading
+ * a deployment whose DSN carries `connection_limit=2` silently opens five times
+ * as many connections, and the DSN offers no way back.
+ */
+// 接続文字列の connection_limit をプール上限 (node-postgres の max) へ読み替える
+function readPoolMax(url: URL): number | undefined {
+  // パラメータを取り出す (無ければ既定のままにする)
+  const raw = url.searchParams.get('connection_limit');
+  if (raw === null) return undefined;
+  // 数値として解釈する
+  const parsed = Number(raw);
+  // 1 以上の整数でなければ設定ミスなので、黙って既定へ倒さず落とす (fail-closed)
+  if (!Number.isInteger(parsed) || parsed < 1) {
+    throw new Error('DATABASE_URL の ?connection_limit= には 1 以上の整数を指定してください。');
+  }
+  // プール 1 本あたりの最大接続数として返す
+  return parsed;
+}
+
+/**
  * Builds the node-postgres config for a DSN that names a schema.
  *
  * The `options` startup parameter has to be handed to the driver explicitly,
@@ -106,15 +129,24 @@ export function createPrismaClient(options?: {
   // node-postgres のコネクションプールを内部に持つアダプタを組み立てる。
   // Prisma が組み立てるクエリは schema オプションで、生 SQL は接続時の search_path で
   // 同じスキーマへ向ける (片方だけだと両者が食い違う。詳細は pg-search-path.ts)。
-  const adapter = new PrismaPg(buildScopedConnectionConfig(connectionString, url, schema), {
-    schema,
-    // プールや待機中コネクションのエラーを握り潰さない (既定では debug 出力に消える)。
-    // DB の再起動・フェイルオーバー時に何も残らないと調査ができなくなるため、
-    // 接続文字列を含まない安全なメッセージだけをログに残す (CLAUDE.md §6 / §9)
-    onPoolError: (error: Error) => console.error('[prisma] 接続プールでエラー:', error.message),
-    onConnectionError: (error: Error) =>
-      console.error('[prisma] コネクションでエラー:', error.message),
-  });
+  // プール上限は DSN の connection_limit を尊重する (未指定なら node-postgres の既定 10)
+  const poolMax = readPoolMax(url);
+
+  const adapter = new PrismaPg(
+    {
+      ...buildScopedConnectionConfig(connectionString, url, schema),
+      ...(poolMax === undefined ? {} : { max: poolMax }),
+    },
+    {
+      schema,
+      // プールや待機中コネクションのエラーを握り潰さない (既定では debug 出力に消える)。
+      // DB の再起動・フェイルオーバー時に何も残らないと調査ができなくなるため、
+      // 接続文字列を含まない安全なメッセージだけをログに残す (CLAUDE.md §6 / §9)
+      onPoolError: (error: Error) => console.error('[prisma] 接続プールでエラー:', error.message),
+      onConnectionError: (error: Error) =>
+        console.error('[prisma] コネクションでエラー:', error.message),
+    },
+  );
 
   // アダプタを渡して PrismaClient を生成し、呼び出し側へ返す
   return new PrismaClient({ adapter, ...(options?.log ? { log: options.log } : {}) });

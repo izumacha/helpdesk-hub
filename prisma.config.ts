@@ -21,7 +21,11 @@ export default defineConfig({
   // `prisma generate` まで巻き添えで落ちる (CI の lint ジョブと Dockerfile の
   // builder ステージはどちらも DATABASE_URL を持たない)。
   // 未設定のまま migrate / seed を叩いた場合は Prisma CLI 自身が接続先未指定として
-  // 落ちるので、fail-closed は維持される。
+  // 落ちるので、fail-closed は維持される。ただし CLI のメッセージは
+  // 「The datasource.url property is required in your Prisma config file」となり、
+  // **このファイルを直せと読める**。実際の原因は DATABASE_URL 未設定なので、
+  // そう言われたらまず環境変数を確認すること (アプリ側は src/lib/prisma-client.ts が
+  // DATABASE_URL 未設定と明示して落ちる)。
   ...(databaseUrl ? { datasource: { url: databaseUrl } } : {}),
   // マイグレーション関連の設定
   migrations: {
