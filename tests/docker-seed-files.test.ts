@@ -1,18 +1,24 @@
-// 実行イメージへ入れる seed 用ソースの集合が、実際に必要な集合と一致することを固定するテスト。
+// Dockerfile が明示的にコピーする seed 用ソースの一覧が、実際に必要な集合と一致することを
+// 固定するテスト。
 //
 // なぜテストで縛るのか:
-//   `docker compose exec app npx prisma db seed` (README / CLAUDE.md §2 の手順) は、
-//   実行イメージへ手で選んで入れた `src/` 配下のファイルだけで動く。Dockerfile は
-//   `src/lib` を丸ごとではなく seed が要るファイルだけコピーしている (認証・SSO・メールの
-//   ソースを実行イメージへ持ち込まないため) が、その「要るファイル」は人手の約束にすぎない。
-//   `prisma/seed.ts` が `src/lib` のモジュールをもう 1 つ import した日に、イメージからは
-//   静かに欠け、**本番のコンテナで seed を叩いたときだけ** `Cannot find module` で落ちる。
-//   CI はイメージをビルドしないので、この壊れ方はマージ後まで表面化しない。
+//   `docker compose exec app npx prisma db seed` (README / CLAUDE.md §2 の手順) が動くには、
+//   seed が import する `src/` 配下のファイルが実行イメージに要る。Dockerfile はそれを
+//   1 ファイルずつ列挙しているが、その一覧は人手の約束にすぎない。`prisma/seed.ts` が
+//   モジュールをもう 1 つ import した日に列挙から漏れ、**本番のコンテナで seed を叩いた
+//   ときだけ** `Cannot find module` で落ちる。CI はイメージをビルドしないので、この壊れ方は
+//   マージ後まで表面化しない。
+//
+// **注意 (誤解しやすい点)**: これは「実行イメージへの露出を絞る」検査ではない。
+//   Dockerfile が先に `COPY /app/.next/standalone ./` しており、Next のファイルトレースの
+//   副作用で standalone にはリポジトリのソースがほぼそのまま入る (実測で src/ 全体・
+//   tests/・docs/ まで含まれる)。つまり実行イメージにはどのみちソースが載っている。
+//   ここで固定したいのは「seed が確実に動く最小集合が明示され、かつ膨らんでいないこと」。
 //
 // 何を防ぐか:
 //   (a) seed の import が増えたのに Dockerfile の COPY を足し忘れた状態 (イメージが壊れる)。
-//   (b) 逆に、もう要らない / 一度も要らなかったファイルを実行イメージへ入れたままの状態
-//       (最小公開の後退。`src/lib` を丸ごと戻す変更もここで落ちる)。
+//   (b) 逆に、seed が使わないファイルやディレクトリを列挙へ足した状態
+//       (`src/lib` を丸ごと書く変更もここで落ちる。何が必要かの記録として一覧を保つため)。
 //
 // **ソースの走査は TypeScript のパーサで行う** (`tests/entry-body-limit.test.ts` と同じ理由:
 // 正規表現だと文字列リテラル中の import らしき文字列を拾う / 実際の import を取り落とす、
@@ -113,7 +119,7 @@ describe('Dockerfile の runner ステージが seed 用ソースを過不足な
     expect(missing).toEqual([]);
   });
 
-  it(`実行イメージへ入る ${HAND_PICKED_DIR} 配下は seed が実際に使うファイルだけ`, () => {
+  it(`明示的にコピーする ${HAND_PICKED_DIR} 配下は seed が実際に使うファイルだけ`, () => {
     // src/lib 配下に届きうるコピー指定を集める。自分が src/lib の下にある場合 (src/lib/xxx) と、
     // 自分が src/lib を含む上位ディレクトリの場合 (src/lib, src) の両方を対象にする
     // — 後者を見ないと「src/lib を丸ごと」「src を丸ごと」に戻す変更を取り逃がす

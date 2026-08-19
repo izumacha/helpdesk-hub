@@ -30,6 +30,13 @@ describe('buildSearchPathOption', () => {
     expect(buildSearchPathOption('my schema')).toBe('-c search_path="my\\ schema"');
   });
 
+  it('半角スペース以外の空白文字 (タブ・改行) は受け付けない', () => {
+    // バックスラッシュで退避してもサーバ側の分割 (pg_split_opts) が区切りとして扱うため、
+    // 通すと接続時に分かりにくいエラーになる。入口で理由付きで落とす
+    expect(() => buildSearchPathOption('tab\there')).toThrow(/空白文字/);
+    expect(() => buildSearchPathOption('line\nbreak')).toThrow(/空白文字/);
+  });
+
   it('バックスラッシュを含む名前もエスケープする', () => {
     // libpq は \ を「次の 1 文字をそのまま使う」記号として消費する
     expect(buildSearchPathOption('back\\slash')).toBe('-c search_path="back\\\\slash"');

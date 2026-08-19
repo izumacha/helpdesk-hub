@@ -69,10 +69,14 @@ COPY --from=builder /app/prisma.config.ts ./prisma.config.ts
 # seed スクリプトが参照する Prisma クライアントのファクトリ (src/lib/prisma-client.ts) と、
 # その中の `@/generated/prisma` を tsx が解決するためのパスエイリアス定義。
 # どちらも無いと `prisma db seed` が Cannot find module で落ちる。
-# src/lib 全体ではなく必要なファイルだけ入れる — 認証・SSO・メールなどのソースを
-# 実行イメージへ持ち込まないため (最小公開)。seed が別の src/lib モジュールを
-# 参照するようになったら、その分だけここへ追加する
-# (足し忘れ・入れ過ぎはどちらも tests/docker-seed-files.test.ts が落とす)
+# 必要なファイルを 1 つずつ挙げるのは、Next の standalone 出力に何が含まれるかへ
+# 依存しないため (上の COPY で入る .next/standalone には**現状リポジトリのソースが
+# ほぼそのまま含まれる** — 実測で src/ 全体・tests/・docs/ まで入る。これは
+# ファイルトレースの副作用で、Next のバージョンや設定で変わりうる)。
+# したがってこの列挙は「実行イメージへの露出を絞る」ためではなく、seed が確実に動く
+# 最小集合を明示して固定するためのもの。seed が別の src/lib モジュールを参照する
+# ようになったら、その分だけここへ追加する
+# (足し忘れ・列挙の膨張はどちらも tests/docker-seed-files.test.ts が落とす)
 COPY --from=builder /app/src/lib/prisma-client.ts ./src/lib/prisma-client.ts
 COPY --from=builder /app/src/lib/pg-search-path.ts ./src/lib/pg-search-path.ts
 COPY --from=builder /app/tsconfig.json ./tsconfig.json

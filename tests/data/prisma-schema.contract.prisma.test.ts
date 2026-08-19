@@ -119,4 +119,22 @@ describe.runIf(SHOULD_RUN)('接続文字列の ?schema= (prisma adapter)', () =>
       await scoped.$disconnect();
     }
   });
+
+  it('?schema= 未指定でも search_path は public に固定される', async () => {
+    // 既定の DSN (schema パラメータなし) をそのまま使う
+    process.env.DATABASE_URL = originalDatabaseUrl;
+    // 既定設定のクライアントを作る
+    const defaults = createPrismaClient();
+    try {
+      // Prisma が組み立てるクエリは public を前提にしているので、生 SQL 側も public に
+      // 揃っていないと両者が食い違う (サーバやロールに search_path が設定された環境で顕在化する)
+      const [{ schemas }] = await defaults.$queryRawUnsafe<{ schemas: string[] }[]>(
+        'SELECT current_schemas(false)::text[] AS schemas',
+      );
+      expect(schemas).toEqual(['public']);
+    } finally {
+      // 接続を必ず閉じる
+      await defaults.$disconnect();
+    }
+  });
 });

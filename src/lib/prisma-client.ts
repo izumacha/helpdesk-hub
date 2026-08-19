@@ -5,6 +5,13 @@ import { Prisma, PrismaClient } from '@/generated/prisma';
 // 接続時に search_path を固定する libpq オプションの組み立て (純粋関数)
 import { buildSearchPathOption } from './pg-search-path';
 
+// `?schema=` が書かれていないときに使うスキーマ。
+// Prisma 5 のクエリエンジンは接続時に search_path をここへ固定していた。Prisma 7 の
+// ドライバアダプタは何もしないため、そのままだと **ORM は public を、生 SQL はサーバ/ロール
+// 側の search_path を**向く (`ALTER DATABASE ... SET search_path` を使う構成で実際に分かれる。
+// 実測: 生 SQL の INSERT が別スキーマに入り、ORM から読めなくなる)。既定値を明示して両者を揃える。
+const DEFAULT_SCHEMA = 'public';
+
 /**
  * Parses the DSN.
  *
@@ -89,23 +96,25 @@ export function createPrismaClient(options?: {
 
   // Prisma 5 のクエリエンジンは接続文字列の ?schema= を解釈して search_path に反映していたが、
   // ドライバアダプタは URL のクエリ文字列を素通しするだけで解釈しない。取りこぼすと
-  // 「public スキーマに黙って読み書きする」= 空の結果やテーブル二重作成になり、
-  // エラーも出ないまま壊れるため、ここで取り出してアダプタの schema オプションへ渡す。
-  // **null と空文字を区別する**: `?schema=` と書かれた (値だけ空の) 状態を「未指定」と
-  // 同じ扱いにすると、テンプレートの変数が空のまま展開されたときに黙って public を
-  // 読み書きしてしまう。空文字はこの後 buildSearchPathOption が弾く (fail-closed)。
-  const schema = url.searchParams.get('schema');
+  // 「ORM と生 SQL が別スキーマを向く」= 空の結果やテーブル二重作成になり、
+  // エラーも出ないまま壊れるため、ここで取り出して両方へ反映する。
+  // **未指定は public を明示する**(DEFAULT_SCHEMA)。**空文字は未指定と区別して弾く**:
+  // `?schema=` と書かれた (値だけ空の) 状態を既定値へ倒すと、テンプレートの変数が
+  // 空のまま展開された事故に気付けない。空文字は buildSearchPathOption が落とす (fail-closed)。
+  const schema = url.searchParams.get('schema') ?? DEFAULT_SCHEMA;
 
   // node-postgres のコネクションプールを内部に持つアダプタを組み立てる。
-  // schema 指定があるときは接続時の search_path も同じスキーマへ向ける
-  // (アダプタの schema オプションは Prisma が組み立てるクエリしか修飾せず、
-  //  生 SQL は search_path で解決されるため。詳細は pg-search-path.ts)。
-  const adapter = new PrismaPg(
-    schema === null
-      ? { connectionString }
-      : buildScopedConnectionConfig(connectionString, url, schema),
-    schema === null ? undefined : { schema },
-  );
+  // Prisma が組み立てるクエリは schema オプションで、生 SQL は接続時の search_path で
+  // 同じスキーマへ向ける (片方だけだと両者が食い違う。詳細は pg-search-path.ts)。
+  const adapter = new PrismaPg(buildScopedConnectionConfig(connectionString, url, schema), {
+    schema,
+    // プールや待機中コネクションのエラーを握り潰さない (既定では debug 出力に消える)。
+    // DB の再起動・フェイルオーバー時に何も残らないと調査ができなくなるため、
+    // 接続文字列を含まない安全なメッセージだけをログに残す (CLAUDE.md §6 / §9)
+    onPoolError: (error: Error) => console.error('[prisma] 接続プールでエラー:', error.message),
+    onConnectionError: (error: Error) =>
+      console.error('[prisma] コネクションでエラー:', error.message),
+  });
 
   // アダプタを渡して PrismaClient を生成し、呼び出し側へ返す
   return new PrismaClient({ adapter, ...(options?.log ? { log: options.log } : {}) });
