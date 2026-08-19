@@ -44,6 +44,24 @@
    大きいため現段階では行わない。**半年ごと（次回 2027-01）にリリース状況を再確認**し、
    本書の §1 を更新する。
 
+## 3.5 nodemailer の override について（2026-08-19 追加）
+
+`package.json` の `overrides` で `next-auth` が使う `nodemailer` をルートの解決
+（9.x）に一致させている。理由と前提は次のとおり:
+
+- `nodemailer <= 9.0.0` は `envelope.size` 未サニタイズによる SMTP コマンド
+  インジェクション（HIGH）の対象で、9.0.5 へ上げる必要があった。
+- 一方 `next-auth@5.0.0-beta.32` の optional peer は `nodemailer` を
+  `^7.0.7 || ^8.0.5` に制限しており、override 無しでは `npm ci` が ERESOLVE で失敗する。
+- **前提**: 本アプリは `next-auth` から Credentials プロバイダしか使わず、メール送信は
+  自前の `src/lib/email/nodemailer-email-sender.ts` が直接 `nodemailer` を呼ぶため、
+  `@auth/core` 側の Nodemailer プロバイダは読み込まれない。
+
+したがって **`next-auth` の Email / Nodemailer プロバイダを有効化しない**こと。
+有効にする場合は、上流が対応する `nodemailer` のメジャーを確認し、override を外せるか
+（あるいは別経路で送信するか）をこの節と併せて見直す。override があるため npm の
+peer 警告は出ない点に注意。
+
 ## 4. 安定版リリース時の移行チェックリスト
 
 - [ ] `next-auth@5.0.0`（安定版）のリリースノート・移行ガイドを読み、現行 beta 以降の

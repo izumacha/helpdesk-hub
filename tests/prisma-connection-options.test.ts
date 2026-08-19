@@ -138,6 +138,43 @@ describe('接続文字列のプール設定の読み替え', () => {
     expect(config.options).toBeUndefined();
   });
 
+  it('pool_timeout と connect_timeout の両方があれば厳しいほうを使う', async () => {
+    // 片方を捨てると「書いたのに効かない」指定ができてしまうので、短いほうに合わせる
+    const config = await captureAdapterConfig(`${BASE_DSN}?pool_timeout=30&connect_timeout=5`);
+    // 5 秒 (厳しいほう) が採用されることを確かめる
+    expect(config.connectionTimeoutMillis).toBe(5_000);
+  });
+
+  it('pool_timeout=0 と connect_timeout=5 なら接続確立の上限を優先する', async () => {
+    // 0 は「無制限」なので、明示された 5 秒のほうを活かす (無制限に倒すとハングが戻る)
+    const config = await captureAdapterConfig(`${BASE_DSN}?pool_timeout=0&connect_timeout=5`);
+    // 5 秒が採用されることを確かめる
+    expect(config.connectionTimeoutMillis).toBe(5_000);
+  });
+
+  it('search_path の先頭が ORM のスキーマでなければ落とす', async () => {
+    // `tenant_x,public` は public を含むが、修飾なしの名前は先頭の tenant_x で解決される。
+    // ORM は public を修飾するので、通してしまうと静かに食い違う
+    vi.stubEnv(
+      'DATABASE_URL',
+      `${BASE_DSN}?options=${encodeURIComponent('-c search_path=tenant_x,public')}`,
+    );
+    const { createPrismaClient } = await import('@/lib/prisma-client');
+    // 先頭が一致しない指定は受け付けない
+    expect(() => createPrismaClient()).toThrow(/search_path/);
+  });
+
+  it('search_path が複数回書かれていれば最後の指定で判定する', async () => {
+    // サーバは後の -c を採用するため、先頭一致で判定すると実際に効く値とずれる
+    vi.stubEnv(
+      'DATABASE_URL',
+      `${BASE_DSN}?options=${encodeURIComponent('-c search_path=public -c search_path=other')}`,
+    );
+    const { createPrismaClient } = await import('@/lib/prisma-client');
+    // 実際に効くのは other なので落ちるのが正しい
+    expect(() => createPrismaClient()).toThrow(/search_path/);
+  });
+
   it('DSN の search_path が ORM のスキーマを含まなければ落とす', async () => {
     // 生 SQL だけ app を向き、ORM は public のまま…という食い違いを黙って作らせない
     vi.stubEnv('DATABASE_URL', `${BASE_DSN}?options=${encodeURIComponent('-c search_path=app')}`);
