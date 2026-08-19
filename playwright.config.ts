@@ -1,3 +1,9 @@
+// .env を読み込む副作用付き import。Playwright は .env を自動で読まず、Prisma 7 のクライアントも
+// (Prisma 5 の生成クライアントと違い) 接続文字列を自力で探さない。DB へ直接 fixture を入れる
+// スペックが module 直下でクライアントを生成するため、これが無いと `cp .env.example .env` だけの
+// ローカル環境では**収集の時点で全スペックが 0 件になる**。設定ファイルはスペックより先に
+// 評価されるのでここで読む (既存の環境変数は上書きしないため CI の指定が優先される)。
+import 'dotenv/config';
 // Playwright の設定ヘルパーと既製のデバイス設定
 import { defineConfig, devices } from '@playwright/test';
 

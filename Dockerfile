@@ -64,8 +64,11 @@ COPY --from=builder /app/prisma ./prisma
 COPY --from=builder /app/prisma.config.ts ./prisma.config.ts
 # seed スクリプトが参照する Prisma クライアントのファクトリ (src/lib/prisma-client.ts) と、
 # その中の `@/generated/prisma` を tsx が解決するためのパスエイリアス定義。
-# どちらも無いと `prisma db seed` が Cannot find module で落ちる
-COPY --from=builder /app/src/lib ./src/lib
+# どちらも無いと `prisma db seed` が Cannot find module で落ちる。
+# src/lib 全体ではなくこの 1 ファイルだけ入れる — 認証・SSO・メールなどのソースを
+# 実行イメージへ持ち込まないため (最小公開)。seed が別の src/lib モジュールを
+# 参照するようになったら、その分だけここへ追加する
+COPY --from=builder /app/src/lib/prisma-client.ts ./src/lib/prisma-client.ts
 COPY --from=builder /app/tsconfig.json ./tsconfig.json
 # Prisma CLI / tsx とその依存をまとめて取り込む (個別コピーでは依存解決が崩れるため)
 COPY --from=builder /app/node_modules ./node_modules
