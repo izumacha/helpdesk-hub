@@ -65,6 +65,18 @@ describe('src/lib/prisma.ts の遅延生成 Proxy', () => {
     expect(Object.keys(prisma).length).toBeGreaterThan(0);
   });
 
+  it('凍結 (Object.freeze) は黙って成功せずエラーになる', async () => {
+    // ダミーの接続先を設定する
+    vi.stubEnv('DATABASE_URL', DUMMY_DATABASE_URL);
+    // モジュールを読み込む
+    const { prisma } = await import('@/lib/prisma');
+    // ターゲットだけ非拡張にすると以降のキー列挙が Proxy の不変条件違反で壊れるため、
+    // 「成功したように見せて食い違う」のではなく、その場で TypeError にする
+    expect(() => Object.freeze(prisma)).toThrow(TypeError);
+    // 失敗したあともキー列挙が壊れていないことを確かめる
+    expect(Object.keys(prisma).length).toBeGreaterThan(0);
+  });
+
   it('defineProperty と getPrototypeOf が実クライアントへ転送される', async () => {
     // ダミーの接続先を設定する
     vi.stubEnv('DATABASE_URL', DUMMY_DATABASE_URL);

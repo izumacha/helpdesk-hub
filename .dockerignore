@@ -5,3 +5,15 @@ node_modules
 .env.local
 npm-debug.log*
 README.md
+# テスト・ドキュメント類は実行イメージで使わない。
+# Next の standalone 出力はビルドコンテキストのファイルを広く取り込むため、
+# ここで除いておかないと本番イメージにテストや設計ドキュメントまで載る (最小公開)。
+tests
+e2e
+docs
+playwright.config.ts
+vitest.config.ts
+docker-compose.yml
+CLAUDE.md
+CONTRIBUTING.md
+SECURITY.md

@@ -13,8 +13,9 @@ import { createPrismaClient } from './prisma-client';
 //      Prisma を呼ぶので、globalThis を挟まないと**接続プールが 2 本**張られる。
 //      プール数は node-postgres の既定で 1 プールあたり最大 10 接続なので、10 → 20 接続に
 //      倍増し、Postgres の `max_connections` を圧迫する
-//      (Prisma 7 でドライバアダプタへ移行したため、接続文字列の `connection_limit` は
-//       もう解釈されない。プール数を変えたいときは node-postgres 側の `max` を渡す)。
+//      (プール数を変えたいときは従来どおり接続文字列の `connection_limit` を使う。
+//       ドライバアダプタ自身は解釈しないが、`createPrismaClient` が node-postgres の
+//       `max` へ読み替えている。`pool_timeout` / `connect_timeout` も同様)。
 //      枯渇すると `jwt` コールバックが接続待ちで失敗し、#298 で直したはずの
 //      「ログイン中のユーザーが /login に弾かれる」に戻る。
 //
@@ -57,8 +58,10 @@ const boundMethodsByClient = new WeakMap<
 
 // 既存の呼び出し側 (`prisma.ticket.findMany()` など) を変えずに遅延生成を挟むための Proxy。
 // プロパティに触れた瞬間に初めて実クライアントを生成し、以降はキャッシュを使う。
-// ターゲットは空オブジェクトなので、**すべての操作を実クライアントへ転送する**必要がある
+// ターゲットは空オブジェクトなので、**転送できる操作はすべて実クライアントへ転送する**
 // (get/has だけだと Object.keys() や代入が空のターゲット側に落ちて黙って食い違う)。
+// 唯一転送できないのが「拡張の禁止」で、こちらは黙って食い違わないよう明示的に失敗させる
+// (末尾の isExtensible / preventExtensions を参照)。
 export const prisma = new Proxy({} as PrismaClient, {
   // プロパティ読み取り (prisma.ticket / prisma.$transaction など) を実クライアントへ委譲する
   get(_target, property) {
@@ -117,6 +120,24 @@ export const prisma = new Proxy({} as PrismaClient, {
   //  どちらでも false。ここで揃えたいのは Proxy と実体の差が出ないこと)
   getPrototypeOf(_target) {
     return Reflect.getPrototypeOf(getPrismaClient());
+  },
+  // プロトタイプの差し替えも実クライアントへ転送する (空ターゲットに書くと黙って消えるため)。
+  // 実クライアント自身も Prisma 側の Proxy なので、受け付けても反映しないことがある —
+  // ここで揃えたいのは「Proxy 越しでも実体を直接触ったときと同じ結果になる」こと (実測で一致)
+  setPrototypeOf(_target, prototype) {
+    return Reflect.setPrototypeOf(getPrismaClient(), prototype);
+  },
+  // 拡張の可否は「常に拡張できる」で答える。
+  // ownKeys が実クライアントのキーを返す以上、ターゲットだけを非拡張にすると
+  // Proxy の不変条件に反して以降の Object.keys が TypeError になる。
+  // そのため Object.freeze / preventExtensions は**成功させずに落とす** (下の trap が false を返す)。
+  // 黙って食い違うより、その場で分かるほうがよい
+  isExtensible() {
+    return true;
+  },
+  // 凍結の要求は受け付けない (理由は上のコメント。false を返すと呼び出し側が TypeError になる)
+  preventExtensions() {
+    return false;
   },
   // delete 演算子も実クライアントへ転送する
   deleteProperty(_target, property) {

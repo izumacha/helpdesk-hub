@@ -34,27 +34,56 @@ function parseConnectionString(connectionString: string): URL {
   }
 }
 
+// Prisma 5 のクエリエンジンが持っていた既定の待ち時間 (秒)。
+// node-postgres は既定で「無期限に待つ」ため、そのままだとプール枯渇や DB 到達不能が
+// エラーではなく**ハング**になる (リクエストが返らない)。同じ既定値を引き継ぐ。
+const DEFAULT_POOL_TIMEOUT_SECONDS = 10;
+
 /**
- * Reads Prisma 5's `?connection_limit=` and maps it to node-postgres's `max`.
+ * Reads the pool knobs Prisma 5 took from the DSN and maps them onto
+ * node-postgres's config.
  *
- * The query engine used to size its pool from that parameter; the driver
- * adapter ignores it and node-postgres defaults to 10. Without this, upgrading
- * a deployment whose DSN carries `connection_limit=2` silently opens five times
- * as many connections, and the DSN offers no way back.
+ * The query engine sized its pool from `connection_limit` and bounded waits
+ * with `pool_timeout` / `connect_timeout`; the driver adapter reads none of
+ * them (`pg-connection-string` keeps them as inert keys), and node-postgres
+ * defaults to 10 connections and **no timeout at all**. Left unmapped, a busy
+ * or unreachable database turns request handling into an indefinite wait — the
+ * failure mode `src/lib/prisma.ts` warns about for the `jwt` callback.
  */
-// 接続文字列の connection_limit をプール上限 (node-postgres の max) へ読み替える
-function readPoolMax(url: URL): number | undefined {
-  // パラメータを取り出す (無ければ既定のままにする)
-  const raw = url.searchParams.get('connection_limit');
-  if (raw === null) return undefined;
-  // 数値として解釈する
-  const parsed = Number(raw);
-  // 1 以上の整数でなければ設定ミスなので、黙って既定へ倒さず落とす (fail-closed)
-  if (!Number.isInteger(parsed) || parsed < 1) {
-    throw new Error('DATABASE_URL の ?connection_limit= には 1 以上の整数を指定してください。');
-  }
-  // プール 1 本あたりの最大接続数として返す
-  return parsed;
+// 接続文字列のプール関連パラメータを node-postgres の設定へ読み替える
+function buildPoolTuning(url: URL): { max?: number; connectionTimeoutMillis: number } {
+  // 1 以上の整数を取り出す共通処理 (不正値は黙って既定へ倒さず落とす: fail-closed)
+  const readPositiveInt = (name: string, allowZero: boolean): number | undefined => {
+    // パラメータを取り出す (無ければ未指定として扱う)
+    const raw = url.searchParams.get(name);
+    if (raw === null) return undefined;
+    // 数値として解釈する
+    const parsed = Number(raw);
+    // 整数かつ許容範囲内であることを確かめる (0 の可否はパラメータによって違う)
+    if (!Number.isInteger(parsed) || parsed < (allowZero ? 0 : 1)) {
+      throw new Error(
+        `DATABASE_URL の ?${name}= には ${allowZero ? '0 以上' : '1 以上'}の整数を指定してください。`,
+      );
+    }
+    // 妥当な値を返す
+    return parsed;
+  };
+
+  // プール 1 本あたりの最大接続数 (未指定なら node-postgres の既定 10 のまま)
+  const max = readPositiveInt('connection_limit', false);
+  // 空きコネクション待ちの上限 (秒)。Prisma と同じく 0 は「待ち続ける」を意味する
+  const poolTimeout = readPositiveInt('pool_timeout', true);
+  // 接続確立の上限 (秒)。node-postgres は待ち時間の設定口が 1 つなので、
+  // pool_timeout が無いときの代わりとして使う
+  const connectTimeout = readPositiveInt('connect_timeout', true);
+  // 使う秒数を決める (指定が無ければ Prisma 5 の既定と同じ 10 秒)
+  const timeoutSeconds = poolTimeout ?? connectTimeout ?? DEFAULT_POOL_TIMEOUT_SECONDS;
+
+  // node-postgres 向けの設定として返す (0 はそのまま渡すと「無期限」になる)
+  return {
+    ...(max === undefined ? {} : { max }),
+    connectionTimeoutMillis: timeoutSeconds * 1000,
+  };
 }
 
 /**
@@ -124,18 +153,33 @@ export function createPrismaClient(options?: {
   // **未指定は public を明示する**(DEFAULT_SCHEMA)。**空文字は未指定と区別して弾く**:
   // `?schema=` と書かれた (値だけ空の) 状態を既定値へ倒すと、テンプレートの変数が
   // 空のまま展開された事故に気付けない。空文字は buildSearchPathOption が落とす (fail-closed)。
-  const schema = url.searchParams.get('schema') ?? DEFAULT_SCHEMA;
+  const requestedSchema = url.searchParams.get('schema');
+  // 実際に使うスキーマ (未指定なら public)
+  const schema = requestedSchema ?? DEFAULT_SCHEMA;
+
+  // **運用側が DSN の options で search_path を明示している場合の逃げ道**。
+  // 既定の public 固定は「ORM と生 SQL が食い違わない」ための安全策だが、
+  // 拡張機能を別スキーマに置くマネージド Postgres (Supabase の extensions など) では
+  // `-c search_path=public,extensions` のような指定を消してはいけない。
+  // `?schema=` を書いていない = スキーマの主張が無い場合に限り、DSN の指定を尊重する
+  // (`?schema=` が書かれていれば、そちらが唯一の主張なので従来どおり後勝ちで固定する)。
+  const dsnPinsSearchPath =
+    requestedSchema === null &&
+    /(^|\s)-c\s*search_path=/.test(url.searchParams.get('options') ?? '');
 
   // node-postgres のコネクションプールを内部に持つアダプタを組み立てる。
   // Prisma が組み立てるクエリは schema オプションで、生 SQL は接続時の search_path で
   // 同じスキーマへ向ける (片方だけだと両者が食い違う。詳細は pg-search-path.ts)。
-  // プール上限は DSN の connection_limit を尊重する (未指定なら node-postgres の既定 10)
-  const poolMax = readPoolMax(url);
+  // プール上限と待ち時間は DSN の connection_limit / pool_timeout / connect_timeout を尊重する
+  const poolTuning = buildPoolTuning(url);
 
   const adapter = new PrismaPg(
     {
-      ...buildScopedConnectionConfig(connectionString, url, schema),
-      ...(poolMax === undefined ? {} : { max: poolMax }),
+      // DSN が自前で search_path を指定しているときは接続文字列をそのまま使う (上の逃げ道)
+      ...(dsnPinsSearchPath
+        ? { connectionString }
+        : buildScopedConnectionConfig(connectionString, url, schema)),
+      ...poolTuning,
     },
     {
       schema,
