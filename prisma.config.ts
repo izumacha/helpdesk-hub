@@ -25,7 +25,9 @@ export default defineConfig({
   ...(databaseUrl ? { datasource: { url: databaseUrl } } : {}),
   // マイグレーション関連の設定
   migrations: {
-    // `prisma db seed` が実行するコマンド (Prisma 7 で package.json の "prisma".seed から移設)
+    // `prisma db seed` が実行するコマンド (Prisma 7 で package.json の "prisma".seed から移設)。
+    // ここが唯一の定義で、`npm run db:seed` は `prisma db seed` を呼ぶだけにしてある
+    // (2 か所に同じコマンドを書くと、片方だけ変えたときに黙って食い違うため)
     seed: 'tsx prisma/seed.ts',
   },
 });

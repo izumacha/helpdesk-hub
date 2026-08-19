@@ -14,7 +14,9 @@ RUN npm ci
 # Build
 # ビルドステージ (Next.js のプロダクションビルドを行う)
 FROM base AS builder
-# Prisma が要求する OpenSSL 3 を入れて、エンジン検出を成功させる
+# Prisma CLI のスキーマエンジン (prisma generate / migrate が使うネイティブバイナリ) が
+# 要求する OpenSSL 3 を入れる。クエリ自体は Prisma 7 から WebAssembly で組み立てるので
+# クエリエンジンのためではない — 消すと prisma generate が動かなくなる
 RUN apk add --no-cache openssl
 # deps から node_modules を持ち込む
 COPY --from=deps /app/node_modules ./node_modules
@@ -39,7 +41,9 @@ ENV NODE_ENV=production
 # コンテナ内のタイムゾーンを日本時間 (JST) に設定 (Node.js のデフォルト TZ も日本時間に揃える)
 ENV TZ=Asia/Tokyo
 
-# Prisma クエリエンジンが必要とする OpenSSL 3 を導入
+# 実行イメージでも `prisma migrate deploy` を叩けるよう OpenSSL 3 を導入する。
+# 使うのは Prisma CLI のスキーマエンジン (schema-engine-*-openssl-3.0.x)。
+# アプリのクエリは WebAssembly なので不要に見えるが、消すとマイグレーションが動かない
 RUN apk add --no-cache openssl
 
 # 専用グループ・ユーザーを作成 (root 実行を避けるため)
@@ -65,10 +69,12 @@ COPY --from=builder /app/prisma.config.ts ./prisma.config.ts
 # seed スクリプトが参照する Prisma クライアントのファクトリ (src/lib/prisma-client.ts) と、
 # その中の `@/generated/prisma` を tsx が解決するためのパスエイリアス定義。
 # どちらも無いと `prisma db seed` が Cannot find module で落ちる。
-# src/lib 全体ではなくこの 1 ファイルだけ入れる — 認証・SSO・メールなどのソースを
+# src/lib 全体ではなく必要なファイルだけ入れる — 認証・SSO・メールなどのソースを
 # 実行イメージへ持ち込まないため (最小公開)。seed が別の src/lib モジュールを
 # 参照するようになったら、その分だけここへ追加する
+# (足し忘れ・入れ過ぎはどちらも tests/docker-seed-files.test.ts が落とす)
 COPY --from=builder /app/src/lib/prisma-client.ts ./src/lib/prisma-client.ts
+COPY --from=builder /app/src/lib/pg-search-path.ts ./src/lib/pg-search-path.ts
 COPY --from=builder /app/tsconfig.json ./tsconfig.json
 # Prisma CLI / tsx とその依存をまとめて取り込む (個別コピーでは依存解決が崩れるため)
 COPY --from=builder /app/node_modules ./node_modules

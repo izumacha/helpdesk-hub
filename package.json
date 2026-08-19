@@ -16,7 +16,7 @@
     "test": "vitest run",
     "test:contract": "vitest run --no-file-parallelism tests/data/*.contract.prisma.test.ts",
     "test:e2e": "playwright test",
-    "db:seed": "tsx prisma/seed.ts",
+    "db:seed": "prisma db seed",
     "db:migrate": "prisma migrate dev",
     "db:generate": "prisma generate",
     "db:backup": "bash scripts/backup-db.sh",

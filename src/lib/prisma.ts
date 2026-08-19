@@ -41,10 +41,19 @@ function getPrismaClient(): PrismaClient {
   return globalForPrisma.prisma;
 }
 
-// bind し直したメソッドを覚えておく表 (プロパティ名 → 束ねる前の関数と束ねた後の関数)。
+// bind し直したメソッドを覚えておく表 (クライアント実体 → プロパティ名 → 束ねた関数)。
 // 毎回 bind すると `prisma.$transaction === prisma.$transaction` が false になり、
 // 「登録したハンドラを同じ参照で解除する」(process.off / removeEventListener) が効かなくなる。
-const boundMethods = new Map<PropertyKey, { source: unknown; bound: unknown }>();
+//
+// **キーはクライアント実体**にする。`$transaction` などのメソッドはインスタンス間で
+// 同一の関数オブジェクト (プロトタイプ上の 1 つ) なので、プロパティ名だけで覚えると
+// globalThis のクライアントが差し替わっても「同じ関数だ」と判定してしまい、
+// 破棄済みクライアントに束ねた古いメソッドを返し続ける。WeakMap なので古い
+// クライアントが参照されなくなればエントリごと回収される。
+const boundMethodsByClient = new WeakMap<
+  PrismaClient,
+  Map<PropertyKey, { source: unknown; bound: unknown }>
+>();
 
 // 既存の呼び出し側 (`prisma.ticket.findMany()` など) を変えずに遅延生成を挟むための Proxy。
 // プロパティに触れた瞬間に初めて実クライアントを生成し、以降はキャッシュを使う。
@@ -60,12 +69,19 @@ export const prisma = new Proxy({} as PrismaClient, {
     const value = Reflect.get(client, property);
     // 関数でなければそのまま返す (モデルデリゲートなどのオブジェクト)
     if (typeof value !== 'function') return value;
-    // 前回束ねた結果が今回の関数と同じ出所なら、その参照を使い回す (同一性を保つ)
+    // このクライアント用の表を取り出す (無ければ空の表を作って登録する)
+    let boundMethods = boundMethodsByClient.get(client);
+    if (!boundMethods) {
+      boundMethods = new Map<PropertyKey, { source: unknown; bound: unknown }>();
+      boundMethodsByClient.set(client, boundMethods);
+    }
+    // 同じクライアントの同じ関数を前回束ねていれば、その参照を使い回す (同一性を保つ)。
+    // source も見るのは、テストがメソッドを差し替えたときに古い参照を返さないため。
     const cached = boundMethods.get(property);
     if (cached && cached.source === value) return cached.bound;
     // 初回、または差し替えられていたら this が実クライアントを指すように束ね直す
     const bound = value.bind(client);
-    // 次回の同一性比較のために覚えておく
+    // 次回同じプロパティを読んだときに同じ参照を返せるよう覚えておく
     boundMethods.set(property, { source: value, bound });
     // 束ね直したメソッドを返す
     return bound;

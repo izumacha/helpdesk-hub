@@ -1,0 +1,89 @@
+// 接続文字列の `?schema=` が「Prisma が組み立てるクエリ」と「生 SQL」の両方へ効くことを、
+// 実 PostgreSQL に対して確かめる契約テスト。
+//
+// 監査で発見したギャップ (Prisma 7 移行): ドライバアダプタは接続文字列の `?schema=` を
+// 解釈しない。アダプタの schema オプションを渡すと Prisma が組み立てるクエリは修飾されるが、
+// 生 SQL ($queryRaw / $executeRawUnsafe) は接続の search_path で解決されるため、
+// 片方だけ直すと **ORM と生 SQL が別スキーマを向く**。エラーにならず「空の結果」や
+// 「別スキーマへの書き込み」になる静かな壊れ方なので、実 DB で関係を直接固定する。
+//
+// スキーマ名の引用規則そのもの (純粋な組み立て) は tests/pg-search-path.test.ts が持つ。
+// ここでは PostgreSQL が実際にどう解釈したかだけを見る。
+//
+// この DB 依存テストは RUN_PRISMA_CONTRACT=1 のときだけ走る。CREATE/DROP SCHEMA を行うが、
+// 対象は下記の専用スキーマ名だけで、他の契約テストが使う public には触れない。
+
+import { describe, beforeAll, afterAll, expect, it } from 'vitest';
+import type { PrismaClient } from '@/generated/prisma';
+// 検査対象: 接続文字列からアダプタを組み立てるファクトリ
+import { createPrismaClient } from '@/lib/prisma-client';
+
+// 実 DB を触るテストなので明示フラグでのみ実行する
+const SHOULD_RUN = process.env.RUN_PRISMA_CONTRACT === '1';
+
+// 検証に使うスキーマ名。単純な名前だけでなく、引用が必要な名前・引用符を含む名前・
+// カンマで検索対象を増やそうとする名前も通す (どれも 1 つの識別子として扱われるはず)
+const SCHEMA_NAMES = ['contract_app', 'contract-hyphen', 'contract space', 'contract"quote'];
+
+describe.runIf(SHOULD_RUN)('接続文字列の ?schema= (prisma adapter)', () => {
+  // スキーマの作成・後始末に使う、schema 指定なしのクライアント
+  let admin: PrismaClient;
+  // テスト中に差し替えるので、元の DATABASE_URL を覚えておく
+  const originalDatabaseUrl = process.env.DATABASE_URL;
+
+  // スキーマ名を SQL リテラルとして安全に埋め込む (" を "" に増やして引用する)
+  const quote = (schema: string) => `"${schema.replace(/"/g, '""')}"`;
+
+  beforeAll(async () => {
+    admin = createPrismaClient();
+    await admin.$connect();
+    // 前回の残骸があっても落ちないよう、作る前に消してから作る
+    for (const schema of SCHEMA_NAMES) {
+      await admin.$executeRawUnsafe(`DROP SCHEMA IF EXISTS ${quote(schema)} CASCADE`);
+      await admin.$executeRawUnsafe(`CREATE SCHEMA ${quote(schema)}`);
+    }
+  });
+
+  afterAll(async () => {
+    // 作った検証用スキーマをすべて片付ける
+    for (const schema of SCHEMA_NAMES) {
+      await admin.$executeRawUnsafe(`DROP SCHEMA IF EXISTS ${quote(schema)} CASCADE`);
+    }
+    await admin.$disconnect();
+    // 環境変数を元に戻す (後続のテストファイルへ影響を残さないため)
+    process.env.DATABASE_URL = originalDatabaseUrl;
+  });
+
+  // 各スキーマ名について、生 SQL の解決先が指定どおりになることを確かめる
+  it.each(SCHEMA_NAMES)('?schema=%s のとき生 SQL も同じスキーマで解決される', async (schema) => {
+    // 元の接続文字列に schema パラメータだけを足した DSN を組み立てる
+    const url = new URL(originalDatabaseUrl as string);
+    url.searchParams.set('schema', schema);
+    process.env.DATABASE_URL = url.toString();
+
+    // 差し替えた接続文字列でクライアントを作る
+    const scoped = createPrismaClient();
+    try {
+      // 生 SQL から見える検索対象スキーマが、指定したスキーマ 1 つだけであることを確かめる
+      // (current_schemas(false) は search_path の解決結果を配列で返す。Prisma は name[] を
+      //  復元できないので text[] へキャストしてから受け取る)
+      const [{ schemas }] = await scoped.$queryRawUnsafe<{ schemas: string[] }[]>(
+        'SELECT current_schemas(false)::text[] AS schemas',
+      );
+      expect(schemas).toEqual([schema]);
+
+      // 生 SQL で作ったテーブルが、狙ったスキーマに入っていることも確かめる
+      // (search_path が別を向いていれば public 側にできてしまう)
+      await scoped.$executeRawUnsafe('CREATE TABLE search_path_probe (id integer)');
+      const [{ count }] = await admin.$queryRawUnsafe<{ count: bigint }[]>(
+        'SELECT count(*) AS count FROM information_schema.tables WHERE table_schema = $1 AND table_name = $2',
+        schema,
+        'search_path_probe',
+      );
+      expect(Number(count)).toBe(1);
+    } finally {
+      // 検証用クライアントの接続を必ず閉じる
+      await scoped.$disconnect();
+    }
+  });
+});

@@ -2,11 +2,8 @@
 import { PrismaPg } from '@prisma/adapter-pg';
 // 生成された Prisma クライアント本体と、ログ設定の型をインポート
 import { Prisma, PrismaClient } from '@/generated/prisma';
-
-// Postgres の識別子として安全に扱える形 (先頭は英字か _、以降は英数字 / _ / $)。
-// search_path はプレースホルダを使えず文字列として組み立てるしかないため、
-// この形に一致しない値は受け付けない (引用符やスペースを混ぜた注入を防ぐ)。
-const SAFE_SCHEMA_NAME = /^[A-Za-z_][A-Za-z0-9_$]*$/;
+// 接続時に search_path を固定する libpq オプションの組み立て (純粋関数)
+import { buildSearchPathOption } from './pg-search-path';
 
 /**
  * Reads the Prisma-specific `?schema=` parameter out of the connection string.
@@ -28,26 +25,6 @@ function readSchemaFromConnectionString(connectionString: string): string | unde
       'DATABASE_URL を URL として解釈できません。postgresql://... 形式で指定してください (値はログに出しません)。',
     );
   }
-}
-
-/**
- * Builds the libpq `options` string that pins the session's `search_path`.
- *
- * The adapter's `schema` option only qualifies Prisma-generated queries. Raw
- * SQL (`$queryRaw` / `$executeRawUnsafe`, used by the dashboard metrics query
- * and the contract tests' TRUNCATE) still resolves through `search_path`, so
- * without this the two halves would silently target different schemas.
- */
-// search_path を接続時に固定するための libpq オプション文字列を組み立てる
-function buildSearchPathOption(schema: string): string {
-  // 識別子として安全でない名前は組み立てず、その場で落とす (fail-closed)
-  if (!SAFE_SCHEMA_NAME.test(schema)) {
-    throw new Error(
-      'DATABASE_URL の ?schema= に使える文字は英数字・アンダースコア・$ のみです (先頭は英字かアンダースコア)。',
-    );
-  }
-  // 接続確立時に実行される設定として search_path を渡す
-  return `-c search_path=${schema}`;
 }
 
 /**
@@ -81,7 +58,9 @@ export function createPrismaClient(options?: {
   const schema = readSchemaFromConnectionString(connectionString);
 
   // node-postgres のコネクションプールを内部に持つアダプタを組み立てる。
-  // schema 指定があるときは接続時の search_path も同じスキーマへ向ける (下の関数の説明を参照)。
+  // schema 指定があるときは接続時の search_path も同じスキーマへ向ける
+  // (アダプタの schema オプションは Prisma が組み立てるクエリしか修飾せず、
+  //  生 SQL は search_path で解決されるため。詳細は pg-search-path.ts)。
   const adapter = new PrismaPg(
     { connectionString, ...(schema ? { options: buildSearchPathOption(schema) } : {}) },
     schema ? { schema } : undefined,

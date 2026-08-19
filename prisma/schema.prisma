@@ -4,9 +4,11 @@
 
 // 生成設定: Prisma クライアント (TS で DB を操作する SDK) の出力先を指定
 generator client {
-  provider      = "prisma-client-js"
-  output        = "../src/generated/prisma" // src/generated/prisma 配下にクライアント本体と型が生成される
-  binaryTargets = ["native", "linux-musl-arm64-openssl-3.0.x", "linux-musl-openssl-3.0.x"]
+  provider = "prisma-client-js"
+  output   = "../src/generated/prisma" // src/generated/prisma 配下にクライアント本体と型が生成される
+  // binaryTargets は指定しない: Prisma 7 のクライアントはクエリを WebAssembly
+  // (query_compiler_fast_bg.wasm) で組み立てるため、OS 別のクエリエンジンバイナリを
+  // 選ぶ設定そのものが無効になった (指定しても何も生成されない)
 }
 
 // データソース設定: 接続先 DB の種類と接続文字列
