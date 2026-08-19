@@ -4,7 +4,9 @@
 // **開発 DB を指さないこと** (CLAUDE.md §テスト)。専用 DB で実行する。
 
 import { describe, beforeAll, afterAll, beforeEach, expect, it } from 'vitest';
-import { PrismaClient } from '@/generated/prisma';
+import type { PrismaClient } from '@/generated/prisma';
+// Prisma 7 はドライバアダプタ必須。生成は共通ファクトリへ寄せる
+import { createPrismaClient } from '@/lib/prisma-client';
 import { buildPrismaRepos } from '@/data/adapters/prisma';
 
 // DB 依存テストを実行してよいかの明示フラグ (CI の専用ジョブだけが '1' を立てる)
@@ -14,7 +16,7 @@ describe.runIf(SHOULD_RUN)('LineLinkCodeRef prisma adapter', () => {
   let prisma: PrismaClient;
 
   beforeAll(async () => {
-    prisma = new PrismaClient();
+    prisma = createPrismaClient();
     await prisma.$connect();
   });
 

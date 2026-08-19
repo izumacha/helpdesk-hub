@@ -59,6 +59,9 @@ COPY --from=builder /app/src/generated ./src/generated
 # 起動後に prisma migrate / db seed を実行できるよう CLI と関連ファイルを同梱
 COPY --from=builder /app/package.json ./package.json
 COPY --from=builder /app/prisma ./prisma
+# Prisma 7 の設定ファイル。接続 URL と seed コマンドの定義がここにあるため、
+# 同梱しないとコンテナ内の `prisma migrate deploy` / `prisma db seed` が動かない
+COPY --from=builder /app/prisma.config.ts ./prisma.config.ts
 # Prisma CLI / tsx とその依存をまとめて取り込む (個別コピーでは依存解決が崩れるため)
 COPY --from=builder /app/node_modules ./node_modules
 

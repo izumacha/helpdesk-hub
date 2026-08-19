@@ -1,7 +1,9 @@
 // Vitest のテスト DSL (describe=グループ, beforeAll/afterAll=前後処理)
 import { describe, beforeAll, afterAll } from 'vitest';
 // Prisma クライアント本体 (生成物。DB へ実際に接続して操作する SDK)
-import { PrismaClient } from '@/generated/prisma';
+import type { PrismaClient } from '@/generated/prisma';
+// Prisma 7 はドライバアダプタ必須。生成は共通ファクトリへ寄せる
+import { createPrismaClient } from '@/lib/prisma-client';
 // 本番 Prisma 実装の repos 束を組み立てる関数
 import { buildPrismaRepos } from '@/data/adapters/prisma';
 // 共通契約テストとそのコンテキスト型 (memory 版と同じものを使い回す)
@@ -27,7 +29,7 @@ describe.runIf(SHOULD_RUN)('prisma adapter', () => {
   // スイート開始時に 1 度だけ DB へ接続する
   beforeAll(async () => {
     // PrismaClient を生成 (接続先は環境変数 DATABASE_URL から読まれる)
-    prisma = new PrismaClient();
+    prisma = createPrismaClient();
     // 実際に DB へ接続を張る (失敗時はここで早期に分かる)
     await prisma.$connect();
   });

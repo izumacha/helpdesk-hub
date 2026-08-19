@@ -59,9 +59,11 @@ Phase 0 でマルチテナント基盤を入れた際に `prisma/migrations/` �
 
 ## 3. アーキテクチャ
 
-**スタック:** Next.js 16 App Router, React 19, Auth.js v5 (next-auth@beta, Credentials + bcryptjs), Prisma 5 + PostgreSQL, Zod, Tailwind v4, Vitest, Playwright。
+**スタック:** Next.js 16 App Router, React 19, Auth.js v5 (next-auth@beta, Credentials + bcryptjs), Prisma 7 + PostgreSQL, Zod, Tailwind v4, Vitest, Playwright。
 
 ### Prisma クライアントの出力先（重要）
+
+**Prisma 7 はドライバアダプタ必須**（`@prisma/adapter-pg`）。`datasource` の `url` は `schema.prisma` に書けなくなり、CLI 用の接続情報と seed コマンドは `prisma.config.ts` に集約している。`PrismaClient` を直接 `new` せず、アダプタ結線を 1 か所に集めた `createPrismaClient()`（`src/lib/prisma-client.ts`）を使う（アプリの singleton `src/lib/prisma.ts`・seed・契約テスト・E2E すべてがこれを経由する）。`src/lib/prisma.ts` の `prisma` は Proxy 経由の**遅延生成**で、DB を触らないユニットテストが import しただけでは接続文字列を要求しない。
 
 `prisma/schema.prisma` はクライアントを `src/generated/prisma` に出力する（`node_modules/@prisma/client` ではない）。**型/enum は必ず `@/generated/prisma` から import**（例: `import type { TicketStatus, Role } from '@/generated/prisma'`）。当ディレクトリは gitignore 対象 — クローン後・スキーマ変更後・fresh 環境の `typecheck`/`build` 前に `npm run db:generate` を実行する。パスエイリアス `@/*` → `src/*`（tsconfig + vitest.config）。
 
@@ -71,7 +73,7 @@ Phase 0 でマルチテナント基盤を入れた際に `prisma/migrations/` �
 - `src/app/api/*` — REST エンドポイント（`POST /api/tickets`, SSE 用 `GET /api/notifications/stream`, `/api/auth/[...nextauth]`）。多くの mutation は Server Action。
 - `src/features/<domain>/{actions,components}` — 機能モジュール。`actions/*.ts` は `'use server'`、`components/*.tsx` は主に Client Component。
 - `src/domain/` — Prisma/Next 非依存の純粋ビジネスルール（現状 `ticket-status.ts` の遷移テーブル）。
-- `src/lib/` — 横断インフラ: `prisma.ts`（singleton）, `auth.ts`, `role.ts`（`isAgent`）, `sla.ts`, `notifications.ts`, `sse-subscribers.ts`, `ticket-history.ts`, `constants.ts`（日本語ラベル＋Tailwind 色）, `validations/`（Zod）。
+- `src/lib/` — 横断インフラ: `prisma.ts`（singleton・遅延生成）, `prisma-client.ts`（ドライバアダプタ結線のファクトリ）, `auth.ts`, `role.ts`（`isAgent`）, `sla.ts`, `notifications.ts`, `sse-subscribers.ts`, `ticket-history.ts`, `constants.ts`（日本語ラベル＋Tailwind 色）, `validations/`（Zod）。
 
 ### Auth & RBAC
 

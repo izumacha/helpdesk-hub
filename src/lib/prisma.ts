@@ -1,5 +1,7 @@
-// 生成された Prisma クライアント (DB 操作の窓口) をインポート
-import { PrismaClient } from '@/generated/prisma';
+// 生成された Prisma クライアントの型 (DB 操作の窓口) をインポート
+import type { PrismaClient } from '@/generated/prisma';
+// ドライバアダプタ込みでクライアントを組み立てる共通ファクトリをインポート
+import { createPrismaClient } from './prisma-client';
 
 // PrismaClient が二重に作られないよう、グローバル変数を借りてプロセス内で 1 つに固定する。
 //
@@ -19,14 +21,38 @@ const globalForPrisma = globalThis as unknown as {
   prisma: PrismaClient | undefined; // グローバルに保持する Prisma インスタンス (未定義の可能性あり)
 };
 
-// 既に生成済みのインスタンスがあればそれを再利用し、無ければ新しく作成する
-export const prisma =
-  globalForPrisma.prisma ??
-  new PrismaClient({
+// 実際に DB へ触るまでクライアントを作らないための遅延生成関数。
+//
+// Prisma 7 はドライバアダプタ必須になり、生成時点で接続文字列を要求する (未設定なら
+// createPrismaClient が fail-closed で落ちる)。一方このモジュールは `@/data` 経由で
+// **DB を触らないユニットテストからも import される**ため、モジュール評価と同時に
+// クライアントを組み立てると DATABASE_URL 未設定の環境で import しただけで落ちる
+// (ユニットテストに DB 依存を持ち込まないという CLAUDE.md §11 の境界が壊れる)。
+// そこで生成を初回アクセスまで遅らせ、fail-closed の検査は「実際に使うとき」に効かせる。
+function getPrismaClient(): PrismaClient {
+  // 既に生成済みならそれを返す (globalThis キャッシュ: 上のコメントの理由で本番も含め常に使う)
+  globalForPrisma.prisma ??= createPrismaClient({
     // 開発環境では error と warn を表示、本番では error のみに絞る
     log: process.env.NODE_ENV === 'development' ? ['error', 'warn'] : ['error'],
   });
+  // キャッシュ済みのインスタンスを返す
+  return globalForPrisma.prisma;
+}
 
-// 作成した prisma をグローバルにキャッシュし、次回の評価では上の `??` で再利用させる。
-// 環境で分岐しないのは上のコメントのとおり (本番こそ proxy / app サーバーの二重生成を防ぎたい)。
-globalForPrisma.prisma = prisma;
+// 既存の呼び出し側 (`prisma.ticket.findMany()` など) を変えずに遅延生成を挟むための Proxy。
+// プロパティに触れた瞬間に初めて実クライアントを生成し、以降はキャッシュを使う。
+export const prisma = new Proxy({} as PrismaClient, {
+  // プロパティ読み取り (prisma.ticket / prisma.$transaction など) を実クライアントへ委譲する
+  get(_target, property, receiver) {
+    // 実クライアントを取得する (初回のみ生成される)
+    const client = getPrismaClient();
+    // 目的のプロパティを取り出す
+    const value = Reflect.get(client, property, receiver);
+    // メソッドは this が実クライアントを指すように束ね直してから返す
+    return typeof value === 'function' ? value.bind(client) : value;
+  },
+  // `in` 演算子やプロパティ存在確認も実クライアントに合わせる
+  has(_target, property) {
+    return Reflect.has(getPrismaClient(), property);
+  },
+});

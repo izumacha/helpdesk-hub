@@ -12,7 +12,6 @@ generator client {
 // データソース設定: 接続先 DB の種類と接続文字列
 datasource db {
   provider = "postgresql" // 使用する DB は PostgreSQL
-  url      = env("DATABASE_URL") // 接続先は環境変数 DATABASE_URL から読む
 }
 
 // ─────────────────────────────────────────────

@@ -8,7 +8,9 @@
 // が担う (契約テスト DB は `prisma migrate deploy` で構築するためトリガも存在する)。
 
 import { describe, beforeAll, afterAll, beforeEach, expect, it } from 'vitest';
-import { PrismaClient } from '@/generated/prisma';
+import type { PrismaClient } from '@/generated/prisma';
+// Prisma 7 はドライバアダプタ必須。生成は共通ファクトリへ寄せる
+import { createPrismaClient } from '@/lib/prisma-client';
 import { buildPrismaRepos } from '@/data/adapters/prisma';
 
 const SHOULD_RUN = process.env.RUN_PRISMA_CONTRACT === '1';
@@ -17,7 +19,7 @@ describe.runIf(SHOULD_RUN)('AuthAuditLogRepository (prisma adapter)', () => {
   let prisma: PrismaClient;
 
   beforeAll(async () => {
-    prisma = new PrismaClient();
+    prisma = createPrismaClient();
     await prisma.$connect();
   });
 

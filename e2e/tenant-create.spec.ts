@@ -1,12 +1,13 @@
 // Playwright のテスト DSL と Page 型
 import { test, expect, Page } from '@playwright/test';
 // E2E 後始末で作成テナント/ユーザーを消すため Prisma Client を使う
-import { PrismaClient } from '../src/generated/prisma';
+// Prisma 7 はドライバアダプタ必須。生成は共通ファクトリへ寄せる
+import { createPrismaClient } from '../src/lib/prisma-client';
 // 監査ログ追記専用トリガに対応したテナント後始末ヘルパー
 import { deleteTenantsForCleanup } from './cleanup';
 
 // DB 直接操作用 Prisma Client (後始末専用)
-const prisma = new PrismaClient();
+const prisma = createPrismaClient();
 
 // 既存 seed の管理者 (テナントを作成する側)
 const ADMIN_EMAIL = 'admin@example.com';

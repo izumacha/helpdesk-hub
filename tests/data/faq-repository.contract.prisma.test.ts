@@ -7,7 +7,9 @@
 // TRUNCATE するため **開発 DB を指さない** こと。
 
 import { describe, beforeAll, afterAll, beforeEach, expect, it } from 'vitest';
-import { PrismaClient } from '@/generated/prisma';
+import type { PrismaClient } from '@/generated/prisma';
+// Prisma 7 はドライバアダプタ必須。生成は共通ファクトリへ寄せる
+import { createPrismaClient } from '@/lib/prisma-client';
 import { buildPrismaRepos } from '@/data/adapters/prisma';
 import { FAQ_LIST_LIMIT } from '@/data/ports/faq-repository';
 
@@ -22,7 +24,7 @@ describe.runIf(SHOULD_RUN)('FaqRepository (prisma adapter)', () => {
   let ticketA: string;
 
   beforeAll(async () => {
-    prisma = new PrismaClient();
+    prisma = createPrismaClient();
     await prisma.$connect();
   });
 

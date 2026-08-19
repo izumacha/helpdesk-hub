@@ -22,13 +22,11 @@
     "db:backup": "bash scripts/backup-db.sh",
     "db:restore": "bash scripts/restore-db.sh"
   },
-  "prisma": {
-    "seed": "tsx prisma/seed.ts"
-  },
   "dependencies": {
     "@hookform/resolvers": "^5.7.1",
     "@node-saml/node-saml": "^5.1.0",
-    "@prisma/client": "^5.22.0",
+    "@prisma/adapter-pg": "^7.9.1",
+    "@prisma/client": "^7.9.1",
     "bcryptjs": "^3.0.3",
     "next": "^16.3.0",
     "next-auth": "^5.0.0-beta.32",
@@ -55,7 +53,7 @@
     "postcss": "^8.5.26",
     "prettier": "^3.9.6",
     "prettier-plugin-tailwindcss": "^0.8.1",
-    "prisma": "^5.22.0",
+    "prisma": "^7.9.1",
     "tailwindcss": "^4.2.2",
     "tsx": "^4.23.12",
     "typescript": "^5.9.3",

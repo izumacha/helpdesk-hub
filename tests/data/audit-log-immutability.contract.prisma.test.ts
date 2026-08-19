@@ -11,7 +11,9 @@
 // なお TRUNCATE 自体は行レベルトリガの対象外 (PostgreSQL 仕様) なのでリセットは常に成功する。
 
 import { describe, beforeAll, afterAll, beforeEach, expect, it } from 'vitest';
-import { PrismaClient } from '@/generated/prisma';
+import type { PrismaClient } from '@/generated/prisma';
+// Prisma 7 はドライバアダプタ必須。生成は共通ファクトリへ寄せる
+import { createPrismaClient } from '@/lib/prisma-client';
 
 const SHOULD_RUN = process.env.RUN_PRISMA_CONTRACT === '1';
 
@@ -22,7 +24,7 @@ describe.runIf(SHOULD_RUN)('監査ログの追記専用トリガ (audit log immu
   let prisma: PrismaClient;
 
   beforeAll(async () => {
-    prisma = new PrismaClient();
+    prisma = createPrismaClient();
     await prisma.$connect();
   });
 

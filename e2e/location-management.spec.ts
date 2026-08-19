@@ -1,7 +1,9 @@
 // Playwright のテスト DSL と Page 型 (ページ操作の API)
 import { test, expect, Page } from '@playwright/test';
 // E2E 用に DB へ直接 fixture を投入するため Prisma Client を使う (multitenant.spec.ts と同じ方針)
-import { PrismaClient, Role } from '../src/generated/prisma';
+import { Role } from '../src/generated/prisma';
+// Prisma 7 はドライバアダプタ必須。生成は共通ファクトリへ寄せる
+import { createPrismaClient } from '../src/lib/prisma-client';
 // ログイン可能なテストユーザーを作るためパスワードをハッシュ化する
 import { hash } from 'bcryptjs';
 
@@ -34,7 +36,7 @@ const OTHER_LOCATION_ID = 'e2e-location-other';
 const OTHER_LOCATION_NAME = 'E2Eテスト別拠点維持用';
 
 // DB 直接投入用 Prisma Client
-const prisma = new PrismaClient();
+const prisma = createPrismaClient();
 
 // 共通ログイン手順 (他の e2e spec と同じパターン)
 async function login(page: Page, email: string) {

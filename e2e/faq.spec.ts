@@ -1,7 +1,8 @@
 // Playwright のテスト DSL と Page 型 (ページ操作の API)
 import { test, expect, Page } from '@playwright/test';
 // フォローアップ (2026-07-14 #6) 用の fixture を DB へ直接投入するため Prisma Client を使う
-import { PrismaClient } from '../src/generated/prisma';
+// Prisma 7 はドライバアダプタ必須。生成は共通ファクトリへ寄せる
+import { createPrismaClient } from '../src/lib/prisma-client';
 
 // フォローアップ (2026-07-14 #5): 監査で発見したギャップの解消。/faq は以前エージェント以上
 // のみ閲覧可能で、依頼者は 404 で弾かれていた。公開済み FAQ を依頼者自身が読めるようになった
@@ -69,7 +70,7 @@ test.describe('/faq エージェント向け管理ビュー (回帰確認)', () 
 // 独立した専用 fixture を使う。
 
 // DB 直接投入用 Prisma Client
-const prisma = new PrismaClient();
+const prisma = createPrismaClient();
 // この describe 専用の fixture ID 群
 const EDIT_TICKET_ID = 'e2e-faq-edit-ticket';
 const EDIT_FAQ_ID = 'e2e-faq-edit-faq';
