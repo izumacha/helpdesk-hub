@@ -57,8 +57,10 @@ function buildPoolTuning(url: URL): { max?: number; connectionTimeoutMillis: num
     // パラメータを取り出す (無ければ未指定として扱う)
     const raw = url.searchParams.get(name);
     if (raw === null) return undefined;
-    // 数値として解釈する
-    const parsed = Number(raw);
+    // **10 進数の数字だけを受け付ける**。Number() は空文字を 0、`0x10` を 16、`1e3` を 1000 と
+    // 解釈してしまい、「値が空のまま展開されたテンプレート」を無期限待ちへ、書き間違いを
+    // 別の数値へ、それぞれ黙って変えてしまう
+    const parsed = /^\d+$/.test(raw) ? Number(raw) : Number.NaN;
     // 整数かつ許容範囲内であることを確かめる (0 の可否はパラメータによって違う)
     if (!Number.isInteger(parsed) || parsed < (allowZero ? 0 : 1)) {
       throw new Error(
@@ -84,6 +86,43 @@ function buildPoolTuning(url: URL): { max?: number; connectionTimeoutMillis: num
     ...(max === undefined ? {} : { max }),
     connectionTimeoutMillis: timeoutSeconds * 1000,
   };
+}
+
+// DSN の options に書かれた search_path を取り出す正規表現。
+// libpq / PostgreSQL は `-c name=value` と `--name=value` の両方を受け付けるので両方見る
+// (片方しか見ないと、同じ設定が書き方によって尊重されたり潰されたりする)。
+const DSN_SEARCH_PATH_PATTERN = /(?:^|\s)(?:-c\s*|--)search_path=(\S*)/;
+
+/**
+ * Decides whether the DSN's own `search_path` may stand in for our pinning.
+ *
+ * Honouring it is only safe while the ORM's schema is *in* that list: Prisma
+ * qualifies its own queries with that schema while raw SQL resolves through
+ * `search_path`, so a list that omits it puts the two halves on different
+ * schemas — silently, which is the failure this module exists to prevent.
+ * A list that merely appends extra schemas (`public,extensions`) is fine.
+ */
+// DSN の search_path 指定が、これから使うスキーマを含んでいるかを判定する
+function dsnSearchPathIncludes(options: string | null, schema: string): boolean {
+  // options が無ければ判定するまでもない
+  if (options === null) return false;
+  // search_path の指定を探す (無ければ逃げ道は使わない)
+  const matched = DSN_SEARCH_PATH_PATTERN.exec(options);
+  if (matched === null) return false;
+  // カンマ区切りの一覧を要素へ分け、引用符と空白を落として比較できる形にする
+  const entries = matched[1].split(',').map((entry) =>
+    entry
+      .trim()
+      .replace(/^"(.*)"$/, '$1')
+      .replace(/""/g, '"'),
+  );
+  // 使うスキーマが一覧に含まれていれば、運用側の指定をそのまま活かす
+  if (entries.includes(schema)) return true;
+  // 含まれていなければ「ORM と生 SQL が別スキーマを向く」状態なので、その場で落とす。
+  // 別スキーマを使いたいのなら ?schema= で宣言してもらう (そちらは両方へ反映される)
+  throw new Error(
+    `DATABASE_URL の options が指定する search_path に ${schema} が含まれていません。別のスキーマを使う場合は ?schema= で指定してください。`,
+  );
 }
 
 /**
@@ -164,8 +203,7 @@ export function createPrismaClient(options?: {
   // `?schema=` を書いていない = スキーマの主張が無い場合に限り、DSN の指定を尊重する
   // (`?schema=` が書かれていれば、そちらが唯一の主張なので従来どおり後勝ちで固定する)。
   const dsnPinsSearchPath =
-    requestedSchema === null &&
-    /(^|\s)-c\s*search_path=/.test(url.searchParams.get('options') ?? '');
+    requestedSchema === null && dsnSearchPathIncludes(url.searchParams.get('options'), schema);
 
   // node-postgres のコネクションプールを内部に持つアダプタを組み立てる。
   // Prisma が組み立てるクエリは schema オプションで、生 SQL は接続時の search_path で

@@ -103,14 +103,47 @@ describe('接続文字列のプール設定の読み替え', () => {
     expect(() => createPrismaClient()).toThrow(/connection_limit/);
   });
 
+  it('空の値は無期限待ちへ倒さずに落とす', async () => {
+    // テンプレート変数が空のまま展開された形 (`?pool_timeout=${VAR}` で VAR 未設定)
+    vi.stubEnv('DATABASE_URL', `${BASE_DSN}?pool_timeout=`);
+    const { createPrismaClient } = await import('@/lib/prisma-client');
+    // 0 (=無期限) と解釈されずに落ちることを確かめる
+    expect(() => createPrismaClient()).toThrow(/pool_timeout/);
+  });
+
+  it('10 進数以外の書き方は別の数値に読み替えず落とす', async () => {
+    // Number() なら 16 と解釈されてしまう形
+    vi.stubEnv('DATABASE_URL', `${BASE_DSN}?connection_limit=0x10`);
+    const { createPrismaClient } = await import('@/lib/prisma-client');
+    // 書き手の意図と違う値で動き出さないことを確かめる
+    expect(() => createPrismaClient()).toThrow(/connection_limit/);
+  });
+
   it('?schema= 未指定で DSN が search_path を指定していればそれを尊重する', async () => {
-    // 拡張機能を別スキーマに置くマネージド Postgres で使われる形
+    // 拡張機能を別スキーマに置くマネージド Postgres で使われる形 (public を含む)
     const config = await captureAdapterConfig(
       `${BASE_DSN}?options=${encodeURIComponent('-c search_path=public,extensions')}`,
     );
     // こちらから search_path を上書きしない (接続文字列をそのまま使う)
     expect(config.options).toBeUndefined();
     expect(config.connectionString).toContain('search_path');
+  });
+
+  it('`--search_path=` の書き方も同じように尊重する', async () => {
+    // PostgreSQL は -c と -- の両方を受け付けるので、書き方で挙動が変わってはいけない
+    const config = await captureAdapterConfig(
+      `${BASE_DSN}?options=${encodeURIComponent('--search_path=public,extensions')}`,
+    );
+    // こちらから search_path を上書きしないことを確かめる
+    expect(config.options).toBeUndefined();
+  });
+
+  it('DSN の search_path が ORM のスキーマを含まなければ落とす', async () => {
+    // 生 SQL だけ app を向き、ORM は public のまま…という食い違いを黙って作らせない
+    vi.stubEnv('DATABASE_URL', `${BASE_DSN}?options=${encodeURIComponent('-c search_path=app')}`);
+    const { createPrismaClient } = await import('@/lib/prisma-client');
+    // 別スキーマを使いたいなら ?schema= で宣言してもらう
+    expect(() => createPrismaClient()).toThrow(/search_path/);
   });
 
   it('?schema= があれば DSN の search_path 指定より優先する', async () => {
