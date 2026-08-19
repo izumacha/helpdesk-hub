@@ -124,9 +124,11 @@ describe.runIf(SHOULD_RUN)('接続文字列の ?schema= (prisma adapter)', () =>
     // 接続先プロバイダが独自の options を載せてくる形 (Neon の endpoint 指定など) を模す。
     // node-postgres は接続文字列側の options を設定オブジェクトへ後勝ちで被せるため、
     // 素朴に渡すと search_path の固定だけが消える (= ORM と生 SQL が別スキーマを向く)
+    // DSN 側に **競合する search_path** も混ぜる。連結順を逆にすると DSN 側が後勝ちになり、
+    // 生 SQL だけ public へ戻る (ORM は schema オプションのままなので静かに食い違う)
     const url = new URL(originalDatabaseUrl as string);
     url.searchParams.set('schema', SCHEMA_NAMES[0]);
-    url.searchParams.set('options', '-c statement_timeout=9000');
+    url.searchParams.set('options', '-c statement_timeout=9000 -c search_path=public');
     process.env.DATABASE_URL = url.toString();
 
     // 差し替えた接続文字列でクライアントを作る

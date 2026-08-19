@@ -53,12 +53,18 @@ const GENERATED_DIR = 'src/generated';
 //   tsconfig.json    … tsx が `@/generated/prisma` を解決するためのパスエイリアス定義
 const EXTRA_RUNNER_FILES = ['prisma.config.ts', 'tsconfig.json'];
 
-// seed から辿れる `src/` 配下のファイル一覧 (リポジトリルートからの相対パス) を集める
-function collectSeedSourceFiles(): Set<string> {
+// seed から辿れる `src/` 配下のファイルと、解決できなかった内部 import を集める。
+//
+// **解決できなかったものを黙って捨てない**のが要点。捨てると、生成物 (src/generated) が
+// 未生成のクローンでは依存が 1 つも見つからず、COPY 漏れの検査が「比べる相手が無い」まま
+// 緑になる (実測で確認)。解決できない内部 import は検査そのものの前提が崩れた合図として扱う。
+function collectSeedSourceFiles(): { sourceFiles: Set<string>; unresolved: string[] } {
   // 走査済みの絶対パス (同じファイルを 2 度開かないため)
   const visited = new Set<string>();
   // 結果として返す `src/` 配下のファイル集合
   const sourceFiles = new Set<string>();
+  // 内部 import (相対パス / `@/` エイリアス) なのに実ファイルへ解決できなかった指定子
+  const unresolved: string[] = [];
   // 幅優先で辿るための待ち行列 (起点は seed 本体)
   const queue = [SEED_ENTRY];
   // 待ち行列が空になるまで辿る
@@ -80,11 +86,19 @@ function collectSeedSourceFiles(): Set<string> {
     // このファイルの import 先をすべて解決して待ち行列へ積む
     for (const specifier of collectModuleSpecifiers(parseSourceFile(current))) {
       const resolved = resolveModuleSpecifier(specifier, current, SRC_DIR);
-      if (resolved) queue.push(resolved);
+      // 解決できたら辿る
+      if (resolved) {
+        queue.push(resolved);
+        continue;
+      }
+      // 外部パッケージは追わない (node_modules は別の COPY でまとめて入る)
+      if (!specifier.startsWith('.') && !specifier.startsWith('@/')) continue;
+      // 内部 import なのに解決できなかった = 走査の前提が崩れているので記録する
+      unresolved.push(`${relative(REPO_ROOT, current)} -> ${specifier}`);
     }
   }
-  // 集めた集合を返す
-  return sourceFiles;
+  // 集めた結果を返す
+  return { sourceFiles, unresolved };
 }
 
 // Dockerfile が実行イメージ (runner ステージ) へ入れるリポジトリ内のパスを集める
@@ -112,11 +126,14 @@ function collectRunnerCopiedSourcePaths(): string[] {
 
 describe('Dockerfile の runner ステージが seed 用ソースを過不足なく含む', () => {
   // seed から辿れる `src/` 配下のファイル (真実の源はソースの import グラフ)
-  const requiredFiles = collectSeedSourceFiles();
+  const { sourceFiles: requiredFiles, unresolved } = collectSeedSourceFiles();
   // Dockerfile が実行イメージへ入れる `src/` 配下のパス
   const copiedPaths = collectRunnerCopiedSourcePaths();
 
   it('走査の前提が崩れていない (seed から src 配下のファイルを 1 つ以上辿れる)', () => {
+    // 内部 import が 1 つでも解決できないと、その先の依存がまるごと検査から外れる。
+    // よくある原因は `npm run db:generate` 未実行 (src/generated が無い) — CLAUDE.md §3 参照
+    expect(unresolved).toEqual([]);
     // 解決に失敗して集合が空になると、以降の検査が素通りしてしまうので先に確かめる
     expect(requiredFiles.size).toBeGreaterThan(0);
     // Dockerfile 側も同様に、1 つも拾えていない状態を弾く

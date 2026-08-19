@@ -22,6 +22,11 @@ describe('src/lib/prisma.ts の遅延生成 Proxy', () => {
     // 環境変数の差し替えとモジュールキャッシュを毎回戻す (他のテストへ影響させない)
     vi.unstubAllEnvs();
     vi.resetModules();
+    // **globalThis のキャッシュも消す**。src/lib/prisma.ts は生成したクライアントを
+    // globalThis に載せるため、ここを消さないと resetModules だけでは前のテストの
+    // クライアントが生き残り、「DATABASE_URL 未設定なら落ちる」検査がテストの並び順で
+    // 通ったり通らなかったりする (実測: 順番を入れ替えると落ちなくなる)
+    delete (globalThis as { prisma?: unknown }).prisma;
   });
 
   it('DATABASE_URL が無くても import だけなら失敗しない', async () => {
