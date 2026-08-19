@@ -17,9 +17,11 @@
  *
  * Two layers of quoting are therefore required, in this order:
  *   1. GUC value: wrap the name in double quotes so hyphens, spaces, upper case
- *      and reserved words survive, doubling any embedded double quote
- *      (`we"ird` → `"we""ird"`). This also stops a name from being read as a
- *      comma-separated list, i.e. from appending extra schemas.
+ *      and reserved words survive. This also stops a name from being read as a
+ *      comma-separated list, i.e. from appending extra schemas. Embedded double
+ *      quotes are doubled as PostgreSQL requires — names carrying one are
+ *      rejected above, but the escaping stays correct on its own so this
+ *      builder cannot become an injection point if that guard ever moves.
  *   2. libpq `options`: escape backslashes and spaces, which libpq itself
  *      consumes as separators/escapes before the server ever sees the value.
  */
@@ -28,6 +30,15 @@ export function buildSearchPathOption(schema: string): string {
   // 空文字は search_path として意味を成さない (どのスキーマも指さない) ので弾く
   if (schema.length === 0) {
     throw new Error('DATABASE_URL の ?schema= が空です。スキーマ名を指定してください。');
+  }
+  // 二重引用符を含む名前は**この関数だけでは救えない**ので入口で弾く (fail-closed)。
+  // search_path 側は下の引用で正しく扱えるが、Prisma のドライバアダプタが生成する
+  // SQL (`"スキーマ"."テーブル"`) はスキーマ名の " をエスケープしないため、
+  // 通してしまうと ORM のクエリだけが構文エラーになる (実 DB で確認済み)。
+  if (schema.includes('"')) {
+    throw new Error(
+      'DATABASE_URL の ?schema= に二重引用符は使えません (Prisma がクエリ生成時にエスケープしないため)。',
+    );
   }
   // (1) GUC 値としての引用: 埋め込まれた " を "" に増やしてから全体を " で囲む
   const quotedIdentifier = `"${schema.replace(/"/g, '""')}"`;

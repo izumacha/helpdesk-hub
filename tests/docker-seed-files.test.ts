@@ -20,11 +20,15 @@
 
 // Vitest の DSL
 import { describe, expect, it } from 'vitest';
-// ソースと Dockerfile を読むため (Node 標準の同期 API で十分)
-import { existsSync, readFileSync, statSync } from 'node:fs';
-import { dirname, join, relative, resolve } from 'node:path';
-// 構文木でソースを読むためのコンパイラ API (自前の字句解析をしないため)
-import ts from 'typescript';
+// Dockerfile を読むため (Node 標準の同期 API で十分)
+import { readFileSync } from 'node:fs';
+import { join, relative, resolve } from 'node:path';
+// ソースの構文木と import 解決は検出網どうしで共有する (tests/entry-body-limit.test.ts と同じ土台)
+import {
+  collectModuleSpecifiers,
+  parseSourceFile,
+  resolveModuleSpecifier,
+} from './lib/source-module-graph';
 
 // リポジトリのルート (このテストファイルは tests/ 直下にある)
 const REPO_ROOT = resolve(__dirname, '..');
@@ -32,68 +36,8 @@ const REPO_ROOT = resolve(__dirname, '..');
 const SEED_ENTRY = join(REPO_ROOT, 'prisma/seed.ts');
 // 実行イメージへ手で選んで入れる対象のディレクトリ (この配下だけを「過不足」の検査対象にする)
 const HAND_PICKED_DIR = 'src/lib';
-// TypeScript ソースとして解決を試みる拡張子 (import の指定に拡張子が無いため補う)
-const SOURCE_EXTENSIONS = ['.ts', '.tsx'];
-
-// import / export / dynamic import の指定子をソース 1 ファイルから集める
-function collectModuleSpecifiers(filePath: string): string[] {
-  // ファイルの中身を読む
-  const sourceText = readFileSync(filePath, 'utf8');
-  // 構文木を作る (最新の構文で解析し、親ノードは辿らないので setParentNodes は false)
-  const sourceFile = ts.createSourceFile(filePath, sourceText, ts.ScriptTarget.Latest, false);
-  // 見つけた指定子を貯める配列
-  const specifiers: string[] = [];
-  // 構文木を再帰的に歩く関数
-  function visit(node: ts.Node): void {
-    // `import ... from '...'` と `export ... from '...'` の指定子を拾う
-    if (
-      (ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) &&
-      node.moduleSpecifier &&
-      ts.isStringLiteral(node.moduleSpecifier)
-    ) {
-      specifiers.push(node.moduleSpecifier.text);
-    }
-    // `import('...')` (動的 import) の指定子も拾う
-    if (
-      ts.isCallExpression(node) &&
-      node.expression.kind === ts.SyntaxKind.ImportKeyword &&
-      node.arguments.length > 0 &&
-      ts.isStringLiteral(node.arguments[0])
-    ) {
-      specifiers.push(node.arguments[0].text);
-    }
-    // 子ノードへ降りる
-    ts.forEachChild(node, visit);
-  }
-  // ルートから走査を始める
-  visit(sourceFile);
-  // 集めた指定子を返す
-  return specifiers;
-}
-
-// 指定子を実ファイルのパスへ解決する (解決できない = 外部パッケージなら undefined)
-function resolveSpecifier(specifier: string, importerPath: string): string | undefined {
-  // `@/xxx` はパスエイリアス (tsconfig の paths) で src/xxx を指す
-  const base = specifier.startsWith('@/')
-    ? join(REPO_ROOT, 'src', specifier.slice('@/'.length))
-    : // `./xxx` / `../xxx` は import 元からの相対パス
-      specifier.startsWith('.')
-      ? resolve(dirname(importerPath), specifier)
-      : // それ以外は node_modules のパッケージなので追わない
-        undefined;
-  // パッケージ import はここで終了
-  if (!base) return undefined;
-  // 拡張子つき / index つきの候補を順に試し、最初に見つかった実ファイルを返す
-  for (const candidate of [
-    base,
-    ...SOURCE_EXTENSIONS.map((extension) => `${base}${extension}`),
-    ...SOURCE_EXTENSIONS.map((extension) => join(base, `index${extension}`)),
-  ]) {
-    if (existsSync(candidate) && statSync(candidate).isFile()) return candidate;
-  }
-  // ディレクトリだけ存在する等、ファイルとして解決できなければ未解決として扱う
-  return undefined;
-}
+// `src/` の絶対パス (import 解決の起点として共有ヘルパーへ渡す)
+const SRC_DIR = join(REPO_ROOT, 'src');
 
 // seed から辿れる `src/` 配下のファイル一覧 (リポジトリルートからの相対パス) を集める
 function collectSeedSourceFiles(): Set<string> {
@@ -115,8 +59,8 @@ function collectSeedSourceFiles(): Set<string> {
     const relativePath = relative(REPO_ROOT, current);
     if (relativePath.startsWith('src/')) sourceFiles.add(relativePath);
     // このファイルの import 先をすべて解決して待ち行列へ積む
-    for (const specifier of collectModuleSpecifiers(current)) {
-      const resolved = resolveSpecifier(specifier, current);
+    for (const specifier of collectModuleSpecifiers(parseSourceFile(current))) {
+      const resolved = resolveModuleSpecifier(specifier, current, SRC_DIR);
       if (resolved) queue.push(resolved);
     }
   }
@@ -169,14 +113,20 @@ describe('Dockerfile の runner ステージが seed 用ソースを過不足な
     expect(missing).toEqual([]);
   });
 
-  it(`実行イメージへ手で入れる ${HAND_PICKED_DIR} 配下は seed が実際に使うものだけ`, () => {
-    // 手で選んでいる範囲 (src/lib 配下) のコピー指定だけを取り出す
-    const handPicked = copiedPaths.filter((path) => path.startsWith(HAND_PICKED_DIR));
-    // seed から辿れないのに入れているもの = 実行イメージへ余計に晒しているソース
-    const unnecessary = handPicked.filter(
-      (path) => ![...requiredFiles].some((file) => file === path || file.startsWith(`${path}/`)),
+  it(`実行イメージへ入る ${HAND_PICKED_DIR} 配下は seed が実際に使うファイルだけ`, () => {
+    // src/lib 配下に届きうるコピー指定を集める。自分が src/lib の下にある場合 (src/lib/xxx) と、
+    // 自分が src/lib を含む上位ディレクトリの場合 (src/lib, src) の両方を対象にする
+    // — 後者を見ないと「src/lib を丸ごと」「src を丸ごと」に戻す変更を取り逃がす
+    const reachingLib = copiedPaths.filter(
+      (path) =>
+        path === HAND_PICKED_DIR ||
+        path.startsWith(`${HAND_PICKED_DIR}/`) ||
+        HAND_PICKED_DIR.startsWith(`${path}/`),
     );
-    // 1 つも無いことを求める (`src/lib` を丸ごとコピーする変更もここで落ちる)
-    expect(unnecessary).toEqual([]);
+    // それぞれが「seed が実際に import しているファイルそのもの」でなければ余計な公開になる
+    // (ディレクトリ指定はこの条件を満たせないので、丸ごとコピーはここで落ちる)
+    const overExposed = reachingLib.filter((path) => !requiredFiles.has(path));
+    // 1 つも無いことを求める
+    expect(overExposed).toEqual([]);
   });
 });

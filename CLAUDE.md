@@ -34,7 +34,7 @@ npm run test         # Vitest — tests/ のユニットテスト
 npm run test:contract # Vitest — Prisma アダプタ契約テスト (RUN_PRISMA_CONTRACT=1 + DATABASE_URL 必須)
 npm run test:e2e     # Playwright — chromium のみ。baseURL は BASE_URL か localhost:3000
 npm run db:migrate   # prisma migrate dev
-npm run db:seed      # tsx prisma/seed.ts
+npm run db:seed      # prisma db seed（実行内容は prisma.config.ts の migrations.seed が唯一の定義）
 npm run db:generate  # Prisma クライアントを src/generated/prisma に再生成
 ```
 

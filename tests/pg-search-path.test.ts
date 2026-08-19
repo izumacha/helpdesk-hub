@@ -35,9 +35,10 @@ describe('buildSearchPathOption', () => {
     expect(buildSearchPathOption('back\\slash')).toBe('-c search_path="back\\\\slash"');
   });
 
-  it('二重引用符を含む名前は "" に増やして 1 つの識別子に閉じ込める', () => {
-    // 引用符を増やさないと、そこで識別子が閉じて後続が別の要素として解釈される
-    expect(buildSearchPathOption('we"ird')).toBe('-c search_path="we""ird"');
+  it('二重引用符を含む名前は受け付けない (Prisma 側が生成 SQL でエスケープしないため)', () => {
+    // search_path 側だけなら扱えるが、ORM のクエリが構文エラーになるので入口で落とす。
+    // 「片方だけ動く」状態を作らないための fail-closed
+    expect(() => buildSearchPathOption('we"ird')).toThrow(/二重引用符/);
   });
 
   it('カンマや追加スキーマを混ぜた名前でも検索対象を増やせない', () => {

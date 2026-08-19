@@ -21,9 +21,10 @@ import { createPrismaClient } from '@/lib/prisma-client';
 // 実 DB を触るテストなので明示フラグでのみ実行する
 const SHOULD_RUN = process.env.RUN_PRISMA_CONTRACT === '1';
 
-// 検証に使うスキーマ名。単純な名前だけでなく、引用が必要な名前・引用符を含む名前・
-// カンマで検索対象を増やそうとする名前も通す (どれも 1 つの識別子として扱われるはず)
-const SCHEMA_NAMES = ['contract_app', 'contract-hyphen', 'contract space', 'contract"quote'];
+// 検証に使うスキーマ名。単純な名前だけでなく、引用が要る名前 (ハイフン・空白) も通す。
+// 二重引用符を含む名前は Prisma 側が生成 SQL でエスケープしないため対象外
+// (受け付けないことは tests/pg-search-path.test.ts で固定している)
+const SCHEMA_NAMES = ['contract_app', 'contract-hyphen', 'contract space'];
 
 describe.runIf(SHOULD_RUN)('接続文字列の ?schema= (prisma adapter)', () => {
   // スキーマの作成・後始末に使う、schema 指定なしのクライアント
@@ -45,13 +46,18 @@ describe.runIf(SHOULD_RUN)('接続文字列の ?schema= (prisma adapter)', () =>
   });
 
   afterAll(async () => {
-    // 作った検証用スキーマをすべて片付ける
-    for (const schema of SCHEMA_NAMES) {
-      await admin.$executeRawUnsafe(`DROP SCHEMA IF EXISTS ${quote(schema)} CASCADE`);
-    }
-    await admin.$disconnect();
-    // 環境変数を元に戻す (後続のテストファイルへ影響を残さないため)
+    // **先に環境変数を戻す**。後片付けが途中で失敗しても、差し替えたままの DSN が
+    // 後続の契約テストファイルへ漏れないようにするため (直列実行なので影響が連鎖する)
     process.env.DATABASE_URL = originalDatabaseUrl;
+    try {
+      // 作った検証用スキーマをすべて片付ける
+      for (const schema of SCHEMA_NAMES) {
+        await admin.$executeRawUnsafe(`DROP SCHEMA IF EXISTS ${quote(schema)} CASCADE`);
+      }
+    } finally {
+      // 片付けが失敗しても接続は必ず閉じる
+      await admin.$disconnect();
+    }
   });
 
   // 各スキーマ名について、生 SQL の解決先が指定どおりになることを確かめる
@@ -81,6 +87,33 @@ describe.runIf(SHOULD_RUN)('接続文字列の ?schema= (prisma adapter)', () =>
         'search_path_probe',
       );
       expect(Number(count)).toBe(1);
+
+      // ここからは **Prisma が組み立てるクエリ側** (アダプタの schema オプション) の確認。
+      // 生 SQL だけ見ていると、schema オプションを外す退行を取り逃がす
+      // (search_path しか効いていない状態でもこのテストが緑になってしまう)。
+      // public の Category と同じ形のテーブルをスコープ側に作り、モデル経由で書き込む
+      // (Category を選ぶのは列が scalar だけで、enum 型の解決を巻き込まないため。
+      //  LIKE は外部キー制約を写さないので、Tenant 行が無くても挿入できる)
+      await scoped.$executeRawUnsafe(
+        `CREATE TABLE "Category" (LIKE public."Category" INCLUDING ALL)`,
+      );
+      // 検証用レコードの ID (スキーマ名ごとに変えて衝突を避ける)
+      const categoryId = `schema-probe-${SCHEMA_NAMES.indexOf(schema)}`;
+      await scoped.category.create({
+        data: { id: categoryId, name: 'スキーマ検証用', tenantId: 'schema-probe-tenant' },
+      });
+      // 狙ったスキーマ側に 1 件入っていること
+      const [{ scopedCount }] = await admin.$queryRawUnsafe<{ scopedCount: bigint }[]>(
+        `SELECT count(*) AS "scopedCount" FROM ${quote(schema)}."Category" WHERE id = $1`,
+        categoryId,
+      );
+      expect(Number(scopedCount)).toBe(1);
+      // public 側には入っていないこと (schema オプションが効かないとこちらへ落ちる)
+      const [{ publicCount }] = await admin.$queryRawUnsafe<{ publicCount: bigint }[]>(
+        `SELECT count(*) AS "publicCount" FROM public."Category" WHERE id = $1`,
+        categoryId,
+      );
+      expect(Number(publicCount)).toBe(0);
     } finally {
       // 検証用クライアントの接続を必ず閉じる
       await scoped.$disconnect();

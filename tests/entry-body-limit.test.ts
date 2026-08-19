@@ -26,10 +26,12 @@
 // Vitest の DSL
 import { beforeAll, describe, expect, it } from 'vitest';
 // ソースを走査して「上限の定義漏れ」を拾うため (Node 標準の同期 API で十分)
-import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { readFileSync, readdirSync } from 'node:fs';
+import { join } from 'node:path';
 // 構文木でソースを読むためのコンパイラ API (自前の字句解析をしないため)
 import ts from 'typescript';
+// 構文木の生成・走査と import 解決は検出網どうしで共有する (tests/docker-seed-files.test.ts と同じ土台)
+import { parseSourceFile, resolveModuleSpecifier, visitNodes } from './lib/source-module-graph';
 // 入口の枠と、その導出材料 (テスト側に書き写すと古びるので導出元から受け取る)
 import {
   ENTRY_MAX_BODY_BYTES,
@@ -194,22 +196,6 @@ let registeredRouteLimitNameList: string[] = [];
 let boundedReadModulePaths = new Set<string>();
 
 /**
- * 1 ファイルを読み込んで構文木にする。
- *
- * 親ノードへの参照は使わないので `setParentNodes` は false にしてある (その分だけ軽い)。
- */
-function parseFile(path: string): ts.SourceFile {
-  // 拡張子に合わせた方言 (.tsx は JSX を含む) で解析する
-  return ts.createSourceFile(
-    path,
-    readFileSync(path, 'utf8'),
-    ts.ScriptTarget.Latest,
-    false,
-    path.endsWith('.tsx') ? ts.ScriptKind.TSX : ts.ScriptKind.TS,
-  );
-}
-
-/**
  * `src/` 配下の .ts / .tsx を読み込み、構文木にして返す。
  *
  * `.tsx` も見るのは、上限がコンポーネント側 (フォームの事前検査など) に置かれても
@@ -221,19 +207,7 @@ function parseSourceFiles(): { path: string; sourceFile: ts.SourceFile }[] {
     .filter((rel) => (rel.endsWith('.ts') || rel.endsWith('.tsx')) && !isGeneratedPath(rel))
     .map((rel) => join(SRC_DIR, rel));
   // 1 ファイルずつ構文木にして返す
-  return files.map((path) => ({ path, sourceFile: parseFile(path) }));
-}
-
-/**
- * 構文木を深さ優先でたどり、各ノードを訪問する。
- *
- * `ts.forEachChild` は子ノードだけを渡すので、入れ子の奥まで見るには自前で再帰する。
- */
-function visitNodes(node: ts.Node, visit: (node: ts.Node) => void): void {
-  // 今のノードを訪問する
-  visit(node);
-  // 子ノードへ降りる
-  ts.forEachChild(node, (child) => visitNodes(child, visit));
+  return files.map((path) => ({ path, sourceFile: parseSourceFile(path) }));
 }
 
 /**
@@ -567,39 +541,6 @@ function nginxFrameFor(
 }
 
 /**
- * import / export 宣言の指定子を、`src/` 配下の絶対パスへ解決する (解決できなければ null)。
- *
- * 対応するのは本リポジトリで実際に使う 2 形だけ: `@/...` エイリアス (tsconfig の `@/*` → `src/*`)
- * と相対パス。`next/...` のような外部パッケージは解決対象外なので null を返す。
- * 拡張子なしで書かれるのが通例なので、`.ts` / `.tsx` / ディレクトリの `index` を順に試す。
- */
-function resolveModuleSpecifier(specifier: string, fromPath: string): string | null {
-  // エイリアスなら src/ 起点、相対パスなら import 元のディレクトリ起点で組み立てる
-  const base = specifier.startsWith('@/')
-    ? join(SRC_DIR, specifier.slice('@/'.length))
-    : specifier.startsWith('.')
-      ? join(dirname(fromPath), specifier)
-      : null;
-  // どちらでもなければ外部パッケージなので解決しない
-  if (base === null) return null;
-  // 拡張子の付け方を順に試し、**実在するファイル**だった最初のものを採用する。
-  // **ディレクトリを弾くのが要点**: `@/data` のようなディレクトリ import では `base` 自体が
-  // 実在してしまい、そこで確定すると `src/data/index.ts` へ辿り着けない。すると
-  // 「index.ts はバレルとして集合に入っているのに、`@/data` と書いた側は集合外」という
-  // ねじれが起き、両方の import 禁止をすり抜ける (`@/data` 形式はこのリポジトリで実際に多用されている)
-  for (const candidate of [
-    base,
-    `${base}.ts`,
-    `${base}.tsx`,
-    join(base, 'index.ts'),
-    join(base, 'index.tsx'),
-  ])
-    if (existsSync(candidate) && statSync(candidate).isFile()) return candidate;
-  // どれも実在しなければ解決できない
-  return null;
-}
-
-/**
  * 上限つき読み取り関数を **import できてしまうモジュール**の絶対パスをすべて返す。
  *
  * **文字列一致をやめて、再公開の連鎖を追うための関数。** 以前は指定子に
@@ -634,7 +575,7 @@ function collectBoundedReadModulePaths(
         if (!ts.isExportDeclaration(statement) || !statement.moduleSpecifier) continue;
         if (!ts.isStringLiteral(statement.moduleSpecifier)) continue;
         // 再公開元が対象集合に入っていれば、このファイルも「読み取り関数を配るモジュール」になる
-        const resolved = resolveModuleSpecifier(statement.moduleSpecifier.text, path);
+        const resolved = resolveModuleSpecifier(statement.moduleSpecifier.text, path, SRC_DIR);
         if (resolved !== null && reachable.has(resolved)) {
           reachable.add(path);
           grew = true;
@@ -657,7 +598,7 @@ function collectBoundedReadModulePaths(
  */
 function isBoundedReadModuleSpecifier(specifier: string, fromPath: string): boolean {
   // 指定子を実ファイルへ解決する
-  const resolved = resolveModuleSpecifier(specifier, fromPath);
+  const resolved = resolveModuleSpecifier(specifier, fromPath, SRC_DIR);
   // 解決できて、かつ対象集合に入っていれば真
   return resolved !== null && boundedReadModulePaths.has(resolved);
 }
