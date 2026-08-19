@@ -62,6 +62,11 @@ COPY --from=builder /app/prisma ./prisma
 # Prisma 7 の設定ファイル。接続 URL と seed コマンドの定義がここにあるため、
 # 同梱しないとコンテナ内の `prisma migrate deploy` / `prisma db seed` が動かない
 COPY --from=builder /app/prisma.config.ts ./prisma.config.ts
+# seed スクリプトが参照する Prisma クライアントのファクトリ (src/lib/prisma-client.ts) と、
+# その中の `@/generated/prisma` を tsx が解決するためのパスエイリアス定義。
+# どちらも無いと `prisma db seed` が Cannot find module で落ちる
+COPY --from=builder /app/src/lib ./src/lib
+COPY --from=builder /app/tsconfig.json ./tsconfig.json
 # Prisma CLI / tsx とその依存をまとめて取り込む (個別コピーでは依存解決が崩れるため)
 COPY --from=builder /app/node_modules ./node_modules
 

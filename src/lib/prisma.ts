@@ -41,6 +41,8 @@ function getPrismaClient(): PrismaClient {
 
 // 既存の呼び出し側 (`prisma.ticket.findMany()` など) を変えずに遅延生成を挟むための Proxy。
 // プロパティに触れた瞬間に初めて実クライアントを生成し、以降はキャッシュを使う。
+// ターゲットは空オブジェクトなので、**すべての操作を実クライアントへ転送する**必要がある
+// (get/has だけだと Object.keys() や代入が空のターゲット側に落ちて黙って食い違う)。
 export const prisma = new Proxy({} as PrismaClient, {
   // プロパティ読み取り (prisma.ticket / prisma.$transaction など) を実クライアントへ委譲する
   get(_target, property, receiver) {
@@ -51,8 +53,27 @@ export const prisma = new Proxy({} as PrismaClient, {
     // メソッドは this が実クライアントを指すように束ね直してから返す
     return typeof value === 'function' ? value.bind(client) : value;
   },
+  // プロパティ代入 (テストで $transaction を差し替える等) を実クライアントへ反映する
+  set(_target, property, value) {
+    return Reflect.set(getPrismaClient(), property, value);
+  },
   // `in` 演算子やプロパティ存在確認も実クライアントに合わせる
   has(_target, property) {
     return Reflect.has(getPrismaClient(), property);
+  },
+  // Object.keys() / スプレッド展開が空にならないよう、キー一覧も実クライアントから返す
+  ownKeys(_target) {
+    return Reflect.ownKeys(getPrismaClient());
+  },
+  // ownKeys と対で必要 (記述子を返せないとキー列挙が実際には空になる)
+  getOwnPropertyDescriptor(_target, property) {
+    // 実クライアント側の記述子を取得する
+    const descriptor = Reflect.getOwnPropertyDescriptor(getPrismaClient(), property);
+    // Proxy の不変条件を満たすため、存在するキーは configurable: true にして返す
+    return descriptor ? { ...descriptor, configurable: true } : undefined;
+  },
+  // delete 演算子も実クライアントへ転送する
+  deleteProperty(_target, property) {
+    return Reflect.deleteProperty(getPrismaClient(), property);
   },
 });
