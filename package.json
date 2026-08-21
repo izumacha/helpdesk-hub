@@ -46,6 +46,7 @@
     "@types/nodemailer": "^8.0.0",
     "@types/react": "^19.2.18",
     "@types/react-dom": "^19.2.4",
+    "@types/semver": "^7.8.0",
     "@typescript-eslint/eslint-plugin": "^8.67.0",
     "@typescript-eslint/parser": "^8.66.0",
     "dotenv": "^17.4.2",
@@ -55,10 +56,12 @@
     "prettier": "^3.9.6",
     "prettier-plugin-tailwindcss": "^0.8.1",
     "prisma": "^7.9.1",
+    "semver": "^7.8.5",
     "tailwindcss": "^4.2.2",
     "tsx": "^4.23.12",
     "typescript": "^5.9.3",
-    "vitest": "^3.2.4"
+    "vitest": "^3.2.4",
+    "yaml": "^2.9.0"
   },
   "overrides": {
     "next-auth": {

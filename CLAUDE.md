@@ -134,6 +134,12 @@ Phase 0 でマルチテナント基盤を入れた際に `prisma/migrations/` �
   CI は毎ジョブ新規の PostgreSQL サービスコンテナで `helpdesk_hub` を使い、専用ジョブ `prisma-contract` が同手順を実行する（スキーマ同期は `db push` ではなく `migrate deploy`。監査ログの追記専用トリガもマイグレーション由来で作成され、契約テストがトリガの挙動も検証する）。`test:contract` は `--no-file-parallelism` で直列実行（共有 DB の TRUNCATE 競合回避）。新しい Prisma 契約テストは `*.contract.prisma.test.ts` 命名に揃える。
 - Playwright は chromium のみ、`fullyParallel: true`、retries は CI のみ。セレクタは日本語コピーに対する正規表現（`/ログイン/i` 等）で揃える。
 
+### ESLint は 9 系に意図的に留め置いている
+
+**`eslint` の major 更新（9 → 10 以降）は `.github/dependabot.yml` の `ignore` で意図的に止めている。** 理由は上流の非互換で、`eslint-config-next` が引き込む `eslint-plugin-react` / `eslint-plugin-import` / `eslint-plugin-jsx-a11y` / `eslint-plugin-react-hooks` がいずれも eslint を `^9` までに制限しており、eslint 10 では削除済みの `context.getFilename()` を呼ぶため `npm run lint` が必ず落ちる（`peerDependencies` は `>=9.0.0` と緩いので npm はインストールを許してしまう）。**`package.json` の `eslint` を手で上げたり、この `ignore` を消したりしない。**
+
+保留の整合性は `tests/dependabot-eslint-guard.test.ts` が機械的に見張る（他の検出網と同じ役割）。見張る対象は 5 つ: (a) 保留の解除漏れ、(b) 保留の消失、(c) 効きすぎ（`update-types` の欠落・`versions` の追加・エントリの重複。Dependabot は複数エントリを**すべて適用**し、`update-types` の無いエントリは全バージョン無視を意味する）、(d) 置き場所間違い（別エコシステム・別ディレクトリ）、(e) **保留の期限切れ**。(e) は `package-lock.json` の解決済み `peerDependencies` を `semver` で評価し、**上記プラグインが揃って eslint 10 を許した時点で落ちる**。保留が効いている限り `package.json` は 9 のまま動かないため、「`package.json` の major を見る」判定だけでは解除条件が永久に発火しない（判定が循環する）ことへの対処。落ちたら `ignore` とこのテストごと削除して major 更新を取り込む。
+
 ### 規約の補足
 
 - Prettier: 100 col / single quotes / 2-space / trailing commas "all"、`prettier-plugin-tailwindcss` がクラス順を整える。
