@@ -1,3 +1,6 @@
+// 検査対象のパスを組み立てるため
+import { resolve } from 'node:path';
+
 // `.github/dependabot.yml` を「構造として」読むための共有ヘルパー。
 //
 // なぜ切り出すのか:
@@ -39,7 +42,7 @@ export interface DependabotConfig {
  * YAML は何でも書けるので、想定した形でなければ「空」として扱い、
  * 呼び出し側の検査 (エントリが存在すること) を落とす方向へ倒す。
  */
-export function asArray(value: unknown): unknown[] {
+function asArray(value: unknown): unknown[] {
   // 配列ならそのまま、そうでなければ空配列 (= 見つからなかった扱い)
   return Array.isArray(value) ? value : [];
 }
@@ -64,7 +67,7 @@ export function asRecord(value: unknown): Record<string, unknown> {
  * 通すときの懸念 (§9 の ReDoS) は当たらない。それでも `*` 以外のメタ文字は
  * エスケープして、意図しないパターンとして解釈されないようにする。
  */
-export function ignoreNameMatches(pattern: unknown, dependencyName: string): boolean {
+function ignoreNameMatches(pattern: unknown, dependencyName: string): boolean {
   // 文字列でなければ照合のしようがない (= 当たらない扱い)
   if (typeof pattern !== 'string') return false;
   // `*` 以外の正規表現メタ文字を無効化してから、`*` だけを「任意の文字列」に置き換える
@@ -80,7 +83,7 @@ export function ignoreNameMatches(pattern: unknown, dependencyName: string): boo
  * ここで扱うのは自分たちが書いた設定の 1 要素だけなので、`*` を「`/` を含まない任意」、
  * `**` を「任意」として素直に展開すれば足りる。
  */
-export function directoryPatternCovers(pattern: string, directory: string): boolean {
+function directoryPatternCovers(pattern: string, directory: string): boolean {
   // `**` は「任意」、`*` は「/ を含まない任意」に相当する。先に `**` を目印へ退避し、
   // 残った正規表現メタ文字を無効化してから、目印を展開し直す
   const doubleStarMark = '\u0000';
@@ -102,7 +105,7 @@ export function directoryPatternCovers(pattern: string, directory: string): bool
  * 読み違え、実際には効いている ignore を「消えた」と報告してしまう
  * (その指摘に従って 2 件目を足すと、今度は Dependabot が両方を適用して効きすぎる)。
  */
-export function coversDirectory(entry: DependabotUpdateEntry, directory: string): boolean {
+function coversDirectory(entry: DependabotUpdateEntry, directory: string): boolean {
   // 単数形が一致すればそれで確定
   if (entry.directory === directory) return true;
   // 複数形は glob も書ける (`["/**"]` / `["/*"]`)。完全一致だけを見ると、
@@ -195,4 +198,50 @@ export function readDevDependencyRange(json: unknown, dependencyName: string): u
   if (typeof devDependencies !== 'object' || devDependencies === null) return undefined;
   // 目的のパッケージのバージョン範囲を返す (無ければ undefined)
   return (devDependencies as Record<string, unknown>)[dependencyName];
+}
+
+// ここから下は「どこを読むか」と Dependabot の語彙。2 本のガードが同じ値を別々に
+// 書き写していると、npm ブロックの directory を変えた・Dependabot が update-types の
+// 語彙を変えたときに片方だけ直され、もう片方は古いリテラルに対して緑を報告し続ける
+// (CLAUDE.md §6 定数の一元管理)
+
+// リポジトリのルート (このファイルは tests/lib/ にある)
+export const REPO_ROOT = resolve(__dirname, '../..');
+// Dependabot の設定ファイル
+export const DEPENDABOT_PATH = resolve(REPO_ROOT, '.github/dependabot.yml');
+// 依存の宣言
+export const PACKAGE_JSON_PATH = resolve(REPO_ROOT, 'package.json');
+// 依存の解決済み版 (package.json には現れない推移依存もここに出る)
+export const PACKAGE_LOCK_PATH = resolve(REPO_ROOT, 'package-lock.json');
+// 保留を書くエコシステム。ここ以外に置いても npm には効かない
+export const NPM_ECOSYSTEM = 'npm';
+// 保留を書く対象ディレクトリ。npm のブロックが複数ある構成で読み違えないために見る
+export const NPM_DIRECTORY = '/';
+// major 更新だけを止めるための update-types 値 (Dependabot の予約語)
+export const MAJOR_UPDATE_TYPE = 'version-update:semver-major';
+// ignore エントリに書いてよいキーの一覧 (これ以外が増えると効き方が変わる)
+export const ALLOWED_IGNORE_KEYS = ['dependency-name', 'update-types'];
+
+/**
+ * npm のロックファイルから `packages` の枝 (パッケージのパス → メタデータ) を取り出す。
+ *
+ * トップレベルや `packages` がオブジェクトでなければ空として返し、
+ * 呼び出し側の「見つかったか」検査で落ちる方向へ倒す。
+ */
+export function lockPackages(lock: unknown): Record<string, unknown> {
+  // トップレベルがオブジェクトでなければ読み進めない
+  return asRecord(asRecord(lock).packages);
+}
+
+/**
+ * ロックファイルから、巻き上げ (hoist) された位置にあるパッケージの解決済み版を取り出す。
+ *
+ * package.json の宣言が正しくても、`overrides` や推移依存の巻き上げで
+ * 実際に使われる版だけがずれることがあるため、宣言とは別に解決結果も見る用途。
+ */
+export function readLockedVersion(lock: unknown, name: string): string | null {
+  // 巻き上げ位置のメタデータを引く
+  const meta = asRecord(lockPackages(lock)[`node_modules/${name}`]);
+  // version を取り出す (文字列でなければ見つからなかった扱い)
+  return typeof meta.version === 'string' ? meta.version : null;
 }

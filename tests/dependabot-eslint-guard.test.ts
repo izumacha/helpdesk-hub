@@ -47,7 +47,6 @@
 import { describe, expect, it } from 'vitest';
 // 設定ファイルを読むため (Node 標準の同期 API で十分)
 import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
 // dependabot.yml を構造として読むため
 import { parse as parseYaml } from 'yaml';
 // peer 範囲が特定のバージョンを許すかを正しく判定するため。
@@ -58,37 +57,24 @@ import { parse as parseYaml } from 'yaml';
 import { satisfies } from 'semver';
 // dependabot.yml の読み方は types-node-runtime-alignment.test.ts と共有する (§6 DRY)
 import {
+  ALLOWED_IGNORE_KEYS,
   asRecord,
   collectIgnoreEntries,
+  DEPENDABOT_PATH,
+  lockPackages,
+  MAJOR_UPDATE_TYPE,
+  NPM_DIRECTORY,
+  NPM_ECOSYSTEM,
+  PACKAGE_JSON_PATH,
+  PACKAGE_LOCK_PATH,
   parseAllowedMajor,
   readDevDependencyRange,
   sortedKeysOf,
   type DependabotConfig,
 } from './lib/dependabot-config';
 
-// リポジトリのルート (このテストファイルは tests/ 直下にある)
-const REPO_ROOT = resolve(__dirname, '..');
-// 検査対象 1: Dependabot の設定ファイル
-const DEPENDABOT_PATH = resolve(REPO_ROOT, '.github/dependabot.yml');
-// 検査対象 2: eslint のバージョン範囲を宣言している場所
-const PACKAGE_JSON_PATH = resolve(REPO_ROOT, 'package.json');
-// 検査対象 3: 上流プラグインの peer 範囲が解決済みで記録されている場所。
-// package.json には現れない推移依存なので、ロックファイルを読む
-const PACKAGE_LOCK_PATH = resolve(REPO_ROOT, 'package-lock.json');
-
 // ignore の対象パッケージ名 (dependabot.yml の dependency-name と一致させる)
 const GUARDED_DEPENDENCY = 'eslint';
-// 保留を書いているエコシステム。ここ以外に置いても npm には効かない
-const GUARDED_ECOSYSTEM = 'npm';
-// 保留を書いている対象ディレクトリ。npm のブロックが複数ある構成 (モノレポ等) で、
-// 別ディレクトリのブロックに書かれた ignore を「効いている」と読み違えないために見る
-const GUARDED_DIRECTORY = '/';
-// major 更新だけを止めるための update-types 値 (Dependabot の予約語)
-const MAJOR_UPDATE_TYPE = 'version-update:semver-major';
-// ignore エントリに書いてよいキーの一覧 (これ以外が増えると効き方が変わる)。
-// 例えば `versions: [">=9.40.0"]` を足すと 9 系の更新まで止まるので、
-// 「major だけを止める」という意図と実際の効き方がずれる
-const ALLOWED_IGNORE_KEYS = ['dependency-name', 'update-types'];
 // いま eslint を留め置いている major。package.json の宣言もこの major であることを前提に、
 // 「保留が要る / 用済み」を判定する。
 // **上流が対応して次の major へ進んだら**、この ignore ごと削除するのが基本。
@@ -118,9 +104,6 @@ const REQUIRED_UPSTREAM_PLUGINS = [
   'eslint-plugin-jsx-a11y',
   'eslint-plugin-react-hooks',
 ];
-
-// dependabot.yml のうち、この検査が読む部分だけを表す型。
-// 全項目を書き写すと設定を増やすたびに型の更新が要るので、必要な枝だけ宣言する
 
 /**
  * ロックファイルから、指定パッケージのメタデータを取り出す。
@@ -168,14 +151,8 @@ interface UpstreamPeer {
  * 「全員そろって読み取れたか」を別途確かめ、欠けていれば前提崩れとして落とす (fail-closed)。
  */
 function collectUpstreamPeers(lock: unknown): UpstreamPeer[] {
-  // トップレベルがオブジェクトでなければ読み進めない
-  if (typeof lock !== 'object' || lock === null) return [];
-  // packages の枝 (パッケージのパス → メタデータ) を取り出す
-  const packages = (lock as { packages?: unknown }).packages;
-  // それ自体がオブジェクトでなければ、やはり読み進めない
-  if (typeof packages !== 'object' || packages === null) return [];
-  // 型を絞った参照を用意する
-  const table = packages as Record<string, unknown>;
+  // packages の枝 (パッケージのパス → メタデータ) を共有ヘルパーで取り出す
+  const table = lockPackages(lock);
   // 集めた peer 範囲を溜める配列
   const peers: UpstreamPeer[] = [];
   // 明示した一覧だけを順に見ていく
@@ -207,8 +184,8 @@ describe('dependabot.yml の ESLint major 保留', () => {
   // npm エコシステムの ignore にある eslint のエントリ (複数書かれていればすべて)
   const ignoreEntries = collectIgnoreEntries(
     dependabotConfig,
-    GUARDED_ECOSYSTEM,
-    GUARDED_DIRECTORY,
+    NPM_ECOSYSTEM,
+    NPM_DIRECTORY,
     GUARDED_DEPENDENCY,
   );
 
@@ -286,7 +263,7 @@ describe('dependabot.yml の ESLint major 保留', () => {
       //  1 件混ざるだけで全バージョンが止まる)
       expect(
         ignoreEntries,
-        `${GUARDED_ECOSYSTEM} / ${GUARDED_DIRECTORY} のブロックに ` +
+        `${NPM_ECOSYSTEM} / ${NPM_DIRECTORY} のブロックに ` +
           `${GUARDED_DEPENDENCY} の ignore がちょうど 1 件ある状態を保ってください。` +
           `0 件なら削除されたか、別エコシステム(docker 等)・別ディレクトリのブロックへ` +
           `移されています。2 件以上なら Dependabot が両方を適用し、意図より広く止まります。` +
