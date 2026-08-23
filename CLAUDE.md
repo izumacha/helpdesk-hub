@@ -140,6 +140,14 @@ Phase 0 でマルチテナント基盤を入れた際に `prisma/migrations/` �
 
 保留の整合性は `tests/dependabot-eslint-guard.test.ts` が機械的に見張る（他の検出網と同じ役割）。見張る対象は 5 つ: (a) 保留の解除漏れ、(b) 保留の消失、(c) 効きすぎ（`update-types` の欠落・`versions` の追加・エントリの重複。Dependabot は複数エントリを**すべて適用**し、`update-types` の無いエントリは全バージョン無視を意味する）、(d) 置き場所間違い（別エコシステム・別ディレクトリ）、(e) **保留の期限切れ**。(e) は `package-lock.json` の解決済み `peerDependencies` を `semver` で評価し、**上記プラグインが揃って eslint 10 を許した時点で落ちる**。保留が効いている限り `package.json` は 9 のまま動かないため、「`package.json` の major を見る」判定だけでは解除条件が永久に発火しない（判定が循環する）ことへの対処。落ちたら `ignore` とこのテストごと削除して major 更新を取り込む。
 
+### `@types/node` は動かす Node の major に固定している
+
+**`@types/node` の major は「実際に動かす Node.js の major」と必ず一致させる。** `@types/node` の major は Node 本体のリリース系列に対応する（DefinitelyTyped の慣習）ため、`@types/node@26` は「Node 26 の API 一覧」であって、Node 22 で動くコードの型チェックに使うものではない。ここがずれても **lint も型チェックも通ってしまう** — むしろ型が API の存在を主張するぶん、Node 22 に無い API を書いても `tsc --noEmit` が緑のまま通り、壊れるのは本番の実行時（`TypeError: x is not a function`）になる。Dependabot の 22 → 26 提案（PR #310）は 4 ジョブすべて緑だったが、それは「動くから」ではなく「型が広がったから」でしかない。**CI の緑が判断材料にならない fail-open** なので、`.github/dependabot.yml` の `ignore` で `@types/node` の major 更新を止め、バージョンの主導権を「ランタイムを上げる判断」の側に置いている。
+
+「実際に動かす Node の major」の宣言は 4 か所ある（`.nvmrc` / `.github/workflows/ci.yml` の `NODE_VERSION` / `Dockerfile` の `FROM node:<major>` / `package.json` の `engines.node`）。**Node を次の LTS へ上げるときは 4 か所を同じ major へ揃え、同じ PR で `@types/node` も新しい major へ上げる**（`ignore` は残したままでよい。止めたいのは「ランタイムと無関係な単独 major 更新」だけ）。
+
+整合性は `tests/types-node-runtime-alignment.test.ts` が機械的に見張る。見張る対象は 5 つ: (a) 型と実行時のずれ（`package.json` の宣言と `package-lock.json` の解決済み版の**両方**を見る）、(b) 4 か所の食い違い・読み取り不能（前提が崩れるので fail-closed で落とす）、(c) 保留の消失、(d) 効きすぎ（`update-types` の欠落・`versions` の追加・エントリの重複）、(e) 置き場所間違い（別エコシステム・別ディレクトリ）。`dependabot.yml` の読み方は `tests/lib/dependabot-config.ts` に集約し、ESLint 保留のテストと共有している（§6 DRY）。
+
 ### 規約の補足
 
 - Prettier: 100 col / single quotes / 2-space / trailing commas "all"、`prettier-plugin-tailwindcss` がクラス順を整える。
