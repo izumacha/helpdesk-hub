@@ -58,6 +58,31 @@ updates:
       #   参照: GitHub Docs の Dependabot options reference (ignore / update-types の節)
       - dependency-name: "eslint"
         update-types: ["version-update:semver-major"]
+      # @types/node の major 更新を、動かす Node.js の major と切り離さないための保留。
+      #
+      # なぜ止めるのか: `@types/node` の major は **Node 本体のリリース系列に対応する**
+      #   (DefinitelyTyped の慣習)。つまり `@types/node@26` は「Node 26 の API 一覧」で、
+      #   Node 22 で動くコードの型チェックに使うものではない。ところがここがずれても
+      #   **lint も型チェックも通ってしまう** — むしろ型が API の存在を主張するぶん、
+      #   Node 22 に無い API を書いても `tsc --noEmit` が緑のまま通り、壊れるのは本番の
+      #   実行時 (`TypeError: x is not a function`) になる。実際 Dependabot の
+      #   22 → 26 提案 (PR #310) は 4 ジョブすべて緑だったが、それは「動くから」ではなく
+      #   「型が広がったから」でしかない。CI の緑が判断材料にならない fail-open なので、
+      #   バージョンの主導権を Dependabot ではなく「ランタイムを上げる判断」に置く。
+      #
+      # 外す条件: **この ignore は恒久的に major を止めるものではない。** 動かす Node を
+      #   次の LTS へ上げるときは、`.nvmrc` / `.github/workflows/ci.yml` の NODE_VERSION /
+      #   `Dockerfile` の `FROM node:<major>` / `package.json` の `engines.node` を同じ
+      #   major へ揃え、**同じ PR で `@types/node` も新しい major へ上げる**。
+      #   ignore はそのまま残してよい (止めたいのは「ランタイムと無関係な単独 major 更新」)。
+      #   この整合は tests/types-node-runtime-alignment.test.ts が機械的に見張り、
+      #   4 か所の食い違い・型と実行時のずれ・保留の消失/効きすぎを検出する。
+      #
+      # 効き方: major 更新だけを対象にするので、22 系の minor / patch 更新は従来どおり
+      #   npm-minor-and-patch グループで届く (型定義に脆弱性 CVE が出る形は考えにくいが、
+      #   eslint の保留と同じく「放置」ではなく「上げ方を管理する保留」として扱う。§9)。
+      - dependency-name: "@types/node"
+        update-types: ["version-update:semver-major"]
 
   # Dockerfile のベースイメージ (node 等)
   - package-ecosystem: "docker"
