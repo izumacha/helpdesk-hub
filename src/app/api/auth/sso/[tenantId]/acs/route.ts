@@ -173,19 +173,6 @@ export async function POST(req: Request, { params }: Params) {
     return errorRedirect('sso-invalid');
   }
 
-  // ここまで来たリクエストは署名検証を通過している = 正当な IdP が発行したアサーションである。
-  // その相手だけを対象にテナント単位のバースト抑制をかける (issue #315)。
-  // 検証の後ろに置いているのが要点で、署名を持たない第三者はこの枠を 1 件も消費できない。
-  // まだアサーションを消費 (リプレイ記録) していない段階なので、429 で弾かれた IdP は
-  // 同じアサーションを窓が明けてから再送できる
-  const verifiedLimitResponse = checkRouteRateLimit(
-    `sso-acs:${tenantId}`,
-    SSO_TENANT_RATE_LIMIT,
-    SSO_RATE_LIMIT_MESSAGE,
-  );
-  // 検証済みリクエストの制限超過なら 429 をそのまま返す
-  if (verifiedLimitResponse) return verifiedLimitResponse;
-
   // メールに対応する既存ユーザーを引く
   const user = await repos.users.findByEmail(email);
   // ユーザーが存在しない、または別テナントのユーザーなら拒否する (クロステナント防止 + JIT 無効)
@@ -242,6 +229,31 @@ export async function POST(req: Request, { params }: Params) {
     userId: user.id,
     tenantId,
   });
+
+  // ここまで到達したリクエストだけを対象に、テナント単位のバースト抑制をかける (issue #315)。
+  //
+  // 位置の理由 (ここより前だと枠を第三者に消費される):
+  //   - 署名検証より後 … 署名を持たない第三者は 1 件も消費できない。これが issue #315 の本丸で、
+  //     公開値の tenantId を知るだけで正規ログインを 429 にできる状態を断つ
+  //   - リプレイ検査より後 … 検証だけを基準にすると、どこかで捕捉した「消費済みの」正当な
+  //     アサーション 1 通を再送し続けるだけで枠を使い切れてしまう (検証は毎回成功するため)。
+  //     消費済みアサーションは上の recordIfNew で 303 拒否され、ここへは到達しない
+  //   - 受理の監査より後 … ここで 429 にしても「いつ・誰のアサーションを受理したか」は
+  //     sso_assertion_accepted として必ず残る。セッション発行まで進めば
+  //     マジックリンクコールバック側が sso_login_success を追記するので、
+  //     accepted があるのに success が無い行がそのまま「受理したがログインは完了しなかった」
+  //     の証跡になる (この経路だけ監査に何も残らない、という穴を作らない)
+  //
+  // 引き換えに、ここで 429 になったアサーションは直前の recordIfNew で焼却済みなので再送できない
+  // (利用者は SSO ログインをやり直して新しいアサーションを受け取る必要がある)。枠を検証の
+  // 手前へ戻せば再送可能にはなるが、それは第三者に枠を消費させる issue #315 そのものなので取らない
+  const verifiedLimitResponse = checkRouteRateLimit(
+    `sso-acs:${tenantId}`,
+    SSO_TENANT_RATE_LIMIT,
+    SSO_RATE_LIMIT_MESSAGE,
+  );
+  // 検証済みリクエストの制限超過なら 429 をそのまま返す
+  if (verifiedLimitResponse) return verifiedLimitResponse;
 
   // セッション発行: ワンタイムトークンを 1 件発行してマジックリンクのコールバックへ渡す
   // 生トークンは URL でのみ運び、DB には SHA-256 ハッシュを保存する (マジックリンクと同方式)
