@@ -13,6 +13,10 @@ import { hashLineLinkCode, normalizeLineLinkCode } from '@/lib/line-link';
 import { __resetRateLimits } from '@/lib/rate-limit';
 // ボディサイズの上限。ルートと同じ定義を参照する (#287。片方だけ値を変えたら気付けるように)
 import { LINE_WEBHOOK_MAX_BODY_BYTES } from '@/lib/webhook-body-limits';
+// レート制限の上限。ボディサイズ上限と同じ理由でルートと同じ定義を参照する。
+// ここに数値を直書きすると、上限を引き上げたときにループ回数が上限に届かなくなり、
+// 下の 2 つのセキュリティ回帰テストが「何も検証していないのに緑」の状態へ黙って落ちる
+import { LINE_RATE_LIMIT, LINE_UNAUTHENTICATED_RATE_LIMIT } from '@/lib/line-rate-limit';
 
 // 外部通知 (Slack/Teams/Chatwork) テスト用の Slack Webhook URL (実際には送信されない)
 const SLACK_WEBHOOK_URL = 'https://hooks.slack.com/services/T000/B000/xxx';
@@ -201,10 +205,10 @@ describe('POST /api/inbound/line', () => {
   // レート制限が事実上機能しなくなる。固定キーの全体レート制限がこれを防いでいることを確認する。
   it('destination を変え続けても固定キーの全体レート制限で頭打ちになる (レート制限回避の防止)', async () => {
     const { POST } = await import('@/app/api/inbound/line/route');
-    // LINE_UNAUTHENTICATED_RATE_LIMIT の上限 (600件/分) に達するまで、
-    // 毎回異なる未登録 destination で送り続ける (署名は無効なので全て 401 になるはず)
+    // LINE_UNAUTHENTICATED_RATE_LIMIT の上限に達するまで、毎回異なる未登録 destination で
+    // 送り続ける (署名は無効なので全て 401 になるはず)。回数は上限そのものから導く
     let lastStatus = 0;
-    for (let i = 0; i < 601; i += 1) {
+    for (let i = 0; i < LINE_UNAUTHENTICATED_RATE_LIMIT.limit + 1; i += 1) {
       // 16進32桁のランダムな destination を都度生成する (登録済み BOT_USER_ID とは無関係)
       const randomDestination = `U${i.toString(16).padStart(32, '0')}`;
       const body = JSON.stringify({ destination: randomDestination, events: [] });
@@ -217,9 +221,41 @@ describe('POST /api/inbound/line', () => {
       const res = await POST(req);
       lastStatus = res.status;
     }
-    // 601 回目 (上限 600 を超えた直後) は、destination が変わっていても固定キーの
-    // 全体レート制限に引っかかり 429 になる (401 のままなら回避が成立してしまっている)
+    // 上限を 1 つ超えた回は、destination が変わっていても固定キーの全体レート制限に
+    // 引っかかり 429 になる (401 のままなら回避が成立してしまっている)
     expect(lastStatus).toBe(429);
+  });
+
+  // セキュリティ回帰テスト: チャネル単位のレート制限を署名検証**より前**に置くと、
+  // 署名を持たない第三者でもそのテナントの枠を消費できてしまう。destination は
+  // route.ts 自身が「署名鍵ではない公開識別子」と位置づけている値なので、それを知る
+  // 相手が出鱈目な署名で上限ぶん叩くだけで、以降 LINE サーバからの正規 Webhook が
+  // すべて 429 になる (LINE は数分で再送を諦めるためメッセージは復旧できず失われる)。
+  it('署名不正のリクエストはテナント単位のレート制限枠を消費しない (取り込み停止攻撃の防止)', async () => {
+    const { POST } = await import('@/app/api/inbound/line/route');
+    // 登録済み destination 宛に、LINE_RATE_LIMIT の上限ぶん署名不正を送りつける。回数は
+    // 上限そのものから導く (直書きすると上限を引き上げたときに検出網が黙って死ぬ)。
+    // 全体制限の上限には届かないので、枠が消費されるとしたらテナント単位の枠だけ
+    expect(LINE_RATE_LIMIT.limit).toBeLessThan(LINE_UNAUTHENTICATED_RATE_LIMIT.limit);
+    for (let i = 0; i < LINE_RATE_LIMIT.limit; i += 1) {
+      const body = JSON.stringify({ destination: BOT_USER_ID, events: [] });
+      const req = new Request('http://localhost/api/inbound/line', {
+        method: 'POST',
+        // 正しい destination だが署名は出鱈目 (＝鍵を持たない第三者からのリクエスト)
+        headers: { 'content-type': 'application/json', 'x-line-signature': 'invalid-signature' },
+        body,
+      });
+      const res = await POST(req);
+      // 署名不正なので毎回 401 で弾かれる (429 が混ざるなら枠を消費してしまっている)
+      expect(res.status).toBe(401);
+    }
+
+    // 直後に LINE サーバからの正規 (署名付き) Webhook が届いても、枠が残っているので通る。
+    // 送信元 ID は他のテストと同じ LINE_ID_UNLINKED を使う ('U' + 32 桁の正規形式でないと
+    // LINE_USER_ID_PATTERN の検証に落ちて '不明' に退化し、起票経路の手前で分岐が変わる)
+    const res = await POST(makeRequest('正規の問い合わせ', LINE_ID_UNLINKED));
+    // 429 なら、署名なしの洪水でテナントの取り込み口を止められてしまっている
+    expect(res.status).toBe(200);
   });
 
   // Standard 以下のプランは LINE 連携不可 (§6.1 料金プラン)。署名は正しくても起票しない

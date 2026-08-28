@@ -28,8 +28,12 @@
  *  - X-Line-Signature ヘッダの HMAC-SHA256 を定数時間比較で検証する (LINE Docs 準拠)。
  *  - 未登録チャネル・シークレット不一致は fail-closed (401 で取り込み口を閉じ、理由は漏らさない)。
  *  - レート制限は 2 段構え: テナント解決 (DB 参照) 前は攻撃者が操作できない固定キーで
- *    全体の上限を設け (destination を変え続けるレート制限回避を防ぐ)、解決後は信頼できる
- *    tenantId をキーにしたチャネル単位の上限で個別テナントのバーストに備える。
+ *    全体の上限を設け (destination を変え続けるレート制限回避を防ぐ)、**署名検証を通過した後**に
+ *    信頼できる tenantId をキーにしたチャネル単位の上限で個別テナントのバーストに備える。
+ *    後者は「テナント解決後」ではなく「署名検証後」であることが要件。解決直後に置くと、
+ *    署名を持たない第三者でもそのテナントの枠を消費でき、正規の Webhook を 429 で締め出せる
+ *    (destination は公開識別子なので誰でも指定できる)。上限値は line-rate-limit.ts に集約し、
+ *    回帰テストが同じ定義を参照する。
  */
 
 // JSON レスポンスヘルパー
@@ -107,22 +111,16 @@ import { bodyRejectResponse } from '@/lib/body-reject-response';
 import { LINE_BODY_REJECT_MESSAGES } from '@/lib/webhook-body-reject-messages';
 // この経路が受け付けるボディの最大バイト数 (route とテストが同じ定義を参照する)
 import { LINE_WEBHOOK_MAX_BODY_BYTES } from '@/lib/webhook-body-limits';
+// レート制限の上限値とメッセージ。回帰テストが同じ定義を参照できるよう共有モジュールに置く
+// (片方だけ値を変えたら気付けるようにするため。詳細は line-rate-limit.ts 冒頭)
+import {
+  LINE_RATE_LIMIT,
+  LINE_RATE_LIMIT_MESSAGE,
+  LINE_UNAUTHENTICATED_RATE_LIMIT,
+} from '@/lib/line-rate-limit';
 
 // このルートは Node ランタイムで動かす (node:crypto / Prisma を使うため Edge では動かない)
 export const runtime = 'nodejs';
-
-// テナント解決 (DB 参照) より前に適用する、固定キーの全体レート制限。
-// destination は署名検証前の値で攻撃者が自由に生成できるため、これをレート制限のキーに
-// 使うと値を毎回変えるだけで無制限に新しいバケットが作られ、事実上レート制限を回避されて
-// しまう (バケット数の際限ない増加は enforceRateLimit 内の全体掃除処理の負荷も増やす)。
-// そのため DB 参照 (findByBotUserId) の前段では固定キーで「未認証リクエスト全体」の上限を
-// 設け、destination をどれだけ変えても DB 参照の総量が頭打ちになるようにする。
-const LINE_UNAUTHENTICATED_RATE_LIMIT = { limit: 600, windowMs: 60_000 } as const;
-
-// テナント解決後に適用する、チャネル (テナント) 単位の取り込み流量上限
-// (シークレット漏洩時のスパムを抑える)。lineConfig.tenantId は DB 由来の信頼できる値
-// (botUserId の @unique 制約でテナントと 1:1) なので、これをキーにする。
-const LINE_RATE_LIMIT = { limit: 120, windowMs: 60_000 } as const;
 
 // チケットタイトルとして使うテキストの最大文字数 (長すぎる場合は末尾を省略する)
 const MAX_TITLE_LENGTH = 100;
@@ -302,7 +300,7 @@ export async function POST(req: Request) {
   const unauthLimitResponse = checkRouteRateLimit(
     'inbound-line:unauthenticated',
     LINE_UNAUTHENTICATED_RATE_LIMIT,
-    '取り込みが混み合っています',
+    LINE_RATE_LIMIT_MESSAGE,
   );
   if (unauthLimitResponse) return unauthLimitResponse;
 
@@ -314,20 +312,35 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: '署名の検証に失敗しました' }, { status: 401 });
   }
 
-  // テナントが解決できたので、ここからは信頼できる tenantId をキーにしたチャネル単位の
-  // レート制限を適用する (destination のような攻撃者が操作可能な値はキーに使わない)。
-  const tenantLimitResponse = checkRouteRateLimit(
-    `inbound-line:${lineConfig.tenantId}`,
-    LINE_RATE_LIMIT,
-    '取り込みが混み合っています',
-  );
-  if (tenantLimitResponse) return tenantLimitResponse;
-
   // このチャネル (テナント) 専用のシークレットで署名を検証する (不正なら 401)
   if (!verifyLineSignature(rawBytes, signature, lineConfig.channelSecret)) {
     // 署名不一致は LINE サーバからのものではないため拒否する (なりすまし POST の防止)
     return NextResponse.json({ error: '署名の検証に失敗しました' }, { status: 401 });
   }
+
+  // 署名を検証した**後**に、信頼できる tenantId をキーにしたチャネル単位のレート制限を
+  // 適用する (destination のような攻撃者が操作可能な値はキーに使わない)。
+  //
+  // **署名検証より後ろに置くのは意図的。** enforceRateLimit は通過した時点でバケットを
+  // 消費するため、前に置くと「署名を持たない相手」でもこの枠を使い切れてしまう。
+  // destination はこのファイル自身が公開識別子と位置づけている値なので、それを知る第三者が
+  // 出鱈目な署名で 120 回叩くだけで対象テナントの枠が枯渇し、以降 LINE サーバからの正規
+  // Webhook がすべて 429 になる。LINE は数分で再送を諦めるため、その間の問い合わせは
+  // 復旧できない形で失われる (上の「取りこぼしは復旧できない」と同じ結末)。
+  // この枠の目的 (定数の定義コメント参照) は「シークレット漏洩時のスパムを抑える」ことで、
+  // 鍵が漏れた相手のリクエストは署名検証を通過するため、後ろへ移しても目的は完全に保たれる。
+  //
+  // **残る限界**: 署名なしの洪水は手前の固定キー全体制限が受け止めるが、あちらは
+  // プロセス全体で 1 つのバケット (600/分) なので、使い切られると**全テナントの**正規
+  // Webhook が 429 になる。個別テナントを狙い撃ちできなくなるだけで、取り込みを止められる
+  // こと自体は解消していない。塞ぐには送信元 IP 単位のバケットを足すなどが要るが、
+  // 前段プロキシの構成に依存するため本経路だけでは決められず、ここでは限界として明記する。
+  const tenantLimitResponse = checkRouteRateLimit(
+    `inbound-line:${lineConfig.tenantId}`,
+    LINE_RATE_LIMIT,
+    LINE_RATE_LIMIT_MESSAGE,
+  );
+  if (tenantLimitResponse) return tenantLimitResponse;
 
   // ここまでで署名検証済み: 以降は body の中身を信用してよい
   const targetTenantId = lineConfig.tenantId;
