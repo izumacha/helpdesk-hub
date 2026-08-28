@@ -222,6 +222,34 @@ describe('POST /api/inbound/line', () => {
     expect(lastStatus).toBe(429);
   });
 
+  // セキュリティ回帰テスト: チャネル単位のレート制限を署名検証**より前**に置くと、
+  // 署名を持たない第三者でもそのテナントの枠を消費できてしまう。destination は
+  // route.ts 自身が「署名鍵ではない公開識別子」と位置づけている値なので、それを知る
+  // 相手が出鱈目な署名で上限ぶん叩くだけで、以降 LINE サーバからの正規 Webhook が
+  // すべて 429 になる (LINE は数分で再送を諦めるためメッセージは復旧できず失われる)。
+  it('署名不正のリクエストはテナント単位のレート制限枠を消費しない (取り込み停止攻撃の防止)', async () => {
+    const { POST } = await import('@/app/api/inbound/line/route');
+    // 登録済み destination 宛に、LINE_RATE_LIMIT の上限 (120件/分) ぶん署名不正を送りつける。
+    // 全体制限 (600件/分) には届かないので、枠が消費されるとしたらテナント単位の枠だけ
+    for (let i = 0; i < 120; i += 1) {
+      const body = JSON.stringify({ destination: BOT_USER_ID, events: [] });
+      const req = new Request('http://localhost/api/inbound/line', {
+        method: 'POST',
+        // 正しい destination だが署名は出鱈目 (＝鍵を持たない第三者からのリクエスト)
+        headers: { 'content-type': 'application/json', 'x-line-signature': 'invalid-signature' },
+        body,
+      });
+      const res = await POST(req);
+      // 署名不正なので毎回 401 で弾かれる (429 が混ざるなら枠を消費してしまっている)
+      expect(res.status).toBe(401);
+    }
+
+    // 直後に LINE サーバからの正規 (署名付き) Webhook が届いても、枠が残っているので通る
+    const res = await POST(makeRequest('正規の問い合わせ', 'Uline_user_1'));
+    // 429 なら、署名なしの洪水でテナントの取り込み口を止められてしまっている
+    expect(res.status).toBe(200);
+  });
+
   // Standard 以下のプランは LINE 連携不可 (§6.1 料金プラン)。署名は正しくても起票しない
   it('Pro 未満のプランのテナントは起票せず 200 (プランゲート)', async () => {
     // シード済みテナントを Standard プランに書き換える

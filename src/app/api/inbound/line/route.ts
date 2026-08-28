@@ -314,20 +314,31 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: '署名の検証に失敗しました' }, { status: 401 });
   }
 
-  // テナントが解決できたので、ここからは信頼できる tenantId をキーにしたチャネル単位の
-  // レート制限を適用する (destination のような攻撃者が操作可能な値はキーに使わない)。
+  // このチャネル (テナント) 専用のシークレットで署名を検証する (不正なら 401)
+  if (!verifyLineSignature(rawBytes, signature, lineConfig.channelSecret)) {
+    // 署名不一致は LINE サーバからのものではないため拒否する (なりすまし POST の防止)
+    return NextResponse.json({ error: '署名の検証に失敗しました' }, { status: 401 });
+  }
+
+  // 署名を検証した**後**に、信頼できる tenantId をキーにしたチャネル単位のレート制限を
+  // 適用する (destination のような攻撃者が操作可能な値はキーに使わない)。
+  //
+  // **署名検証より後ろに置くのは意図的。** enforceRateLimit は通過した時点でバケットを
+  // 消費するため、前に置くと「署名を持たない相手」でもこの枠を使い切れてしまう。
+  // destination はこのファイル自身が公開識別子と位置づけている値なので、それを知る第三者が
+  // 出鱈目な署名で 120 回叩くだけで対象テナントの枠が枯渇し、以降 LINE サーバからの正規
+  // Webhook がすべて 429 になる。LINE は数分で再送を諦めるため、その間の問い合わせは
+  // 復旧できない形で失われる (上の「取りこぼしは復旧できない」と同じ結末)。
+  // 署名なしの洪水は手前の固定キー全体制限が引き続き受け止める。
+  //
+  // この枠の目的 (定数の定義コメント参照) は「シークレット漏洩時のスパムを抑える」ことで、
+  // 鍵が漏れた相手のリクエストは署名検証を通過するため、後ろへ移しても目的は完全に保たれる。
   const tenantLimitResponse = checkRouteRateLimit(
     `inbound-line:${lineConfig.tenantId}`,
     LINE_RATE_LIMIT,
     '取り込みが混み合っています',
   );
   if (tenantLimitResponse) return tenantLimitResponse;
-
-  // このチャネル (テナント) 専用のシークレットで署名を検証する (不正なら 401)
-  if (!verifyLineSignature(rawBytes, signature, lineConfig.channelSecret)) {
-    // 署名不一致は LINE サーバからのものではないため拒否する (なりすまし POST の防止)
-    return NextResponse.json({ error: '署名の検証に失敗しました' }, { status: 401 });
-  }
 
   // ここまでで署名検証済み: 以降は body の中身を信用してよい
   const targetTenantId = lineConfig.tenantId;
