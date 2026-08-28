@@ -15,10 +15,17 @@ import { createMemoryContext, type Store } from '@/data/adapters/memory';
 import type { Repos, UnitOfWork } from '@/data/ports/unit-of-work';
 // 優先度ベースの解決期限自動算出 (期待値の算出に使う純粋関数)
 import { calculateResolutionDueAt } from '@/lib/sla';
+// 'YYYY-MM-DD' を JST 終端 Date に変換するヘルパー (route.ts が手動 dueDate の変換に使うのと同じもの)
+import { endOfDayJST } from '@/lib/format-date';
 
 // 主に使うテナント ID と依頼者 ID
 const TENANT = 'default-tenant';
 const REQUESTER = 'u-req-1';
+
+// 両テストが送る「期限日」の指定値。リクエストと期待値の双方がこの 1 か所を参照することで、
+// 片方だけ書き換えて検証がすり抜ける状態を作らない (§6 定数の一元管理)。
+// Lite テストの年月日アサーションはこの値に対応する (変更したらそちらも合わせる)。
+const MANUAL_DUE_DATE = '2026-09-01';
 
 // 各テストで差し替える可変な依存 (Action import 前に値を入れる)
 let store: Store;
@@ -110,7 +117,7 @@ describe('POST /api/tickets の dueDate (期限日) と mode の関係', () => {
         title: '複合機が印刷できない',
         body: '朝から紙詰まりが続く',
         priority: 'Medium',
-        dueDate: '2026-09-01',
+        dueDate: MANUAL_DUE_DATE,
       }),
     );
 
@@ -132,7 +139,7 @@ describe('POST /api/tickets の dueDate (期限日) と mode の関係', () => {
         body: '電源ボタンを押しても反応なし',
         priority: 'Low',
         // Web フォームは Pro で dueDate 欄自体を非表示にするが、API を直接叩けば送れてしまう
-        dueDate: '2026-09-01',
+        dueDate: MANUAL_DUE_DATE,
       }),
     );
 
@@ -145,7 +152,17 @@ describe('POST /api/tickets の dueDate (期限日) と mode の関係', () => {
     expect(Math.abs(new Date(created.resolutionDueAt).getTime() - expected.getTime())).toBeLessThan(
       1000,
     );
-    // 指定した dueDate (2026-09-01 の JST 終端) とは異なる値になっている
-    expect(new Date(created.resolutionDueAt).getMonth()).not.toBe(8); // 0 始まりで 9 月ではない
+    // 指定した dueDate (JST 終端) が採用されていないことを、その値そのものと突き合わせて確かめる。
+    // 以前はここで「月が 9 月ではない」ことを見ていたが、自動算出値は実行時刻が基準なので
+    // 実行日によっては偶然 9 月に入り (Low = 168 時間 = 7 日先)、8 月下旬から 9 月にかけて
+    // 毎年必ず落ちる時限式の検証になっていた。比較対象を暦の月ではなく「無視されたはずの値」
+    // 自体にすれば、いつ実行しても同じ意味で判定できる。
+    const ignoredManualDueAt = endOfDayJST(MANUAL_DUE_DATE);
+    // ヘルパーが null を返す (＝日付として解釈できない) 場合はテストの前提自体が崩れている。
+    // ここで打ち切らないと以降の比較が無意味に成立し、検証が素通りしてしまう (fail-closed)
+    if (ignoredManualDueAt === null) {
+      throw new Error(`テストの前提が崩れています: ${MANUAL_DUE_DATE} を JST 終端へ変換できません`);
+    }
+    expect(new Date(created.resolutionDueAt).getTime()).not.toBe(ignoredManualDueAt.getTime());
   });
 });
