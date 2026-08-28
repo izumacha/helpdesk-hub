@@ -38,6 +38,7 @@ import { checkRouteRateLimit } from '@/lib/route-rate-limit';
 // (/code-review ultra 指摘対応: 3 ファイルへの同一定数の複製を集約)
 import {
   SSO_UNAUTHENTICATED_RATE_LIMIT,
+  SSO_ACS_UNVERIFIED_TENANT_RATE_LIMIT,
   SSO_TENANT_RATE_LIMIT,
   SSO_RATE_LIMIT_MESSAGE,
 } from '@/lib/sso-rate-limit';
@@ -86,15 +87,19 @@ export async function POST(req: Request, { params }: Params) {
   if (!ctx.ok) return errorRedirect('sso-unavailable');
 
   // テナントが実在し SSO が有効だと確認できたので、ここからは信頼できる tenantId を
-  // キーにしたテナント単位のレート制限を適用する (この後の XML パース・署名検証は
-  // CPU コストが高いため、その前に弾く)
-  const tenantLimitResponse = checkRouteRateLimit(
-    `sso-acs:${tenantId}`,
-    SSO_TENANT_RATE_LIMIT,
+  // キーにしたテナント単位のレート制限を適用する。この後の XML パース・署名検証は CPU
+  // コストが高いため、その前に弾く必要がある。
+  // ただしこの枠は署名検証に落ちるリクエストでも消費される (enforceRateLimit は通過時点で
+  // バケットを消費する) ので、正規ログイン用の枠とは別のキー・別の上限にする (issue #315)。
+  // 同じ枠を共用すると、公開値である tenantId を知る第三者が出鱈目な SAMLResponse を
+  // 投げるだけで枠を枯渇させ、IdP からの正規アサーションまで 429 にできてしまう
+  const unverifiedLimitResponse = checkRouteRateLimit(
+    `sso-acs-unverified:${tenantId}`,
+    SSO_ACS_UNVERIFIED_TENANT_RATE_LIMIT,
     SSO_RATE_LIMIT_MESSAGE,
   );
-  // テナント単位の制限超過なら 429 をそのまま返す
-  if (tenantLimitResponse) return tenantLimitResponse;
+  // 未検証リクエストの制限超過なら 429 をそのまま返す
+  if (unverifiedLimitResponse) return unverifiedLimitResponse;
 
   // 認証イベント監査 (否認防止): 検証不能なアサーション試行の記録 (本文欠落・破損・署名検証失敗で共用)。
   // 検証を通っていない以上アサーションの主張 (メール等) は信用できないため email は
@@ -224,6 +229,31 @@ export async function POST(req: Request, { params }: Params) {
     userId: user.id,
     tenantId,
   });
+
+  // ここまで到達したリクエストだけを対象に、テナント単位のバースト抑制をかける (issue #315)。
+  //
+  // 位置の理由 (ここより前だと枠を第三者に消費される):
+  //   - 署名検証より後 … 署名を持たない第三者は 1 件も消費できない。これが issue #315 の本丸で、
+  //     公開値の tenantId を知るだけで正規ログインを 429 にできる状態を断つ
+  //   - リプレイ検査より後 … 検証だけを基準にすると、どこかで捕捉した「消費済みの」正当な
+  //     アサーション 1 通を再送し続けるだけで枠を使い切れてしまう (検証は毎回成功するため)。
+  //     消費済みアサーションは上の recordIfNew で 303 拒否され、ここへは到達しない
+  //   - 受理の監査より後 … ここで 429 にしても「いつ・誰のアサーションを受理したか」は
+  //     sso_assertion_accepted として必ず残る。セッション発行まで進めば
+  //     マジックリンクコールバック側が sso_login_success を追記するので、
+  //     accepted があるのに success が無い行がそのまま「受理したがログインは完了しなかった」
+  //     の証跡になる (この経路だけ監査に何も残らない、という穴を作らない)
+  //
+  // 引き換えに、ここで 429 になったアサーションは直前の recordIfNew で焼却済みなので再送できない
+  // (利用者は SSO ログインをやり直して新しいアサーションを受け取る必要がある)。枠を検証の
+  // 手前へ戻せば再送可能にはなるが、それは第三者に枠を消費させる issue #315 そのものなので取らない
+  const verifiedLimitResponse = checkRouteRateLimit(
+    `sso-acs:${tenantId}`,
+    SSO_TENANT_RATE_LIMIT,
+    SSO_RATE_LIMIT_MESSAGE,
+  );
+  // 検証済みリクエストの制限超過なら 429 をそのまま返す
+  if (verifiedLimitResponse) return verifiedLimitResponse;
 
   // セッション発行: ワンタイムトークンを 1 件発行してマジックリンクのコールバックへ渡す
   // 生トークンは URL でのみ運び、DB には SHA-256 ハッシュを保存する (マジックリンクと同方式)
