@@ -16,9 +16,24 @@ import { AUTH_AUDIT_UNKNOWN_EMAIL, __resetAuthAuditThrottle } from '@/lib/auth-a
 // ボディサイズ上限はルートと同じ定義を参照する (テストに閾値を直書きすると、
 // 上限を変えたときにテストが境界を突かなくなったことに気付けない §6)
 import { SSO_ACS_MAX_BODY_BYTES } from '@/lib/auth-body-limits';
+// レート制限の上限もルートと同じ定義を参照する (テストに回数を直書きすると、上限を
+// 変えたときにテストが境界を突かなくなったことに気付けない §6)。
+// とくに issue #315 の修正後は「検証前 (未検証) の枠」と「検証後の枠」で上限が異なるため、
+// どちらの枠を突いているテストなのかを定数名で示す意味もある
+import {
+  SSO_UNAUTHENTICATED_RATE_LIMIT,
+  SSO_ACS_UNVERIFIED_TENANT_RATE_LIMIT,
+  SSO_TENANT_RATE_LIMIT,
+} from '@/lib/sso-rate-limit';
 import { expectRateLimitTripsAfter } from './sso-rate-limit-assertions';
 
 const TENANT_ID = 'tenant-1';
+
+// 署名検証を通過させたいテストで使う SAMLResponse の合図 (下のスパイがこの値だけ成功させる)
+const VALID_SAML_RESPONSE = 'valid-assertion';
+// 検証成功時にアサーションから取り出せたことにするメール (テナント内ユーザーは用意しないので
+// この後の照合には落ちるが、レート制限の枠を消費したかどうかの検証にはそれで足りる)
+const VERIFIED_EMAIL = 'sso-user@example.com';
 
 // 各テストで差し替える可変な依存 (Route import 前に値を入れる)
 let store: Store;
@@ -36,10 +51,20 @@ vi.mock('@/data', () => ({
 // 到達しない (= 手前で打ち切られている)」ことを表明するために必要。
 // これが無いと、上限を撤去してもレスポンスは同じ sso-invalid のままなので
 // テストが素通りしてしまい、回帰を検出できない
-const validateSamlResponseSpy = vi.fn(async () => {
-  // 検証は必ず失敗させる (このファイルは正常系ログインを扱わない)。
-  // 実際の node-saml も不正なアサーションでは例外を投げる
-  throw new Error('テスト用: アサーション検証は常に失敗させる');
+// issue #315 の回帰テスト用に、合図の値だけ検証成功にする (それ以外は従来どおり必ず失敗)。
+// 「署名検証を通ったリクエストだけが検証後の枠を消費する」ことは、成功する経路を 1 本
+// 用意しないと表明できない (すべて失敗させると枠が減らないのが当たり前になってしまう)
+// 検証成功のたびに増やす連番 (assertionId を毎回変えてリプレイ判定に引っかからないようにする)
+let verifiedAssertionSeq = 0;
+const validateSamlResponseSpy = vi.fn(async (_saml: unknown, samlResponse: string) => {
+  // 合図以外はすべて検証失敗として扱う。実際の node-saml も不正なアサーションでは例外を投げる
+  if (samlResponse !== VALID_SAML_RESPONSE) {
+    throw new Error('テスト用: アサーション検証は常に失敗させる');
+  }
+  // 連番を 1 つ進める
+  verifiedAssertionSeq += 1;
+  // 合図のときだけ検証済みの本人情報を返す (assertionId はリプレイ判定に使われる一意キー)
+  return { email: VERIFIED_EMAIL, assertionId: `assertion-${verifiedAssertionSeq}` };
 });
 vi.mock('@/lib/saml', () => ({
   createSamlInstance: vi.fn(() => ({})),
@@ -106,20 +131,55 @@ beforeEach(() => {
   __resetAuthAuditThrottle();
   // SAML 検証の呼び出し履歴も毎回まっさらにする (「検証まで到達したか」の表明に使う)
   validateSamlResponseSpy.mockClear();
+  // アサーション ID の連番も戻す (テスト間で持ち越さない)
+  verifiedAssertionSeq = 0;
   const ctx = createMemoryContext();
   store = ctx.store;
   repos = ctx.repos;
 });
 
 describe('POST /api/auth/sso/[tenantId]/acs のレート制限', () => {
-  // 固定キーの全体レート制限 (60秒60回) を超えると 429 を返す
+  // 署名検証を通る正規のアサーションを 1 件送るヘルパー (検証後の枠を消費させるのに使う)
+  const postVerifiedAcs = () =>
+    postAcs(TENANT_ID, { body: new URLSearchParams({ SAMLResponse: VALID_SAML_RESPONSE }) });
+
+  // 固定キーの全体レート制限を超えると 429 を返す (テナントを毎回変えて全体枠だけを突く)
   it('未認証全体のレート制限を超えると429を返す', async () => {
-    await expectRateLimitTripsAfter((i) => postAcs(`tenant-${i}`), 60);
+    await expectRateLimitTripsAfter(
+      (i) => postAcs(`tenant-${i}`),
+      SSO_UNAUTHENTICATED_RATE_LIMIT.limit,
+    );
   });
 
-  // テナント単位のレート制限 (60秒20回) を超えると429を返す (同一テナントへの連打)
-  it('同一テナントへの連打はテナント単位のレート制限で429を返す', async () => {
-    await expectRateLimitTripsAfter(() => postAcs(TENANT_ID), 20);
+  // 同一テナントへの連打は、署名検証より手前の「未検証の枠」で 429 になる
+  it('同一テナントへの連打は未検証リクエストのレート制限で429を返す', async () => {
+    await expectRateLimitTripsAfter(
+      () => postAcs(TENANT_ID),
+      SSO_ACS_UNVERIFIED_TENANT_RATE_LIMIT.limit,
+    );
+  });
+
+  // issue #315 の回帰テスト (本丸)。
+  // 署名検証に落ちるリクエストは「検証後の枠」を 1 件も消費してはいけない。
+  // 消費してしまうと、公開値である tenantId を知る第三者が出鱈目な SAMLResponse を
+  // 上限ぶん投げるだけで、IdP からの正規アサーションまで 429 にできてしまう。
+  // 修正前 (枠が 1 つで検証前に置かれていた) 状態ではこのテストが 429 で落ちる
+  it('署名検証に落ちるリクエストは検証後のテナント枠を消費しない', async () => {
+    // 検証後の枠の上限ぶんだけ、署名検証に落ちるリクエストを送る
+    for (let i = 0; i < SSO_TENANT_RATE_LIMIT.limit; i++) {
+      const res = await postAcs(TENANT_ID);
+      // 未検証の枠のほうが上限が大きいので、この時点ではまだ 429 にならないはず
+      expect(res.status).not.toBe(429);
+    }
+    // 直後に正規の (署名検証を通る) アサーションを送っても 429 にはならないはず
+    const res = await postVerifiedAcs();
+    expect(res.status).not.toBe(429);
+  });
+
+  // 検証後の枠そのものは生きていること (回帰テストのために枠を外していないことの確認)。
+  // 署名検証を通ったリクエストだけを連打すると、その上限で 429 になる
+  it('署名検証を通ったリクエストの連打は検証後のテナント枠で429を返す', async () => {
+    await expectRateLimitTripsAfter(() => postVerifiedAcs(), SSO_TENANT_RATE_LIMIT.limit);
   });
 
   // 「レート制限内なら 429 ではなく sso-invalid が返る」ケースは、下の監査記録テスト

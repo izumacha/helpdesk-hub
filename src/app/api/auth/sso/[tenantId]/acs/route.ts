@@ -38,6 +38,7 @@ import { checkRouteRateLimit } from '@/lib/route-rate-limit';
 // (/code-review ultra 指摘対応: 3 ファイルへの同一定数の複製を集約)
 import {
   SSO_UNAUTHENTICATED_RATE_LIMIT,
+  SSO_ACS_UNVERIFIED_TENANT_RATE_LIMIT,
   SSO_TENANT_RATE_LIMIT,
   SSO_RATE_LIMIT_MESSAGE,
 } from '@/lib/sso-rate-limit';
@@ -86,15 +87,19 @@ export async function POST(req: Request, { params }: Params) {
   if (!ctx.ok) return errorRedirect('sso-unavailable');
 
   // テナントが実在し SSO が有効だと確認できたので、ここからは信頼できる tenantId を
-  // キーにしたテナント単位のレート制限を適用する (この後の XML パース・署名検証は
-  // CPU コストが高いため、その前に弾く)
-  const tenantLimitResponse = checkRouteRateLimit(
-    `sso-acs:${tenantId}`,
-    SSO_TENANT_RATE_LIMIT,
+  // キーにしたテナント単位のレート制限を適用する。この後の XML パース・署名検証は CPU
+  // コストが高いため、その前に弾く必要がある。
+  // ただしこの枠は署名検証に落ちるリクエストでも消費される (enforceRateLimit は通過時点で
+  // バケットを消費する) ので、正規ログイン用の枠とは別のキー・別の上限にする (issue #315)。
+  // 同じ枠を共用すると、公開値である tenantId を知る第三者が出鱈目な SAMLResponse を
+  // 投げるだけで枠を枯渇させ、IdP からの正規アサーションまで 429 にできてしまう
+  const unverifiedLimitResponse = checkRouteRateLimit(
+    `sso-acs-unverified:${tenantId}`,
+    SSO_ACS_UNVERIFIED_TENANT_RATE_LIMIT,
     SSO_RATE_LIMIT_MESSAGE,
   );
-  // テナント単位の制限超過なら 429 をそのまま返す
-  if (tenantLimitResponse) return tenantLimitResponse;
+  // 未検証リクエストの制限超過なら 429 をそのまま返す
+  if (unverifiedLimitResponse) return unverifiedLimitResponse;
 
   // 認証イベント監査 (否認防止): 検証不能なアサーション試行の記録 (本文欠落・破損・署名検証失敗で共用)。
   // 検証を通っていない以上アサーションの主張 (メール等) は信用できないため email は
@@ -167,6 +172,19 @@ export async function POST(req: Request, { params }: Params) {
     await auditRejectedAssertion();
     return errorRedirect('sso-invalid');
   }
+
+  // ここまで来たリクエストは署名検証を通過している = 正当な IdP が発行したアサーションである。
+  // その相手だけを対象にテナント単位のバースト抑制をかける (issue #315)。
+  // 検証の後ろに置いているのが要点で、署名を持たない第三者はこの枠を 1 件も消費できない。
+  // まだアサーションを消費 (リプレイ記録) していない段階なので、429 で弾かれた IdP は
+  // 同じアサーションを窓が明けてから再送できる
+  const verifiedLimitResponse = checkRouteRateLimit(
+    `sso-acs:${tenantId}`,
+    SSO_TENANT_RATE_LIMIT,
+    SSO_RATE_LIMIT_MESSAGE,
+  );
+  // 検証済みリクエストの制限超過なら 429 をそのまま返す
+  if (verifiedLimitResponse) return verifiedLimitResponse;
 
   // メールに対応する既存ユーザーを引く
   const user = await repos.users.findByEmail(email);
