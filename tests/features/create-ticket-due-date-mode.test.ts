@@ -15,10 +15,23 @@ import { createMemoryContext, type Store } from '@/data/adapters/memory';
 import type { Repos, UnitOfWork } from '@/data/ports/unit-of-work';
 // 優先度ベースの解決期限自動算出 (期待値の算出に使う純粋関数)
 import { calculateResolutionDueAt } from '@/lib/sla';
+// 'YYYY-MM-DD' を JST 終端 Date に変換するヘルパー (route.ts が手動 dueDate の変換に使うのと同じもの)
+import { endOfDayJST } from '@/lib/format-date';
 
 // 主に使うテナント ID と依頼者 ID
 const TENANT = 'default-tenant';
 const REQUESTER = 'u-req-1';
+
+// 両テストが送る「期限日」の指定値。リクエストと期待値の双方がこの 1 か所を参照することで、
+// 片方だけ書き換えて検証がすり抜ける状態を作らない (§6 定数の一元管理)。
+const MANUAL_DUE_DATE = '2026-09-01';
+
+// 手動指定した期限日が変換されるべき瞬間を UTC の ISO 文字列で表したもの。
+// JST 終端 23:59:59.999+09:00 は UTC では同じ日の 14:59:59.999Z になる (JST は夏時間を持たない)。
+// getFullYear() / getMonth() / getDate() のような「実行環境のタイムゾーンで読む」getter を使うと、
+// 同じ瞬間でも UTC+10 以東 (Australia/Sydney 等) では日付が翌日にずれて落ちる。実行環境で結果が
+// 変わる検証を残さないため、比較はタイムゾーンに依存しない ISO 文字列で行う。
+const MANUAL_DUE_DATE_ENDS_AT_UTC = `${MANUAL_DUE_DATE}T14:59:59.999Z`;
 
 // 各テストで差し替える可変な依存 (Action import 前に値を入れる)
 let store: Store;
@@ -110,16 +123,16 @@ describe('POST /api/tickets の dueDate (期限日) と mode の関係', () => {
         title: '複合機が印刷できない',
         body: '朝から紙詰まりが続く',
         priority: 'Medium',
-        dueDate: '2026-09-01',
+        dueDate: MANUAL_DUE_DATE,
       }),
     );
 
     expect(res.status).toBe(201);
     const created = (await res.json()) as { resolutionDueAt: string };
-    // 指定した期限日 (JST 終端) が反映されている
-    expect(new Date(created.resolutionDueAt).getFullYear()).toBe(2026);
-    expect(new Date(created.resolutionDueAt).getMonth()).toBe(8); // 0 始まりで 9 月
-    expect(new Date(created.resolutionDueAt).getDate()).toBe(1);
+    // 指定した期限日 (JST 終端) が反映されている。
+    // 期待値は endOfDayJST を呼び直さずに組み立てる: 同じ関数で期待値を作ると、その関数自体が
+    // 壊れたときに両辺が一緒にずれて検証が素通りしてしまう (独立した検算にならない)
+    expect(new Date(created.resolutionDueAt).toISOString()).toBe(MANUAL_DUE_DATE_ENDS_AT_UTC);
   });
 
   it('Pro テナントでは dueDate 指定があっても無視され優先度ベースの自動算出値になる', async () => {
@@ -132,20 +145,30 @@ describe('POST /api/tickets の dueDate (期限日) と mode の関係', () => {
         body: '電源ボタンを押しても反応なし',
         priority: 'Low',
         // Web フォームは Pro で dueDate 欄自体を非表示にするが、API を直接叩けば送れてしまう
-        dueDate: '2026-09-01',
+        dueDate: MANUAL_DUE_DATE,
       }),
     );
 
     expect(res.status).toBe(201);
     const created = (await res.json()) as { resolutionDueAt: string; createdAt: string };
     const expected = calculateResolutionDueAt('Low', new Date(created.createdAt));
-    // 指定した dueDate (2026-09-01) ではなく、優先度 (Low) ベースの自動算出値になっている
+    // 指定した dueDate ではなく、優先度 (Low) ベースの自動算出値になっている
     // (route.ts 内部の now とテスト側で created.createdAt から再計算した基準時刻は数 ms
     // ずれ得るため、厳密な一致ではなく許容誤差付きで比較する)
     expect(Math.abs(new Date(created.resolutionDueAt).getTime() - expected.getTime())).toBeLessThan(
       1000,
     );
-    // 指定した dueDate (2026-09-01 の JST 終端) とは異なる値になっている
-    expect(new Date(created.resolutionDueAt).getMonth()).not.toBe(8); // 0 始まりで 9 月ではない
+    // 指定した dueDate (JST 終端) が採用されていないことを、その値そのものと突き合わせて確かめる。
+    // 以前はここで「月が 9 月ではない」ことを見ていたが、自動算出値は実行時刻が基準なので
+    // 実行日によっては偶然 9 月に入り (Low = 168 時間 = 7 日先)、8 月下旬から 9 月にかけて
+    // 毎年必ず落ちる時限式の検証になっていた。比較対象を暦の月ではなく「無視されたはずの値」
+    // 自体にすれば、いつ実行しても同じ意味で判定できる。
+    const ignoredManualDueAt = endOfDayJST(MANUAL_DUE_DATE);
+    // ヘルパーが null を返す (＝日付として解釈できない) 場合はテストの前提自体が崩れている。
+    // ここで打ち切らないと以降の比較が無意味に成立し、検証が素通りしてしまう (fail-closed)
+    if (ignoredManualDueAt === null) {
+      throw new Error(`テストの前提が崩れています: ${MANUAL_DUE_DATE} を JST 終端へ変換できません`);
+    }
+    expect(new Date(created.resolutionDueAt).getTime()).not.toBe(ignoredManualDueAt.getTime());
   });
 });
