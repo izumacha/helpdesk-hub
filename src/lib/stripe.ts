@@ -153,10 +153,11 @@ export function stripeStatusToPlan(
   // Price ID が空文字の場合は環境変数未設定またはデータ不備なので free にフォールバック
   // (空文字同士が一致して意図せず pro/standard に昇格するのを防ぐ)
   if (!priceId) return 'free';
+  // 同じ Price ID が複数のプランに割り当てられていたら、どちらとも決められないので free に倒す。
+  // (両方の環境変数に同じ値を入れる設定ミスで、Standard 契約者に Pro 権限が渡るのを防ぐ。
+  //  戻り値が free になることで、Webhook 側の「解決できないイベントは適用しない」経路に乗る)
+  const matched = PAID_PLAN_PRIORITY.filter((plan) => priceId === knownPriceIds[plan]);
+  if (matched.length > 1) return 'free';
   // 有効なサブスクの Price ID でプランを判定する (順序は pickKnownPriceId と同じ表を回す)
-  for (const plan of PAID_PLAN_PRIORITY) {
-    if (priceId === knownPriceIds[plan]) return plan;
-  }
-  // 未知の Price ID は free にフォールバック (fail-safe)
-  return 'free';
+  return matched[0] ?? 'free';
 }

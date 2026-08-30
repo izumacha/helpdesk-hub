@@ -6,7 +6,7 @@
 // Pro モードで運用していたテナントが解約/ダウングレードしても mode='pro' のまま残り、
 // エスカレーション等の Pro 専用機能が使い続けられてしまう不備があった。
 
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createMemoryContext, type Store } from '@/data/adapters/memory';
 import type { Repos, UnitOfWork } from '@/data/ports/unit-of-work';
 // システムアクター (actorId=null) の表示名。ハードコードせず一元管理定数と突き合わせる
@@ -130,6 +130,12 @@ function makeRequest(eventBody: Record<string, unknown>): Request {
 }
 
 describe('POST /api/webhooks/stripe', () => {
+  // 失敗したテストが console のスパイを張ったまま抜けると、以降のテストの診断出力が
+  // 消えて連鎖的に読みにくくなる。各テストの後で必ず戻す (vitest.config.ts に restoreMocks は無い)
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   beforeEach(() => {
     const ctx = createMemoryContext();
     store = ctx.store;
@@ -242,47 +248,70 @@ describe('POST /api/webhooks/stripe', () => {
   // 原因 (環境変数の設定漏れ / Stripe 側の Price 作り直し / ペイロードの形状変化) を直しても
   // DB は自動復旧せず、課金中のテナントが free + lite のまま取り残される
   it.each([
-    ['対応表は揃っているが Price ID が未知', { standard: 'price_standard', pro: 'price_pro' }],
-    ['両方とも未設定', { standard: '', pro: '' }],
-    ['Standard だけ未設定', { standard: '', pro: 'price_pro' }],
-    ['Pro だけ未設定', { standard: 'price_standard', pro: '' }],
-  ])('プランを解決できないイベント (%s) は適用せず 500 で再送させる', async (_名, 表) => {
-    seedTenant('pro', 'pro');
-    // 対応表を実際に効かせるため、判定は本物を通す (固定値のモックだと表が結果に届かず、
-    // 「未設定の空文字が空の Price ID と一致して昇格する」ような退行を見逃す)
-    useRealPlanMapping.current = true;
-    priceIdsForNextCall.current = 表;
-    // ログ出力はテスト出力に混ぜたくないので実装を握りつぶしつつ呼び出しだけ記録する
-    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
-    const { POST } = await import('@/app/api/webhooks/stripe/route');
-    const res = await POST(
-      makeRequest({
-        type: 'customer.subscription.updated',
-        data: {
-          object: {
-            id: 'sub_1',
-            customer: 'cus_1',
-            // status は有効なまま (= 解約ではない)。ここが「無言の降格」の分かれ目
-            status: 'active',
-            items: { data: [{ price: { id: 'price_unknown' } }] },
-            metadata: { tenantId: TENANT },
+    // 対応表は揃っているが、届いた Price ID がどちらとも違う (Stripe 側で Price を作り直した等)
+    [
+      '対応表は揃っているが Price ID が未知',
+      { standard: 'price_standard', pro: 'price_pro' },
+      'price_unknown',
+    ],
+    // 対応表が空。空文字が届いた Price ID と誤って一致しないことも同時に見る
+    ['両方とも未設定', { standard: '', pro: '' }, 'price_pro'],
+    // 片方だけ未設定。**未設定側のプランの Price ID が届く**ケースを送るのが要点で、
+    // ここを未知の ID にすると「未設定でも一致しない」当たり前の経路しか通らない
+    ['Standard だけ未設定', { standard: '', pro: 'price_pro' }, 'price_standard'],
+    ['Pro だけ未設定', { standard: 'price_standard', pro: '' }, 'price_pro'],
+    // 両方に同じ値が入った設定ミス。どちらのプランとも決められないので昇格させない
+    // (ここが通ると Standard 契約者に Pro 権限が渡る)
+    ['両方に同じ Price ID', { standard: 'price_same', pro: 'price_same' }, 'price_same'],
+  ])(
+    'プランを解決できないイベント (%s) は適用せず 500 で再送させる',
+    async (_名, 表, 届いた価格) => {
+      seedTenant('pro', 'pro');
+      // Stripe 連携情報が未保存の状態から始める (保存されたことを観測できるようにする)
+      const seeded = store.tenants.get(TENANT)!;
+      store.tenants.set(TENANT, {
+        ...seeded,
+        stripeCustomerId: null,
+        stripeSubscriptionId: null,
+      });
+      // 対応表を実際に効かせるため、判定は本物を通す (固定値のモックだと表が結果に届かず、
+      // 「未設定の空文字が空の Price ID と一致して昇格する」ような退行を見逃す)
+      useRealPlanMapping.current = true;
+      priceIdsForNextCall.current = 表;
+      // ログ出力はテスト出力に混ぜたくないので実装を握りつぶしつつ呼び出しだけ記録する
+      const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const { POST } = await import('@/app/api/webhooks/stripe/route');
+      const res = await POST(
+        makeRequest({
+          type: 'customer.subscription.updated',
+          data: {
+            object: {
+              id: 'sub_1',
+              customer: 'cus_1',
+              // status は有効なまま (= 解約ではない)。ここが「無言の降格」の分かれ目
+              status: 'active',
+              items: { data: [{ price: { id: 届いた価格 } }] },
+              metadata: { tenantId: TENANT },
+            },
           },
-        },
-      }),
-    );
-    // 500 を返すことで Stripe が再送し、原因を直したあとの再配信で正しい状態が入る
-    expect(res.status).toBe(500);
-    // プランもモードも書き換わっていないこと (これが守りたい本体)
-    const tenant = store.tenants.get(TENANT)!;
-    expect(tenant.subscriptionPlan).toBe('pro');
-    expect(tenant.mode).toBe('pro');
-    // 原因の切り分けに要る値がログに残ること (顧客名・メール等の個人情報は載せない)
-    const logged = errorSpy.mock.calls.flat().map(String).join(' ');
-    expect(logged).toContain('どのプランにも一致せず');
-    expect(logged).toContain('priceIds=[price_unknown]');
-    expect(logged).toContain('currentPlan=pro');
-    errorSpy.mockRestore();
-  });
+        }),
+      );
+      // 500 を返すことで Stripe が再送し、原因を直したあとの再配信で正しい状態が入る
+      expect(res.status).toBe(500);
+      // プランもモードも書き換わっていないこと (これが守りたい本体)
+      const tenant = store.tenants.get(TENANT)!;
+      expect(tenant.subscriptionPlan).toBe('pro');
+      expect(tenant.mode).toBe('pro');
+      // ただし Stripe 連携情報は保存されること (未保存だと顧客ポータルが開けず二重課金の元になる)
+      expect(tenant.stripeCustomerId).toBe('cus_1');
+      expect(tenant.stripeSubscriptionId).toBe('sub_1');
+      // 原因の切り分けに要る値がログに残ること (顧客名・メール等の個人情報は載せない)
+      const logged = errorSpy.mock.calls.flat().map(String).join(' ');
+      expect(logged).toContain('どのプランにも一致せず');
+      expect(logged).toContain(`priceIds=[${届いた価格}]`);
+      expect(logged).toContain('currentPlan=pro');
+    },
+  );
 
   // 正規の解約 (status が有効でない) は異常ではないので、500 にしてはいけない。
   // ここが無いと「free になったら常に 500」という実装に退行しても気付けず、
@@ -363,6 +392,70 @@ describe('POST /api/webhooks/stripe', () => {
     const logged = errorSpy.mock.calls.flat().map(String).join(' ');
     expect(logged).toContain('priceIds=[price_unknown]');
     errorSpy.mockRestore();
+  });
+
+  // 再送しても解決できないと分かっているケースは 500 にしない。
+  // (a) 配信順序の CAS が必ず弾く古いイベント
+  it('より新しいイベント適用済みなら、解決できなくても 500 にせず通す', async () => {
+    // 保存済みの処理時刻を「イベントより新しい」状態にする
+    seedTenant('pro', 'pro', new Date(Date.now() + 60_000));
+    planForNextCall.current = 'free';
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const { POST } = await import('@/app/api/webhooks/stripe/route');
+    const res = await POST(
+      makeRequest({
+        // 保存済みより古い発生時刻 (= CAS で必ず無視される)
+        created: Math.floor((Date.now() - 60_000) / 1000),
+        type: 'customer.subscription.updated',
+        data: {
+          object: {
+            id: 'sub_1',
+            customer: 'cus_1',
+            status: 'active',
+            items: { data: [{ price: { id: 'price_retired' } }] },
+            metadata: { tenantId: TENANT },
+          },
+        },
+      }),
+    );
+    // 再送させない (適用されないものを再送させても失敗を積むだけ)
+    expect(res.status).toBe(200);
+    // プランは巻き戻らない
+    expect(store.tenants.get(TENANT)!.subscriptionPlan).toBe('pro');
+    // 無視した事実と理由は記録に残す
+    expect(warnSpy.mock.calls.flat().map(String).join(' ')).toContain(
+      'より新しいイベントが適用済み',
+    );
+  });
+
+  // (b) items が 10 件上限で切り捨てられ、プラン本体がページ外に落ちている場合。
+  // 同じペイロードが再配信されるだけなので、再送させても永久に解決しない
+  it('items が上限で切り捨てられているなら、解決できなくても 500 にせず通す', async () => {
+    seedTenant('pro', 'pro');
+    planForNextCall.current = 'free';
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const { POST } = await import('@/app/api/webhooks/stripe/route');
+    const res = await POST(
+      makeRequest({
+        type: 'customer.subscription.updated',
+        data: {
+          object: {
+            id: 'sub_1',
+            customer: 'cus_1',
+            status: 'active',
+            // has_more=true = プラン本体の item がページ外にある可能性がある
+            items: { data: [{ price: { id: 'price_addon_seats' } }], has_more: true },
+            metadata: { tenantId: TENANT },
+          },
+        },
+      }),
+    );
+    expect(res.status).toBe(200);
+    // 解決できていないのでプランは書き換えない
+    expect(store.tenants.get(TENANT)!.subscriptionPlan).toBe('pro');
+    const logged = warnSpy.mock.calls.flat().map(String).join(' ');
+    expect(logged).toContain('items が上限で切り捨て');
+    expect(logged).toContain('itemsTruncated=true');
   });
 
   // 複数 item のサブスクで、アドオンが先頭に来ても本命プランの Price ID が選ばれること。

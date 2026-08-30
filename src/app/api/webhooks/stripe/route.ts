@@ -362,15 +362,41 @@ async function handleSubscriptionUpsert(
     // 適用済み) は、再送しても永久に適用されない。適用されないものを再送させ続けると、
     // 「他のイベントは通っているのに 1 件だけ落ち続ける」ノイズを作るだけなので、
     // 記録だけ残して通す (applyPlanChange 側の CAS が実際の適用を止める)
+    // 判定の根拠は tx 外のスナップショットなので、並行配信で処理済み時刻が進むと
+    // 「古いのに古くないと見なす」ことがある。その場合も再送のたびに読み直すので自己回復する
+    // (逆方向のずれ = 古くないのに古いと見なす、は起きない)。
+    // 比較の規則は tenant-repository の CAS (stripeEventProcessedAt <= eventCreatedAt なら適用)
+    // と対になっている。片方だけ変えるとここが噛み合わなくなるので、変えるときは両方見る
     const processedAt = existingTenant.stripeEventProcessedAt ?? null;
     const isStaleEvent = processedAt !== null && eventCreatedAt < processedAt;
-    if (isStaleEvent) {
+
+    // 再送しても解決できないと分かっているケースは、再送させても失敗を積むだけなので通す。
+    //   - 古いイベント: CAS が必ず弾くので、何度届いても適用されない
+    //   - items が 10 件超で切り捨てられている: プラン本体の item はページ外のままで、
+    //     同じペイロードが再配信されるだけ (API から取り直さない理由は下記)
+    if (isStaleEvent || itemsTruncated) {
       console.warn(
         '[stripe-webhook] 有効なサブスクリプションの Price ID を解決できませんでしたが、' +
-          `より新しいイベントが適用済みのため再送させません (${diagnosticInfo})`,
+          '再送しても解決できないため再送させません' +
+          `(${isStaleEvent ? 'より新しいイベントが適用済み' : 'items が上限で切り捨て'}: ${diagnosticInfo})`,
       );
       return;
     }
+
+    // ここから先は再送に委ねるが、**Stripe 連携情報 (customer/subscription/status) だけは
+    // 先に保存する**。この経路はこれらの列の唯一の書き込み元で、throw して未保存のままにすると
+    // stripeCustomerId が null のままになり、(a) 顧客ポータルが開けず解約できない、
+    // (b) 再チェックアウトで別の Customer が作られて二重課金になる。
+    // プランは渡さない (subscriptionPlan は省略可能) ので、解決できなかったプランは書き換わらない。
+    await repos.tenants.updateStripeSubscription(
+      tenantId,
+      {
+        stripeCustomerId: customerId,
+        stripeSubscriptionId: subscriptionId,
+        stripeSubscriptionStatus: status,
+      },
+      eventCreatedAt,
+    );
 
     // 分からないままプランを書き換えるのではなく throw し、呼び出し元に 500 を返させて
     // Stripe に再送させる (§9 fail-closed: 不明なら拒否)。
