@@ -32,7 +32,14 @@ import type Stripe from 'stripe';
 // データリポジトリ (テナント更新用) + トランザクション境界
 import { repos, uow } from '@/data';
 // Stripe クライアントと設定ヘルパー
-import { getStripeClient, getStripeWebhookSecret, stripeStatusToPlan } from '@/lib/stripe';
+import {
+  getStripeClient,
+  getStripeWebhookSecret,
+  isActiveSubscriptionStatus,
+  pickKnownPriceId,
+  STRIPE_PRICE_IDS,
+  stripeStatusToPlan,
+} from '@/lib/stripe';
 // レート制限 (署名検証の前に粗すぎる連打を弾いてサーバー負荷を抑える)
 import { enforceRateLimit, RateLimitError } from '@/lib/rate-limit';
 // Pro モード (7 ステータス・SLA・エスカレーション等) がそのプランで許可されるかの判定
@@ -271,6 +278,126 @@ async function applyPlanChange(
   ]);
 }
 
+// 「課金が有効なサブスクなのに、適用しようとしているプランが free になった」= Stripe の Price ID を
+// プランへ解決できなかった、という異常を引き受けるヘルパー。
+//
+// なぜこの検知が要るか: stripeStatusToPlan は Price ID が空でも未知でも安全側の free を返すため、
+// 戻り値だけでは**正常な解約と区別がつかず、課金中のテナントを無言で降格させてしまう**。
+//
+// 呼び出し側は nextPlan の確定後・テナント実在確認の後に呼ぶこと。前に置くと Enterprise
+// (プラン据え置き) や存在しない tenantId でも発火し、正常な運用が壊れる。
+//
+// 原因 (環境変数の設定漏れ / Stripe 側の Price 作り直し / ペイロードの形状変化) では分岐しない。
+// **課金が有効なサブスクは解約でもダウングレードでもない**ので、そこから free が出てくること自体が
+// 「解決できなかった」という意味しか持たない。原因ごとに「片方は再送、片方は降格」と分けると、
+// より起きやすい側 (Price の作り直しなど) が黙って降格する穴になる。
+//
+// 戻り値: このイベントをそのまま適用してよければ true。適用してはいけない場合は
+//   - 再送で解決しうる → throw (呼び出し元の catch が 500 を返し、Stripe が再送する)
+//   - 再送しても解決しない → false (呼び出し元は何もせず終了し、Stripe には 200 が返る)
+async function handleUnresolvablePlanIfNeeded(params: {
+  tenantId: string;
+  existingTenant: { subscriptionPlan: SubscriptionPlan; stripeEventProcessedAt?: Date | null };
+  linkageFields: {
+    stripeCustomerId: string;
+    stripeSubscriptionId: string;
+    stripeSubscriptionStatus: string;
+  };
+  status: string;
+  nextPlan: SubscriptionPlan;
+  priceIds: readonly string[];
+  selectedPriceId: string;
+  itemsTruncated: boolean;
+  eventCreatedAt: Date;
+}): Promise<boolean> {
+  const {
+    tenantId,
+    existingTenant,
+    linkageFields,
+    status,
+    nextPlan,
+    priceIds,
+    selectedPriceId,
+    itemsTruncated,
+    eventCreatedAt,
+  } = params;
+
+  // 解決できているならこのヘルパーの出番はない (そのまま適用してよい)
+  if (!isActiveSubscriptionStatus(status) || nextPlan !== 'free') return true;
+
+  // 原因の切り分けに要る値をまとめる。顧客名やメールなどの個人情報は載せない (§9)。
+  // 設定側の Price ID も載せるのは、「両方の環境変数に同じ値が入っている」ような
+  // 対応表そのものの誤りを、ログだけで見分けられるようにするため
+  const diagnosticInfo =
+    `tenantId=${tenantId}, subscriptionId=${linkageFields.stripeSubscriptionId}, status=${status}, ` +
+    `priceIds=[${priceIds.join(', ')}], selectedPriceId=${selectedPriceId || '(空)'}, ` +
+    `configured={standard=${STRIPE_PRICE_IDS.standard || '(未設定)'}, pro=${STRIPE_PRICE_IDS.pro || '(未設定)'}}, ` +
+    `itemsTruncated=${itemsTruncated}, currentPlan=${existingTenant.subscriptionPlan}`;
+
+  // 配信順序の CAS で確実に無視されるイベントか。判定の根拠は tx 外のスナップショットなので、
+  // 並行配信で処理済み時刻が進むと「古いのに古くないと見なす」ことがあるが、再送のたびに
+  // 読み直すので自己回復する (逆方向のずれは起きない)。比較の規則は tenant-repository の CAS
+  // (stripeEventProcessedAt <= eventCreatedAt なら適用) と対になっており、変えるときは両方見る
+  const processedAt = existingTenant.stripeEventProcessedAt ?? null;
+  const isStaleEvent = processedAt !== null && eventCreatedAt < processedAt;
+
+  // **プランを解決できなくても、Stripe 連携情報は先に保存する。** この経路はこれらの列の唯一の
+  // 書き込み元で、未保存のままにすると stripeCustomerId が null で残り、(a) 顧客ポータルが
+  // 開けず自力で解約できない、(b) 再チェックアウトで別 Customer が作られて二重課金になる。
+  // プランは渡さないので、解決できなかったプランは書き換わらない。
+  // 下の早期 return より前に置くのが要点で、後ろに置くと「再送しない」判断のケースで
+  // 保存の機会ごと失われる (古いイベントの場合は CAS が 0 件更新にするため、先に呼んでも無害)。
+  const linkageApplied = await repos.tenants.updateStripeSubscription(
+    tenantId,
+    linkageFields,
+    eventCreatedAt,
+  );
+  // 実際に保存できたかも載せる。保存できていないのに「保存した」と読めるログを出さないため
+  const details = `${diagnosticInfo}, linkageSaved=${linkageApplied}`;
+
+  // (1) 古いイベント: CAS が必ず弾くので、何度届いても適用されない。再送させても失敗を積むだけ
+  if (isStaleEvent) {
+    console.warn(
+      '[stripe-webhook] 有効なサブスクリプションの Price ID を解決できませんでしたが、' +
+        `より新しいイベントが適用済みのため再送させません (${details})`,
+    );
+    return false;
+  }
+
+  // (2) items が 10 件上限で切り捨てられている: プラン本体の item はページ外のままなので、
+  //     同じペイロードが再配信されるだけで再送では解決しない。**プランは判断材料が欠けたまま
+  //     なので変更せず**、運用の対応が要る異常として error で残す (warn だと日常の記録に紛れる)。
+  //     items を API から取り直す手もあるが、署名検証済みイベントの処理へ外向き通信と新しい
+  //     失敗経路を持ち込むことになるため採らない。該当したらアドオン構成の見直しで解消する。
+  if (itemsTruncated) {
+    console.error(
+      '[stripe-webhook] サブスクリプションの items が上限で切り捨てられており、プランを判定できません。' +
+        'このテナントのプランは更新されないまま残ります。アドオン構成を確認してください ' +
+        `(${details})`,
+    );
+    return false;
+  }
+
+  // (3) それ以外: 原因を直せば再送で解決しうる。分からないままプランを書き換えず throw する
+  //     (§9 fail-closed: 不明なら拒否)。200 で受けてしまうと Stripe は再送しないため、
+  //     原因を直しても DB は自動復旧しない — 現在のプランが有料なら課金中のテナントが
+  //     free + lite で取り残され、free なら成立した契約が反映されないまま取り残される
+  //     (新規契約は必ず free からの遷移なのでここに来る)。どちらも手動修復が要る。
+  //     「1 件の解決不能な契約でエンドポイントごと無効化されるのでは」という懸念については、
+  //     Stripe の自動無効化は**そのエンドポイント全体が継続的に失敗している**ことが条件で、
+  //     他のイベントが通っている限り起きない。逆に全イベントが失敗する状況 (対応表が丸ごと
+  //     未設定など) は、まさに再送で自動回復してほしいケースにあたる。
+  //     **回復には設定修正だけでなく再起動 (再デプロイ) が要る場合がある** — STRIPE_PRICE_IDS は
+  //     モジュール評価時に process.env を読む固定値のため。
+  //     解約 (customer.subscription.deleted) は Price ID を見ないのでこの経路を通らず、
+  //     失効の反映が止まることはない。Enterprise も nextPlan が enterprise なので通らない。
+  throw new Error(
+    '[stripe-webhook] 有効なサブスクリプションの Price ID をプランへ解決できません。' +
+      'プランを書き換えず再送させます。STRIPE_PRICE_STANDARD / STRIPE_PRICE_PRO の設定と ' +
+      `Stripe 側の Price ID を確認してください (${details})`,
+  );
+}
+
 // サブスクリプション作成・更新を処理する: テナントのプランと状態を最新に保つ
 async function handleSubscriptionUpsert(
   subscriptionObject: Record<string, unknown>,
@@ -280,10 +407,18 @@ async function handleSubscriptionUpsert(
   const subscriptionId = subscriptionObject['id'] as string | undefined;
   const customerId = subscriptionObject['customer'] as string | undefined;
   const status = subscriptionObject['status'] as string | undefined;
-  // items.data[0].price.id で Price ID を取得する (最初のアイテムのみ使用)
+  // items に含まれる Price ID をすべて取り出し、その中からプラン判定に使う 1 件を選ぶ。
+  // サブスクリプションは座席追加や従量課金のアドオンで複数 item を持つことがあり、
+  // items の並び順は保証されないため、先頭を無条件に使うとアドオンの ID を拾って
+  // 本来 Pro のテナントを「未知の Price ID」として扱ってしまう (選び方は pickKnownPriceId)
   const items = subscriptionObject['items'] as
-    { data?: Array<{ price?: { id?: string } }> } | undefined;
-  const priceId = items?.data?.[0]?.price?.id ?? '';
+    { data?: Array<{ price?: { id?: string } }>; has_more?: boolean } | undefined;
+  const priceIds = (items?.data ?? []).map((item) => item?.price?.id ?? '');
+  // Stripe はサブスクに埋め込む item を既定 10 件までしか載せず、超過分は has_more で示す。
+  // 11 件以上のアドオンを持つ契約ではプラン本体の item がページ外に落ちうるので、
+  // 解決できなかったときの診断に含める (API を再取得しない理由は下の throw を参照)
+  const itemsTruncated = items?.has_more === true;
+  const priceId = pickKnownPriceId(priceIds, STRIPE_PRICE_IDS);
   // メタデータから tenantId を取得する (チェックアウト時に metadata.tenantId として設定する)
   const metadata = subscriptionObject['metadata'] as Record<string, string> | undefined;
   const tenantId = metadata?.['tenantId'];
@@ -300,7 +435,7 @@ async function handleSubscriptionUpsert(
   }
 
   // Stripe の状態と Price ID からプランを判定する
-  const plan = stripeStatusToPlan(status, priceId);
+  const plan = stripeStatusToPlan(status, priceId, STRIPE_PRICE_IDS);
 
   // tenantId はチェックアウト時にメタデータに埋め込んだ値だが、
   // ユーザーが Stripe のチェックアウトセッション生成時に任意の値を渡せる可能性があるため
@@ -321,17 +456,32 @@ async function handleSubscriptionUpsert(
   // Stripe 連携情報 (customer/subscription/status) は最新化しつつ、プランは enterprise を維持する。
   const nextPlan = existingTenant.subscriptionPlan === 'enterprise' ? 'enterprise' : plan;
 
-  // テナントのサブスク情報を更新する (ダウングレードなら Pro モードも同時に強制解除する)
-  await applyPlanChange(
+  // Stripe 連携情報 (顧客・サブスク・状態)。プランを解決できた場合とできなかった場合の
+  // 両方で同じ 3 列を書くので、1 か所で組み立てて両方へ渡す (§6 DRY)
+  const linkageFields = {
+    stripeCustomerId: customerId,
+    stripeSubscriptionId: subscriptionId,
+    stripeSubscriptionStatus: status,
+  };
+
+  // 「課金が有効なサブスクなのに、適用しようとしているプランが free」= プランを解決できなかった、
+  // という異常の扱い。判断と記録はヘルパーへ寄せ、ここは呼ぶだけにする (詳細はそちらの冒頭)。
+  // 「このイベントを適用してよいか」を返し、適用してはいけない場合は throw するか false を返す
+  const shouldApply = await handleUnresolvablePlanIfNeeded({
     tenantId,
-    {
-      stripeCustomerId: customerId,
-      stripeSubscriptionId: subscriptionId,
-      stripeSubscriptionStatus: status,
-      subscriptionPlan: nextPlan,
-    },
+    existingTenant,
+    linkageFields,
+    status,
+    nextPlan,
+    priceIds,
+    selectedPriceId: priceId,
+    itemsTruncated,
     eventCreatedAt,
-  );
+  });
+  if (!shouldApply) return;
+
+  // テナントのサブスク情報を更新する (ダウングレードなら Pro モードも同時に強制解除する)
+  await applyPlanChange(tenantId, { ...linkageFields, subscriptionPlan: nextPlan }, eventCreatedAt);
 }
 
 // サブスクリプション削除を処理する: free プランに降格してキャンセル状態を記録する
