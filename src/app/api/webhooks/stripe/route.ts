@@ -36,6 +36,7 @@ import {
   getStripeClient,
   getStripeWebhookSecret,
   isActiveSubscriptionStatus,
+  STRIPE_PRICE_IDS,
   stripeStatusToPlan,
 } from '@/lib/stripe';
 // レート制限 (署名検証の前に粗すぎる連打を弾いてサーバー負荷を抑える)
@@ -307,30 +308,6 @@ async function handleSubscriptionUpsert(
   // Stripe の状態と Price ID からプランを判定する
   const plan = stripeStatusToPlan(status, priceId);
 
-  // 「課金が有効なサブスクなのに free と判定された」= Price ID が空か、どのプランにも
-  // 一致しなかった、という異常。stripeStatusToPlan は安全側 (free) に倒すだけで、
-  // 正常な解約と区別がつかないまま**課金中のテナントを無言で降格させてしまう**。
-  //
-  // 実際に起きうる原因は 3 つあり、いずれも「Stripe 側は正常」なので気付きにくい:
-  //   (a) サーバーの STRIPE_PRICE_STANDARD / STRIPE_PRICE_PRO が未設定・設定ミス
-  //       (STRIPE_PRICE_IDS が空文字になり、**全テナント**が次のイベントで free に落ちる)
-  //   (b) Stripe ダッシュボードで Price を作り直したのに環境変数を更新していない
-  //   (c) Webhook エンドポイントの API バージョンが変わり、items[0].price.id の位置が動いた
-  //       (Webhook ペイロードの版はエンドポイント/アカウント側の設定で決まるもので、
-  //        src/lib/stripe.ts の apiVersion — こちらから送る Stripe-Version — では固定できない)
-  //
-  // 降格そのものは権限を絞る方向なので安全側として維持するが、**黙って捨てない**
-  // (§6 エラーを握り潰さない)。運用が気付けるよう原因の切り分けに要る値だけを error で残す。
-  // 出すのは Stripe が採番した ID と状態だけで、顧客名やメールなどの個人情報は載せない (§9)。
-  if (isActiveSubscriptionStatus(status) && plan === 'free') {
-    console.error(
-      '[stripe-webhook] 有効なサブスクリプションの Price ID がどのプランにも一致しません。' +
-        'STRIPE_PRICE_STANDARD / STRIPE_PRICE_PRO の設定と、Stripe 側の Price ID を確認してください。' +
-        'このイベントはテナントを free へ降格させます:',
-      { tenantId, subscriptionId, status, priceId: priceId || '(空)' },
-    );
-  }
-
   // tenantId はチェックアウト時にメタデータに埋め込んだ値だが、
   // ユーザーが Stripe のチェックアウトセッション生成時に任意の値を渡せる可能性があるため
   // DB にテナントが実在することを確認してからサブスク情報を更新する。
@@ -349,6 +326,43 @@ async function handleSubscriptionUpsert(
   // 無関係な Stripe サブスク (旧 Pro 等) が残っていても、Stripe イベントでプランを降格させない。
   // Stripe 連携情報 (customer/subscription/status) は最新化しつつ、プランは enterprise を維持する。
   const nextPlan = existingTenant.subscriptionPlan === 'enterprise' ? 'enterprise' : plan;
+
+  // ここから下は「課金が有効なサブスクなのに、適用しようとしているプランが free」という異常の扱い。
+  // stripeStatusToPlan は Price ID が空でも未知でも安全側の free を返すだけなので、戻り値だけでは
+  // **正常な解約と区別がつかず、課金中のテナントを無言で降格させてしまう**。
+  //
+  // この検査を nextPlan の確定後・テナント実在確認の後に置いているのは、実際に降格が起きる
+  // ケースだけを対象にするため。前に置くと、Enterprise (プラン据え置き) や存在しない tenantId で
+  // 「降格させます」と誤報し続け、本当に危険なときの警報が定常的なノイズに埋もれる。
+  if (isActiveSubscriptionStatus(status) && nextPlan === 'free') {
+    // (a) プラン対応表そのものが空 = Price ID を 1 つも分類できない状態。これは顧客データの
+    //     問題ではなく**サーバーの設定不全**で、放置すると次のイベントで全テナントが free へ
+    //     落ちる (Stripe は 200 を受け取るので再送されず、環境変数を直しても DB は自動復旧しない)。
+    //     区別可能な設定不全である以上、分からないままプランを書き換えるのではなく throw して
+    //     呼び出し元に 500 を返させる。Stripe が再送してくれるので、環境変数を直せば自動で回復する
+    //     (§9 fail-closed: 不明なら拒否)。解約イベントは Price ID を見ないのでここは通らない。
+    if (!STRIPE_PRICE_IDS.standard && !STRIPE_PRICE_IDS.pro) {
+      throw new Error(
+        '[stripe-webhook] STRIPE_PRICE_STANDARD / STRIPE_PRICE_PRO がどちらも未設定のため、' +
+          'Price ID からプランを判定できません。プランを書き換えず再送させます ' +
+          `(tenantId=${tenantId}, subscriptionId=${subscriptionId})`,
+      );
+    }
+    // (b) 対応表はあるのに一致しない = 特定の Price ID だけの問題。原因は Stripe 側で Price を
+    //     作り直した / 片方の環境変数だけ古い / Webhook ペイロードの形が変わって
+    //     items[0].price.id を読めない、など (ペイロードの版はエンドポイント・アカウント側の
+    //     設定で決まり、src/lib/stripe.ts の apiVersion では固定できない点に注意)。
+    //     この場合の降格は権限を絞る方向なので安全側として維持するが、**黙って捨てない**
+    //     (§6 エラーを握り潰さない)。原因の切り分けに要る値だけを error で残し、顧客名や
+    //     メールなどの個人情報は載せない (§9)。
+    //     なお配信順序の CAS で古いイベントとして無視される可能性は残るため、断定はしない。
+    console.error(
+      '[stripe-webhook] 有効なサブスクリプションの Price ID がどのプランにも一致しません。' +
+        'STRIPE_PRICE_STANDARD / STRIPE_PRICE_PRO の設定と、Stripe 側の Price ID を確認してください。' +
+        'このイベントが適用されるとテナントは free へ降格します:',
+      { tenantId, subscriptionId, status, priceId: priceId || '(空)' },
+    );
+  }
 
   // テナントのサブスク情報を更新する (ダウングレードなら Pro モードも同時に強制解除する)
   await applyPlanChange(

@@ -37,8 +37,10 @@ vi.mock('@/data', () => ({
 // constructEventSpy は「署名検証へ渡る生ボディ」を検証するために呼び出しを記録する。
 // #290 以降、ルートは復号を挟まず受信バイト列そのものを Buffer で渡すため、
 // スパイ側も Buffer を受け取れる形にしてある (本物の Stripe SDK も string | Buffer を受け付ける)
-const { planForNextCall, constructEventSpy } = vi.hoisted(() => ({
+const { planForNextCall, priceIdsForNextCall, constructEventSpy } = vi.hoisted(() => ({
   planForNextCall: { current: 'pro' as 'free' | 'standard' | 'pro' },
+  // Price ID の対応表。既定は「両方設定済み」で、環境変数の設定不全を再現するテストだけ空にする
+  priceIdsForNextCall: { current: { standard: 'price_standard', pro: 'price_pro' } },
   // 署名検証はモックで飛ばし、受け取ったバイト列を JSON として解釈するだけにする。
   // 引数の型を Uint8Array に固定してあるのが要点で、ルートが復号済みの文字列を渡す形へ
   // 退行すると型チェックと実行時の両方で落ちる (SDK の WebhookPayload は string も許すため、
@@ -66,6 +68,10 @@ vi.mock('@/lib/stripe', async (importOriginal) => {
     stripeStatusToPlan: () => planForNextCall.current,
     // status が active / trialing かの判定は本物をそのまま使う
     isActiveSubscriptionStatus: actual.isActiveSubscriptionStatus,
+    // Price ID の対応表 (getter にして beforeEach / 各テストの差し替えを反映させる)
+    get STRIPE_PRICE_IDS() {
+      return priceIdsForNextCall.current;
+    },
   };
 });
 
@@ -116,6 +122,8 @@ describe('POST /api/webhooks/stripe', () => {
     repos = ctx.repos;
     uow = ctx.uow;
     planForNextCall.current = 'pro';
+    // Price ID の対応表は既定で「両方設定済み」に戻す (設定不全は該当テストだけで再現する)
+    priceIdsForNextCall.current = { standard: 'price_standard', pro: 'price_pro' };
     // 呼び出し記録をテストごとに初期化する (mockClear は実装を残したまま履歴だけ消す)
     constructEventSpy.mockClear();
   });
@@ -288,6 +296,77 @@ describe('POST /api/webhooks/stripe', () => {
         String(args[0]).includes('Price ID がどのプランにも一致しません'),
       ),
     ).toBe(false);
+    errorSpy.mockRestore();
+  });
+
+  // Enterprise はプランが据え置かれる (= 降格しない) ので、未知 Price ID でも警報を出してはいけない。
+  // Enterprise は個別見積の独自 Price を持つのが通常なので、ここで誤報すると請求サイクルごとに
+  // 「降格させます」が出続け、本当に危険なときの警報がノイズに埋もれる
+  it('Enterprise テナントは未知 Price ID でも降格しないので error ログを出さない', async () => {
+    seedTenant('pro', 'enterprise');
+    planForNextCall.current = 'free';
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const { POST } = await import('@/app/api/webhooks/stripe/route');
+    const res = await POST(
+      makeRequest({
+        type: 'customer.subscription.updated',
+        data: {
+          object: {
+            id: 'sub_1',
+            customer: 'cus_1',
+            status: 'active',
+            items: { data: [{ price: { id: 'price_ent_custom' } }] },
+            metadata: { tenantId: TENANT },
+          },
+        },
+      }),
+    );
+    expect(res.status).toBe(200);
+    // プランは enterprise のまま据え置かれる
+    expect(store.tenants.get(TENANT)!.subscriptionPlan).toBe('enterprise');
+    expect(
+      errorSpy.mock.calls.some((args) =>
+        String(args[0]).includes('Price ID がどのプランにも一致しません'),
+      ),
+    ).toBe(false);
+    errorSpy.mockRestore();
+  });
+
+  // Price ID の対応表が丸ごと空 = 顧客データではなくサーバーの設定不全。
+  // 「1 件だけ未知」と区別できる以上、分からないままプランを書き換えず 500 で再送させる。
+  // ここを 200 + 降格にすると、環境変数が抜けた瞬間に全課金テナントが free へ落ち、
+  // Stripe は再送しないので設定を直しても DB は自動復旧しない
+  it('Price ID の対応表が空なら、プランを書き換えず 500 で再送させる', async () => {
+    seedTenant('pro', 'pro');
+    planForNextCall.current = 'free';
+    // STRIPE_PRICE_STANDARD / STRIPE_PRICE_PRO がどちらも未設定の状態を再現する
+    priceIdsForNextCall.current = { standard: '', pro: '' };
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const { POST } = await import('@/app/api/webhooks/stripe/route');
+    const res = await POST(
+      makeRequest({
+        type: 'customer.subscription.updated',
+        data: {
+          object: {
+            id: 'sub_1',
+            customer: 'cus_1',
+            status: 'active',
+            items: { data: [{ price: { id: 'price_pro' } }] },
+            metadata: { tenantId: TENANT },
+          },
+        },
+      }),
+    );
+    // 500 を返すことで Stripe が再送し、環境変数を直せば自動で回復できる
+    expect(res.status).toBe(500);
+    // プランもモードも書き換わっていないこと (これが守りたい本体)
+    const tenant = store.tenants.get(TENANT)!;
+    expect(tenant.subscriptionPlan).toBe('pro');
+    expect(tenant.mode).toBe('pro');
+    // 原因が分かる形でログに残っていること
+    expect(
+      errorSpy.mock.calls.some((args) => args.some((a) => String(a).includes('どちらも未設定'))),
+    ).toBe(true);
     errorSpy.mockRestore();
   });
 
