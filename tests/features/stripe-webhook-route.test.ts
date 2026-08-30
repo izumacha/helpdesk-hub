@@ -369,6 +369,14 @@ describe('POST /api/webhooks/stripe', () => {
   // 機能が付かない状態が手動修復されるまで続く
   it('現在 free のテナントでも、解決できないイベントは適用せず 500 で再送させる', async () => {
     seedTenant('lite', 'free');
+    // 新規契約の直前を再現する: 連携情報は未保存、status も未確定
+    const seeded = store.tenants.get(TENANT)!;
+    store.tenants.set(TENANT, {
+      ...seeded,
+      stripeCustomerId: null,
+      stripeSubscriptionId: null,
+      stripeSubscriptionStatus: 'incomplete',
+    });
     planForNextCall.current = 'free';
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     const { POST } = await import('@/app/api/webhooks/stripe/route');
@@ -387,8 +395,14 @@ describe('POST /api/webhooks/stripe', () => {
       }),
     );
     expect(res.status).toBe(500);
-    // 解決できなかったものを free として確定させない (stripeSubscriptionStatus も書き換えない)
-    expect(store.tenants.get(TENANT)!.stripeSubscriptionStatus).toBe('active');
+    // プランは解決できなかったので書き換えない
+    expect(store.tenants.get(TENANT)!.subscriptionPlan).toBe('free');
+    // 一方 Stripe 連携情報は最新化される (未保存だと顧客ポータルが開けず二重課金の元になる)。
+    // seed の 'incomplete' から、イベントの 'active' へ実際に更新されることを見る
+    const tenant = store.tenants.get(TENANT)!;
+    expect(tenant.stripeSubscriptionStatus).toBe('active');
+    expect(tenant.stripeCustomerId).toBe('cus_1');
+    expect(tenant.stripeSubscriptionId).toBe('sub_1');
     const logged = errorSpy.mock.calls.flat().map(String).join(' ');
     expect(logged).toContain('priceIds=[price_unknown]');
     errorSpy.mockRestore();
@@ -432,6 +446,9 @@ describe('POST /api/webhooks/stripe', () => {
   // 同じペイロードが再配信されるだけなので、再送させても永久に解決しない
   it('items が上限で切り捨てられているなら、解決できなくても 500 にせず通す', async () => {
     seedTenant('pro', 'pro');
+    // 連携情報が未保存の状態から始め、この 1 通で保存されることを観測できるようにする
+    const seeded = store.tenants.get(TENANT)!;
+    store.tenants.set(TENANT, { ...seeded, stripeCustomerId: null, stripeSubscriptionId: null });
     planForNextCall.current = 'free';
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const { POST } = await import('@/app/api/webhooks/stripe/route');
@@ -452,10 +469,15 @@ describe('POST /api/webhooks/stripe', () => {
     );
     expect(res.status).toBe(200);
     // 解決できていないのでプランは書き換えない
-    expect(store.tenants.get(TENANT)!.subscriptionPlan).toBe('pro');
+    const tenant = store.tenants.get(TENANT)!;
+    expect(tenant.subscriptionPlan).toBe('pro');
+    // 再送されない経路なので、連携情報の保存はこの 1 通で終わらせる必要がある
+    expect(tenant.stripeCustomerId).toBe('cus_1');
+    expect(tenant.stripeSubscriptionId).toBe('sub_1');
     const logged = warnSpy.mock.calls.flat().map(String).join(' ');
     expect(logged).toContain('items が上限で切り捨て');
     expect(logged).toContain('itemsTruncated=true');
+    expect(logged).toContain('linkageSaved=true');
   });
 
   // 複数 item のサブスクで、アドオンが先頭に来ても本命プランの Price ID が選ばれること。

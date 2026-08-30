@@ -370,25 +370,16 @@ async function handleSubscriptionUpsert(
     const processedAt = existingTenant.stripeEventProcessedAt ?? null;
     const isStaleEvent = processedAt !== null && eventCreatedAt < processedAt;
 
-    // 再送しても解決できないと分かっているケースは、再送させても失敗を積むだけなので通す。
-    //   - 古いイベント: CAS が必ず弾くので、何度届いても適用されない
-    //   - items が 10 件超で切り捨てられている: プラン本体の item はページ外のままで、
-    //     同じペイロードが再配信されるだけ (API から取り直さない理由は下記)
-    if (isStaleEvent || itemsTruncated) {
-      console.warn(
-        '[stripe-webhook] 有効なサブスクリプションの Price ID を解決できませんでしたが、' +
-          '再送しても解決できないため再送させません' +
-          `(${isStaleEvent ? 'より新しいイベントが適用済み' : 'items が上限で切り捨て'}: ${diagnosticInfo})`,
-      );
-      return;
-    }
-
-    // ここから先は再送に委ねるが、**Stripe 連携情報 (customer/subscription/status) だけは
-    // 先に保存する**。この経路はこれらの列の唯一の書き込み元で、throw して未保存のままにすると
-    // stripeCustomerId が null のままになり、(a) 顧客ポータルが開けず解約できない、
-    // (b) 再チェックアウトで別の Customer が作られて二重課金になる。
-    // プランは渡さない (subscriptionPlan は省略可能) ので、解決できなかったプランは書き換わらない。
-    await repos.tenants.updateStripeSubscription(
+    // **プランを解決できなくても、Stripe 連携情報 (customer/subscription/status) は先に保存する。**
+    // この経路はこれらの列の唯一の書き込み元で、未保存のままにすると stripeCustomerId が
+    // null で残り、(a) 顧客ポータルが開けず自力で解約できない、(b) 再チェックアウトで別の
+    // Customer が作られて二重課金になる。プランは渡さない (subscriptionPlan は省略可能) ので、
+    // 解決できなかったプランは書き換わらない。
+    //
+    // **下の早期 return より前に置くのが要点**: 早期 return は「再送しない」= この 1 通で
+    // 保存を終わらせるという判断なので、後ろに置くと保存の機会ごと失われる
+    // (古いイベントの場合は下の CAS が 0 件更新にするため、先に呼んでも無害)。
+    const linkageApplied = await repos.tenants.updateStripeSubscription(
       tenantId,
       {
         stripeCustomerId: customerId,
@@ -397,6 +388,23 @@ async function handleSubscriptionUpsert(
       },
       eventCreatedAt,
     );
+    // 実際に保存できたかをログに載せる (CAS に弾かれて 0 件更新なら false)。
+    // 保存できていないのに「保存した」と読めるログを出さないため (§6 エラーを握り潰さない)
+    const linkageInfo = `linkageSaved=${linkageApplied}`;
+
+    // 再送しても解決できないと分かっているケースは、再送させても失敗を積むだけなので通す。
+    //   - 古いイベント: CAS が必ず弾くので、何度届いても適用されない
+    //   - items が 10 件超で切り捨てられている: プラン本体の item はページ外のままで、
+    //     同じペイロードが再配信されるだけ (API から取り直さない理由は下記)
+    if (isStaleEvent || itemsTruncated) {
+      console.warn(
+        '[stripe-webhook] 有効なサブスクリプションの Price ID を解決できませんでしたが、' +
+          '再送しても解決できないため再送させません' +
+          `(${isStaleEvent ? 'より新しいイベントが適用済み' : 'items が上限で切り捨て'}: ` +
+          `${diagnosticInfo}, ${linkageInfo})`,
+      );
+      return;
+    }
 
     // 分からないままプランを書き換えるのではなく throw し、呼び出し元に 500 を返させて
     // Stripe に再送させる (§9 fail-closed: 不明なら拒否)。
@@ -425,7 +433,7 @@ async function handleSubscriptionUpsert(
       '[stripe-webhook] 有効なサブスクリプションの Price ID がどのプランにも一致せず、' +
         'プランを判定できません。プランを書き換えず再送させます。' +
         'STRIPE_PRICE_STANDARD / STRIPE_PRICE_PRO の設定と Stripe 側の Price ID を確認してください ' +
-        `(${diagnosticInfo})`,
+        `(${diagnosticInfo}, ${linkageInfo})`,
     );
   }
 
