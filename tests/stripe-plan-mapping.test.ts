@@ -85,7 +85,6 @@ describe('pickKnownPriceId', () => {
     expect(pickKnownPriceId(['price_addon', 'price_pro_test'], 対応表)).toBe('price_pro_test');
   });
 
-  // 既知の ID が複数あるときは最初に見つかったものを使う (判定が並び順で揺れないことの確認)
   // standard と pro を同時に持つサブスク (プラン変更中の按分など) では、配列順で結果が
   // 揺れないよう上位プラン (pro) を優先する。並び順は保証されないので、ここが順序依存だと
   // 同じサブスクが再配信のたびに pro→standard へ降格しうる

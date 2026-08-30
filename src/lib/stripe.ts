@@ -61,13 +61,26 @@ export const STRIPE_PRICE_IDS: KnownPriceIds = {
   pro: process.env.STRIPE_PRICE_PRO ?? '',
 } as const;
 
+// 有料プランの優先順位 (上位プランが先)。**プラン判定の順序に関する唯一の真実の源**で、
+// pickKnownPriceId (どの Price ID を判定に使うか) と stripeStatusToPlan (どのプランと見なすか)
+// の両方がこの並びを回す。片方だけに順序を書き写すと、プランを増やしたときに
+// 「選んだ ID を別の関数が下位プランと判定する」形で黙って降格する (§6 一元管理)。
+const PAID_PLAN_PRIORITY = ['pro', 'standard'] as const;
+
 // サブスクリプションに含まれる Price ID 群から、プラン判定に使う 1 件を選ぶヘルパー。
 //
 // なぜ「先頭の 1 件」で済ませないのか: Stripe のサブスクリプションは複数の item を持てる
 // (座席の追加購入・従量課金のアドオン等)。items の並び順は保証されないので、先頭を無条件に
 // 使うとアドオンの Price ID を拾ってしまい、本来 Pro のテナントが「未知の Price ID」として
-// 扱われる。既知のプランに対応する ID を優先して探し、無ければ先頭を返す
-// (見つからない場合も素の値を返すのは、原因調査でどの ID が来ていたかを見せるため)。
+// 扱われる。
+//
+// 選び方は次の 2 段階:
+//   1. PAID_PLAN_PRIORITY の順 (pro → standard) に既知の Price ID を探す。上位プランを
+//      先に見るのは、standard と pro の item を同時に持つサブスク (プラン変更中の按分など) で
+//      **配列順によって pro→standard へ降格しない**ようにするため。
+//   2. どれとも一致しなければ、空でない最初の値を返す (原因調査でどの ID が来ていたかを
+//      見せるため。先頭固定にすると、price が展開されていない item が先頭に来ただけで
+//      実際に届いた ID が消える)。
 //
 // 対応表 (knownPriceIds) をモジュール内の STRIPE_PRICE_IDS から読まず引数で受け取るのは、
 // この関数を純粋関数に保ち、ユニットテストから対応表を差し替えられるようにするため。
@@ -77,16 +90,12 @@ export function pickKnownPriceId(
 ): string {
   // 空文字 (対応表未設定の目印・price が展開されていない item) は候補から外す
   const candidates = priceIds.filter((id) => id !== '');
-  // Pro を先に探す。standard と pro の item を同時に持つサブスク (プラン変更中の按分など) で
-  // 配列順によって pro→standard に降格しないよう、上位プランを優先する
-  // (stripeStatusToPlan も pro を先に判定しており、その規則をここでも守る)
-  const pro = candidates.find((id) => id === knownPriceIds.pro);
-  if (pro !== undefined) return pro;
-  // 次に Standard を探す
-  const standard = candidates.find((id) => id === knownPriceIds.standard);
-  if (standard !== undefined) return standard;
-  // どれとも一致しなければ、空でない最初の値を返す (原因調査でどの ID が来ていたかを見せるため。
-  // 先頭固定にすると、price が展開されていない item が先頭に来ただけで実際の ID が消える)
+  // 上位プランから順に、対応表と一致する Price ID を探す
+  for (const plan of PAID_PLAN_PRIORITY) {
+    const hit = candidates.find((id) => id === knownPriceIds[plan]);
+    if (hit !== undefined) return hit;
+  }
+  // 一致が無ければ、空でない最初の値 (それも無ければ空文字) を返す
   return candidates[0] ?? '';
 }
 
@@ -137,9 +146,10 @@ export function stripeStatusToPlan(
   // Price ID が空文字の場合は環境変数未設定またはデータ不備なので free にフォールバック
   // (空文字同士が一致して意図せず pro/standard に昇格するのを防ぐ)
   if (!priceId) return 'free';
-  // 有効なサブスクの Price ID でプランを判定する
-  if (priceId === knownPriceIds.pro) return 'pro';
-  if (priceId === knownPriceIds.standard) return 'standard';
+  // 有効なサブスクの Price ID でプランを判定する (順序は pickKnownPriceId と同じ表を回す)
+  for (const plan of PAID_PLAN_PRIORITY) {
+    if (priceId === knownPriceIds[plan]) return plan;
+  }
   // 未知の Price ID は free にフォールバック (fail-safe)
   return 'free';
 }

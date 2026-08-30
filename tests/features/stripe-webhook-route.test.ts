@@ -37,21 +37,26 @@ vi.mock('@/data', () => ({
 // constructEventSpy は「署名検証へ渡る生ボディ」を検証するために呼び出しを記録する。
 // #290 以降、ルートは復号を挟まず受信バイト列そのものを Buffer で渡すため、
 // スパイ側も Buffer を受け取れる形にしてある (本物の Stripe SDK も string | Buffer を受け付ける)
-const { planForNextCall, priceIdsForNextCall, constructEventSpy } = vi.hoisted(() => ({
-  planForNextCall: { current: 'pro' as 'free' | 'standard' | 'pro' },
-  // Price ID の対応表。既定は「両方設定済み」で、環境変数の設定不全を再現するテストだけ空にする
-  priceIdsForNextCall: { current: { standard: 'price_standard', pro: 'price_pro' } },
-  // 署名検証はモックで飛ばし、受け取ったバイト列を JSON として解釈するだけにする。
-  // 引数の型を Uint8Array に固定してあるのが要点で、ルートが復号済みの文字列を渡す形へ
-  // 退行すると型チェックと実行時の両方で落ちる (SDK の WebhookPayload は string も許すため、
-  // 本物の型をそのまま使うと退行を検出できない)。
-  // 復号に TextDecoder を使うのは、BOM 付きの本文でも JSON として解釈できるようにするため。
-  // **このスパイの復号はあくまで JSON 解釈用**で、署名対象が何だったかは
-  // mock.calls に記録された引数そのもので確かめる
-  constructEventSpy: vi.fn(
-    (rawBody: Uint8Array) => JSON.parse(new TextDecoder().decode(rawBody)) as unknown,
-  ),
-}));
+const { planForNextCall, priceIdsForNextCall, useRealPlanMapping, constructEventSpy } = vi.hoisted(
+  () => ({
+    planForNextCall: { current: 'pro' as 'free' | 'standard' | 'pro' },
+    // true にすると stripeStatusToPlan を本物に切り替え、Price ID からの判定経路まで通す
+    // (pickKnownPriceId がルートへ正しく結線されているかは、これでしか観測できない)
+    useRealPlanMapping: { current: false },
+    // Price ID の対応表。既定は「両方設定済み」で、環境変数の設定不全を再現するテストだけ空にする
+    priceIdsForNextCall: { current: { standard: 'price_standard', pro: 'price_pro' } },
+    // 署名検証はモックで飛ばし、受け取ったバイト列を JSON として解釈するだけにする。
+    // 引数の型を Uint8Array に固定してあるのが要点で、ルートが復号済みの文字列を渡す形へ
+    // 退行すると型チェックと実行時の両方で落ちる (SDK の WebhookPayload は string も許すため、
+    // 本物の型をそのまま使うと退行を検出できない)。
+    // 復号に TextDecoder を使うのは、BOM 付きの本文でも JSON として解釈できるようにするため。
+    // **このスパイの復号はあくまで JSON 解釈用**で、署名対象が何だったかは
+    // mock.calls に記録された引数そのもので確かめる
+    constructEventSpy: vi.fn(
+      (rawBody: Uint8Array) => JSON.parse(new TextDecoder().decode(rawBody)) as unknown,
+    ),
+  }),
+);
 vi.mock('@/lib/stripe', async (importOriginal) => {
   // 「有効な status とは何か」の規則だけは本物を使う。ここでモックすると、
   // 未知 Price ID の検知テストが本番と違う規則を相手に緑になってしまう (§6 DRY)
@@ -64,8 +69,15 @@ vi.mock('@/lib/stripe', async (importOriginal) => {
       },
     }),
     getStripeWebhookSecret: () => 'whsec_test',
-    // 本来は status + priceId から判定するが、テストでは明示的に差し替えて挙動を固定する
-    stripeStatusToPlan: () => planForNextCall.current,
+    // 既定では判定結果を固定するが、useRealPlanMapping を立てたテストだけ本物を通す
+    stripeStatusToPlan: (
+      status: string,
+      priceId: string,
+      known: { standard: string; pro: string },
+    ) =>
+      useRealPlanMapping.current
+        ? actual.stripeStatusToPlan(status, priceId, known)
+        : planForNextCall.current,
     // status が active / trialing かの判定は本物をそのまま使う
     isActiveSubscriptionStatus: actual.isActiveSubscriptionStatus,
     // 複数 item から判定用の Price ID を選ぶ規則も本物を使う (対応表は引数で渡る純粋関数)
@@ -124,6 +136,8 @@ describe('POST /api/webhooks/stripe', () => {
     repos = ctx.repos;
     uow = ctx.uow;
     planForNextCall.current = 'pro';
+    // 判定は既定で固定値に戻す (本物を通すテストだけ個別に立てる)
+    useRealPlanMapping.current = false;
     // Price ID の対応表は既定で「両方設定済み」に戻す (設定不全は該当テストだけで再現する)
     priceIdsForNextCall.current = { standard: 'price_standard', pro: 'price_pro' };
     // 呼び出し記録をテストごとに初期化する (mockClear は実装を残したまま履歴だけ消す)
@@ -320,11 +334,10 @@ describe('POST /api/webhooks/stripe', () => {
     expect(store.tenants.get(TENANT)!.subscriptionPlan).toBe('enterprise');
   });
 
-  // 既に free のテナントは降格しようがないので、解決できなくても 500 にしない。
-  // ここを一律 500 にすると、対応表に無い Price ID を持つ free テナントが 1 件いるだけで
-  // そのサブスクの全イベントが失敗し続け、Stripe がエンドポイントごと無効化して
-  // **全テナントの解約・昇格の反映まで止まる** (poison pill)
-  it('既に free のテナントは、解決できなくても 500 にせず記録だけ残して適用する', async () => {
+  // 現在 free のテナントでも 500 にする。新規契約は必ず free からの遷移なので、ここを 200 で
+  // 受けると「成立した契約が反映されないまま Stripe が再送しない」= 顧客は課金だけされて
+  // 機能が付かない状態が手動修復されるまで続く
+  it('現在 free のテナントでも、解決できないイベントは適用せず 500 で再送させる', async () => {
     seedTenant('lite', 'free');
     planForNextCall.current = 'free';
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
@@ -343,14 +356,42 @@ describe('POST /api/webhooks/stripe', () => {
         },
       }),
     );
-    // 再送は不要 (適用しても失うものが無い)
-    expect(res.status).toBe(200);
-    expect(store.tenants.get(TENANT)!.subscriptionPlan).toBe('free');
-    // ただし「本来は昇格だった可能性」を含めて記録に残す
+    expect(res.status).toBe(500);
+    // 解決できなかったものを free として確定させない (stripeSubscriptionStatus も書き換えない)
+    expect(store.tenants.get(TENANT)!.stripeSubscriptionStatus).toBe('active');
     const logged = errorSpy.mock.calls.flat().map(String).join(' ');
-    expect(logged).toContain('本来は昇格だった可能性');
     expect(logged).toContain('priceIds=[price_unknown]');
     errorSpy.mockRestore();
+  });
+
+  // 複数 item のサブスクで、アドオンが先頭に来ても本命プランの Price ID が選ばれること。
+  // ここは stripeStatusToPlan を本物に切り替えて Price ID からの判定まで通す
+  // (固定値のモックのままだと、pickKnownPriceId を先頭固定へ退行させても緑になってしまう)
+  it('複数 item のサブスクでは、アドオンが先頭でも既知プランの Price ID で判定する', async () => {
+    seedTenant('lite', 'free');
+    // 本物の判定を通す (対応表は priceIdsForNextCall の既定値 = standard/pro とも設定済み)
+    useRealPlanMapping.current = true;
+    const { POST } = await import('@/app/api/webhooks/stripe/route');
+    const res = await POST(
+      makeRequest({
+        type: 'customer.subscription.updated',
+        data: {
+          object: {
+            id: 'sub_1',
+            customer: 'cus_1',
+            status: 'active',
+            // アドオンが先頭、本命の Pro が 2 番目という並び
+            items: {
+              data: [{ price: { id: 'price_addon_seats' } }, { price: { id: 'price_pro' } }],
+            },
+            metadata: { tenantId: TENANT },
+          },
+        },
+      }),
+    );
+    // 先頭固定だと price_addon_seats が未知扱いになり 500 になる
+    expect(res.status).toBe(200);
+    expect(store.tenants.get(TENANT)!.subscriptionPlan).toBe('pro');
   });
 
   // 既に Lite モードのテナントがダウングレードしても、mode は変更不要 (既に lite) のまま

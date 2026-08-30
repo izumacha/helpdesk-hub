@@ -344,48 +344,40 @@ async function handleSubscriptionUpsert(
   // 作り直し / ペイロードの形状変化) では分岐しない。**課金が有効なサブスクは、解約でも
   // ダウングレードでもない**ので、そこから free が出てくること自体が「プランを解決できなかった」
   // という意味しか持たない。原因ごとに「片方は再送、片方は降格」と分けると、より起きやすい
-  // 側 (Price の作り直しなど) が黙って降格する穴になる。
-  // 分岐させるのは原因ではなく**このイベントで失うものがあるか**で、理由は下記のとおり。
+  // 側 (Price の作り直しなど) が黙って降格する穴になる。現在のプランでも分岐しない
+  // (理由は下記のとおり。free からの新規契約が失われる側も同じ重さの事故になる)。
   if (isActiveSubscriptionStatus(status) && nextPlan === 'free') {
-    // このイベントで実際にプランが下がるのか (= 失うものがあるのか)。
-    // **既に free のテナントは再送させない**のが要点で、ここを一律 500 にすると、
-    // 対応表に無い Price ID を 1 件持つ free テナントがいるだけで、そのサブスクの
-    // 全イベントが恒常的に失敗する。Stripe は連続失敗したエンドポイントを無効化するため、
-    // その 1 件が**全テナントの解約・昇格の反映まで止める** poison pill になる。
-    // 失うものが無い側は記録だけ残して適用し、影響をそのテナントに閉じ込める。
-    const wouldDowngrade = existingTenant.subscriptionPlan !== 'free';
-
-    // 原因の切り分けに要る値を残す。顧客名やメールなどの個人情報は載せない (§9)。
-    // priceIds をまとめて出すのは、複数 item のうちどれが来ていたかを見えるようにするため。
-    const 診断情報 =
+    // 原因の切り分けに要る値をまとめる。顧客名やメールなどの個人情報は載せない (§9)。
+    // priceIds を配列のまま出すのは、複数 item のうち何が届いていたかを見えるようにするため。
+    const diagnosticInfo =
       `tenantId=${tenantId}, subscriptionId=${subscriptionId}, status=${status}, ` +
-      `priceIds=[${priceIds.join(', ')}], currentPlan=${existingTenant.subscriptionPlan}`;
+      `priceIds=[${priceIds.join(', ')}], selectedPriceId=${priceId || '(空)'}, ` +
+      `currentPlan=${existingTenant.subscriptionPlan}`;
 
-    // 降格が起きないなら、適用しても失うものは無い。ただし「本当は昇格だったのに解決できず
-    // free のままにした」可能性が残るので、気付けるように error として記録する
-    if (!wouldDowngrade) {
-      console.error(
-        '[stripe-webhook] 有効なサブスクリプションの Price ID がどのプランにも一致しません。' +
-          'プランは変わらないため適用しますが、本来は昇格だった可能性があります。' +
-          `STRIPE_PRICE_STANDARD / STRIPE_PRICE_PRO の設定と Stripe 側の Price ID を確認してください (${診断情報})`,
-      );
-    } else {
-      // 分からないままプランを書き換えるのではなく throw し、呼び出し元に 500 を返させて
-      // Stripe に再送させる (§9 fail-closed: 不明なら拒否)。ここで 200 + 降格にすると、
-      // Stripe は再送しないので**設定を直しても DB は自動復旧せず**、課金中のテナントが
-      // free + lite のまま取り残される (手動修復が要る)。再送に委ねれば、原因を直したあとの
-      // 再配信で正しい状態が入る。
-      // **回復には設定修正だけでなくプロセスの再起動 (再デプロイ) が要る場合がある** —
-      // STRIPE_PRICE_IDS はモジュール評価時に process.env を読む固定値のため。
-      // 解約 (customer.subscription.deleted) は Price ID を見ないのでこの経路を通らず、
-      // 失効の反映が止まることはない。Enterprise も nextPlan が enterprise なので通らない。
-      throw new Error(
-        '[stripe-webhook] 有効なサブスクリプションの Price ID がどのプランにも一致せず、' +
-          'プランを判定できません。課金中のテナントを降格させずに再送させます。' +
-          'STRIPE_PRICE_STANDARD / STRIPE_PRICE_PRO の設定と Stripe 側の Price ID を確認してください ' +
-          `(${診断情報})`,
-      );
-    }
+    // 分からないままプランを書き換えるのではなく throw し、呼び出し元に 500 を返させて
+    // Stripe に再送させる (§9 fail-closed: 不明なら拒否)。
+    //
+    // 200 で受けてしまうと Stripe は再送しないため、原因を直しても DB は自動復旧しない:
+    //   - 現在のプランが有料なら、課金中のテナントが free + lite のまま取り残される
+    //   - 現在のプランが free なら、成立したはずの契約が反映されず、顧客は課金だけされて
+    //     機能が付かないまま取り残される (新規契約は必ず free からの遷移なのでここに来る)
+    // どちらも手動修復が要るので、現在のプランでは分岐せず一律で再送に委ねる。
+    //
+    // 「解決できない 1 件がエンドポイントごと無効化するのでは」という懸念については、
+    // Stripe の自動無効化は**そのエンドポイント全体が継続的に失敗している**ことが条件で、
+    // 他のイベントが通っている限り 1 サブスク分の失敗では起きない。逆に全イベントが
+    // 失敗する状況 (対応表が丸ごと未設定など) は、まさに再送で自動回復してほしいケース。
+    //
+    // **回復には設定修正だけでなくプロセスの再起動 (再デプロイ) が要る場合がある** —
+    // STRIPE_PRICE_IDS はモジュール評価時に process.env を読む固定値のため。
+    // 解約 (customer.subscription.deleted) は Price ID を見ないのでこの経路を通らず、
+    // 失効の反映が止まることはない。Enterprise も nextPlan が enterprise なので通らない。
+    throw new Error(
+      '[stripe-webhook] 有効なサブスクリプションの Price ID がどのプランにも一致せず、' +
+        'プランを判定できません。プランを書き換えず再送させます。' +
+        'STRIPE_PRICE_STANDARD / STRIPE_PRICE_PRO の設定と Stripe 側の Price ID を確認してください ' +
+        `(${diagnosticInfo})`,
+    );
   }
 
   // テナントのサブスク情報を更新する (ダウングレードなら Pro モードも同時に強制解除する)
