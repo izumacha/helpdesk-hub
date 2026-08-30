@@ -42,10 +42,19 @@ export function getStripeClient(): Stripe {
   return global._stripeClient;
 }
 
+// プラン判定に使う Price ID の対応表の型。プラン判定に関わる関数はこれを引数で受け取り、
+// モジュール内の定数を直接読まない (参照元が 2 つに割れると、片方だけ差し替えたときに
+// 「選んだ ID を別の関数が未知と判定する」形で黙って壊れる。§6 一元管理)
+export interface KnownPriceIds {
+  readonly standard: string;
+  readonly pro: string;
+}
+
 // プラン ID マッピング: Stripe の Price ID を環境変数から取得する。
 // Price ID は Stripe ダッシュボードで各プランのサブスク価格を作成した際に発行される。
-// 未設定の場合は空文字列を返すが、課金処理実行前に Server Action 側でチェックする。
-export const STRIPE_PRICE_IDS = {
+// 未設定なら空文字列になる。チェックアウト経路は Server Action 側で弾き、Webhook 経路は
+// 「プランを解決できないイベントは適用しない」形で扱う (src/app/api/webhooks/stripe/route.ts)。
+export const STRIPE_PRICE_IDS: KnownPriceIds = {
   // スタンダードプラン: 月額 4,980 円 (Lite モードフル + メール取り込み)
   standard: process.env.STRIPE_PRICE_STANDARD ?? '',
   // プロプラン: 月額 14,800 円 (Pro モード + 監査ログ + LINE 連携)
@@ -64,14 +73,21 @@ export const STRIPE_PRICE_IDS = {
 // この関数を純粋関数に保ち、ユニットテストから対応表を差し替えられるようにするため。
 export function pickKnownPriceId(
   priceIds: readonly string[],
-  knownPriceIds: { readonly standard: string; readonly pro: string },
+  knownPriceIds: KnownPriceIds,
 ): string {
-  // 既知のプラン (pro / standard) に一致する ID を探す。空文字は対応表未設定の目印なので除外する
-  const known = priceIds.find(
-    (id) => id !== '' && (id === knownPriceIds.pro || id === knownPriceIds.standard),
-  );
-  // 見つかればそれを、無ければ先頭 (それも無ければ空文字) を返す
-  return known ?? priceIds[0] ?? '';
+  // 空文字 (対応表未設定の目印・price が展開されていない item) は候補から外す
+  const candidates = priceIds.filter((id) => id !== '');
+  // Pro を先に探す。standard と pro の item を同時に持つサブスク (プラン変更中の按分など) で
+  // 配列順によって pro→standard に降格しないよう、上位プランを優先する
+  // (stripeStatusToPlan も pro を先に判定しており、その規則をここでも守る)
+  const pro = candidates.find((id) => id === knownPriceIds.pro);
+  if (pro !== undefined) return pro;
+  // 次に Standard を探す
+  const standard = candidates.find((id) => id === knownPriceIds.standard);
+  if (standard !== undefined) return standard;
+  // どれとも一致しなければ、空でない最初の値を返す (原因調査でどの ID が来ていたかを見せるため。
+  // 先頭固定にすると、price が展開されていない item が先頭に来ただけで実際の ID が消える)
+  return candidates[0] ?? '';
 }
 
 // Stripe Webhook の署名検証に使う Endpoint Secret (Webhook 設定画面で発行)
@@ -111,6 +127,7 @@ export function isActiveSubscriptionStatus(status: string): boolean {
 export function stripeStatusToPlan(
   status: string,
   priceId: string,
+  knownPriceIds: KnownPriceIds,
 ): 'free' | 'standard' | 'pro' {
   // サブスク status が有効 (active | trialing) のときだけプランを昇格する
   if (!isActiveSubscriptionStatus(status)) {
@@ -121,8 +138,8 @@ export function stripeStatusToPlan(
   // (空文字同士が一致して意図せず pro/standard に昇格するのを防ぐ)
   if (!priceId) return 'free';
   // 有効なサブスクの Price ID でプランを判定する
-  if (priceId === STRIPE_PRICE_IDS.pro) return 'pro';
-  if (priceId === STRIPE_PRICE_IDS.standard) return 'standard';
+  if (priceId === knownPriceIds.pro) return 'pro';
+  if (priceId === knownPriceIds.standard) return 'standard';
   // 未知の Price ID は free にフォールバック (fail-safe)
   return 'free';
 }

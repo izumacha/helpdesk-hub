@@ -264,7 +264,7 @@ describe('POST /api/webhooks/stripe', () => {
     // 原因の切り分けに要る値がログに残ること (顧客名・メール等の個人情報は載せない)
     const logged = errorSpy.mock.calls.flat().map(String).join(' ');
     expect(logged).toContain('どのプランにも一致せず');
-    expect(logged).toContain('priceId=price_unknown');
+    expect(logged).toContain('priceIds=[price_unknown]');
     expect(logged).toContain('currentPlan=pro');
     errorSpy.mockRestore();
   });
@@ -320,14 +320,14 @@ describe('POST /api/webhooks/stripe', () => {
     expect(store.tenants.get(TENANT)!.subscriptionPlan).toBe('enterprise');
   });
 
-  // サブスクは座席追加や従量課金のアドオンで複数 item を持つことがあり、items の並び順は
-  // 保証されない。先頭を無条件に使うと、アドオンの Price ID を拾って本来 Pro のテナントが
-  // 「解決できないイベント」として 500 になり、正常な契約が止まってしまう
-  it('複数 item のサブスクでは、既知プランの Price ID を選んで判定する', async () => {
+  // 既に free のテナントは降格しようがないので、解決できなくても 500 にしない。
+  // ここを一律 500 にすると、対応表に無い Price ID を持つ free テナントが 1 件いるだけで
+  // そのサブスクの全イベントが失敗し続け、Stripe がエンドポイントごと無効化して
+  // **全テナントの解約・昇格の反映まで止まる** (poison pill)
+  it('既に free のテナントは、解決できなくても 500 にせず記録だけ残して適用する', async () => {
     seedTenant('lite', 'free');
-    // 本物の判定関数と同じ経路を通すため、ここではプラン判定をモックしない代わりに
-    // 「pro と判定されたら適用される」ことを確認する
-    planForNextCall.current = 'pro';
+    planForNextCall.current = 'free';
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     const { POST } = await import('@/app/api/webhooks/stripe/route');
     const res = await POST(
       makeRequest({
@@ -337,17 +337,20 @@ describe('POST /api/webhooks/stripe', () => {
             id: 'sub_1',
             customer: 'cus_1',
             status: 'active',
-            // アドオンが先頭、本命の Pro が 2 番目という並び
-            items: {
-              data: [{ price: { id: 'price_addon_seats' } }, { price: { id: 'price_pro' } }],
-            },
+            items: { data: [{ price: { id: 'price_unknown' } }] },
             metadata: { tenantId: TENANT },
           },
         },
       }),
     );
+    // 再送は不要 (適用しても失うものが無い)
     expect(res.status).toBe(200);
-    expect(store.tenants.get(TENANT)!.subscriptionPlan).toBe('pro');
+    expect(store.tenants.get(TENANT)!.subscriptionPlan).toBe('free');
+    // ただし「本来は昇格だった可能性」を含めて記録に残す
+    const logged = errorSpy.mock.calls.flat().map(String).join(' ');
+    expect(logged).toContain('本来は昇格だった可能性');
+    expect(logged).toContain('priceIds=[price_unknown]');
+    errorSpy.mockRestore();
   });
 
   // 既に Lite モードのテナントがダウングレードしても、mode は変更不要 (既に lite) のまま

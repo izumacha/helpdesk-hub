@@ -51,30 +51,30 @@ describe('isActiveSubscriptionStatus', () => {
 describe('stripeStatusToPlan', () => {
   // 有効なサブスクなら Price ID に対応するプランへ昇格する
   it('有効な状態で Pro の Price ID なら pro を返す', () => {
-    expect(stripeStatusToPlan('active', 'price_pro_test')).toBe('pro');
+    expect(stripeStatusToPlan('active', 'price_pro_test', 対応表)).toBe('pro');
   });
 
   it('有効な状態で Standard の Price ID なら standard を返す', () => {
-    expect(stripeStatusToPlan('trialing', 'price_standard_test')).toBe('standard');
+    expect(stripeStatusToPlan('trialing', 'price_standard_test', 対応表)).toBe('standard');
   });
 
   // status が無効なら、Price ID が何であってもプランを与えない（支払いが止まっている以上、
   // 正しい Price ID を持っていることは権限の根拠にならない）
   it('status が無効なら Pro の Price ID でも free を返す', () => {
-    expect(stripeStatusToPlan('past_due', 'price_pro_test')).toBe('free');
+    expect(stripeStatusToPlan('past_due', 'price_pro_test', 対応表)).toBe('free');
   });
 
   // Price ID が空（環境変数未設定・ペイロード欠落）でも、空文字同士が一致して
   // 誤って昇格しないこと。ここが崩れると未課金テナントに Pro 権限が渡る
   it('Price ID が空なら free を返す（空文字同士の一致で昇格しない）', () => {
-    expect(stripeStatusToPlan('active', '')).toBe('free');
+    expect(stripeStatusToPlan('active', '', 対応表)).toBe('free');
   });
 
   // どのプランにも一致しない Price ID は安全側の free。
   // ただしこれは「正常な解約」と同じ戻り値になるため、呼び出し側（Webhook ルート）が
   // 異常としてログに出す責務を持つ — その挙動は tests/features/stripe-webhook-route.test.ts が固定する
   it('未知の Price ID は free を返す（安全側のフォールバック）', () => {
-    expect(stripeStatusToPlan('active', 'price_not_configured')).toBe('free');
+    expect(stripeStatusToPlan('active', 'price_not_configured', 対応表)).toBe('free');
   });
 });
 
@@ -86,10 +86,20 @@ describe('pickKnownPriceId', () => {
   });
 
   // 既知の ID が複数あるときは最初に見つかったものを使う (判定が並び順で揺れないことの確認)
-  it('既知プランの Price ID が複数あれば先に現れた方を選ぶ', () => {
-    expect(pickKnownPriceId(['price_standard_test', 'price_pro_test'], 対応表)).toBe(
-      'price_standard_test',
-    );
+  // standard と pro を同時に持つサブスク (プラン変更中の按分など) では、配列順で結果が
+  // 揺れないよう上位プラン (pro) を優先する。並び順は保証されないので、ここが順序依存だと
+  // 同じサブスクが再配信のたびに pro→standard へ降格しうる
+  it.each([
+    [['price_standard_test', 'price_pro_test']],
+    [['price_pro_test', 'price_standard_test']],
+  ])('standard と pro を両方持つときは並び順によらず pro を選ぶ (%s)', (ids) => {
+    expect(pickKnownPriceId(ids, 対応表)).toBe('price_pro_test');
+  });
+
+  // price が展開されていない item が先頭に来ても、実際に届いた ID を落とさない
+  // (ここで空文字を返すと、原因調査のログから本物の Price ID が消える)
+  it('空の Price ID は飛ばして、空でない最初の値を返す', () => {
+    expect(pickKnownPriceId(['', 'price_legacy'], 対応表)).toBe('price_legacy');
   });
 
   // 一致するものが無ければ先頭を返す。素の値を返すのは、原因調査でどの ID が来ていたかを
@@ -101,9 +111,13 @@ describe('pickKnownPriceId', () => {
   });
 
   // 対応表が未設定 (空文字) のとき、空文字同士が一致して「既知」と誤判定しないこと。
-  // ここが崩れると未設定の環境で任意の空 Price ID がプラン扱いされる
+  // ここが崩れると、未設定の環境で空の Price ID がプラン扱いされて誤って昇格する。
+  // 返る値は診断用の素の ID (price_x) で、これが「既知」を意味しないことは
+  // stripeStatusToPlan 側が同じ対応表で free と判定することで担保される
   it('対応表が未設定でも空文字を既知として扱わない', () => {
-    expect(pickKnownPriceId(['', 'price_x'], { standard: '', pro: '' })).toBe('');
+    const 未設定の対応表 = { standard: '', pro: '' } as const;
+    expect(pickKnownPriceId(['', 'price_x'], 未設定の対応表)).toBe('price_x');
+    expect(stripeStatusToPlan('active', 'price_x', 未設定の対応表)).toBe('free');
   });
 
   // items が空 (ペイロード欠落) でも例外にせず空文字へ倒す
