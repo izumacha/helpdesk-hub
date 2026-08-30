@@ -307,7 +307,7 @@ describe('POST /api/webhooks/stripe', () => {
       expect(tenant.stripeSubscriptionId).toBe('sub_1');
       // 原因の切り分けに要る値がログに残ること (顧客名・メール等の個人情報は載せない)
       const logged = errorSpy.mock.calls.flat().map(String).join(' ');
-      expect(logged).toContain('どのプランにも一致せず');
+      expect(logged).toContain('プランへ解決できません');
       expect(logged).toContain(`priceIds=[${届いた価格}]`);
       expect(logged).toContain('currentPlan=pro');
     },
@@ -450,7 +450,7 @@ describe('POST /api/webhooks/stripe', () => {
     const seeded = store.tenants.get(TENANT)!;
     store.tenants.set(TENANT, { ...seeded, stripeCustomerId: null, stripeSubscriptionId: null });
     planForNextCall.current = 'free';
-    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     const { POST } = await import('@/app/api/webhooks/stripe/route');
     const res = await POST(
       makeRequest({
@@ -474,8 +474,9 @@ describe('POST /api/webhooks/stripe', () => {
     // 再送されない経路なので、連携情報の保存はこの 1 通で終わらせる必要がある
     expect(tenant.stripeCustomerId).toBe('cus_1');
     expect(tenant.stripeSubscriptionId).toBe('sub_1');
-    const logged = warnSpy.mock.calls.flat().map(String).join(' ');
-    expect(logged).toContain('items が上限で切り捨て');
+    // 運用の対応が要る異常なので error で残す (warn だと日常の記録に紛れる)
+    const logged = errorSpy.mock.calls.flat().map(String).join(' ');
+    expect(logged).toContain('items が上限で切り捨てられており');
     expect(logged).toContain('itemsTruncated=true');
     expect(logged).toContain('linkageSaved=true');
   });

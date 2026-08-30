@@ -13,7 +13,9 @@ const STRIPE_API_VERSION = '2026-07-29.dahlia' as const;
 // Stripe シークレットキーを環境変数から取得する (サーバー側のみで参照 — クライアントに漏らさない)
 function getStripeSecretKey(): string {
   // 未設定なら起動時に問題を顕在化させる (fail-closed: 不明な状態で課金処理をしない)
-  const key = process.env.STRIPE_SECRET_KEY;
+  // 値は trim する (STRIPE_PRICE_* と同じ理由: secret マネージャ経由で末尾に改行が混ざると、
+  // 署名計算や API 呼び出しが全滅する。しかもこちらは再送で回復できない壊れ方になる)
+  const key = process.env.STRIPE_SECRET_KEY?.trim();
   if (!key) {
     throw new Error(
       '[stripe] STRIPE_SECRET_KEY が設定されていません。環境変数を確認してください。',
@@ -109,7 +111,8 @@ export function pickKnownPriceId(
 // Stripe Webhook の署名検証に使う Endpoint Secret (Webhook 設定画面で発行)
 // リクエスト本文が Stripe から送られたものと同一かを HMAC 署名で検証するために必要
 export function getStripeWebhookSecret(): string {
-  const secret = process.env.STRIPE_WEBHOOK_SECRET;
+  // 値は trim する (末尾の改行が混ざると HMAC が全件不一致になり、全イベントが 400 になる)
+  const secret = process.env.STRIPE_WEBHOOK_SECRET?.trim();
   if (!secret) {
     throw new Error(
       '[stripe] STRIPE_WEBHOOK_SECRET が設定されていません。Stripe ダッシュボードの Webhook 設定を確認してください。',
