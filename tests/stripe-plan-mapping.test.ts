@@ -8,30 +8,15 @@
 //   とくに「安全側に倒して free を返す」分岐は、正常な解約と区別がつかないまま
 //   課金中のテナントを降格させうるため、境界値を明示的に固定しておく価値が高い。
 //
-// 環境変数について:
-//   `STRIPE_PRICE_IDS` はモジュール読み込み時に `process.env` を読むので、
-//   import より前に値を入れておく必要がある（後から差し替えても反映されない）。
-//   ただし vitest はモジュールレジストリこそファイル単位で分けるが `process.env` は
-//   ワーカープロセスで共有されるため、素の代入だと**後続のテストファイルへ漏れる**。
-//   実行順で緑にも赤にもなる検出網を作らないよう、`vi.stubEnv` で入れて最後に必ず戻す。
+// 対応表について:
+//   このモジュールのプラン判定関数はいずれも対応表 (knownPriceIds) を**引数で受け取る**ため、
+//   環境変数を差し替える必要が無い。テストごとにローカルの対応表を渡すだけでよい。
 
-import { afterAll, describe, expect, it, vi } from 'vitest';
+import { describe, expect, it } from 'vitest';
+import { isActiveSubscriptionStatus, pickKnownPriceId, stripeStatusToPlan } from '@/lib/stripe';
 
-// Price ID の対応表はモジュール評価時に固定されるため、import 前に環境変数を用意する
-vi.stubEnv('STRIPE_PRICE_STANDARD', 'price_standard_test');
-vi.stubEnv('STRIPE_PRICE_PRO', 'price_pro_test');
-
-// 環境変数を入れ終えてから読み込む（静的 import だと巻き上げで先に評価されてしまう）
-const { isActiveSubscriptionStatus, pickKnownPriceId, stripeStatusToPlan } =
-  await import('@/lib/stripe');
-
-// pickKnownPriceId に渡す対応表 (この関数は純粋関数で、対応表を引数で受け取る)
+// プラン判定に渡す対応表 (本物の環境変数には依存しない)
 const 対応表 = { standard: 'price_standard_test', pro: 'price_pro_test' } as const;
-
-// 差し替えた環境変数を元へ戻し、同じワーカーで動く後続のテストファイルへ持ち越さない
-afterAll(() => {
-  vi.unstubAllEnvs();
-});
 
 describe('isActiveSubscriptionStatus', () => {
   // 課金が有効とみなすのは active（支払い済み）と trialing（試用期間中）の 2 つだけ

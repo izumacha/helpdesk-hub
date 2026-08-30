@@ -248,8 +248,9 @@ describe('POST /api/webhooks/stripe', () => {
     ['Pro だけ未設定', { standard: 'price_standard', pro: '' }],
   ])('プランを解決できないイベント (%s) は適用せず 500 で再送させる', async (_名, 表) => {
     seedTenant('pro', 'pro');
-    // Price ID がどのプランにも一致しなかった状況を再現する (判定結果は free)
-    planForNextCall.current = 'free';
+    // 対応表を実際に効かせるため、判定は本物を通す (固定値のモックだと表が結果に届かず、
+    // 「未設定の空文字が空の Price ID と一致して昇格する」ような退行を見逃す)
+    useRealPlanMapping.current = true;
     priceIdsForNextCall.current = 表;
     // ログ出力はテスト出力に混ぜたくないので実装を握りつぶしつつ呼び出しだけ記録する
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});

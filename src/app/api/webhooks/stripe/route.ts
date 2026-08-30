@@ -292,8 +292,12 @@ async function handleSubscriptionUpsert(
   // items の並び順は保証されないため、先頭を無条件に使うとアドオンの ID を拾って
   // 本来 Pro のテナントを「未知の Price ID」として扱ってしまう (選び方は pickKnownPriceId)
   const items = subscriptionObject['items'] as
-    { data?: Array<{ price?: { id?: string } }> } | undefined;
+    { data?: Array<{ price?: { id?: string } }>; has_more?: boolean } | undefined;
   const priceIds = (items?.data ?? []).map((item) => item?.price?.id ?? '');
+  // Stripe はサブスクに埋め込む item を既定 10 件までしか載せず、超過分は has_more で示す。
+  // 11 件以上のアドオンを持つ契約ではプラン本体の item がページ外に落ちうるので、
+  // 解決できなかったときの診断に含める (API を再取得しない理由は下の throw を参照)
+  const itemsTruncated = items?.has_more === true;
   const priceId = pickKnownPriceId(priceIds, STRIPE_PRICE_IDS);
   // メタデータから tenantId を取得する (チェックアウト時に metadata.tenantId として設定する)
   const metadata = subscriptionObject['metadata'] as Record<string, string> | undefined;
@@ -352,7 +356,21 @@ async function handleSubscriptionUpsert(
     const diagnosticInfo =
       `tenantId=${tenantId}, subscriptionId=${subscriptionId}, status=${status}, ` +
       `priceIds=[${priceIds.join(', ')}], selectedPriceId=${priceId || '(空)'}, ` +
-      `currentPlan=${existingTenant.subscriptionPlan}`;
+      `itemsTruncated=${itemsTruncated}, currentPlan=${existingTenant.subscriptionPlan}`;
+
+    // 配信順序の CAS で確実に無視されるイベント (このテナントは既により新しいイベントまで
+    // 適用済み) は、再送しても永久に適用されない。適用されないものを再送させ続けると、
+    // 「他のイベントは通っているのに 1 件だけ落ち続ける」ノイズを作るだけなので、
+    // 記録だけ残して通す (applyPlanChange 側の CAS が実際の適用を止める)
+    const processedAt = existingTenant.stripeEventProcessedAt ?? null;
+    const isStaleEvent = processedAt !== null && eventCreatedAt < processedAt;
+    if (isStaleEvent) {
+      console.warn(
+        '[stripe-webhook] 有効なサブスクリプションの Price ID を解決できませんでしたが、' +
+          `より新しいイベントが適用済みのため再送させません (${diagnosticInfo})`,
+      );
+      return;
+    }
 
     // 分からないままプランを書き換えるのではなく throw し、呼び出し元に 500 を返させて
     // Stripe に再送させる (§9 fail-closed: 不明なら拒否)。
@@ -372,6 +390,11 @@ async function handleSubscriptionUpsert(
     // STRIPE_PRICE_IDS はモジュール評価時に process.env を読む固定値のため。
     // 解約 (customer.subscription.deleted) は Price ID を見ないのでこの経路を通らず、
     // 失効の反映が止まることはない。Enterprise も nextPlan が enterprise なので通らない。
+    //
+    // **既知の限界**: items が 10 件を超えるとプラン本体の item がページ外に落ち、再送しても
+    // 解決できない (diagnosticInfo の itemsTruncated=true がその印)。ここで items を API から
+    // 取り直すこともできるが、署名検証済みのイベント処理に外向き通信と新しい失敗経路を
+    // 持ち込むことになるため採らない。該当したら運用でアドオン構成を見直す。
     throw new Error(
       '[stripe-webhook] 有効なサブスクリプションの Price ID がどのプランにも一致せず、' +
         'プランを判定できません。プランを書き換えず再送させます。' +

@@ -42,30 +42,37 @@ export function getStripeClient(): Stripe {
   return global._stripeClient;
 }
 
+// 有料プランの優先順位 (上位プランが先)。**プラン判定に関する唯一の真実の源**で、
+// pickKnownPriceId (どの Price ID を判定に使うか) と stripeStatusToPlan (どのプランと見なすか)
+// の両方がこの並びを回す。片方だけに順序を書き写すと、プランを増やしたときに
+// 「選んだ ID を別の関数が下位プランと判定する」形で黙って降格する (§6 一元管理)。
+//
+// 下の KnownPriceIds をこの配列から導出しているのが要点で、プランを足すとき配列への追記を
+// 忘れると STRIPE_PRICE_IDS 側に余分なキーが残って**型チェックが落ちる**。
+// 「表に載せ忘れたプランが黙って free 扱いになる」形の漏れを型で塞いでいる。
+const PAID_PLAN_PRIORITY = ['pro', 'standard'] as const;
+
+// 有料プラン名 (Stripe の Price ID で判定できるもの)。free は Price ID を持たないので含まない
+export type PaidPlan = (typeof PAID_PLAN_PRIORITY)[number];
+
 // プラン判定に使う Price ID の対応表の型。プラン判定に関わる関数はこれを引数で受け取り、
 // モジュール内の定数を直接読まない (参照元が 2 つに割れると、片方だけ差し替えたときに
 // 「選んだ ID を別の関数が未知と判定する」形で黙って壊れる。§6 一元管理)
-export interface KnownPriceIds {
-  readonly standard: string;
-  readonly pro: string;
-}
+export type KnownPriceIds = { readonly [P in PaidPlan]: string };
 
 // プラン ID マッピング: Stripe の Price ID を環境変数から取得する。
 // Price ID は Stripe ダッシュボードで各プランのサブスク価格を作成した際に発行される。
 // 未設定なら空文字列になる。チェックアウト経路は Server Action 側で弾き、Webhook 経路は
 // 「プランを解決できないイベントは適用しない」形で扱う (src/app/api/webhooks/stripe/route.ts)。
+// 値は trim してから使う。secret マネージャや `docker --env-file` 経由だと末尾に改行や空白が
+// 混ざることがあり、そのままだと Stripe から届く本物の Price ID と一致せず、**全課金テナントの
+// イベントが解決不能**になる (§9 環境変数も検証する)。
 export const STRIPE_PRICE_IDS: KnownPriceIds = {
   // スタンダードプラン: 月額 4,980 円 (Lite モードフル + メール取り込み)
-  standard: process.env.STRIPE_PRICE_STANDARD ?? '',
+  standard: (process.env.STRIPE_PRICE_STANDARD ?? '').trim(),
   // プロプラン: 月額 14,800 円 (Pro モード + 監査ログ + LINE 連携)
-  pro: process.env.STRIPE_PRICE_PRO ?? '',
+  pro: (process.env.STRIPE_PRICE_PRO ?? '').trim(),
 } as const;
-
-// 有料プランの優先順位 (上位プランが先)。**プラン判定の順序に関する唯一の真実の源**で、
-// pickKnownPriceId (どの Price ID を判定に使うか) と stripeStatusToPlan (どのプランと見なすか)
-// の両方がこの並びを回す。片方だけに順序を書き写すと、プランを増やしたときに
-// 「選んだ ID を別の関数が下位プランと判定する」形で黙って降格する (§6 一元管理)。
-const PAID_PLAN_PRIORITY = ['pro', 'standard'] as const;
 
 // サブスクリプションに含まれる Price ID 群から、プラン判定に使う 1 件を選ぶヘルパー。
 //
@@ -137,7 +144,7 @@ export function stripeStatusToPlan(
   status: string,
   priceId: string,
   knownPriceIds: KnownPriceIds,
-): 'free' | 'standard' | 'pro' {
+): 'free' | PaidPlan {
   // サブスク status が有効 (active | trialing) のときだけプランを昇格する
   if (!isActiveSubscriptionStatus(status)) {
     // キャンセル・支払い遅延 (past_due | canceled 等) は free に降格
