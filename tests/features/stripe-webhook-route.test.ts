@@ -261,6 +261,8 @@ describe('POST /api/webhooks/stripe', () => {
       subscriptionId: 'sub_1',
       status: 'active',
       priceId: 'price_unknown',
+      // 降格が起きるのか (課金中なのか既に free なのか) を受け手が読み違えないようにする
+      currentPlan: 'pro',
     });
     errorSpy.mockRestore();
   });
@@ -332,14 +334,59 @@ describe('POST /api/webhooks/stripe', () => {
     errorSpy.mockRestore();
   });
 
-  // Price ID の対応表が丸ごと空 = 顧客データではなくサーバーの設定不全。
-  // 「1 件だけ未知」と区別できる以上、分からないままプランを書き換えず 500 で再送させる。
-  // ここを 200 + 降格にすると、環境変数が抜けた瞬間に全課金テナントが free へ落ち、
-  // Stripe は再送しないので設定を直しても DB は自動復旧しない
-  it('Price ID の対応表が空なら、プランを書き換えず 500 で再送させる', async () => {
-    seedTenant('pro', 'pro');
+  // Price ID の対応表に欠けがある = 顧客データではなくサーバーの設定不全。
+  // 判定の軸を「両方空」ではなく「1 つでも空」にしているのが要点で、**片方だけ未設定**という
+  // より起きやすい設定漏れを取りこぼすと、その瞬間に課金テナントの無言降格へ戻ってしまう。
+  // ここを 200 + 降格にすると、Stripe は再送しないので設定を直しても DB は自動復旧しない
+  it.each([
+    ['両方とも未設定', { standard: '', pro: '' }],
+    ['Standard だけ未設定', { standard: '', pro: 'price_pro' }],
+    ['Pro だけ未設定', { standard: 'price_standard', pro: '' }],
+  ])(
+    'Price ID の対応表が %s なら、課金中テナントを降格させず 500 で再送させる',
+    async (_名, 表) => {
+      seedTenant('pro', 'pro');
+      planForNextCall.current = 'free';
+      // 環境変数の設定漏れを再現する
+      priceIdsForNextCall.current = 表;
+      const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const { POST } = await import('@/app/api/webhooks/stripe/route');
+      const res = await POST(
+        makeRequest({
+          type: 'customer.subscription.updated',
+          data: {
+            object: {
+              id: 'sub_1',
+              customer: 'cus_1',
+              status: 'active',
+              items: { data: [{ price: { id: 'price_unknown' } }] },
+              metadata: { tenantId: TENANT },
+            },
+          },
+        }),
+      );
+      // 500 を返すことで Stripe が再送し、設定修正 + 再起動のあと自動で回復できる
+      expect(res.status).toBe(500);
+      // プランもモードも書き換わっていないこと (これが守りたい本体)
+      const tenant = store.tenants.get(TENANT)!;
+      expect(tenant.subscriptionPlan).toBe('pro');
+      expect(tenant.mode).toBe('pro');
+      // 原因が分かる形でログに残っていること
+      expect(
+        errorSpy.mock.calls.some((args) =>
+          args.some((a) => String(a).includes('未設定のものがあり')),
+        ),
+      ).toBe(true);
+      errorSpy.mockRestore();
+    },
+  );
+
+  // 既に free のテナントは降格しようがないので、設定不全でも 500 にしない。
+  // ここを 500 にすると、失うものが無いイベントまで Stripe が再送し続け、
+  // 継続失敗で Webhook エンドポイントごと無効化されうる (回復をかえって遠ざける)
+  it('既に free のテナントは、対応表に欠けがあっても 500 にせず記録だけ残す', async () => {
+    seedTenant('lite', 'free');
     planForNextCall.current = 'free';
-    // STRIPE_PRICE_STANDARD / STRIPE_PRICE_PRO がどちらも未設定の状態を再現する
     priceIdsForNextCall.current = { standard: '', pro: '' };
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     const { POST } = await import('@/app/api/webhooks/stripe/route');
@@ -351,21 +398,20 @@ describe('POST /api/webhooks/stripe', () => {
             id: 'sub_1',
             customer: 'cus_1',
             status: 'active',
-            items: { data: [{ price: { id: 'price_pro' } }] },
+            items: { data: [{ price: { id: 'price_unknown' } }] },
             metadata: { tenantId: TENANT },
           },
         },
       }),
     );
-    // 500 を返すことで Stripe が再送し、環境変数を直せば自動で回復できる
-    expect(res.status).toBe(500);
-    // プランもモードも書き換わっていないこと (これが守りたい本体)
-    const tenant = store.tenants.get(TENANT)!;
-    expect(tenant.subscriptionPlan).toBe('pro');
-    expect(tenant.mode).toBe('pro');
-    // 原因が分かる形でログに残っていること
+    // 再送は不要 (適用しても何も変わらない)
+    expect(res.status).toBe(200);
+    expect(store.tenants.get(TENANT)!.subscriptionPlan).toBe('free');
+    // ただし設定不全そのものは記録に残す (気付ける状態は保つ)
     expect(
-      errorSpy.mock.calls.some((args) => args.some((a) => String(a).includes('どちらも未設定'))),
+      errorSpy.mock.calls.some((args) =>
+        String(args[0]).includes('Price ID がどのプランにも一致しません'),
+      ),
     ).toBe(true);
     errorSpy.mockRestore();
   });

@@ -12,14 +12,23 @@
 //   `STRIPE_PRICE_IDS` はモジュール読み込み時に `process.env` を読むので、
 //   import より前に値を入れておく必要がある（後から差し替えても反映されない）。
 
-import { describe, expect, it } from 'vitest';
+//   ただし vitest はモジュールレジストリこそファイル単位で分けるが `process.env` は
+//   ワーカープロセスで共有されるため、素の代入だと**後続のテストファイルへ漏れる**。
+//   実行順で緑にも赤にもなる検出網を作らないよう、`vi.stubEnv` で入れて最後に必ず戻す。
+
+import { afterAll, describe, expect, it, vi } from 'vitest';
 
 // Price ID の対応表はモジュール評価時に固定されるため、import 前に環境変数を用意する
-process.env.STRIPE_PRICE_STANDARD = 'price_standard_test';
-process.env.STRIPE_PRICE_PRO = 'price_pro_test';
+vi.stubEnv('STRIPE_PRICE_STANDARD', 'price_standard_test');
+vi.stubEnv('STRIPE_PRICE_PRO', 'price_pro_test');
 
 // 環境変数を入れ終えてから読み込む（静的 import だと巻き上げで先に評価されてしまう）
 const { isActiveSubscriptionStatus, stripeStatusToPlan } = await import('@/lib/stripe');
+
+// 差し替えた環境変数を元へ戻し、同じワーカーで動く後続のテストファイルへ持ち越さない
+afterAll(() => {
+  vi.unstubAllEnvs();
+});
 
 describe('isActiveSubscriptionStatus', () => {
   // 課金が有効とみなすのは active（支払い済み）と trialing（試用期間中）の 2 つだけ
