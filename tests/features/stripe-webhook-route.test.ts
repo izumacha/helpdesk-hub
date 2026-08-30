@@ -50,17 +50,24 @@ const { planForNextCall, constructEventSpy } = vi.hoisted(() => ({
     (rawBody: Uint8Array) => JSON.parse(new TextDecoder().decode(rawBody)) as unknown,
   ),
 }));
-vi.mock('@/lib/stripe', () => ({
-  // 署名検証はモックし、リクエストボディの JSON をそのまま Stripe イベントとして扱う
-  getStripeClient: () => ({
-    webhooks: {
-      constructEvent: constructEventSpy,
-    },
-  }),
-  getStripeWebhookSecret: () => 'whsec_test',
-  // 本来は status + priceId から判定するが、テストでは明示的に差し替えて挙動を固定する
-  stripeStatusToPlan: () => planForNextCall.current,
-}));
+vi.mock('@/lib/stripe', async (importOriginal) => {
+  // 「有効な status とは何か」の規則だけは本物を使う。ここでモックすると、
+  // 未知 Price ID の検知テストが本番と違う規則を相手に緑になってしまう (§6 DRY)
+  const actual = await importOriginal<typeof import('@/lib/stripe')>();
+  return {
+    // 署名検証はモックし、リクエストボディの JSON をそのまま Stripe イベントとして扱う
+    getStripeClient: () => ({
+      webhooks: {
+        constructEvent: constructEventSpy,
+      },
+    }),
+    getStripeWebhookSecret: () => 'whsec_test',
+    // 本来は status + priceId から判定するが、テストでは明示的に差し替えて挙動を固定する
+    stripeStatusToPlan: () => planForNextCall.current,
+    // status が active / trialing かの判定は本物をそのまま使う
+    isActiveSubscriptionStatus: actual.isActiveSubscriptionStatus,
+  };
+});
 
 // テナントをシードする (mode / plan を指定可能)。stripeEventProcessedAt は配信順序 CAS の
 // テストで「既にこの時刻のイベントまで適用済み」を再現するために使う (省略時は未処理 = null)
@@ -203,6 +210,85 @@ describe('POST /api/webhooks/stripe', () => {
     expect(tenant.mode).toBe('pro');
     // mode が変わっていないので監査ログも記録されない (無関係なイベントで監査ログを埋めない)
     expect(await repos.settingsAudit.findAllByTenant({ tenantId: TENANT })).toHaveLength(0);
+  });
+
+  // 課金が有効なのにどのプランにも一致しない Price ID が来たときは、降格を黙って実行しない。
+  // 原因は環境変数 (STRIPE_PRICE_*) の設定ミス・Stripe 側の Price 作り直し・Webhook ペイロード
+  // 形状の変化のいずれかで、どれも「Stripe 側は正常」なので運用が気付けない。
+  // 降格自体は権限を絞る方向なので維持しつつ、error ログで顕在化させる (§6 エラーを握り潰さない)
+  it('有効なサブスクの Price ID が未知なら、降格しつつ error ログで顕在化させる', async () => {
+    seedTenant('pro', 'pro');
+    // Price ID がどのプランにも一致しなかった状況を再現する (判定結果は free)
+    planForNextCall.current = 'free';
+    // ログ出力はテスト出力に混ぜたくないので実装を握りつぶしつつ呼び出しだけ記録する
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const { POST } = await import('@/app/api/webhooks/stripe/route');
+    const res = await POST(
+      makeRequest({
+        type: 'customer.subscription.updated',
+        data: {
+          object: {
+            id: 'sub_1',
+            customer: 'cus_1',
+            // status は有効なまま (= 解約ではない)。ここが「無言の降格」の分かれ目
+            status: 'active',
+            items: { data: [{ price: { id: 'price_unknown' } }] },
+            metadata: { tenantId: TENANT },
+          },
+        },
+      }),
+    );
+    expect(res.status).toBe(200);
+    // 安全側の降格自体は維持する (未知の Price ID で Pro 権限を持たせ続けない)
+    const tenant = store.tenants.get(TENANT)!;
+    expect(tenant.subscriptionPlan).toBe('free');
+    expect(tenant.mode).toBe('lite');
+    // 原因の切り分けに要る値がログに載っていること (顧客名・メール等の個人情報は載せない)
+    const call = errorSpy.mock.calls.find((args) =>
+      String(args[0]).includes('Price ID がどのプランにも一致しません'),
+    );
+    expect(call, '未知の Price ID を知らせる error ログが出ていない').toBeDefined();
+    expect(call![1]).toEqual({
+      tenantId: TENANT,
+      subscriptionId: 'sub_1',
+      status: 'active',
+      priceId: 'price_unknown',
+    });
+    errorSpy.mockRestore();
+  });
+
+  // 正規の解約 (status が有効でない) は異常ではないので、上のログを出してはいけない。
+  // ここが無いと「free になったら常に error」という実装に退行しても気付けず、
+  // 本当に異常なときのログが日常のノイズに埋もれる
+  it('正規の解約による free 降格では未知 Price ID の error ログを出さない', async () => {
+    seedTenant('pro', 'pro');
+    planForNextCall.current = 'free';
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const { POST } = await import('@/app/api/webhooks/stripe/route');
+    const res = await POST(
+      makeRequest({
+        type: 'customer.subscription.updated',
+        data: {
+          object: {
+            id: 'sub_1',
+            customer: 'cus_1',
+            // 支払い遅延で失効した状態 (= 有効な status ではない)
+            status: 'canceled',
+            items: { data: [{ price: { id: 'price_pro' } }] },
+            metadata: { tenantId: TENANT },
+          },
+        },
+      }),
+    );
+    expect(res.status).toBe(200);
+    // 降格は起きるが、異常を知らせるログは出ない
+    expect(store.tenants.get(TENANT)!.subscriptionPlan).toBe('free');
+    expect(
+      errorSpy.mock.calls.some((args) =>
+        String(args[0]).includes('Price ID がどのプランにも一致しません'),
+      ),
+    ).toBe(false);
+    errorSpy.mockRestore();
   });
 
   // 既に Lite モードのテナントがダウングレードしても、mode は変更不要 (既に lite) のまま

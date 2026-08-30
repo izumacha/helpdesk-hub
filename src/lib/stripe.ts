@@ -64,16 +64,34 @@ export function getStripeWebhookSecret(): string {
   return secret;
 }
 
+// Stripe のサブスクリプション status が「課金が有効」と言える状態かを判定するヘルパー。
+// active (支払い済み) と trialing (試用期間中) だけを有効とみなし、past_due / canceled /
+// incomplete などはすべて無効として扱う。
+//
+// なぜ独立した関数にしているか: この「有効な状態とは何か」という規則は
+// stripeStatusToPlan (プラン判定) と Webhook ルート (未知の Price ID の検知) の
+// 2 か所で必要になる。片方に書き写すと、規則を変えたときにもう片方だけ古いままになり、
+// 「有効なはずのサブスクを無効と誤判定する」形で黙ってずれる (§6 DRY)。
+export function isActiveSubscriptionStatus(status: string): boolean {
+  // active か trialing のどちらかであれば課金が有効な状態とみなす
+  return status === 'active' || status === 'trialing';
+}
+
 // Stripe のサブスクリプション status 文字列を SubscriptionPlan にマップするヘルパー
 // Stripe Webhook の customer.subscription.updated / deleted イベントで使用する。
 // 戻り値に 'enterprise' は含めない: Enterprise は個別見積で Stripe チェックアウトを経由せず
 // 運用が手動設定するため、Stripe イベント経由でこのプランへ昇格/降格させることはない。
+//
+// なお「有効なサブスクなのに free になった」= Price ID が空か未知、という異常は
+// この関数からは区別できない (戻り値がどちらも 'free' のため)。呼び出し側で検知して
+// ログに出す責務があり、Webhook ルートの handleSubscriptionUpsert がそれを行う。
+// ここに console を持ち込まないのは、この関数を純粋関数のまま保つため (§10 / テスト容易性)。
 export function stripeStatusToPlan(
   status: string,
   priceId: string,
 ): 'free' | 'standard' | 'pro' {
   // サブスク status が有効 (active | trialing) のときだけプランを昇格する
-  if (status !== 'active' && status !== 'trialing') {
+  if (!isActiveSubscriptionStatus(status)) {
     // キャンセル・支払い遅延 (past_due | canceled 等) は free に降格
     return 'free';
   }
