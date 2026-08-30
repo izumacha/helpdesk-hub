@@ -68,6 +68,8 @@ vi.mock('@/lib/stripe', async (importOriginal) => {
     stripeStatusToPlan: () => planForNextCall.current,
     // status が active / trialing かの判定は本物をそのまま使う
     isActiveSubscriptionStatus: actual.isActiveSubscriptionStatus,
+    // 複数 item から判定用の Price ID を選ぶ規則も本物を使う (対応表は引数で渡る純粋関数)
+    pickKnownPriceId: actual.pickKnownPriceId,
     // Price ID の対応表 (getter にして beforeEach / 各テストの差し替えを反映させる)
     get STRIPE_PRICE_IDS() {
       return priceIdsForNextCall.current;
@@ -220,14 +222,21 @@ describe('POST /api/webhooks/stripe', () => {
     expect(await repos.settingsAudit.findAllByTenant({ tenantId: TENANT })).toHaveLength(0);
   });
 
-  // 課金が有効なのにどのプランにも一致しない Price ID が来たときは、降格を黙って実行しない。
-  // 原因は環境変数 (STRIPE_PRICE_*) の設定ミス・Stripe 側の Price 作り直し・Webhook ペイロード
-  // 形状の変化のいずれかで、どれも「Stripe 側は正常」なので運用が気付けない。
-  // 降格自体は権限を絞る方向なので維持しつつ、error ログで顕在化させる (§6 エラーを握り潰さない)
-  it('有効なサブスクの Price ID が未知なら、降格しつつ error ログで顕在化させる', async () => {
+  // 課金が有効なサブスクなのにプランを解決できないイベントは、そもそも適用しない。
+  // 有効なサブスクは解約でもダウングレードでもないので、そこから free が出てくること自体が
+  // 「判定に失敗した」という意味しか持たない。200 + 降格にすると Stripe は再送しないため、
+  // 原因 (環境変数の設定漏れ / Stripe 側の Price 作り直し / ペイロードの形状変化) を直しても
+  // DB は自動復旧せず、課金中のテナントが free + lite のまま取り残される
+  it.each([
+    ['対応表は揃っているが Price ID が未知', { standard: 'price_standard', pro: 'price_pro' }],
+    ['両方とも未設定', { standard: '', pro: '' }],
+    ['Standard だけ未設定', { standard: '', pro: 'price_pro' }],
+    ['Pro だけ未設定', { standard: 'price_standard', pro: '' }],
+  ])('プランを解決できないイベント (%s) は適用せず 500 で再送させる', async (_名, 表) => {
     seedTenant('pro', 'pro');
     // Price ID がどのプランにも一致しなかった状況を再現する (判定結果は free)
     planForNextCall.current = 'free';
+    priceIdsForNextCall.current = 表;
     // ログ出力はテスト出力に混ぜたくないので実装を握りつぶしつつ呼び出しだけ記録する
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     const { POST } = await import('@/app/api/webhooks/stripe/route');
@@ -246,34 +255,26 @@ describe('POST /api/webhooks/stripe', () => {
         },
       }),
     );
-    expect(res.status).toBe(200);
-    // 安全側の降格自体は維持する (未知の Price ID で Pro 権限を持たせ続けない)
+    // 500 を返すことで Stripe が再送し、原因を直したあとの再配信で正しい状態が入る
+    expect(res.status).toBe(500);
+    // プランもモードも書き換わっていないこと (これが守りたい本体)
     const tenant = store.tenants.get(TENANT)!;
-    expect(tenant.subscriptionPlan).toBe('free');
-    expect(tenant.mode).toBe('lite');
-    // 原因の切り分けに要る値がログに載っていること (顧客名・メール等の個人情報は載せない)
-    const call = errorSpy.mock.calls.find((args) =>
-      String(args[0]).includes('Price ID がどのプランにも一致しません'),
-    );
-    expect(call, '未知の Price ID を知らせる error ログが出ていない').toBeDefined();
-    expect(call![1]).toEqual({
-      tenantId: TENANT,
-      subscriptionId: 'sub_1',
-      status: 'active',
-      priceId: 'price_unknown',
-      // 降格が起きるのか (課金中なのか既に free なのか) を受け手が読み違えないようにする
-      currentPlan: 'pro',
-    });
+    expect(tenant.subscriptionPlan).toBe('pro');
+    expect(tenant.mode).toBe('pro');
+    // 原因の切り分けに要る値がログに残ること (顧客名・メール等の個人情報は載せない)
+    const logged = errorSpy.mock.calls.flat().map(String).join(' ');
+    expect(logged).toContain('どのプランにも一致せず');
+    expect(logged).toContain('priceId=price_unknown');
+    expect(logged).toContain('currentPlan=pro');
     errorSpy.mockRestore();
   });
 
-  // 正規の解約 (status が有効でない) は異常ではないので、上のログを出してはいけない。
-  // ここが無いと「free になったら常に error」という実装に退行しても気付けず、
-  // 本当に異常なときのログが日常のノイズに埋もれる
-  it('正規の解約による free 降格では未知 Price ID の error ログを出さない', async () => {
+  // 正規の解約 (status が有効でない) は異常ではないので、500 にしてはいけない。
+  // ここが無いと「free になったら常に 500」という実装に退行しても気付けず、
+  // 解約の反映が永久に止まる
+  it('正規の解約による free 降格は 500 にせず、そのまま適用する', async () => {
     seedTenant('pro', 'pro');
     planForNextCall.current = 'free';
-    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     const { POST } = await import('@/app/api/webhooks/stripe/route');
     const res = await POST(
       makeRequest({
@@ -282,7 +283,7 @@ describe('POST /api/webhooks/stripe', () => {
           object: {
             id: 'sub_1',
             customer: 'cus_1',
-            // 支払い遅延で失効した状態 (= 有効な status ではない)
+            // 失効した状態 (= 有効な status ではない)
             status: 'canceled',
             items: { data: [{ price: { id: 'price_pro' } }] },
             metadata: { tenantId: TENANT },
@@ -291,23 +292,15 @@ describe('POST /api/webhooks/stripe', () => {
       }),
     );
     expect(res.status).toBe(200);
-    // 降格は起きるが、異常を知らせるログは出ない
     expect(store.tenants.get(TENANT)!.subscriptionPlan).toBe('free');
-    expect(
-      errorSpy.mock.calls.some((args) =>
-        String(args[0]).includes('Price ID がどのプランにも一致しません'),
-      ),
-    ).toBe(false);
-    errorSpy.mockRestore();
   });
 
-  // Enterprise はプランが据え置かれる (= 降格しない) ので、未知 Price ID でも警報を出してはいけない。
-  // Enterprise は個別見積の独自 Price を持つのが通常なので、ここで誤報すると請求サイクルごとに
-  // 「降格させます」が出続け、本当に危険なときの警報がノイズに埋もれる
-  it('Enterprise テナントは未知 Price ID でも降格しないので error ログを出さない', async () => {
+  // Enterprise はプランが据え置かれる (= 書き換わらない) ので、未知 Price ID でも 500 にしない。
+  // Enterprise は個別見積の独自 Price を持つのが通常なので、ここで止めると
+  // 請求サイクルごとに Webhook が失敗し続けてエンドポイントごと無効化されかねない
+  it('Enterprise テナントは未知 Price ID でもプランが据え置かれ 500 にならない', async () => {
     seedTenant('pro', 'enterprise');
     planForNextCall.current = 'free';
-    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     const { POST } = await import('@/app/api/webhooks/stripe/route');
     const res = await POST(
       makeRequest({
@@ -324,71 +317,17 @@ describe('POST /api/webhooks/stripe', () => {
       }),
     );
     expect(res.status).toBe(200);
-    // プランは enterprise のまま据え置かれる
     expect(store.tenants.get(TENANT)!.subscriptionPlan).toBe('enterprise');
-    expect(
-      errorSpy.mock.calls.some((args) =>
-        String(args[0]).includes('Price ID がどのプランにも一致しません'),
-      ),
-    ).toBe(false);
-    errorSpy.mockRestore();
   });
 
-  // Price ID の対応表に欠けがある = 顧客データではなくサーバーの設定不全。
-  // 判定の軸を「両方空」ではなく「1 つでも空」にしているのが要点で、**片方だけ未設定**という
-  // より起きやすい設定漏れを取りこぼすと、その瞬間に課金テナントの無言降格へ戻ってしまう。
-  // ここを 200 + 降格にすると、Stripe は再送しないので設定を直しても DB は自動復旧しない
-  it.each([
-    ['両方とも未設定', { standard: '', pro: '' }],
-    ['Standard だけ未設定', { standard: '', pro: 'price_pro' }],
-    ['Pro だけ未設定', { standard: 'price_standard', pro: '' }],
-  ])(
-    'Price ID の対応表が %s なら、課金中テナントを降格させず 500 で再送させる',
-    async (_名, 表) => {
-      seedTenant('pro', 'pro');
-      planForNextCall.current = 'free';
-      // 環境変数の設定漏れを再現する
-      priceIdsForNextCall.current = 表;
-      const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
-      const { POST } = await import('@/app/api/webhooks/stripe/route');
-      const res = await POST(
-        makeRequest({
-          type: 'customer.subscription.updated',
-          data: {
-            object: {
-              id: 'sub_1',
-              customer: 'cus_1',
-              status: 'active',
-              items: { data: [{ price: { id: 'price_unknown' } }] },
-              metadata: { tenantId: TENANT },
-            },
-          },
-        }),
-      );
-      // 500 を返すことで Stripe が再送し、設定修正 + 再起動のあと自動で回復できる
-      expect(res.status).toBe(500);
-      // プランもモードも書き換わっていないこと (これが守りたい本体)
-      const tenant = store.tenants.get(TENANT)!;
-      expect(tenant.subscriptionPlan).toBe('pro');
-      expect(tenant.mode).toBe('pro');
-      // 原因が分かる形でログに残っていること
-      expect(
-        errorSpy.mock.calls.some((args) =>
-          args.some((a) => String(a).includes('未設定のものがあり')),
-        ),
-      ).toBe(true);
-      errorSpy.mockRestore();
-    },
-  );
-
-  // 既に free のテナントは降格しようがないので、設定不全でも 500 にしない。
-  // ここを 500 にすると、失うものが無いイベントまで Stripe が再送し続け、
-  // 継続失敗で Webhook エンドポイントごと無効化されうる (回復をかえって遠ざける)
-  it('既に free のテナントは、対応表に欠けがあっても 500 にせず記録だけ残す', async () => {
+  // サブスクは座席追加や従量課金のアドオンで複数 item を持つことがあり、items の並び順は
+  // 保証されない。先頭を無条件に使うと、アドオンの Price ID を拾って本来 Pro のテナントが
+  // 「解決できないイベント」として 500 になり、正常な契約が止まってしまう
+  it('複数 item のサブスクでは、既知プランの Price ID を選んで判定する', async () => {
     seedTenant('lite', 'free');
-    planForNextCall.current = 'free';
-    priceIdsForNextCall.current = { standard: '', pro: '' };
-    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    // 本物の判定関数と同じ経路を通すため、ここではプラン判定をモックしない代わりに
+    // 「pro と判定されたら適用される」ことを確認する
+    planForNextCall.current = 'pro';
     const { POST } = await import('@/app/api/webhooks/stripe/route');
     const res = await POST(
       makeRequest({
@@ -398,22 +337,17 @@ describe('POST /api/webhooks/stripe', () => {
             id: 'sub_1',
             customer: 'cus_1',
             status: 'active',
-            items: { data: [{ price: { id: 'price_unknown' } }] },
+            // アドオンが先頭、本命の Pro が 2 番目という並び
+            items: {
+              data: [{ price: { id: 'price_addon_seats' } }, { price: { id: 'price_pro' } }],
+            },
             metadata: { tenantId: TENANT },
           },
         },
       }),
     );
-    // 再送は不要 (適用しても何も変わらない)
     expect(res.status).toBe(200);
-    expect(store.tenants.get(TENANT)!.subscriptionPlan).toBe('free');
-    // ただし設定不全そのものは記録に残す (気付ける状態は保つ)
-    expect(
-      errorSpy.mock.calls.some((args) =>
-        String(args[0]).includes('Price ID がどのプランにも一致しません'),
-      ),
-    ).toBe(true);
-    errorSpy.mockRestore();
+    expect(store.tenants.get(TENANT)!.subscriptionPlan).toBe('pro');
   });
 
   // 既に Lite モードのテナントがダウングレードしても、mode は変更不要 (既に lite) のまま

@@ -52,6 +52,28 @@ export const STRIPE_PRICE_IDS = {
   pro: process.env.STRIPE_PRICE_PRO ?? '',
 } as const;
 
+// サブスクリプションに含まれる Price ID 群から、プラン判定に使う 1 件を選ぶヘルパー。
+//
+// なぜ「先頭の 1 件」で済ませないのか: Stripe のサブスクリプションは複数の item を持てる
+// (座席の追加購入・従量課金のアドオン等)。items の並び順は保証されないので、先頭を無条件に
+// 使うとアドオンの Price ID を拾ってしまい、本来 Pro のテナントが「未知の Price ID」として
+// 扱われる。既知のプランに対応する ID を優先して探し、無ければ先頭を返す
+// (見つからない場合も素の値を返すのは、原因調査でどの ID が来ていたかを見せるため)。
+//
+// 対応表 (knownPriceIds) をモジュール内の STRIPE_PRICE_IDS から読まず引数で受け取るのは、
+// この関数を純粋関数に保ち、ユニットテストから対応表を差し替えられるようにするため。
+export function pickKnownPriceId(
+  priceIds: readonly string[],
+  knownPriceIds: { readonly standard: string; readonly pro: string },
+): string {
+  // 既知のプラン (pro / standard) に一致する ID を探す。空文字は対応表未設定の目印なので除外する
+  const known = priceIds.find(
+    (id) => id !== '' && (id === knownPriceIds.pro || id === knownPriceIds.standard),
+  );
+  // 見つかればそれを、無ければ先頭 (それも無ければ空文字) を返す
+  return known ?? priceIds[0] ?? '';
+}
+
 // Stripe Webhook の署名検証に使う Endpoint Secret (Webhook 設定画面で発行)
 // リクエスト本文が Stripe から送られたものと同一かを HMAC 署名で検証するために必要
 export function getStripeWebhookSecret(): string {

@@ -11,7 +11,6 @@
 // 環境変数について:
 //   `STRIPE_PRICE_IDS` はモジュール読み込み時に `process.env` を読むので、
 //   import より前に値を入れておく必要がある（後から差し替えても反映されない）。
-
 //   ただし vitest はモジュールレジストリこそファイル単位で分けるが `process.env` は
 //   ワーカープロセスで共有されるため、素の代入だと**後続のテストファイルへ漏れる**。
 //   実行順で緑にも赤にもなる検出網を作らないよう、`vi.stubEnv` で入れて最後に必ず戻す。
@@ -23,7 +22,11 @@ vi.stubEnv('STRIPE_PRICE_STANDARD', 'price_standard_test');
 vi.stubEnv('STRIPE_PRICE_PRO', 'price_pro_test');
 
 // 環境変数を入れ終えてから読み込む（静的 import だと巻き上げで先に評価されてしまう）
-const { isActiveSubscriptionStatus, stripeStatusToPlan } = await import('@/lib/stripe');
+const { isActiveSubscriptionStatus, pickKnownPriceId, stripeStatusToPlan } =
+  await import('@/lib/stripe');
+
+// pickKnownPriceId に渡す対応表 (この関数は純粋関数で、対応表を引数で受け取る)
+const 対応表 = { standard: 'price_standard_test', pro: 'price_pro_test' } as const;
 
 // 差し替えた環境変数を元へ戻し、同じワーカーで動く後続のテストファイルへ持ち越さない
 afterAll(() => {
@@ -72,5 +75,39 @@ describe('stripeStatusToPlan', () => {
   // 異常としてログに出す責務を持つ — その挙動は tests/features/stripe-webhook-route.test.ts が固定する
   it('未知の Price ID は free を返す（安全側のフォールバック）', () => {
     expect(stripeStatusToPlan('active', 'price_not_configured')).toBe('free');
+  });
+});
+
+describe('pickKnownPriceId', () => {
+  // サブスクは座席追加や従量課金のアドオンで複数 item を持ち、items の並び順は保証されない。
+  // 先頭を無条件に使うと、アドオンの ID を拾って本来 Pro の契約を「解決できない」と誤判定する
+  it('既知プランの Price ID を、並び順によらず選ぶ', () => {
+    expect(pickKnownPriceId(['price_addon', 'price_pro_test'], 対応表)).toBe('price_pro_test');
+  });
+
+  // 既知の ID が複数あるときは最初に見つかったものを使う (判定が並び順で揺れないことの確認)
+  it('既知プランの Price ID が複数あれば先に現れた方を選ぶ', () => {
+    expect(pickKnownPriceId(['price_standard_test', 'price_pro_test'], 対応表)).toBe(
+      'price_standard_test',
+    );
+  });
+
+  // 一致するものが無ければ先頭を返す。素の値を返すのは、原因調査でどの ID が来ていたかを
+  // ログに見せるため (ここで空文字に潰すと調査の手がかりが消える)
+  it('既知プランに一致しなければ先頭の Price ID を返す', () => {
+    expect(pickKnownPriceId(['price_unknown_a', 'price_unknown_b'], 対応表)).toBe(
+      'price_unknown_a',
+    );
+  });
+
+  // 対応表が未設定 (空文字) のとき、空文字同士が一致して「既知」と誤判定しないこと。
+  // ここが崩れると未設定の環境で任意の空 Price ID がプラン扱いされる
+  it('対応表が未設定でも空文字を既知として扱わない', () => {
+    expect(pickKnownPriceId(['', 'price_x'], { standard: '', pro: '' })).toBe('');
+  });
+
+  // items が空 (ペイロード欠落) でも例外にせず空文字へ倒す
+  it('Price ID が 1 つも無ければ空文字を返す', () => {
+    expect(pickKnownPriceId([], 対応表)).toBe('');
   });
 });
