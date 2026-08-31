@@ -28,10 +28,16 @@
 //     (a)  SDK の申告するメジャー版が想定どおりか    … 破壊的変更の入口で落とす
 //     (a') SDK 内部で版とメジャー版が整合しているか   … 申告どうしの食い違いを検出する
 //     (b0') stripe を実行時に import するファイルが 1 つか … SDK に触れる範囲を閉じ込める
+//     (b0'') 所有モジュールが SDK クラスを再公開していないか … 束縛の横流しを防ぐ
 //     (b0) Stripe の生成箇所が src 全体で 1 つか      … 生成箇所の増殖を検出する
 //     (b)  実行時チェックが生成経路に配線されているか … 検査ごと外されるのを防ぐ
 //     (b') 配線された版が SDK の申告値と一致するか    … 実行時チェックごと通ることを確かめる
 //     (c)  日付入りリテラルが復活していないか         … 手書きの写しへの逆戻りを防ぐ
+//
+//   加えて (d) として、**実行時チェックそのものの挙動**もこのファイルで固定する。
+//   上の (a)〜(c) が静的な性質だけを見るのに対し、(d) は `assertApiVersionSupported` を
+//   直接呼んで「止めるべきものを止めるか / 止めてはいけないものを通すか」を確かめる。
+//   役割分担の要 (値の妥当性は実行時チェックが担う) が無検証だと、検出網の中心が空洞になるため。
 //
 //   (b0')(b0) は実行時チェックの守備範囲外。**2 つ目のクライアント**は
 //   `getStripeClient()` を通らないので、いくら実行時チェックを強くしても見えない。
@@ -54,7 +60,11 @@ import ts from 'typescript';
 // 検査の基準となる SDK 本体 (API_VERSION / MAJOR_API_VERSION を読む)
 import Stripe from 'stripe';
 // 検査対象のモジュールが公開している、想定メジャー版とクライアント生成関数
-import { EXPECTED_STRIPE_MAJOR_API_VERSION, getStripeClient } from '@/lib/stripe';
+import {
+  assertApiVersionSupported,
+  EXPECTED_STRIPE_MAJOR_API_VERSION,
+  getStripeClient,
+} from '@/lib/stripe';
 // src の走査範囲・構文木化は検出網どうしで共有する (tests/entry-body-limit.test.ts と同じ土台)
 import { SRC_DIR, parseSourceFiles, visitNodes } from './lib/source-module-graph';
 
@@ -74,11 +84,13 @@ const STRIPE_MODULE_PATH = path.join(SRC_DIR, 'lib', 'stripe.ts');
 // 引き換えに受け入れている (値が使えるかどうかは実行時チェックが別に見ている)。
 const DATED_VERSION_PATTERN = /\d{4}-\d{2}-\d{2}\./;
 
-// 本番モジュール側の実行時チェックの関数名 ((b) がこの呼び出しの存在を確かめる)
-const RUNTIME_ASSERT_NAME = 'assertApiVersionSupported';
+// 本番モジュール側の実行時チェックの関数名 ((b) がこの呼び出しの存在を確かめる)。
+// 文字列を書き写さず import した関数から導出する — 写しにすると、本体を改名したときに
+// ここが古い名前のまま残り、「配線されていない」と誤って落ちる (§6 写しを持たない)
+const RUNTIME_ASSERT_NAME = assertApiVersionSupported.name;
 
-// クライアントを生成してよい唯一の入口の関数名 ((b) が生成箇所をここに固定する)
-const CLIENT_FACTORY_NAME = 'getStripeClient';
+// クライアントを生成してよい唯一の入口の関数名 ((b) が生成箇所をここに固定する)。同上の理由で導出する
+const CLIENT_FACTORY_NAME = getStripeClient.name;
 
 // 走査したソースの構文木。**1 回だけ読んで全テストで使い回す**
 // (テストごとに読み直すと同じ I/O と解析を繰り返すうえ、走査中にファイルが書き換わると
@@ -391,11 +403,6 @@ describe('Stripe API バージョンのガード', () => {
   });
 
   // (b0') SDK に実行時に触れられるファイルを 1 つに閉じ込める。
-  //      **実行時チェックの守備範囲外**なのでここで見る — 2 つ目のクライアントは
-  //      `getStripeClient()` を通らないため、いくら実行時チェックを強くしても見えない。
-  //      古いメジャーへピン留めした 2 つ目が黙って入るのを防ぐ。
-  //      0 件 (検出網が対象を見失った) と 2 件以上の両方を fail-closed で落とす
-  // (b0') SDK に実行時に触れられるファイルを 1 つに閉じ込める。
   //       生成箇所の走査は「そのファイルが stripe をどの名前で import したか」を解決してから
   //       `new` を探すため、束縛が別モジュール経由で渡ってくる形 (再エクスポート・
   //       `import = require` ・動的 import) が見えない。**クライアントを作るには何らかの経路で
@@ -596,5 +603,52 @@ describe('Stripe API バージョンのガード', () => {
   //     迂回できてしまう (実測で確認済み) ので、範囲は src 全体にする
   it('ソースに日付入りの API バージョンリテラルが直書きされていない', () => {
     expect(collectDatedVersionLiterals()).toEqual([]);
+  });
+});
+
+// (d) **実行時チェックそのものの挙動**を固定する。
+//     上の (b) 群は「呼び出しが配線されているか」を名前で照合するだけなので、
+//     `assertApiVersionSupported` の**中身**は 1 件も検証されていなかった。実際、本体を
+//     `void apiVersion;` に空にしても typecheck・lint・全テストが緑のまま通る状態だった
+//     (実測)。このファイル冒頭が「値の妥当性は実行時チェックが担う」と役割分担を宣言している
+//     以上、その担い手が無検証なのは検出網の中心に空いた穴にあたる。
+//
+//     ここで見るのは「止めるべきものを止めるか」と「止めてはいけないものを通すか」の両方。
+//     後者が無いと、常に throw する実装 (= 課金機能が丸ごと使えない) でも緑になってしまう。
+describe('API バージョンの実行時チェックの挙動', () => {
+  // 値を解決できない場合は止める。版を固定できていない状態で課金 API を話し始めない
+  it.each([
+    ['undefined (指定なし)', undefined],
+    ['空文字', ''],
+  ])('%s なら例外にする', (_label, apiVersion) => {
+    expect(() => assertApiVersionSupported(apiVersion)).toThrow(/API バージョンを解決できません/);
+  });
+
+  // 想定と違うメジャーは止める。破壊的変更を含みうる版で黙って話し始めないため
+  it('想定と違うメジャー版なら例外にする', () => {
+    expect(() => assertApiVersionSupported('2027-01-01.elderflower')).toThrow(
+      new RegExp(`メジャー版が想定 \\(${EXPECTED_STRIPE_MAJOR_API_VERSION}\\) と異なります`),
+    );
+  });
+
+  // メジャー名が「部分一致」しただけの版も別物として止める。区切りのドットを見ずに
+  // 含まれるかだけで判定すると、`dahlia2` のような別メジャーを取り違えて通してしまう
+  it('メジャー名が途中に含まれるだけの版も例外にする', () => {
+    expect(() =>
+      assertApiVersionSupported(`2027-01-01.${EXPECTED_STRIPE_MAJOR_API_VERSION}2`),
+    ).toThrow(/メジャー版が想定/);
+  });
+
+  // 想定どおりのメジャーなら通す。ここが無いと「常に throw する」実装でも上の 3 件は緑になる
+  it('想定どおりのメジャー版なら例外にしない', () => {
+    expect(() =>
+      assertApiVersionSupported(`2026-07-29.${EXPECTED_STRIPE_MAJOR_API_VERSION}`),
+    ).not.toThrow();
+  });
+
+  // 実際に同梱されている SDK の申告値が通ること。定数と SDK がずれていれば (a) が落ちるが、
+  // 「実行時チェックを通り抜けられる値なのか」はこちらでしか確かめられない
+  it('同梱されている SDK の API バージョンは実行時チェックを通る', () => {
+    expect(() => assertApiVersionSupported(Stripe.API_VERSION)).not.toThrow();
   });
 });

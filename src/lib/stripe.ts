@@ -69,8 +69,15 @@ declare global {
  * export だけを import する経路を巻き添えで落とさないため (現時点ではそういう利用者は無く、
  * `@/lib/stripe` の import 元 3 つ — Webhook ルート / チェックアウト / 顧客ポータル — は
  * いずれも `getStripeClient()` を呼ぶ。つまり**今はどの経路もこの検査を通る**)。
+ *
+ * **export しているのはテストから直接呼ぶため。** ガードのテストは「呼び出しが配線されているか」を
+ * 名前で照合するだけなので、この関数の**中身**は誰も検証していなかった — 実際、本体を
+ * `void apiVersion;` に空にしても typecheck・lint・全 1509 テストが緑のまま通る状態だった。
+ * 役割分担の要 (値の妥当性はテストではなくこの実行時チェックが担保する) が、いちばん検証されて
+ * いないという逆転が起きていたので、挙動そのものを固定できるように外へ出している。
+ * 本番の呼び出し元は下の `getStripeClient()` だけで、外部から呼ぶことは想定していない。
  */
-function assertApiVersionSupported(apiVersion: string | undefined): void {
+export function assertApiVersionSupported(apiVersion: string | undefined): void {
   // 値が空 (指定なし・undefined 相当) なら、版を固定できていないので止める
   if (!apiVersion) {
     throw new Error(
