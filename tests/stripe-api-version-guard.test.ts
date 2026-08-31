@@ -54,7 +54,11 @@ import ts from 'typescript';
 // 検査の基準となる SDK 本体 (API_VERSION / MAJOR_API_VERSION を読む)
 import Stripe from 'stripe';
 // 検査対象のモジュールが公開している、想定メジャー版とクライアント生成関数
-import { EXPECTED_STRIPE_MAJOR_API_VERSION, getStripeClient } from '@/lib/stripe';
+import {
+  assertApiVersionSupported,
+  EXPECTED_STRIPE_MAJOR_API_VERSION,
+  getStripeClient,
+} from '@/lib/stripe';
 // src の走査範囲・構文木化は検出網どうしで共有する (tests/entry-body-limit.test.ts と同じ土台)
 import { SRC_DIR, parseSourceFiles, visitNodes } from './lib/source-module-graph';
 
@@ -596,5 +600,52 @@ describe('Stripe API バージョンのガード', () => {
   //     迂回できてしまう (実測で確認済み) ので、範囲は src 全体にする
   it('ソースに日付入りの API バージョンリテラルが直書きされていない', () => {
     expect(collectDatedVersionLiterals()).toEqual([]);
+  });
+});
+
+// (c) **実行時チェックそのものの挙動**を固定する。
+//     上の (b) 群は「呼び出しが配線されているか」を名前で照合するだけなので、
+//     `assertApiVersionSupported` の**中身**は 1 件も検証されていなかった。実際、本体を
+//     `void apiVersion;` に空にしても typecheck・lint・全テストが緑のまま通る状態だった
+//     (実測)。このファイル冒頭が「値の妥当性は実行時チェックが担う」と役割分担を宣言している
+//     以上、その担い手が無検証なのは検出網の中心に空いた穴にあたる。
+//
+//     ここで見るのは「止めるべきものを止めるか」と「止めてはいけないものを通すか」の両方。
+//     後者が無いと、常に throw する実装 (= 課金機能が丸ごと使えない) でも緑になってしまう。
+describe('API バージョンの実行時チェックの挙動', () => {
+  // 値を解決できない場合は止める。版を固定できていない状態で課金 API を話し始めない
+  it.each([
+    ['undefined (指定なし)', undefined],
+    ['空文字', ''],
+  ])('%s なら例外にする', (_label, apiVersion) => {
+    expect(() => assertApiVersionSupported(apiVersion)).toThrow(/API バージョンを解決できません/);
+  });
+
+  // 想定と違うメジャーは止める。破壊的変更を含みうる版で黙って話し始めないため
+  it('想定と違うメジャー版なら例外にする', () => {
+    expect(() => assertApiVersionSupported('2027-01-01.elderflower')).toThrow(
+      new RegExp(`メジャー版が想定 \\(${EXPECTED_STRIPE_MAJOR_API_VERSION}\\) と異なります`),
+    );
+  });
+
+  // メジャー名が「部分一致」しただけの版も別物として止める。区切りのドットを見ずに
+  // 含まれるかだけで判定すると、`dahlia2` のような別メジャーを取り違えて通してしまう
+  it('メジャー名が途中に含まれるだけの版も例外にする', () => {
+    expect(() =>
+      assertApiVersionSupported(`2027-01-01.${EXPECTED_STRIPE_MAJOR_API_VERSION}2`),
+    ).toThrow(/メジャー版が想定/);
+  });
+
+  // 想定どおりのメジャーなら通す。ここが無いと「常に throw する」実装でも上の 3 件は緑になる
+  it('想定どおりのメジャー版なら例外にしない', () => {
+    expect(() =>
+      assertApiVersionSupported(`2026-07-29.${EXPECTED_STRIPE_MAJOR_API_VERSION}`),
+    ).not.toThrow();
+  });
+
+  // 実際に同梱されている SDK の申告値が通ること。定数と SDK がずれていれば (a) が落ちるが、
+  // 「実行時チェックを通り抜けられる値なのか」はこちらでしか確かめられない
+  it('同梱されている SDK の API バージョンは実行時チェックを通る', () => {
+    expect(() => assertApiVersionSupported(Stripe.API_VERSION)).not.toThrow();
   });
 });
