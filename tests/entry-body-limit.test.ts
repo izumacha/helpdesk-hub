@@ -26,12 +26,17 @@
 // Vitest の DSL
 import { beforeAll, describe, expect, it } from 'vitest';
 // ソースを走査して「上限の定義漏れ」を拾うため (Node 標準の同期 API で十分)
-import { readFileSync, readdirSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 // 構文木でソースを読むためのコンパイラ API (自前の字句解析をしないため)
 import ts from 'typescript';
 // 構文木の生成・走査と import 解決は検出網どうしで共有する (tests/docker-seed-files.test.ts と同じ土台)
-import { parseSourceFile, resolveModuleSpecifier, visitNodes } from './lib/source-module-graph';
+import {
+  SRC_DIR,
+  parseSourceFiles,
+  resolveModuleSpecifier,
+  visitNodes,
+} from './lib/source-module-graph';
 // 入口の枠と、その導出材料 (テスト側に書き写すと古びるので導出元から受け取る)
 import {
   ENTRY_MAX_BODY_BYTES,
@@ -56,8 +61,6 @@ import nextConfig from '../next.config';
 
 // リポジトリのルート (このテストファイルは <root>/tests/ にあるので 1 つ上)
 const REPO_ROOT = join(__dirname, '..');
-// 走査対象のソースディレクトリ
-const SRC_DIR = join(REPO_ROOT, 'src');
 // 導出元 (この一覧に登録されていない上限を落としたい)
 const ENTRY_MODULE_PATH = join(SRC_DIR, 'lib', 'entry-body-limit.ts');
 // 上限つき読み取り関数の定義元 (呼び出し側の検査では対象外にする)
@@ -162,20 +165,6 @@ const NGINX_ROUTE_EXPECTATIONS: {
     routePath: '/api/auth/magic-link/callback',
   },
 ];
-// パス区切り (POSIX/Windows いずれの表記でも同じ判定になるようにする)
-const PATH_SEGMENT_SEPARATORS = ['/', '\\'];
-
-/**
- * 生成物ディレクトリ (`src/generated/`) 配下かどうかを、**パス区切り単位**で判定する。
- *
- * 単純な前方一致にすると `generated-reports/limits.ts` のような別ディレクトリまで
- * 走査対象から外れ、そこに置かれた上限が検出網に入らなくなる。
- */
-function isGeneratedPath(relativePath: string): boolean {
-  // ディレクトリ名がちょうど `generated` で、その直後が区切り文字であることを求める
-  return PATH_SEGMENT_SEPARATORS.some((sep) => relativePath.startsWith(`generated${sep}`));
-}
-
 // 走査したソースファイルのパスと構文木。**1 回だけ読んで全テストで使い回す**
 // (テストごとに読み直すと同じ I/O と解析を 3 倍行ううえ、走査中にファイルが書き換わると
 //  テストごとに見ている対象がずれる)
@@ -194,21 +183,6 @@ let registeredRouteLimitNameList: string[] = [];
 // 挟むだけで名前空間 import 禁止と別名 import 禁止をまとめて迂回できた)。
 // 走査と同じく beforeAll で 1 回だけ組み立てる
 let boundedReadModulePaths = new Set<string>();
-
-/**
- * `src/` 配下の .ts / .tsx を読み込み、構文木にして返す。
- *
- * `.tsx` も見るのは、上限がコンポーネント側 (フォームの事前検査など) に置かれても
- * 検出網から外れないようにするため。
- */
-function parseSourceFiles(): { path: string; sourceFile: ts.SourceFile }[] {
-  // src/ 配下を再帰的にたどり、対象拡張子だけを絶対パスにする (生成物は対象外)
-  const files = readdirSync(SRC_DIR, { recursive: true, encoding: 'utf8' })
-    .filter((rel) => (rel.endsWith('.ts') || rel.endsWith('.tsx')) && !isGeneratedPath(rel))
-    .map((rel) => join(SRC_DIR, rel));
-  // 1 ファイルずつ構文木にして返す
-  return files.map((path) => ({ path, sourceFile: parseSourceFile(path) }));
-}
 
 /**
  * 1 ファイルから、経路上限として **export されている** 定数名をすべて拾う。
