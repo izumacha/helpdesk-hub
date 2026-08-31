@@ -148,6 +148,14 @@ Phase 0 でマルチテナント基盤を入れた際に `prisma/migrations/` �
 
 整合性は `tests/types-node-runtime-alignment.test.ts` が機械的に見張る。見張る対象は 5 つ: (a) 型と実行時のずれ（`package.json` の宣言と `package-lock.json` の解決済み版の**両方**を見る）、(b) 4 か所の食い違い・読み取り不能（前提が崩れるので fail-closed で落とす）、(c) 保留の消失、(d) 効きすぎ（`update-types` の欠落・`versions` の追加・エントリの重複）、(e) 置き場所間違い（別エコシステム・別ディレクトリ）。`dependabot.yml` の読み方は `tests/lib/dependabot-config.ts` に集約し、ESLint 保留のテストと共有している（§6 DRY）。
 
+### Stripe の API バージョンは SDK から導出する（手で書き写さない）
+
+**`src/lib/stripe.ts` の `apiVersion` に日付入りリテラル（`'2026-07-29.dahlia'` 等）を直書きしない。** SDK の型 `Stripe.LatestApiVersion` は「その SDK が生成されたただ 1 つの日付版」を指す**単一のリテラル型**なので、そもそも別の版を書くことは型が許さない。つまり直書きは「版を固定する」働きを最初から持っておらず（実際に版を決めているのは `package.json` / `package-lock.json` でピン留めした **SDK のバージョン**の方）、残る効果は「`stripe` を上げるたびに `npm run typecheck` だけが落ち、`node_modules` の中の値を人が書き写して直す」という手間だけになる。§6 が禁じる「写しを持つ」形そのもので、実際 Dependabot の `stripe` 22.5.0 → 22.6.0（PR #317）が `TS2322` で落ちた。値は `Stripe.API_VERSION`（SDK が申告する定数。型は `LatestApiVersion` と同一）から導出する。
+
+導出にすると「日付が進んでも何も鳴らない」ので、**本当に見張るべき破壊的変更＝メジャー版の切り替わり**を別途固定する。Stripe の API バージョンは `<日付>.<メジャー名>` の形で、**同じメジャー名のあいだは後方互換が保たれる**（日付だけの更新は互換のある変更）。`EXPECTED_STRIPE_MAJOR_API_VERSION`（`src/lib/stripe.ts`）がこのモジュールで唯一「人が手で書く」バージョン値で、Stripe が次のメジャーへ進んだ SDK が入った時点でだけテストが落ち、移行の要否を人が判断する入口になる。**落ちたら移行して定数を更新するのが正しい対応で、テストを緩めるのは誤り。**
+
+整合性は `tests/stripe-api-version-guard.test.ts` が機械的に見張る。見張る対象は 4 つ: (a) SDK の申告するメジャー版が想定どおりか、(a') その想定値が**実際に配線された版の接尾辞と一致する**か（定数を適当な値へ書き換えるだけでガードを無力化できないようにする）、(b) クライアントへ**実際に配線された**版が SDK の申告値と一致するか（定数どうしの比較＝トートロジーにしない）、(c) ソースに日付入りリテラルが復活していないか（現在は正しい値でも、次の bump で必ず壊れる潜在的な写しなので落とす）。(c) はコメントを除いたコード部分だけを走査するため、除去が効きすぎて**検査が空振りで緑になる**ことがないよう、走査対象に `Stripe.API_VERSION` が残っていることを先に確かめる（判定とは独立な手がかりで検出網の生存を見張る）。
+
 ### 規約の補足
 
 - Prettier: 100 col / single quotes / 2-space / trailing commas "all"、`prettier-plugin-tailwindcss` がクラス順を整える。

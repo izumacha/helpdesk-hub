@@ -5,10 +5,30 @@
 // Stripe SDK をインポート (npm install stripe 済み)
 import Stripe from 'stripe';
 
-// Stripe の API バージョン (後方互換を固定するため定数化)
-// Stripe は定期的に API バージョンを更新するため、明示固定して意図しない挙動変化を防ぐ
-// インストール済み stripe SDK が対応するバージョンに合わせる (npm ls stripe で確認)
-const STRIPE_API_VERSION = '2026-07-29.dahlia' as const;
+// Stripe API の「メジャー版」。Stripe の API バージョンは `<日付>.<メジャー名>` という形をしていて、
+// **同じメジャー名のあいだは後方互換が保たれる** (日付だけが進む更新は互換のある変更)。
+// 破壊的変更が入るのはメジャー名が変わるときなので、見張るべきなのは日付ではなくこちら。
+//
+// このモジュールで唯一「人が手で書く」バージョン値で、`tests/stripe-api-version-guard.test.ts` が
+// SDK の申告するメジャー版と突き合わせる。Stripe が次のメジャーへ進んだ SDK が Dependabot で
+// 入ってきた時点でそのテストが落ち、移行の要否を人が判断する入口になる (日常の日付更新では鳴らない)。
+export const EXPECTED_STRIPE_MAJOR_API_VERSION = 'dahlia';
+
+// Stripe へ送る API バージョン。**SDK が申告する値をそのまま使い、手で書き写さない。**
+//
+// なぜ日付入りのリテラルを直書きしないのか (以前は直書きしていた):
+//   SDK の型は `apiVersion?: Stripe.LatestApiVersion` で、これは「その SDK が生成された
+//   ただ 1 つの日付版」を指す**単一のリテラル型**。つまり別の版を書くことは型が許さないので、
+//   直書きのリテラルは「版を固定する」働きを最初から持っていなかった。実際に版を決めていたのは
+//   package.json / package-lock.json でピン留めした **SDK のバージョン**の方。
+//   残っていた効果は「stripe を上げるたびに typecheck だけが落ち、node_modules の中の値を人が
+//   書き写して直す」という手間だけで、これは §6 が禁じる「写しを持つ」形そのものだった
+//   (実例: Dependabot の stripe 22.5.0 → 22.6.0 で `npm run typecheck` が TS2322 で落ちた)。
+//
+// 型注釈を省略せず残しているのは、SDK が将来 `API_VERSION` を素の `string` へ広げたときに
+// **この代入で落として気付けるようにする**ため (§9 fail-closed。型が緩んだことに気付かないまま
+// 通すと、上のメジャー版ガードが照合している相手も静かに緩む)。
+const STRIPE_API_VERSION: Stripe.LatestApiVersion = Stripe.API_VERSION;
 
 // Stripe シークレットキーを環境変数から取得する (サーバー側のみで参照 — クライアントに漏らさない)
 function getStripeSecretKey(): string {
@@ -38,7 +58,7 @@ export function getStripeClient(): Stripe {
   if (!global._stripeClient) {
     // 初回のみインスタンスを生成してグローバルにキャッシュ
     global._stripeClient = new Stripe(getStripeSecretKey(), {
-      apiVersion: STRIPE_API_VERSION, // API バージョンを固定して安定性を確保
+      apiVersion: STRIPE_API_VERSION, // SDK の申告値をそのまま渡す (互換性は SDK の版ピンで担保)
     });
   }
   return global._stripeClient;
