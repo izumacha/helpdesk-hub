@@ -65,8 +65,10 @@ declare global {
  * 直結する領域なので、不明なら止める側に倒す (§9 fail-closed。このモジュールが
  * `STRIPE_SECRET_KEY` 未設定でも起動を失敗させているのと同じ扱い)。
  *
- * 生成時にだけ呼ぶ (モジュール読み込み時ではない) のは、`STRIPE_PRICE_IDS` だけを import する
- * 経路 (Webhook ルート等) を巻き添えで落とさないため。
+ * モジュール読み込み時ではなく**生成時に**呼ぶのは、`STRIPE_PRICE_IDS` など SDK を使わない
+ * export だけを import する経路を巻き添えで落とさないため (現時点ではそういう利用者は無く、
+ * `@/lib/stripe` の import 元 3 つ — Webhook ルート / チェックアウト / 顧客ポータル — は
+ * いずれも `getStripeClient()` を呼ぶ。つまり**今はどの経路もこの検査を通る**)。
  */
 function assertApiVersionSupported(apiVersion: string | undefined): void {
   // 値が空 (指定なし・undefined 相当) なら、版を固定できていないので止める
@@ -94,7 +96,7 @@ export function getStripeClient(): Stripe {
     // こうして「実際に渡すオブジェクト」を検査対象にするのが要点で、別の定数に差し替えられても、
     // 後ろのスプレッドで上書きされても、指定ごと消されても、下の検査がその結果を見る。
     // (組み立てずに定数だけを検査すると、渡している値とは別のものを確かめることになる)
-    const clientOptions = {
+    const clientOptions: Stripe.StripeConfig = {
       // SDK の申告値をそのまま渡す (互換性は SDK の版ピンで担保)。
       // **この指定は現時点では送信内容を変えない** — SDK は
       // `version: props.apiVersion || DEFAULT_API_VERSION` で、その既定値が `Stripe.API_VERSION`

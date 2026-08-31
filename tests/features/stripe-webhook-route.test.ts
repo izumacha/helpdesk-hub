@@ -43,6 +43,7 @@ const {
   useRealPlanMapping,
   constructEventSpy,
   stripeConfigBroken,
+  webhookSecretBroken,
 } = vi.hoisted(() => ({
   planForNextCall: { current: 'pro' as 'free' | 'standard' | 'pro' },
   // true にすると stripeStatusToPlan を本物に切り替え、Price ID からの判定経路まで通す
@@ -53,6 +54,9 @@ const {
   // 立てると getStripeClient() が throw する。Stripe の設定不備 (シークレット未設定・
   // API バージョンが想定外) を再現し、署名検証失敗と**別扱い**になることを確かめるために使う
   stripeConfigBroken: { current: false },
+  // 立てると getStripeWebhookSecret() が throw する。**クライアント取得とは別の関数**なので
+  // 独立したフラグにする (片方だけを試すと、もう片方が署名検証の try へ戻る退行を見逃す)
+  webhookSecretBroken: { current: false },
   // 署名検証はモックで飛ばし、受け取ったバイト列を JSON として解釈するだけにする。
   // 引数の型を Uint8Array に固定してあるのが要点で、ルートが復号済みの文字列を渡す形へ
   // 退行すると型チェックと実行時の両方で落ちる (SDK の WebhookPayload は string も許すため、
@@ -79,7 +83,11 @@ vi.mock('@/lib/stripe', async (importOriginal) => {
         },
       };
     },
-    getStripeWebhookSecret: () => 'whsec_test',
+    getStripeWebhookSecret: () => {
+      // 設定不備を再現するテストでは、本物と同じように取得時点で throw する
+      if (webhookSecretBroken.current) throw new Error('[stripe] Webhook Secret 未設定 (テスト用)');
+      return 'whsec_test';
+    },
     // 既定では判定結果を固定するが、useRealPlanMapping を立てたテストだけ本物を通す
     stripeStatusToPlan: (
       status: string,
@@ -159,6 +167,7 @@ describe('POST /api/webhooks/stripe', () => {
     priceIdsForNextCall.current = { standard: 'price_standard', pro: 'price_pro' };
     // 設定は既定で正常に戻す (設定不備は該当テストだけで再現する)
     stripeConfigBroken.current = false;
+    webhookSecretBroken.current = false;
     // 呼び出し記録をテストごとに初期化する (mockClear は実装を残したまま履歴だけ消す)
     constructEventSpy.mockClear();
   });
@@ -167,9 +176,12 @@ describe('POST /api/webhooks/stripe', () => {
   // 別の原因なので別扱いで返す。以前は同じ try にまとめられていて 400「署名検証失敗」になり、
   // 運用側が鍵の不一致を疑って調べ続けることになっていた。
   // **この 2 件が無いと、両者を再び 1 つの try にまとめる退行が全件緑のまま通る**
-  it('Stripe の設定不備は署名検証失敗と区別して 500 を返す', async () => {
-    // クライアント生成が throw する状態にする
-    stripeConfigBroken.current = true;
+  it.each([
+    ['クライアント生成', () => (stripeConfigBroken.current = true)],
+    ['Webhook Secret 取得', () => (webhookSecretBroken.current = true)],
+  ])('%s の設定不備は署名検証失敗と区別して 500 を返す', async (_name, breakIt) => {
+    // 対象の関数が throw する状態にする
+    breakIt();
     const { POST } = await import('@/app/api/webhooks/stripe/route');
     // 正常なイベント本文を送っても、設定不備なら 500 になる
     const res = await POST(

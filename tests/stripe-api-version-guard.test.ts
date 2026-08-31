@@ -27,13 +27,17 @@
 //   このテストが担うのは、実行時チェックでは原理的に見えない**静的な性質**:
 //     (a)  SDK の申告するメジャー版が想定どおりか    … 破壊的変更の入口で落とす
 //     (a') SDK 内部で版とメジャー版が整合しているか   … 申告どうしの食い違いを検出する
+//     (b0') stripe を実行時に import するファイルが 1 つか … SDK に触れる範囲を閉じ込める
 //     (b0) Stripe の生成箇所が src 全体で 1 つか      … 生成箇所の増殖を検出する
 //     (b)  実行時チェックが生成経路に配線されているか … 検査ごと外されるのを防ぐ
 //     (b') 配線された版が SDK の申告値と一致するか    … 実行時チェックごと通ることを確かめる
 //     (c)  日付入りリテラルが復活していないか         … 手書きの写しへの逆戻りを防ぐ
 //
-//   (b0) は実行時チェックの守備範囲外。**2 つ目のクライアント**は
+//   (b0')(b0) は実行時チェックの守備範囲外。**2 つ目のクライアント**は
 //   `getStripeClient()` を通らないので、いくら実行時チェックを強くしても見えない。
+//   2 つを併せ持つのは守備範囲が違うため: (b0) は「どう import したか」を解決してから `new` を
+//   探すので束縛が別モジュール経由で渡る形に弱く、(b0') は「SDK がどのファイルへ到達しているか」
+//   だけを見るので再エクスポート・`import = require`・動的 import もまとめて捉える (実測で確認)。
 //
 // **ソースの読み取りは正規表現ではなく TypeScript のパーサで行う**
 // (`tests/lib/source-module-graph.ts` を再利用。§6 DRY)。同ヘッダが書いているとおり、
@@ -144,6 +148,67 @@ function isStripeConstruction(
   return false;
 }
 
+/**
+ * `stripe` モジュールを**実行時に**引き込んでいるファイルを集める。
+ *
+ * なぜ生成箇所の走査だけでは足りないか: 生成箇所の検出は「そのファイルが `stripe` を
+ * どの名前で import したか」を解決してから `new` を探すので、**束縛が別モジュール経由で
+ * 渡ってくる形**が見えない (`export { default as X } from 'stripe'` を別ファイルが import して
+ * `new X(...)` する、など。実測で素通りした)。`import x = require('stripe')` や
+ * `await import('stripe')` も同様。
+ *
+ * そこで「SDK に触れられるのはどのファイルか」を別に固定する。**クライアントを作るには
+ * 何らかの経路で `stripe` がそのモジュールへ到達している必要がある**ので、到達点の集合を
+ * 1 ファイルに閉じ込めれば、上のような間接的な形もまとめて塞げる (構成上の性質なので、
+ * 新しい書き方が増えても崩れない)。
+ *
+ * 型のみの参照は実行時に消えるので数えない (Webhook ルートの `import type Stripe from 'stripe'`
+ * は正当な利用)。
+ */
+function collectRuntimeStripeImporters(): string[] {
+  // 見つけたファイルのパスを入れる配列
+  const importers: string[] = [];
+  // 走査済みの構文木を 1 つずつ見る
+  for (const { path: filePath, sourceFile } of parsedSources) {
+    // このファイルが実行時に stripe を引き込んでいるか
+    let referencesAtRuntime = false;
+    visitNodes(sourceFile, (node) => {
+      // `import ... from 'stripe'` / `export ... from 'stripe'` (型のみは除く)
+      if (ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) {
+        const specifier = node.moduleSpecifier;
+        if (!specifier || !ts.isStringLiteral(specifier) || specifier.text !== 'stripe') return;
+        // 宣言まるごと型のみなら実行時には残らない
+        if (ts.isImportDeclaration(node) && node.importClause?.isTypeOnly) return;
+        if (ts.isExportDeclaration(node) && node.isTypeOnly) return;
+        referencesAtRuntime = true;
+        return;
+      }
+      // `import x = require('stripe')`
+      if (
+        ts.isImportEqualsDeclaration(node) &&
+        ts.isExternalModuleReference(node.moduleReference)
+      ) {
+        const expression = node.moduleReference.expression;
+        if (ts.isStringLiteral(expression) && expression.text === 'stripe')
+          referencesAtRuntime = true;
+        return;
+      }
+      // `import('stripe')` (動的 import)
+      if (
+        ts.isCallExpression(node) &&
+        node.expression.kind === ts.SyntaxKind.ImportKeyword &&
+        node.arguments.length > 0 &&
+        ts.isStringLiteral(node.arguments[0]!) &&
+        node.arguments[0].text === 'stripe'
+      ) {
+        referencesAtRuntime = true;
+      }
+    });
+    if (referencesAtRuntime) importers.push(path.relative(SRC_DIR, filePath));
+  }
+  return importers;
+}
+
 /** `src/` 全体から Stripe クライアントの生成箇所を集める */
 function collectStripeConstructions(): StripeConstruction[] {
   // 見つけた呼び出しを入れる配列
@@ -237,6 +302,15 @@ describe('Stripe API バージョンのガード', () => {
   //      `getStripeClient()` を通らないため、いくら実行時チェックを強くしても見えない。
   //      古いメジャーへピン留めした 2 つ目が黙って入るのを防ぐ。
   //      0 件 (検出網が対象を見失った) と 2 件以上の両方を fail-closed で落とす
+  // (b0') SDK に実行時に触れられるファイルを 1 つに閉じ込める。
+  //       生成箇所の走査は「そのファイルが stripe をどの名前で import したか」を解決してから
+  //       `new` を探すため、束縛が別モジュール経由で渡ってくる形 (再エクスポート・
+  //       `import = require` ・動的 import) が見えない。**クライアントを作るには何らかの経路で
+  //       stripe がそのモジュールへ到達している必要がある**ので、到達点を固定すればまとめて塞げる
+  it('stripe を実行時に import しているファイルが 1 つだけである', () => {
+    expect(collectRuntimeStripeImporters()).toEqual([path.relative(SRC_DIR, STRIPE_MODULE_PATH)]);
+  });
+
   it('Stripe クライアントの生成箇所が src 全体でちょうど 1 つである', () => {
     // 生成箇所を src からの相対パスにして比較する
     // (行番号は入れない — 無関係な編集で行がずれるたびに赤くなるのは検査の意図ではない)
