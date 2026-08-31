@@ -127,8 +127,10 @@ export async function POST(request: Request): Promise<NextResponse> {
     stripe = getStripeClient();
     webhookSecret = getStripeWebhookSecret();
   } catch (err) {
-    // 設定不備: 署名の問題ではないので 500 で返す (原因はログにだけ残す)
-    console.error('[stripe-webhook] Stripe クライアントの設定不備:', err);
+    // 設定不備: 署名の問題ではないので 500 で返す (原因はログにだけ残す)。
+    // ラベルは中立にする — この catch はクライアント生成と Webhook Secret 取得の両方を受けるので、
+    // 「クライアントの」と書くと Secret 未設定を別の場所の問題として報告してしまう
+    console.error('[stripe-webhook] Stripe 設定の取得に失敗:', err);
     return NextResponse.json({ error: 'イベントの受信に失敗しました' }, { status: 500 });
   }
 

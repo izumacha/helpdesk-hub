@@ -149,6 +149,33 @@ function isStripeConstruction(
 }
 
 /**
+ * ある生成箇所を囲む、いちばん内側の関数を返す (見つからなければ null)。
+ *
+ * 「実行時チェックが**その生成経路に**配線されているか」を見るために要る。
+ * 同じファイルのどこかに呼び出しがあるかどうかだけでは、**一度も呼ばれない関数の中**に
+ * 置いてあっても通ってしまう (実測で、その形にすると全件緑のまま実行時の担保が失われた)。
+ */
+function findEnclosingFunction(
+  construction: StripeConstruction,
+): ts.FunctionLikeDeclaration | null {
+  // 生成箇所の開始位置 (この位置を含む関数を探す)
+  const target = construction.call.getStart(construction.sourceFile);
+  // 見つかった中でいちばん内側 (開始位置が最も後ろ) のものを保持する
+  let innermost: ts.FunctionLikeDeclaration | null = null;
+  visitNodes(construction.sourceFile, (node) => {
+    // 関数のような宣言だけを見る (関数宣言・関数式・アロー・メソッド)
+    if (!ts.isFunctionLike(node)) return;
+    // 生成箇所を範囲に含んでいるか
+    const start = node.getStart(construction.sourceFile);
+    if (start > target || node.end < target) return;
+    // より内側 (開始位置が後ろ) なら差し替える
+    if (!innermost || start > innermost.getStart(construction.sourceFile))
+      innermost = node as ts.FunctionLikeDeclaration;
+  });
+  return innermost;
+}
+
+/**
  * `stripe` モジュールを**実行時に**引き込んでいるファイルを集める。
  *
  * なぜ生成箇所の走査だけでは足りないか: 生成箇所の検出は「そのファイルが `stripe` を
@@ -177,10 +204,36 @@ function collectRuntimeStripeImporters(): string[] {
       if (ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) {
         const specifier = node.moduleSpecifier;
         if (!specifier || !ts.isStringLiteral(specifier) || specifier.text !== 'stripe') return;
-        // 宣言まるごと型のみなら実行時には残らない
-        if (ts.isImportDeclaration(node) && node.importClause?.isTypeOnly) return;
-        if (ts.isExportDeclaration(node) && node.isTypeOnly) return;
-        referencesAtRuntime = true;
+        // `export ... from 'stripe'` は型のみでなければ実行時に残る
+        if (ts.isExportDeclaration(node)) {
+          if (!node.isTypeOnly) referencesAtRuntime = true;
+          return;
+        }
+        // ここからは import 宣言。宣言まるごと型のみなら実行時には残らない
+        const clause = node.importClause;
+        // 副作用 import (`import 'stripe'`) は束縛が無くても実行時に読み込まれる
+        if (!clause) {
+          referencesAtRuntime = true;
+          return;
+        }
+        if (clause.isTypeOnly) return;
+        // デフォルト束縛か名前空間束縛があれば実行時に残る
+        if (clause.name) {
+          referencesAtRuntime = true;
+          return;
+        }
+        if (clause.namedBindings && ts.isNamespaceImport(clause.namedBindings)) {
+          referencesAtRuntime = true;
+          return;
+        }
+        // 名前付き import は**要素ごとの型のみ指定**を見る。`import { type Stripe } from 'stripe'`
+        // は emit 時に丸ごと消えるので実行時には引き込まれない。宣言レベルの isTypeOnly だけを
+        // 見ると、この正当な書き方で検出網が誤って落ちる ((b0) 側は要素レベルまで見ており、
+        // 判定の粒度が食い違ってもいた)
+        if (clause.namedBindings && ts.isNamedImports(clause.namedBindings)) {
+          if (clause.namedBindings.elements.some((element) => !element.isTypeOnly))
+            referencesAtRuntime = true;
+        }
         return;
       }
       // `import x = require('stripe')`
@@ -193,15 +246,16 @@ function collectRuntimeStripeImporters(): string[] {
           referencesAtRuntime = true;
         return;
       }
-      // `import('stripe')` (動的 import)
-      if (
-        ts.isCallExpression(node) &&
-        node.expression.kind === ts.SyntaxKind.ImportKeyword &&
-        node.arguments.length > 0 &&
-        ts.isStringLiteral(node.arguments[0]!) &&
-        node.arguments[0].text === 'stripe'
-      ) {
-        referencesAtRuntime = true;
+      // `import('stripe')` (動的 import) と `require('stripe')` (素の CommonJS 読み込み)。
+      // require は ESLint の `no-require-imports` が error で止めるが、disable コメントで
+      // 抑止できるので検出網の側でも数える (「lint が止めるから大丈夫」は前提が 1 つ増える)
+      if (ts.isCallExpression(node) && node.arguments.length > 0) {
+        const isModuleLoad =
+          node.expression.kind === ts.SyntaxKind.ImportKeyword ||
+          (ts.isIdentifier(node.expression) && node.expression.text === 'require');
+        const [first] = node.arguments;
+        if (isModuleLoad && first && ts.isStringLiteral(first) && first.text === 'stripe')
+          referencesAtRuntime = true;
       }
     });
     if (referencesAtRuntime) importers.push(path.relative(SRC_DIR, filePath));
@@ -327,18 +381,29 @@ describe('Stripe API バージョンのガード', () => {
   it('API バージョンの実行時チェックがクライアント生成の経路に配線されている', () => {
     // 生成箇所を取り出す ((b0) が 1 件であることを保証しているが、ここでも前提を確かめる)
     expect(stripeConstructions, '生成箇所をソースから特定できなかった').toHaveLength(1);
-    // 生成箇所と同じモジュールから、実行時チェックの呼び出しを探す
-    const calls: string[] = [];
-    visitNodes(stripeConstructions[0]!.sourceFile, (node) => {
+    const construction = stripeConstructions[0]!;
+    // 生成箇所を囲む関数を特定する (ここに配線されていることを求める)
+    const enclosing = findEnclosingFunction(construction);
+    expect(enclosing, '生成箇所を囲む関数を特定できなかった').not.toBeNull();
+
+    // 生成の開始位置。実行時チェックはこれより**前**に呼ばれていなければ意味がない
+    const constructionStart = construction.call.getStart(construction.sourceFile);
+    // 囲んでいる関数の中から、生成より前に置かれた実行時チェックの呼び出しを探す
+    const wiredCalls: string[] = [];
+    visitNodes(enclosing!, (node) => {
       if (!ts.isCallExpression(node)) return;
-      if (ts.isIdentifier(node.expression) && node.expression.text === RUNTIME_ASSERT_NAME)
-        calls.push(node.getText(stripeConstructions[0]!.sourceFile));
+      if (!ts.isIdentifier(node.expression) || node.expression.text !== RUNTIME_ASSERT_NAME) return;
+      // 生成より後ろの呼び出しは、その生成を守っていないので数えない
+      if (node.getStart(construction.sourceFile) >= constructionStart) return;
+      wiredCalls.push(node.getText(construction.sourceFile));
     });
-    // 1 回以上呼ばれていること (消えていたら実行時の担保ごと失われている)。
-    // 見つかった呼び出しをメッセージに載せる (増えた・形が変わったときに差分が読める)
+
+    // 同じ関数の中で、生成より前に 1 回以上呼ばれていること。
+    // **「ファイルのどこかにあるか」では足りない** — 一度も呼ばれない関数の中に置いても
+    // 通ってしまい、実行時の担保が黙って外れる (実測で確認済み)
     expect(
-      calls.length,
-      `${RUNTIME_ASSERT_NAME} の呼び出しが見つからない (検出したもの: ${JSON.stringify(calls)})`,
+      wiredCalls.length,
+      `${RUNTIME_ASSERT_NAME} が生成箇所と同じ関数の中で、生成より前に呼ばれていない`,
     ).toBeGreaterThan(0);
   });
 

@@ -196,6 +196,26 @@ describe('POST /api/webhooks/stripe', () => {
     expect(constructEventSpy).not.toHaveBeenCalled();
   });
 
+  // 逆向きも固定する。**設定不備 → 500 だけを固定しても、署名検証を設定不備の try へ
+  // 移す退行 (= 偽装リクエストが 500 になる) は全件緑のまま通る**ので、両方向を押さえる
+  it('署名検証の失敗は設定不備と区別して 400 を返す', async () => {
+    // 署名検証だけが失敗する状態にする (設定は正常)
+    constructEventSpy.mockImplementationOnce(() => {
+      throw new Error('signature verification failed (テスト用)');
+    });
+    const { POST } = await import('@/app/api/webhooks/stripe/route');
+    const res = await POST(
+      makeRequest({
+        type: 'customer.subscription.deleted',
+        data: { object: { id: 'sub_1', customer: 'cus_1', metadata: { tenantId: 'tenant-1' } } },
+      }),
+    );
+    // 設定不備の 500 ではなく、偽装リクエストとして 400 で返る
+    expect(res.status).toBe(400);
+    // 署名検証までは到達している (設定不備で手前で止まっていない)
+    expect(constructEventSpy).toHaveBeenCalled();
+  });
+
   it('設定不備の応答に内部の事情を書かない (未認証で叩ける経路のため)', async () => {
     // クライアント生成が throw する状態にする
     stripeConfigBroken.current = true;
