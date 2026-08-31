@@ -390,7 +390,7 @@ describe('Stripe API バージョンのガード', () => {
     expect(Stripe.API_VERSION.endsWith(`.${Stripe.MAJOR_API_VERSION}`)).toBe(true);
   });
 
-  // (b0) Stripe クライアントの生成箇所が src 全体でちょうど 1 つであることを固定する。
+  // (b0') SDK に実行時に触れられるファイルを 1 つに閉じ込める。
   //      **実行時チェックの守備範囲外**なのでここで見る — 2 つ目のクライアントは
   //      `getStripeClient()` を通らないため、いくら実行時チェックを強くしても見えない。
   //      古いメジャーへピン留めした 2 つ目が黙って入るのを防ぐ。
@@ -454,8 +454,19 @@ describe('Stripe API バージョンのガード', () => {
       if (!exported) continue;
       for (const declaration of statement.declarationList.declarations) {
         const initializer = declaration.initializer;
-        if (!initializer || !ts.isIdentifier(initializer)) continue;
-        if (sdkNames.includes(initializer.text))
+        if (!initializer) continue;
+        // `export const X = Stripe` (識別子をそのまま)
+        if (ts.isIdentifier(initializer) && sdkNames.includes(initializer.text)) {
+          reExports.push(declaration.getText(owner!.sourceFile));
+          continue;
+        }
+        // `export const X = StripeNs.default` (名前空間経由のプロパティアクセス)。
+        // 初期化子を識別子に限ると、この形で再公開されたときに検出できない (実測で素通りした)
+        if (
+          ts.isPropertyAccessExpression(initializer) &&
+          ts.isIdentifier(initializer.expression) &&
+          sdkNames.includes(initializer.expression.text)
+        )
           reExports.push(declaration.getText(owner!.sourceFile));
       }
     }
@@ -514,14 +525,14 @@ describe('Stripe API バージョンのガード', () => {
     let assertEnd = -1;
     for (const statement of block!.statements) {
       const statementStart = statement.getStart(construction.sourceFile);
-      // 生成より後ろの文は、その生成を守っていないので数えない
-      if (statementStart >= constructionStart) continue;
-      // 「式だけの文」であること (条件分岐やループの中に隠れていない)
-      if (!ts.isExpressionStatement(statement)) continue;
-      const expression = statement.expression;
-
-      // 実行時チェックの呼び出し
+      // 生成を含む文とそれ以降は対象外 (生成そのものはオプションを参照して当然なので、
+      // 終端が生成の開始より後ろの文はすべて外す)
+      if (statement.end > constructionStart) continue;
+      // 実行時チェックの呼び出しは「式だけの文」であること
+      // (条件分岐やループの中に隠れていたら無条件とは言えない)
+      const expression = ts.isExpressionStatement(statement) ? statement.expression : null;
       if (
+        expression &&
         ts.isCallExpression(expression) &&
         ts.isIdentifier(expression.expression) &&
         expression.expression.text === RUNTIME_ASSERT_NAME
@@ -541,17 +552,17 @@ describe('Stripe API バージョンのガード', () => {
         continue;
       }
 
-      // 検査より後ろで、オプションを書き換える / プロパティを消す文
+      // 検査より後ろ・生成より前で、**オプションに言及する文があれば違反**とする。
+      // 代入や delete だけを列挙すると `Object.assign(...)` や `if (...) opts.x = ...` の
+      // ような書き換えを取り落とす (いずれも実測で素通りした)。「触っていないこと」を
+      // 求める方が、書き方の数に依存せず確実
       if (assertEnd >= 0 && statementStart > assertEnd) {
-        const touchesOptions =
-          (ts.isDeleteExpression(expression) &&
-            ts.isPropertyAccessExpression(expression.expression) &&
-            ts.isIdentifier(expression.expression.expression) &&
-            expression.expression.expression.text === optionsName) ||
-          (ts.isBinaryExpression(expression) &&
-            expression.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
-            expression.left.getText(construction.sourceFile).startsWith(optionsName));
-        if (touchesOptions) mutations.push(statement.getText(construction.sourceFile));
+        visitNodes(statement, (node) => {
+          // 識別子そのもので照合する (前方一致だと clientOptionsBackup のような
+          // 別変数まで巻き込んで誤検知する)
+          if (ts.isIdentifier(node) && node.text === optionsName)
+            mutations.push(statement.getText(construction.sourceFile));
+        });
       }
     }
 
