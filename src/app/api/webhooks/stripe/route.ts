@@ -114,17 +114,20 @@ export async function POST(request: Request): Promise<NextResponse> {
   // Stripe クライアントと Webhook Secret を取得する。
   // **署名検証の try とは分ける。** どちらも throw しうるが原因の種類が違い、まとめると
   // 設定不備 (シークレット未設定・API バージョンが想定外) まで「署名検証失敗」の 400 として
-  // 報告されてしまう。運用側は鍵の不一致を疑って調べ続けることになり、しかも 400 なので
-  // Stripe は再送を続けてエンドポイントを無効化しうる。設定不備は 500 で、それと分かる文言で返す
-  let stripe;
-  let webhookSecret;
+  // 報告されてしまい、運用側は鍵の不一致を疑って調べ続けることになる。**分ける理由は
+  // 診断可能性**で、再送の抑止ではない (Stripe は 400 でも 500 でも 2xx 以外なら再送し、
+  // 失敗が続けばどちらでもエンドポイントを無効化しうる。ステータスの選択でそこは変わらない)。
+  // 外向きの文言は一般的なものに留め、原因はサーバログにだけ残す — 未認証で叩ける経路なので、
+  // 「今この Webhook は設定不備だ」と外部から判別できる応答を返さない (§9)
+  let stripe: Stripe;
+  let webhookSecret: string;
   try {
     stripe = getStripeClient();
     webhookSecret = getStripeWebhookSecret();
   } catch (err) {
-    // 設定不備: 署名の問題ではないので、区別できる文言とステータスで返す
+    // 設定不備: 署名の問題ではないので 500 で返す (原因はログにだけ残す)
     console.error('[stripe-webhook] Stripe クライアントの設定不備:', err);
-    return NextResponse.json({ error: 'Stripe の設定に問題があります' }, { status: 500 });
+    return NextResponse.json({ error: 'イベントの受信に失敗しました' }, { status: 500 });
   }
 
   // 署名を検証して Stripe イベントオブジェクトを取り出す

@@ -37,37 +37,48 @@ vi.mock('@/data', () => ({
 // constructEventSpy は「署名検証へ渡る生ボディ」を検証するために呼び出しを記録する。
 // #290 以降、ルートは復号を挟まず受信バイト列そのものを Buffer で渡すため、
 // スパイ側も Buffer を受け取れる形にしてある (本物の Stripe SDK も string | Buffer を受け付ける)
-const { planForNextCall, priceIdsForNextCall, useRealPlanMapping, constructEventSpy } = vi.hoisted(
-  () => ({
-    planForNextCall: { current: 'pro' as 'free' | 'standard' | 'pro' },
-    // true にすると stripeStatusToPlan を本物に切り替え、Price ID からの判定経路まで通す
-    // (pickKnownPriceId がルートへ正しく結線されているかは、これでしか観測できない)
-    useRealPlanMapping: { current: false },
-    // Price ID の対応表。既定は「両方設定済み」で、環境変数の設定不全を再現するテストだけ空にする
-    priceIdsForNextCall: { current: { standard: 'price_standard', pro: 'price_pro' } },
-    // 署名検証はモックで飛ばし、受け取ったバイト列を JSON として解釈するだけにする。
-    // 引数の型を Uint8Array に固定してあるのが要点で、ルートが復号済みの文字列を渡す形へ
-    // 退行すると型チェックと実行時の両方で落ちる (SDK の WebhookPayload は string も許すため、
-    // 本物の型をそのまま使うと退行を検出できない)。
-    // 復号に TextDecoder を使うのは、BOM 付きの本文でも JSON として解釈できるようにするため。
-    // **このスパイの復号はあくまで JSON 解釈用**で、署名対象が何だったかは
-    // mock.calls に記録された引数そのもので確かめる
-    constructEventSpy: vi.fn(
-      (rawBody: Uint8Array) => JSON.parse(new TextDecoder().decode(rawBody)) as unknown,
-    ),
-  }),
-);
+const {
+  planForNextCall,
+  priceIdsForNextCall,
+  useRealPlanMapping,
+  constructEventSpy,
+  stripeConfigBroken,
+} = vi.hoisted(() => ({
+  planForNextCall: { current: 'pro' as 'free' | 'standard' | 'pro' },
+  // true にすると stripeStatusToPlan を本物に切り替え、Price ID からの判定経路まで通す
+  // (pickKnownPriceId がルートへ正しく結線されているかは、これでしか観測できない)
+  useRealPlanMapping: { current: false },
+  // Price ID の対応表。既定は「両方設定済み」で、環境変数の設定不全を再現するテストだけ空にする
+  priceIdsForNextCall: { current: { standard: 'price_standard', pro: 'price_pro' } },
+  // 立てると getStripeClient() が throw する。Stripe の設定不備 (シークレット未設定・
+  // API バージョンが想定外) を再現し、署名検証失敗と**別扱い**になることを確かめるために使う
+  stripeConfigBroken: { current: false },
+  // 署名検証はモックで飛ばし、受け取ったバイト列を JSON として解釈するだけにする。
+  // 引数の型を Uint8Array に固定してあるのが要点で、ルートが復号済みの文字列を渡す形へ
+  // 退行すると型チェックと実行時の両方で落ちる (SDK の WebhookPayload は string も許すため、
+  // 本物の型をそのまま使うと退行を検出できない)。
+  // 復号に TextDecoder を使うのは、BOM 付きの本文でも JSON として解釈できるようにするため。
+  // **このスパイの復号はあくまで JSON 解釈用**で、署名対象が何だったかは
+  // mock.calls に記録された引数そのもので確かめる
+  constructEventSpy: vi.fn(
+    (rawBody: Uint8Array) => JSON.parse(new TextDecoder().decode(rawBody)) as unknown,
+  ),
+}));
 vi.mock('@/lib/stripe', async (importOriginal) => {
   // 「有効な status とは何か」の規則だけは本物を使う。ここでモックすると、
   // 未知 Price ID の検知テストが本番と違う規則を相手に緑になってしまう (§6 DRY)
   const actual = await importOriginal<typeof import('@/lib/stripe')>();
   return {
     // 署名検証はモックし、リクエストボディの JSON をそのまま Stripe イベントとして扱う
-    getStripeClient: () => ({
-      webhooks: {
-        constructEvent: constructEventSpy,
-      },
-    }),
+    getStripeClient: () => {
+      // 設定不備を再現するテストでは、本物と同じように生成時点で throw する
+      if (stripeConfigBroken.current) throw new Error('[stripe] 設定不備 (テスト用)');
+      return {
+        webhooks: {
+          constructEvent: constructEventSpy,
+        },
+      };
+    },
     getStripeWebhookSecret: () => 'whsec_test',
     // 既定では判定結果を固定するが、useRealPlanMapping を立てたテストだけ本物を通す
     stripeStatusToPlan: (
@@ -146,8 +157,47 @@ describe('POST /api/webhooks/stripe', () => {
     useRealPlanMapping.current = false;
     // Price ID の対応表は既定で「両方設定済み」に戻す (設定不全は該当テストだけで再現する)
     priceIdsForNextCall.current = { standard: 'price_standard', pro: 'price_pro' };
+    // 設定は既定で正常に戻す (設定不備は該当テストだけで再現する)
+    stripeConfigBroken.current = false;
     // 呼び出し記録をテストごとに初期化する (mockClear は実装を残したまま履歴だけ消す)
     constructEventSpy.mockClear();
+  });
+
+  // Stripe の設定不備 (シークレット未設定・API バージョンが想定外) は、署名検証の失敗とは
+  // 別の原因なので別扱いで返す。以前は同じ try にまとめられていて 400「署名検証失敗」になり、
+  // 運用側が鍵の不一致を疑って調べ続けることになっていた。
+  // **この 2 件が無いと、両者を再び 1 つの try にまとめる退行が全件緑のまま通る**
+  it('Stripe の設定不備は署名検証失敗と区別して 500 を返す', async () => {
+    // クライアント生成が throw する状態にする
+    stripeConfigBroken.current = true;
+    const { POST } = await import('@/app/api/webhooks/stripe/route');
+    // 正常なイベント本文を送っても、設定不備なら 500 になる
+    const res = await POST(
+      makeRequest({
+        type: 'customer.subscription.deleted',
+        data: { object: { id: 'sub_1', customer: 'cus_1', metadata: { tenantId: 'tenant-1' } } },
+      }),
+    );
+    // 署名検証の 400 ではなく 500 で返る
+    expect(res.status).toBe(500);
+    // 設定不備なので署名検証まで進んでいない
+    expect(constructEventSpy).not.toHaveBeenCalled();
+  });
+
+  it('設定不備の応答に内部の事情を書かない (未認証で叩ける経路のため)', async () => {
+    // クライアント生成が throw する状態にする
+    stripeConfigBroken.current = true;
+    const { POST } = await import('@/app/api/webhooks/stripe/route');
+    const res = await POST(
+      makeRequest({
+        type: 'customer.subscription.deleted',
+        data: { object: { id: 'sub_1', customer: 'cus_1', metadata: { tenantId: 'tenant-1' } } },
+      }),
+    );
+    // 応答本文を読む
+    const body = (await res.json()) as { error?: string };
+    // 「設定が壊れている」と外部から判別できる語を含めない (原因はサーバログにだけ残す)
+    expect(body.error).not.toMatch(/設定|config|Stripe/i);
   });
 
   // 解約 (customer.subscription.deleted) で Pro → Free に降格すると、Pro モードも強制的に lite へ戻る

@@ -43,7 +43,6 @@ const REPO_ROOT = resolve(__dirname, '..');
 const SEED_ENTRY = join(REPO_ROOT, 'prisma/seed.ts');
 // 実行イメージへ手で選んで入れる対象のディレクトリ (この配下だけを「過不足」の検査対象にする)
 const HAND_PICKED_DIR = 'src/lib';
-// `src/` の絶対パス (import 解決の起点として共有ヘルパーへ渡す)
 // Prisma の生成物ディレクトリ。中は自動生成の .js / .d.ts で、Dockerfile も丸ごとコピーするため、
 // 依存として「このディレクトリが要る」ことだけ記録し、中身までは辿らない (数千ファイルある)
 const GENERATED_DIR = 'src/generated';

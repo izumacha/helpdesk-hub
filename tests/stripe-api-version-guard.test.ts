@@ -115,6 +115,18 @@ function collectStripeBindings(sourceFile: ts.SourceFile): {
     // 名前空間 import の名前
     if (clause.namedBindings && ts.isNamespaceImport(clause.namedBindings))
       namespaceNames.push(clause.namedBindings.name.text);
+    // 名前付き import の名前。stripe はクラスを default と名前付き (`Stripe`) の両方で公開しており、
+    // `import { Stripe } from 'stripe'` でも同じクラスが手に入る。ここを見ないと、その形で作った
+    // 2 つ目のクライアントが (b0) から見えない (実測で素通りした)
+    if (clause.namedBindings && ts.isNamedImports(clause.namedBindings)) {
+      for (const element of clause.namedBindings.elements) {
+        // 要素ごとの型のみ import (`import { type Stripe }`) は実行時に存在しないので除く
+        if (element.isTypeOnly) continue;
+        // 元の名前 (別名なら propertyName 側) が Stripe クラスを指すものだけを拾う
+        const imported = (element.propertyName ?? element.name).text;
+        if (imported === 'Stripe' || imported === 'default') defaultNames.push(element.name.text);
+      }
+    }
   }
   return { defaultNames, namespaceNames };
 }
@@ -248,8 +260,12 @@ describe('Stripe API バージョンのガード', () => {
       if (ts.isIdentifier(node.expression) && node.expression.text === RUNTIME_ASSERT_NAME)
         calls.push(node.getText(stripeConstructions[0]!.sourceFile));
     });
-    // 1 回以上呼ばれていること (消えていたら実行時の担保ごと失われている)
-    expect(calls.length, `${RUNTIME_ASSERT_NAME} の呼び出しが見つからない`).toBeGreaterThan(0);
+    // 1 回以上呼ばれていること (消えていたら実行時の担保ごと失われている)。
+    // 見つかった呼び出しをメッセージに載せる (増えた・形が変わったときに差分が読める)
+    expect(
+      calls.length,
+      `${RUNTIME_ASSERT_NAME} の呼び出しが見つからない (検出したもの: ${JSON.stringify(calls)})`,
+    ).toBeGreaterThan(0);
   });
 
   // (b') クライアントを実際に生成し、配線された版が SDK の申告値と一致することを確かめる。
