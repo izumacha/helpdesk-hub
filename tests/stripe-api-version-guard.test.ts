@@ -47,68 +47,112 @@
 //   - 置換ありのテンプレートリテラル (`` `2026-07-29.${major}` ``) は断片が別ノードになるため、
 //     接尾辞まで含む正規表現では取り落とす → 日付だけを見る形にし、断片も拾う
 //   - ショートハンド (`{ apiVersion }`) を「指定なし」と誤判定していた → 受け付ける
+//
+// さらに「どこまでを走査対象と見るか」にも穴があった (いずれも実測で確認):
+//   - 呼び出し元の名前を `Stripe` に決め打ちしていたため、別名のデフォルト import
+//     (`import StripeSdk from 'stripe'`) で作った 2 つ目のクライアントが (b0) から見えない
+//     → ファイルごとに `stripe` の束縛名を import 宣言から解決する
+//   - (c) を 1 ファイルに絞っていたため、日付入りの写しを別モジュールへ置いて名前付き定数として
+//     import し直すだけで (b)(c) を迂回できる → 走査を src 全体へ広げる
+//     (src 全体で日付の文字列リテラルは 0 件なので、広げても誤検知は増えない)
+//   - `apiVersion: undefined` は弾けても `const V = undefined` を経由すると素通りする
+//     → 識別子の宣言まで辿り、`undefined` への束縛を弾く
 
-import { readdirSync } from 'node:fs';
 import path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import ts from 'typescript';
 import Stripe from 'stripe';
 import { EXPECTED_STRIPE_MAJOR_API_VERSION, getStripeClient } from '@/lib/stripe';
-import { parseSourceFile, visitNodes } from './lib/source-module-graph';
+import { parseSourceFiles, visitNodes } from './lib/source-module-graph';
 
 // 検査対象のソースファイル (API バージョンを所有するモジュール)
 const STRIPE_MODULE_PATH = path.resolve(__dirname, '../src/lib/stripe.ts');
-// `new Stripe(...)` を探す範囲。**1 ファイルではなく src 全体**を見る (理由は下の (b0) を参照)
+// 走査範囲。**1 ファイルではなく src 全体**を見る (理由は下の (b0)(c) を参照)
 const SRC_DIR = path.resolve(__dirname, '../src');
-// Prisma が生成するコードは検査対象外 (自動生成物なので規約の適用先ではない)
-const GENERATED_DIR = path.join(SRC_DIR, 'generated');
 
 // 日付の形 (例: 2026-07-29)。(c) が使う。
 // **`.<メジャー名>` まで含めず日付だけを見る**のが要点で、`` `2026-07-29.${major}` `` のように
 // 分割して書かれた写しは「日付部分」しか 1 つのトークンに残らないため、接尾辞まで要求すると
-// 取り落とす (実測でこの形が素通りしていた)。日付そのものがこのモジュールに現れる正当な理由は無い
+// 取り落とす (実測でこの形が素通りしていた)。src 全体で日付の文字列リテラルは 0 件なので
+// 範囲を広げても誤検知は増えない (実測して確認済み)
 const DATED_VERSION_PATTERN = /\d{4}-\d{2}-\d{2}/;
 
-// 構文木は 1 度だけ作って使い回す (同じファイルを何度も読み直さない)
-const 構文木 = parseSourceFile(STRIPE_MODULE_PATH);
-
-/** `src/` 配下の .ts / .tsx を再帰的に集める (自動生成物は除く) */
-function ソースファイルを集める(ディレクトリ: string): string[] {
-  // 見つけたファイルのパスを入れる配列
-  const ファイル群: string[] = [];
-  // ディレクトリの中身を 1 件ずつ見る
-  for (const エントリ of readdirSync(ディレクトリ, { withFileTypes: true })) {
-    // フルパスを組み立てる
-    const フルパス = path.join(ディレクトリ, エントリ.name);
-    // 自動生成ディレクトリは丸ごと飛ばす
-    if (フルパス === GENERATED_DIR) continue;
-    // ディレクトリなら再帰、ファイルなら拡張子で絞って追加する
-    if (エントリ.isDirectory()) ファイル群.push(...ソースファイルを集める(フルパス));
-    else if (/\.tsx?$/.test(エントリ.name)) ファイル群.push(フルパス);
-  }
-  return ファイル群;
-}
+// 走査したソースの構文木。**1 回だけ読んで全テストで使い回す**
+// (テストごとに読み直すと同じ I/O と解析を繰り返すうえ、走査中にファイルが書き換わると
+//  テストごとに見ている対象がずれる。`tests/entry-body-limit.test.ts` と同じ方針)
+const 走査済みソース = parseSourceFiles(SRC_DIR);
 
 // `new Stripe(...)` を 1 件見つけた記録。構文木も持ち回るのは、`parseSourceFile` が
 // `setParentNodes: false` で木を作るため、ノードから親 (SourceFile) を辿れないから
 type Stripe生成箇所 = { パス: string; 呼び出し: ts.NewExpression; 木: ts.SourceFile };
 
-/** `src/` 全体から `new Stripe(...)` の呼び出しを集める (ファイルパスつき) */
+/**
+ * 1 ファイルの中で `stripe` の**デフォルト import に付けられた名前**を返す (無ければ null)。
+ *
+ * 名前を `Stripe` に決め打ちしないのは、デフォルト import の束縛名が任意だから。
+ * 別名で import した 2 つ目のクライアント (`import StripeSdk from 'stripe'`) を
+ * 見落とすと (b0) が素通りする (実測で確認済み)。
+ * 型のみの import (`import type Stripe from 'stripe'`) は `new` できないので対象外にする。
+ */
+function stripeの束縛名(木: ts.SourceFile): string | null {
+  // 見つけた束縛名を入れる場所
+  let 束縛名: string | null = null;
+  // import 宣言を探す
+  visitNodes(木, (node) => {
+    if (!ts.isImportDeclaration(node)) return;
+    // 指定子が 'stripe' のものだけを見る
+    if (!ts.isStringLiteral(node.moduleSpecifier) || node.moduleSpecifier.text !== 'stripe') return;
+    // 型のみの import は実行時に存在しないので除く
+    if (!node.importClause || node.importClause.isTypeOnly) return;
+    // デフォルト import の名前を採る
+    if (node.importClause.name) 束縛名 = node.importClause.name.text;
+  });
+  return 束縛名;
+}
+
+/** `src/` 全体から `new <stripe のデフォルト import>(...)` の呼び出しを集める */
 function Stripe生成箇所を集める(): Stripe生成箇所[] {
   // 見つけた呼び出しを入れる配列
   const 呼び出し群: Stripe生成箇所[] = [];
-  // ソースファイルを 1 つずつ構文木にして走査する
-  for (const パス of ソースファイルを集める(SRC_DIR)) {
-    // このファイルの構文木 (ノードから辿れないので変数に持つ)
-    const 木 = parseSourceFile(パス);
+  // 走査済みの構文木を 1 つずつ見る
+  for (const { path: パス, sourceFile: 木 } of 走査済みソース) {
+    // このファイルが stripe をデフォルト import しているか (していなければ生成しえない)
+    const 束縛名 = stripeの束縛名(木);
+    if (束縛名 === null) continue;
     visitNodes(木, (node) => {
-      // `new X(...)` の形で、かつ `X` が識別子 `Stripe` のものだけを対象にする
+      // `new X(...)` の形で、かつ `X` がこのファイルでの stripe の束縛名のものだけを対象にする
       if (!ts.isNewExpression(node)) return;
-      if (!ts.isIdentifier(node.expression) || node.expression.text !== 'Stripe') return;
+      if (!ts.isIdentifier(node.expression) || node.expression.text !== 束縛名) return;
       呼び出し群.push({ パス, 呼び出し: node, 木 });
     });
   }
   return 呼び出し群;
+}
+
+// 生成箇所も 1 回だけ求めて使い回す ((b0) と (b) が同じものを見るようにする)
+const Stripe生成箇所一覧 = Stripe生成箇所を集める();
+
+/**
+ * 識別子の宣言を `src` 全体から探し、その初期化式を返す (見つからなければ null)。
+ *
+ * `apiVersion` に渡された定数が**別モジュールで `undefined` に束縛されている**形を弾くために要る。
+ * `apiVersion: undefined` は (b) が直接弾けるが、`const V = undefined` を経由すると
+ * 識別子に見えるので素通りしてしまう (実測で確認済み)。
+ */
+function 定数の初期化式を探す(名前: string): ts.Expression | null {
+  // 見つけた初期化式を入れる場所
+  let 初期化式: ts.Expression | null = null;
+  // 走査済みの構文木から、その名前の変数宣言を探す
+  for (const { sourceFile: 木 } of 走査済みソース) {
+    visitNodes(木, (node) => {
+      if (!ts.isVariableDeclaration(node)) return;
+      if (!ts.isIdentifier(node.name) || node.name.text !== 名前) return;
+      // 初期化式があれば採る (無い宣言は後述の判定で弾かれる)
+      if (node.initializer) 初期化式 = node.initializer;
+    });
+    if (初期化式 !== null) break;
+  }
+  return 初期化式;
 }
 
 // `apiVersion` の指定を調べた結果。どの理由で駄目だったかを呼び出し側が区別できるようにする
@@ -117,6 +161,27 @@ type apiVersion指定 =
   | { 種別: '指定なし' } // オプション自体が無い / `apiVersion` が無い
   | { 種別: '不透明'; 詳細: string } // スプレッド等で静的に読めない
   | { 種別: '定数でない'; 詳細: string }; // リテラル・`undefined`・条件式など
+
+/**
+ * `apiVersion` に渡された識別子が本当に「値を持つ定数」かを確かめる。
+ *
+ * `undefined` は指定しないのと同義なので、直接書かれた場合も、`undefined` に束縛された
+ * 定数を経由した場合も弾く (SDK は `props.apiVersion || DEFAULT_API_VERSION` なので、
+ * どちらも実行時には指定なしと同じ挙動になり、(b') では気付けない)。
+ */
+function 識別子を検証する(名前: string): apiVersion指定 {
+  // `undefined` そのものを渡す形
+  if (名前 === 'undefined') return { 種別: '定数でない', 詳細: 'undefined' };
+  // 宣言を探して初期化式を見る
+  const 初期化式 = 定数の初期化式を探す(名前);
+  // 宣言が見つからない (import 元が src 外など) 場合は確かめようがないので不透明として落とす
+  if (初期化式 === null)
+    return { 種別: '不透明', 詳細: `${名前} の宣言と初期化式を src 内で特定できない` };
+  // 初期化式が `undefined` なら、指定なしと同義なので弾く
+  if (ts.isIdentifier(初期化式) && 初期化式.text === 'undefined')
+    return { 種別: '定数でない', 詳細: `${名前} は undefined に束縛されている` };
+  return { 種別: 'ok', 識別子名: 名前 };
+}
 
 /** ある `new Stripe(...)` 呼び出しの `apiVersion` 指定を構文木から読み取る */
 function apiVersion指定を読む(呼び出し: ts.NewExpression, 木: ts.SourceFile): apiVersion指定 {
@@ -139,16 +204,15 @@ function apiVersion指定を読む(呼び出し: ts.NewExpression, 木: ts.Sourc
       const 値 = プロパティ.initializer;
       // 識別子でなければ (リテラル・キャスト・条件式など) 定数ではない
       if (!ts.isIdentifier(値)) return { 種別: '定数でない', 詳細: 値.getText(木) };
-      // `undefined` は指定しないのと同義なので識別子でも弾く
-      if (値.text === 'undefined') return { 種別: '定数でない', 詳細: 'undefined' };
-      return { 種別: 'ok', 識別子名: 値.text };
+      // 識別子の中身まで確かめる (`undefined` に束縛された定数を経由する形を弾く)
+      return 識別子を検証する(値.text);
     }
     // ショートハンド形 `{ apiVersion }` (プロパティ名がそのまま定数名)
     if (
       ts.isShorthandPropertyAssignment(プロパティ) &&
       プロパティ.name.getText(木) === 'apiVersion'
     ) {
-      return { 種別: 'ok', 識別子名: プロパティ.name.text };
+      return 識別子を検証する(プロパティ.name.text);
     }
   }
 
@@ -158,27 +222,37 @@ function apiVersion指定を読む(呼び出し: ts.NewExpression, 木: ts.Sourc
   return { 種別: '指定なし' };
 }
 
-// モジュール内に書かれた文字列リテラルをすべて集める ((c) が使う)。
+// `src` 全体の文字列リテラルから、日付の形をしたものを「ファイル: 中身」で集める ((c) が使う)。
+//
+// **走査を 1 ファイルに絞らない**のが要点。絞ると、日付入りの写しを別モジュールへ置いて
+// 名前付き定数として import し直すだけで (b)(c) の両方を迂回できる (実測で確認済み)。
+// (b') も、写した値が現時点では SDK の申告値と一致するため気付けず、次の bump ではじめて
+// TS2322 で壊れる — この PR が無くそうとしている失敗そのものになる。
+//
 // **コメントはトークンではないので構文木に現れない** — 経緯の説明として日付版をコメントに
 // 書いても誤検知しない (正規表現版で必要だったコメント除去が丸ごと不要になる)。
 // テンプレートリテラルは置換の有無で節点の種類が変わるため、断片 (Head / Middle / Tail) まで拾う
 // (`` `2026-07-29.${major}` `` のように分割した写しを取り落とさないため)
-function 文字列リテラルを集める(): string[] {
-  // 集めた文字列を入れる配列
-  const 文字列群: string[] = [];
-  // 構文木をたどって文字列らしきトークンをすべて拾う
-  visitNodes(構文木, (node) => {
-    if (
-      ts.isStringLiteral(node) ||
-      ts.isNoSubstitutionTemplateLiteral(node) ||
-      ts.isTemplateHead(node) ||
-      ts.isTemplateMiddle(node) ||
-      ts.isTemplateTail(node)
-    ) {
-      文字列群.push(node.text);
-    }
-  });
-  return 文字列群;
+function 日付入りリテラルを集める(): string[] {
+  // 見つけた違反を入れる配列
+  const 違反: string[] = [];
+  // 走査済みの構文木をたどって文字列らしきトークンをすべて見る
+  for (const { path: パス, sourceFile: 木 } of 走査済みソース) {
+    visitNodes(木, (node) => {
+      if (
+        !ts.isStringLiteral(node) &&
+        !ts.isNoSubstitutionTemplateLiteral(node) &&
+        !ts.isTemplateHead(node) &&
+        !ts.isTemplateMiddle(node) &&
+        !ts.isTemplateTail(node)
+      )
+        return;
+      // 日付の形をしていれば、どこにあったかが分かる形で記録する
+      if (DATED_VERSION_PATTERN.test(node.text))
+        違反.push(`${path.relative(SRC_DIR, パス)}: ${node.text}`);
+    });
+  }
+  return 違反;
 }
 
 // クライアント生成には STRIPE_SECRET_KEY が要る (未設定なら fail-closed で throw する仕様)。
@@ -202,8 +276,13 @@ afterAll(() => {
 
 describe('Stripe API バージョンのガード', () => {
   // (a) 破壊的変更の入口。Stripe が次のメジャーへ進んだ SDK が入るとここで落ちる。
-  //     落ちたら「移行して定数を更新する」のが正しい対応で、テストを緩めるのは誤り。
-  //     定数を書き換えてガードを黙らせようとした場合もここが落ちる
+  //     落ちたら「移行を確認してから定数を更新する」のが正しい対応。
+  //
+  //     **これは改ざん検知ではない。** 定数を新しいメジャー名へ書き換えれば当然また緑になり、
+  //     それは「移行を済ませた」場合と「確認せず黙らせた」場合とで**まったく同じ編集**なので、
+  //     テストの側から両者を区別することは原理的にできない。このガードの役目は
+  //     「メジャーが変わったことを人の目に必ず一度通す」ことであって、その先の判断を強制する
+  //     ことではない (強制したければレビューで差分の理由を確認する側に置くしかない)
   it('SDK が申告するメジャー API バージョンが想定どおりである', () => {
     expect(Stripe.MAJOR_API_VERSION).toBe(EXPECTED_STRIPE_MAJOR_API_VERSION);
   });
@@ -211,7 +290,6 @@ describe('Stripe API バージョンのガード', () => {
   // (a') SDK 内部の整合性を見る。`API_VERSION` と `MAJOR_API_VERSION` は別々の定数として
   //      公開されているため、上流の生成ミスで両者が食い違う (例: 版は `.basil` なのに
   //      メジャー申告は `dahlia`) と、(a) だけでは通ってしまう。
-  //      **定数の書き換えを検出する役目は (a) が負っている** — こちらではない。
   //      比較は正規表現ではなく `endsWith` で行う (メジャー名に `.` や `(` のような正規表現の
   //      特殊文字が入ったとき、誤って通す / 例外で落ちる のどちらも避けるため)
   it('SDK の API バージョンとメジャー版の申告が互いに整合している', () => {
@@ -231,7 +309,7 @@ describe('Stripe API バージョンのガード', () => {
   it('Stripe クライアントの生成箇所が src 全体でちょうど 1 つである', () => {
     // 生成箇所を src からの相対パスにして比較する
     // (行番号は入れない — 無関係な編集で行がずれるたびに赤くなるのは検査の意図ではない)
-    const 箇所 = Stripe生成箇所を集める().map(({ パス }) => path.relative(SRC_DIR, パス));
+    const 箇所 = Stripe生成箇所一覧.map(({ パス }) => path.relative(SRC_DIR, パス));
     // 期待するのは API バージョンを所有するモジュールの 1 箇所だけ
     expect(箇所).toEqual([path.relative(SRC_DIR, STRIPE_MODULE_PATH)]);
   });
@@ -243,7 +321,7 @@ describe('Stripe API バージョンのガード', () => {
   //     値の正しさは (b') が担う)
   it('new Stripe(...) の apiVersion に名前付き定数を渡している', () => {
     // 生成箇所を取り出す ((b0) が 1 件であることを保証しているが、ここでも前提を確かめる)
-    const 生成箇所 = Stripe生成箇所を集める();
+    const 生成箇所 = Stripe生成箇所一覧;
     expect(生成箇所, 'new Stripe(...) の呼び出しをソースから特定できなかった').toHaveLength(1);
     // その呼び出しの apiVersion 指定を読む
     const 指定 = apiVersion指定を読む(生成箇所[0]!.呼び出し, 生成箇所[0]!.木);
@@ -253,7 +331,12 @@ describe('Stripe API バージョンのガード', () => {
 
   // (b') 指定した値が SDK の申告値と一致することを確かめる。
   //      キャストで別の日付版を渡す形 (`'...' as Stripe.LatestApiVersion`) はここで落ちる。
-  //      指定の**消失**は上の (b) が担当する (この検査は SDK の既定値に隠れて検出できない)
+  //      指定の**消失**は上の (b) が担当する (この検査は SDK の既定値に隠れて検出できない)。
+  //
+  //      `getApiField` は SDK の型定義で `@private` とされ「将来削除しうる」と明記されている。
+  //      それでも使うのは、**実際にクライアントへ配線された値**を読む手段が他に無いため
+  //      (公開の定数どうしを比べるとトートロジーになる)。この結合は承知のうえで、SDK 更新で
+  //      これが失われたら (b) と (c) が静的側の担保として残る、という前提で受け入れている
   it('配線された API バージョンが SDK の申告値と一致する', () => {
     expect(getStripeClient().getApiField('version')).toBe(Stripe.API_VERSION);
   });
@@ -261,9 +344,7 @@ describe('Stripe API バージョンのガード', () => {
   // (c) ソースに日付入りリテラルが復活していないことを確かめる。
   //     構文木から文字列リテラルだけを集めるので、コメント中の日付版は誤検知しない
   it('ソースに日付入りの API バージョンリテラルが直書きされていない', () => {
-    // 日付入りの形に一致する文字列リテラルを拾う
-    const 違反 = 文字列リテラルを集める().filter((s) => DATED_VERSION_PATTERN.test(s));
-    // 1 つも無いこと (あれば手書きの写しへ逆戻りしている)
-    expect(違反).toEqual([]);
+    // src 全体から日付入りの文字列リテラルを拾う (1 つも無いのが正常)
+    expect(日付入りリテラルを集める()).toEqual([]);
   });
 });
