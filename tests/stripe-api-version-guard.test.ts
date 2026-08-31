@@ -77,6 +77,9 @@ const DATED_VERSION_PATTERN = /\d{4}-\d{2}-\d{2}\./;
 // 本番モジュール側の実行時チェックの関数名 ((b) がこの呼び出しの存在を確かめる)
 const RUNTIME_ASSERT_NAME = 'assertApiVersionSupported';
 
+// クライアントを生成してよい唯一の入口の関数名 ((b) が生成箇所をここに固定する)
+const CLIENT_FACTORY_NAME = 'getStripeClient';
+
 // 走査したソースの構文木。**1 回だけ読んで全テストで使い回す**
 // (テストごとに読み直すと同じ I/O と解析を繰り返すうえ、走査中にファイルが書き換わると
 //  テストごとに見ている対象がずれる。`tests/entry-body-limit.test.ts` と同じ方針)
@@ -85,6 +88,33 @@ const parsedSources = parseSourceFiles();
 // `new Stripe(...)` を 1 件見つけた記録。構文木も持ち回るのは、`parseSourceFile` が
 // `setParentNodes: false` で木を作るため、ノードから親 (SourceFile) を辿れないから
 type StripeConstruction = { path: string; call: ts.NewExpression; sourceFile: ts.SourceFile };
+
+/**
+ * その import 宣言が `stripe` を**実行時に**引き込むかを判定する ((b0) と (b0') が共有)。
+ *
+ * 判定を 1 か所に置くのは、同じ規則を 2 か所に書いた結果 (b0) と (b0') で粒度が食い違い、
+ * `import { type Stripe } from 'stripe'` を片方だけが実行時 import と誤判定した実績があるため
+ * (§6 DRY)。新しい書き方を足すときもここだけ直せば両方に効く。
+ */
+function isRuntimeStripeImport(statement: ts.Statement): statement is ts.ImportDeclaration {
+  // import 宣言で、指定子が 'stripe' のものだけを見る
+  if (!ts.isImportDeclaration(statement)) return false;
+  if (!ts.isStringLiteral(statement.moduleSpecifier) || statement.moduleSpecifier.text !== 'stripe')
+    return false;
+  const clause = statement.importClause;
+  // 副作用 import (`import 'stripe'`) は束縛が無くても実行時に読み込まれる
+  if (!clause) return true;
+  // 宣言まるごと型のみなら実行時には残らない
+  if (clause.isTypeOnly) return false;
+  // デフォルト束縛・名前空間束縛があれば実行時に残る
+  if (clause.name) return true;
+  if (clause.namedBindings && ts.isNamespaceImport(clause.namedBindings)) return true;
+  // 名前付き import は**要素ごとの型のみ指定**を見る。`import { type Stripe } from 'stripe'`
+  // は emit 時に丸ごと消えるので実行時には引き込まれない
+  if (clause.namedBindings && ts.isNamedImports(clause.namedBindings))
+    return clause.namedBindings.elements.some((element) => !element.isTypeOnly);
+  return false;
+}
 
 /**
  * 1 ファイルの中で `stripe` を実行時に参照できる**束縛名**を集める。
@@ -104,16 +134,10 @@ function collectStripeBindings(sourceFile: ts.SourceFile): {
   const namespaceNames: string[] = [];
   // import 宣言はトップレベルの文にしか現れないので、木を全走査せず statements だけを見る
   for (const statement of sourceFile.statements) {
-    if (!ts.isImportDeclaration(statement)) continue;
-    // 指定子が 'stripe' のものだけを見る
-    if (
-      !ts.isStringLiteral(statement.moduleSpecifier) ||
-      statement.moduleSpecifier.text !== 'stripe'
-    )
-      continue;
-    // 型のみの import は実行時に存在しないので除く
+    // 実行時に stripe を引き込む import だけを見る (判定は共有の述語に任せる)
+    if (!isRuntimeStripeImport(statement)) continue;
     const clause = statement.importClause;
-    if (!clause || clause.isTypeOnly) continue;
+    if (!clause) continue;
     // デフォルト import の名前
     if (clause.name) defaultNames.push(clause.name.text);
     // 名前空間 import の名前
@@ -149,30 +173,34 @@ function isStripeConstruction(
 }
 
 /**
- * ある生成箇所を囲む、いちばん内側の関数を返す (見つからなければ null)。
+ * ある生成箇所を囲む、いちばん内側の「関数」と「ブロック」を返す。
  *
- * 「実行時チェックが**その生成経路に**配線されているか」を見るために要る。
- * 同じファイルのどこかに呼び出しがあるかどうかだけでは、**一度も呼ばれない関数の中**に
- * 置いてあっても通ってしまう (実測で、その形にすると全件緑のまま実行時の担保が失われた)。
+ * 「実行時チェックが**その生成経路に**配線されているか」を見るために両方が要る。
+ *   - 関数: 一度も呼ばれない関数の中に生成ごと置かれていないか (名前で錨を打つ)
+ *   - ブロック: 検査が生成と**同じブロックに無条件で**置かれているか
+ *     (入れ子の中まで数えると `if (...) assert(...)` のように条件付きにしただけで通る)
  */
-function findEnclosingFunction(
-  construction: StripeConstruction,
-): ts.FunctionLikeDeclaration | null {
-  // 生成箇所の開始位置 (この位置を含む関数を探す)
+function findEnclosingScopes(construction: StripeConstruction): {
+  fn: ts.FunctionLikeDeclaration | null;
+  block: ts.Block | null;
+} {
+  // 生成箇所の開始位置 (この位置を含むものを探す)
   const target = construction.call.getStart(construction.sourceFile);
   // 見つかった中でいちばん内側 (開始位置が最も後ろ) のものを保持する
-  let innermost: ts.FunctionLikeDeclaration | null = null;
+  let fn: ts.FunctionLikeDeclaration | null = null;
+  let block: ts.Block | null = null;
   visitNodes(construction.sourceFile, (node) => {
-    // 関数のような宣言だけを見る (関数宣言・関数式・アロー・メソッド)
-    if (!ts.isFunctionLike(node)) return;
-    // 生成箇所を範囲に含んでいるか
+    // 生成箇所を範囲に含んでいるものだけを見る
     const start = node.getStart(construction.sourceFile);
     if (start > target || node.end < target) return;
-    // より内側 (開始位置が後ろ) なら差し替える
-    if (!innermost || start > innermost.getStart(construction.sourceFile))
-      innermost = node as ts.FunctionLikeDeclaration;
+    // 関数のような宣言 (関数宣言・関数式・アロー・メソッド)
+    if (ts.isFunctionLike(node) && (!fn || start > fn.getStart(construction.sourceFile)))
+      fn = node as ts.FunctionLikeDeclaration;
+    // ブロック
+    if (ts.isBlock(node) && (!block || start > block.getStart(construction.sourceFile)))
+      block = node;
   });
-  return innermost;
+  return { fn, block };
 }
 
 /**
@@ -200,40 +228,21 @@ function collectRuntimeStripeImporters(): string[] {
     // このファイルが実行時に stripe を引き込んでいるか
     let referencesAtRuntime = false;
     visitNodes(sourceFile, (node) => {
-      // `import ... from 'stripe'` / `export ... from 'stripe'` (型のみは除く)
-      if (ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) {
+      // `import ... from 'stripe'` (判定は (b0) と共有の述語に任せる)
+      if (ts.isStatement(node) && isRuntimeStripeImport(node)) {
+        referencesAtRuntime = true;
+        return;
+      }
+      // `export ... from 'stripe'` は型のみでなければ実行時に残る
+      if (ts.isExportDeclaration(node)) {
         const specifier = node.moduleSpecifier;
-        if (!specifier || !ts.isStringLiteral(specifier) || specifier.text !== 'stripe') return;
-        // `export ... from 'stripe'` は型のみでなければ実行時に残る
-        if (ts.isExportDeclaration(node)) {
-          if (!node.isTypeOnly) referencesAtRuntime = true;
-          return;
-        }
-        // ここからは import 宣言。宣言まるごと型のみなら実行時には残らない
-        const clause = node.importClause;
-        // 副作用 import (`import 'stripe'`) は束縛が無くても実行時に読み込まれる
-        if (!clause) {
+        if (
+          !node.isTypeOnly &&
+          specifier &&
+          ts.isStringLiteral(specifier) &&
+          specifier.text === 'stripe'
+        )
           referencesAtRuntime = true;
-          return;
-        }
-        if (clause.isTypeOnly) return;
-        // デフォルト束縛か名前空間束縛があれば実行時に残る
-        if (clause.name) {
-          referencesAtRuntime = true;
-          return;
-        }
-        if (clause.namedBindings && ts.isNamespaceImport(clause.namedBindings)) {
-          referencesAtRuntime = true;
-          return;
-        }
-        // 名前付き import は**要素ごとの型のみ指定**を見る。`import { type Stripe } from 'stripe'`
-        // は emit 時に丸ごと消えるので実行時には引き込まれない。宣言レベルの isTypeOnly だけを
-        // 見ると、この正当な書き方で検出網が誤って落ちる ((b0) 側は要素レベルまで見ており、
-        // 判定の粒度が食い違ってもいた)
-        if (clause.namedBindings && ts.isNamedImports(clause.namedBindings)) {
-          if (clause.namedBindings.elements.some((element) => !element.isTypeOnly))
-            referencesAtRuntime = true;
-        }
         return;
       }
       // `import x = require('stripe')`
@@ -313,11 +322,16 @@ function collectDatedVersionLiterals(): string[] {
 // クライアント生成には STRIPE_SECRET_KEY が要る (未設定なら fail-closed で throw する仕様)。
 // 実際の通信はしないのでダミー値でよい。テスト後に元へ戻す
 const originalSecretKey = process.env.STRIPE_SECRET_KEY;
+// 生成済みのシングルトンも退避する。既定 (isolate: true) では他ファイルと共有しないが、
+// 設定が変わったときに「他ファイルが作ったクライアントを捨てる」形で壊れないようにする
+// (環境変数と同じく、書き換えたものは元に戻す)
+let originalClient: Stripe | undefined;
 
 beforeAll(() => {
   // ダミーのシークレットキーを入れてクライアントを生成できるようにする
   process.env.STRIPE_SECRET_KEY = 'sk_test_dummy_for_api_version_guard';
-  // シングルトンのキャッシュを捨て、このテストの環境変数で作り直させる
+  // 既存のシングルトンを退避してから捨て、このテストの環境変数で作り直させる
+  originalClient = global._stripeClient;
   global._stripeClient = undefined;
 });
 
@@ -325,8 +339,8 @@ afterAll(() => {
   // 環境変数を元の状態へ戻す (未設定だったなら未設定に戻す)
   if (originalSecretKey === undefined) delete process.env.STRIPE_SECRET_KEY;
   else process.env.STRIPE_SECRET_KEY = originalSecretKey;
-  // 生成したクライアントを捨てて他のテストへ持ち越さない
-  global._stripeClient = undefined;
+  // 生成したクライアントを捨て、退避しておいたものを戻す
+  global._stripeClient = originalClient;
 });
 
 describe('Stripe API バージョンのガード', () => {
@@ -365,6 +379,48 @@ describe('Stripe API バージョンのガード', () => {
     expect(collectRuntimeStripeImporters()).toEqual([path.relative(SRC_DIR, STRIPE_MODULE_PATH)]);
   });
 
+  // (b0'') 唯一 SDK に触れてよいモジュールが、そのクラスを**外へ再公開していない**ことを見る。
+  //        (b0')(b0) は「stripe を名指しで読み込むファイル」を数えるので、`stripe.ts` が
+  //        クラスを再公開すると、他のファイルは `@/lib/stripe` から受け取って
+  //        2 つ目のクライアントを作れてしまう (実測で全件緑のまま通った)。しかも
+  //        「stripe は stripe.ts でしか import しない」という規約に従うほどその経路を選びやすい
+  it('API バージョンを所有するモジュールが SDK クラスを再公開していない', () => {
+    // 対象モジュールの構文木を取り出す
+    const owner = parsedSources.find(({ path: p }) => p === STRIPE_MODULE_PATH);
+    expect(
+      owner,
+      'API バージョンを所有するモジュールを走査結果から見つけられなかった',
+    ).toBeDefined();
+    // このファイルでの stripe の束縛名 (再公開されていないか照合する相手)
+    const bindings = collectStripeBindings(owner!.sourceFile);
+    const sdkNames = [...bindings.defaultNames, ...bindings.namespaceNames];
+
+    // 再公開に当たる形を集める
+    const reExports: string[] = [];
+    for (const statement of owner!.sourceFile.statements) {
+      // `export ... from 'stripe'` (型のみを除く)
+      if (ts.isExportDeclaration(statement) && !statement.isTypeOnly) {
+        const specifier = statement.moduleSpecifier;
+        if (specifier && ts.isStringLiteral(specifier) && specifier.text === 'stripe')
+          reExports.push(statement.getText(owner!.sourceFile));
+        continue;
+      }
+      // `export const X = Stripe;` のように束縛をそのまま外へ出す形
+      if (!ts.isVariableStatement(statement)) continue;
+      const exported = statement.modifiers?.some((m) => m.kind === ts.SyntaxKind.ExportKeyword);
+      if (!exported) continue;
+      for (const declaration of statement.declarationList.declarations) {
+        const initializer = declaration.initializer;
+        if (!initializer || !ts.isIdentifier(initializer)) continue;
+        if (sdkNames.includes(initializer.text))
+          reExports.push(declaration.getText(owner!.sourceFile));
+      }
+    }
+
+    // 1 つも無いこと (あると SDK に触れる範囲が事実上広がる)
+    expect(reExports).toEqual([]);
+  });
+
   it('Stripe クライアントの生成箇所が src 全体でちょうど 1 つである', () => {
     // 生成箇所を src からの相対パスにして比較する
     // (行番号は入れない — 無関係な編集で行がずれるたびに赤くなるのは検査の意図ではない)
@@ -382,28 +438,46 @@ describe('Stripe API バージョンのガード', () => {
     // 生成箇所を取り出す ((b0) が 1 件であることを保証しているが、ここでも前提を確かめる)
     expect(stripeConstructions, '生成箇所をソースから特定できなかった').toHaveLength(1);
     const construction = stripeConstructions[0]!;
-    // 生成箇所を囲む関数を特定する (ここに配線されていることを求める)
-    const enclosing = findEnclosingFunction(construction);
-    expect(enclosing, '生成箇所を囲む関数を特定できなかった').not.toBeNull();
+    // 生成箇所を囲む関数とブロックを特定する (ここに配線されていることを求める)
+    const { fn, block } = findEnclosingScopes(construction);
+    expect(fn, '生成箇所を囲む関数を特定できなかった').not.toBeNull();
+    expect(block, '生成箇所を囲むブロックを特定できなかった').not.toBeNull();
+
+    // 生成は**実際に呼ばれる入口**の中で行われていること。名前で錨を打つのは、
+    // 一度も呼ばれない関数の中へ生成ごと移されても位置関係だけは成立してしまうため
+    // (実測で、そうすると全件緑のまま実行時の担保が失われた)
+    const fnName = ts.isFunctionDeclaration(fn!) && fn!.name ? fn!.name.text : null;
+    expect(fnName, `生成は ${CLIENT_FACTORY_NAME} の中で行うこと`).toBe(CLIENT_FACTORY_NAME);
 
     // 生成の開始位置。実行時チェックはこれより**前**に呼ばれていなければ意味がない
     const constructionStart = construction.call.getStart(construction.sourceFile);
-    // 囲んでいる関数の中から、生成より前に置かれた実行時チェックの呼び出しを探す
+
+    // **生成と同じブロックの直下の文だけ**を見る。入れ子の中まで数えると、
+    // `if (...) assert(...)` のように条件付きにしただけで「配線されている」と誤認する
+    // (実測で、環境変数で切り替える形にすると本番では一度も走らないのに全件緑で通った)。
+    // 無条件に必ず走ることまで求める
     const wiredCalls: string[] = [];
-    visitNodes(enclosing!, (node) => {
-      if (!ts.isCallExpression(node)) return;
-      if (!ts.isIdentifier(node.expression) || node.expression.text !== RUNTIME_ASSERT_NAME) return;
-      // 生成より後ろの呼び出しは、その生成を守っていないので数えない
-      if (node.getStart(construction.sourceFile) >= constructionStart) return;
-      wiredCalls.push(node.getText(construction.sourceFile));
-    });
+    for (const statement of block!.statements) {
+      // 生成より後ろの文は、その生成を守っていないので数えない
+      if (statement.getStart(construction.sourceFile) >= constructionStart) continue;
+      // 「式だけの文」であること (条件分岐やループの中に隠れていない)
+      if (!ts.isExpressionStatement(statement)) continue;
+      const expression = statement.expression;
+      if (!ts.isCallExpression(expression)) continue;
+      if (
+        !ts.isIdentifier(expression.expression) ||
+        expression.expression.text !== RUNTIME_ASSERT_NAME
+      )
+        continue;
+      wiredCalls.push(expression.getText(construction.sourceFile));
+    }
 
     // 同じ関数の中で、生成より前に 1 回以上呼ばれていること。
     // **「ファイルのどこかにあるか」では足りない** — 一度も呼ばれない関数の中に置いても
     // 通ってしまい、実行時の担保が黙って外れる (実測で確認済み)
     expect(
       wiredCalls.length,
-      `${RUNTIME_ASSERT_NAME} が生成箇所と同じ関数の中で、生成より前に呼ばれていない`,
+      `${RUNTIME_ASSERT_NAME} が、生成と同じブロックで、生成より前に無条件で呼ばれていない`,
     ).toBeGreaterThan(0);
   });
 

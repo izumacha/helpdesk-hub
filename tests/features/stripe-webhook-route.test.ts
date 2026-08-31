@@ -180,6 +180,8 @@ describe('POST /api/webhooks/stripe', () => {
     ['クライアント生成', () => (stripeConfigBroken.current = true)],
     ['Webhook Secret 取得', () => (webhookSecretBroken.current = true)],
   ])('%s の設定不備は署名検証失敗と区別して 500 を返す', async (_name, breakIt) => {
+    // 他のテストの診断出力を汚さないよう console を差し替えつつ、記録内容も検証する
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     // 対象の関数が throw する状態にする
     breakIt();
     const { POST } = await import('@/app/api/webhooks/stripe/route');
@@ -194,11 +196,17 @@ describe('POST /api/webhooks/stripe', () => {
     expect(res.status).toBe(500);
     // 設定不備なので署名検証まで進んでいない
     expect(constructEventSpy).not.toHaveBeenCalled();
+    // **原因がサーバログに残ること**も固定する。外向きを一般化した以上、ログが唯一の
+    // 手がかりなので、ここから console.error が落ちると分割の目的ごと失われる
+    expect(errorSpy).toHaveBeenCalled();
+    expect(String(errorSpy.mock.calls[0]?.[0])).toContain('[stripe-webhook]');
   });
 
   // 逆向きも固定する。**設定不備 → 500 だけを固定しても、署名検証を設定不備の try へ
   // 移す退行 (= 偽装リクエストが 500 になる) は全件緑のまま通る**ので、両方向を押さえる
   it('署名検証の失敗は設定不備と区別して 400 を返す', async () => {
+    // 他のテストの診断出力を汚さないよう console を差し替える
+    vi.spyOn(console, 'error').mockImplementation(() => {});
     // 署名検証だけが失敗する状態にする (設定は正常)
     constructEventSpy.mockImplementationOnce(() => {
       throw new Error('signature verification failed (テスト用)');
@@ -217,6 +225,8 @@ describe('POST /api/webhooks/stripe', () => {
   });
 
   it('設定不備の応答に内部の事情を書かない (未認証で叩ける経路のため)', async () => {
+    // 他のテストの診断出力を汚さないよう console を差し替える
+    vi.spyOn(console, 'error').mockImplementation(() => {});
     // クライアント生成が throw する状態にする
     stripeConfigBroken.current = true;
     const { POST } = await import('@/app/api/webhooks/stripe/route');
