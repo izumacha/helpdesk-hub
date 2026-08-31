@@ -204,6 +204,31 @@ function findEnclosingScopes(construction: StripeConstruction): {
 }
 
 /**
+ * 関数の名前を読む。関数宣言はもちろん、`const f = () => {}` / `const f = function () {}` の
+ * ように**変数へ束縛した形**でも名前を引けるようにする。
+ *
+ * 宣言形だけを見ていると、意味の変わらないリファクタ (アロー関数化) で検出網が誤って落ち、
+ * しかも「別の関数の中で生成している」という実態と違うメッセージが出る。
+ */
+function readFunctionName(
+  fn: ts.FunctionLikeDeclaration,
+  sourceFile: ts.SourceFile,
+): string | null {
+  // 関数宣言・関数式で名前が付いている場合はそれを使う
+  if ((ts.isFunctionDeclaration(fn) || ts.isFunctionExpression(fn)) && fn.name) return fn.name.text;
+  // アロー/無名関数式は、囲んでいる変数宣言の名前を探す
+  const start = fn.getStart(sourceFile);
+  let name: string | null = null;
+  visitNodes(sourceFile, (node) => {
+    if (!ts.isVariableDeclaration(node) || !node.initializer) return;
+    // その変数の初期化式がこの関数そのものであるかを位置で照合する
+    if (node.initializer.getStart(sourceFile) !== start) return;
+    if (ts.isIdentifier(node.name)) name = node.name.text;
+  });
+  return name;
+}
+
+/**
  * `stripe` モジュールを**実行時に**引き込んでいるファイルを集める。
  *
  * なぜ生成箇所の走査だけでは足りないか: 生成箇所の検出は「そのファイルが `stripe` を
@@ -398,10 +423,28 @@ describe('Stripe API バージョンのガード', () => {
     // 再公開に当たる形を集める
     const reExports: string[] = [];
     for (const statement of owner!.sourceFile.statements) {
-      // `export ... from 'stripe'` (型のみを除く)
+      // `export ... from 'stripe'` と `export { Stripe }` (型のみを除く)
       if (ts.isExportDeclaration(statement) && !statement.isTypeOnly) {
         const specifier = statement.moduleSpecifier;
-        if (specifier && ts.isStringLiteral(specifier) && specifier.text === 'stripe')
+        // 指定子つき: `export { default as X } from 'stripe'`
+        if (specifier && ts.isStringLiteral(specifier) && specifier.text === 'stripe') {
+          reExports.push(statement.getText(owner!.sourceFile));
+          continue;
+        }
+        // 指定子なし: `export { Stripe }` — ローカル束縛をそのまま外へ出す形
+        if (!specifier && statement.exportClause && ts.isNamedExports(statement.exportClause)) {
+          for (const element of statement.exportClause.elements) {
+            if (element.isTypeOnly) continue;
+            // 元の名前 (別名なら propertyName 側) が SDK の束縛なら再公開
+            const local = (element.propertyName ?? element.name).text;
+            if (sdkNames.includes(local)) reExports.push(element.getText(owner!.sourceFile));
+          }
+        }
+        continue;
+      }
+      // `export default Stripe;` (ExportAssignment)
+      if (ts.isExportAssignment(statement)) {
+        if (ts.isIdentifier(statement.expression) && sdkNames.includes(statement.expression.text))
           reExports.push(statement.getText(owner!.sourceFile));
         continue;
       }
@@ -446,38 +489,82 @@ describe('Stripe API バージョンのガード', () => {
     // 生成は**実際に呼ばれる入口**の中で行われていること。名前で錨を打つのは、
     // 一度も呼ばれない関数の中へ生成ごと移されても位置関係だけは成立してしまうため
     // (実測で、そうすると全件緑のまま実行時の担保が失われた)
-    const fnName = ts.isFunctionDeclaration(fn!) && fn!.name ? fn!.name.text : null;
+    const fnName = readFunctionName(fn!, construction.sourceFile);
     expect(fnName, `生成は ${CLIENT_FACTORY_NAME} の中で行うこと`).toBe(CLIENT_FACTORY_NAME);
 
     // 生成の開始位置。実行時チェックはこれより**前**に呼ばれていなければ意味がない
     const constructionStart = construction.call.getStart(construction.sourceFile);
 
+    // 生成へ渡しているオプションの識別子。検査は**この値**を見ていなければ意味がない
+    const optionsArg = construction.call.arguments?.[1];
+    expect(
+      optionsArg !== undefined && ts.isIdentifier(optionsArg),
+      'オプションは名前付きの変数として組み立ててから渡すこと (検査対象を特定するため)',
+    ).toBe(true);
+    const optionsName = (optionsArg as ts.Identifier).text;
+
     // **生成と同じブロックの直下の文だけ**を見る。入れ子の中まで数えると、
     // `if (...) assert(...)` のように条件付きにしただけで「配線されている」と誤認する
     // (実測で、環境変数で切り替える形にすると本番では一度も走らないのに全件緑で通った)。
-    // 無条件に必ず走ることまで求める
+    // さらに**引数が「実際に渡すオブジェクトの apiVersion」であること**まで見る —
+    // 定数を渡す形に戻すと、検査対象と配線対象が別物になる (これも実測で素通りした)
     const wiredCalls: string[] = [];
+    // 検査より後ろ・生成より前で、オプションを書き換える文が無いかも見る
+    const mutations: string[] = [];
+    let assertEnd = -1;
     for (const statement of block!.statements) {
+      const statementStart = statement.getStart(construction.sourceFile);
       // 生成より後ろの文は、その生成を守っていないので数えない
-      if (statement.getStart(construction.sourceFile) >= constructionStart) continue;
+      if (statementStart >= constructionStart) continue;
       // 「式だけの文」であること (条件分岐やループの中に隠れていない)
       if (!ts.isExpressionStatement(statement)) continue;
       const expression = statement.expression;
-      if (!ts.isCallExpression(expression)) continue;
+
+      // 実行時チェックの呼び出し
       if (
-        !ts.isIdentifier(expression.expression) ||
-        expression.expression.text !== RUNTIME_ASSERT_NAME
-      )
+        ts.isCallExpression(expression) &&
+        ts.isIdentifier(expression.expression) &&
+        expression.expression.text === RUNTIME_ASSERT_NAME
+      ) {
+        const [argument] = expression.arguments;
+        // 引数が `<オプション>.apiVersion` であること
+        const inspectsOptions =
+          argument !== undefined &&
+          ts.isPropertyAccessExpression(argument) &&
+          ts.isIdentifier(argument.expression) &&
+          argument.expression.text === optionsName &&
+          argument.name.text === 'apiVersion';
+        if (inspectsOptions) {
+          wiredCalls.push(expression.getText(construction.sourceFile));
+          assertEnd = statement.end;
+        }
         continue;
-      wiredCalls.push(expression.getText(construction.sourceFile));
+      }
+
+      // 検査より後ろで、オプションを書き換える / プロパティを消す文
+      if (assertEnd >= 0 && statementStart > assertEnd) {
+        const touchesOptions =
+          (ts.isDeleteExpression(expression) &&
+            ts.isPropertyAccessExpression(expression.expression) &&
+            ts.isIdentifier(expression.expression.expression) &&
+            expression.expression.expression.text === optionsName) ||
+          (ts.isBinaryExpression(expression) &&
+            expression.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+            expression.left.getText(construction.sourceFile).startsWith(optionsName));
+        if (touchesOptions) mutations.push(statement.getText(construction.sourceFile));
+      }
     }
+
+    // 検査の後に値を書き換えていないこと (書き換えると検査を通った値と渡す値が別物になる)
+    expect(mutations, '実行時チェックの後でオプションを書き換えている').toEqual([]);
 
     // 同じ関数の中で、生成より前に 1 回以上呼ばれていること。
     // **「ファイルのどこかにあるか」では足りない** — 一度も呼ばれない関数の中に置いても
     // 通ってしまい、実行時の担保が黙って外れる (実測で確認済み)
     expect(
       wiredCalls.length,
-      `${RUNTIME_ASSERT_NAME} が、生成と同じブロックで、生成より前に無条件で呼ばれていない`,
+      `${RUNTIME_ASSERT_NAME} が、生成と同じブロックで、生成より前に、` +
+        `実際に渡すオプション (${optionsName}.apiVersion) を引数として無条件で呼ばれていない`,
     ).toBeGreaterThan(0);
   });
 
