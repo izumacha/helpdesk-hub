@@ -31,7 +31,12 @@ import { join } from 'node:path';
 // 構文木でソースを読むためのコンパイラ API (自前の字句解析をしないため)
 import ts from 'typescript';
 // 構文木の生成・走査と import 解決は検出網どうしで共有する (tests/docker-seed-files.test.ts と同じ土台)
-import { parseSourceFiles, resolveModuleSpecifier, visitNodes } from './lib/source-module-graph';
+import {
+  SRC_DIR,
+  parseSourceFiles,
+  resolveModuleSpecifier,
+  visitNodes,
+} from './lib/source-module-graph';
 // 入口の枠と、その導出材料 (テスト側に書き写すと古びるので導出元から受け取る)
 import {
   ENTRY_MAX_BODY_BYTES,
@@ -56,8 +61,6 @@ import nextConfig from '../next.config';
 
 // リポジトリのルート (このテストファイルは <root>/tests/ にあるので 1 つ上)
 const REPO_ROOT = join(__dirname, '..');
-// 走査対象のソースディレクトリ
-const SRC_DIR = join(REPO_ROOT, 'src');
 // 導出元 (この一覧に登録されていない上限を落としたい)
 const ENTRY_MODULE_PATH = join(SRC_DIR, 'lib', 'entry-body-limit.ts');
 // 上限つき読み取り関数の定義元 (呼び出し側の検査では対象外にする)
@@ -835,7 +838,7 @@ function boundedReadCallsWithUnregisteredLimit(): string[] {
 describe('入口 (proxy) のボディ複製上限', () => {
   // ソースの読み込みと構文解析は 1 回だけ行い、全テストで同じ対象を見る
   beforeAll(() => {
-    parsedSources = parseSourceFiles(SRC_DIR);
+    parsedSources = parseSourceFiles();
     // 読み取り関数の名前は解析済みの構文木から導出する (手書き一覧にしない)
     boundedReadFunctionNames = exportedBoundedReadFunctionNames();
     registeredRouteLimitNameList = registeredRouteLimitNames();

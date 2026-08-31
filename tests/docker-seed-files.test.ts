@@ -31,6 +31,7 @@ import { readFileSync } from 'node:fs';
 import { join, relative, resolve } from 'node:path';
 // ソースの構文木と import 解決は検出網どうしで共有する (tests/entry-body-limit.test.ts と同じ土台)
 import {
+  SRC_DIR,
   collectModuleSpecifiers,
   parseSourceFile,
   resolveModuleSpecifier,
@@ -43,7 +44,6 @@ const SEED_ENTRY = join(REPO_ROOT, 'prisma/seed.ts');
 // 実行イメージへ手で選んで入れる対象のディレクトリ (この配下だけを「過不足」の検査対象にする)
 const HAND_PICKED_DIR = 'src/lib';
 // `src/` の絶対パス (import 解決の起点として共有ヘルパーへ渡す)
-const SRC_DIR = join(REPO_ROOT, 'src');
 // Prisma の生成物ディレクトリ。中は自動生成の .js / .d.ts で、Dockerfile も丸ごとコピーするため、
 // 依存として「このディレクトリが要る」ことだけ記録し、中身までは辿らない (数千ファイルある)
 const GENERATED_DIR = 'src/generated';

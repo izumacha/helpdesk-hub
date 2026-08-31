@@ -122,6 +122,18 @@ export function collectModuleSpecifiers(sourceFile: ts.SourceFile): string[] {
   return specifiers;
 }
 
+// リポジトリのルート (このファイルは <root>/tests/lib/ にあるので 2 つ上)
+const REPO_ROOT = join(__dirname, '..', '..');
+
+/**
+ * 走査対象のソースディレクトリ。**検出網どうしで 1 つの定義を共有する。**
+ *
+ * `parseSourceFiles` の生成物除外はこのディレクトリからの相対パスで判断するので、
+ * 走査範囲と除外規則は同じ場所が持っているべき (別々に持つと、片方だけ動かしたときに
+ * 除外が別の意味になる)。
+ */
+export const SRC_DIR = join(REPO_ROOT, 'src');
+
 // パス区切り (POSIX/Windows いずれの表記でも同じ判定になるようにする)
 const PATH_SEGMENT_SEPARATORS = ['/', '\\'];
 
@@ -145,11 +157,11 @@ function isGeneratedPath(relativePath: string): boolean {
  * 何度も行ううえ、走査中にファイルが書き換わるとテストごとに見ている対象がずれる。
  */
 // src 配下のソースをすべて構文木にして返す
-export function parseSourceFiles(srcDir: string): { path: string; sourceFile: ts.SourceFile }[] {
+export function parseSourceFiles(): { path: string; sourceFile: ts.SourceFile }[] {
   // src/ 配下を再帰的にたどり、対象拡張子だけを絶対パスにする (生成物は対象外)
-  const files = readdirSync(srcDir, { recursive: true, encoding: 'utf8' })
+  const files = readdirSync(SRC_DIR, { recursive: true, encoding: 'utf8' })
     .filter((rel) => (rel.endsWith('.ts') || rel.endsWith('.tsx')) && !isGeneratedPath(rel))
-    .map((rel) => join(srcDir, rel));
+    .map((rel) => join(SRC_DIR, rel));
   // 1 ファイルずつ構文木にして返す
   return files.map((path) => ({ path, sourceFile: parseSourceFile(path) }));
 }

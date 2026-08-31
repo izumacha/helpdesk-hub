@@ -68,18 +68,19 @@ declare global {
  * 生成時にだけ呼ぶ (モジュール読み込み時ではない) のは、`STRIPE_PRICE_IDS` だけを import する
  * 経路 (Webhook ルート等) を巻き添えで落とさないため。
  */
-function assertApiVersionSupported(): void {
-  // 値が空 (未設定・undefined 相当) なら、版を固定できていないので止める
-  if (!STRIPE_API_VERSION) {
+function assertApiVersionSupported(apiVersion: string | undefined): void {
+  // 値が空 (指定なし・undefined 相当) なら、版を固定できていないので止める
+  if (!apiVersion) {
     throw new Error(
-      '[stripe] 送信する API バージョンを解決できません。stripe SDK の API_VERSION を確認してください。',
+      '[stripe] 送信する API バージョンを解決できません。' +
+        'クライアント生成時の apiVersion 指定と stripe SDK の API_VERSION を確認してください。',
     );
   }
   // 想定したメジャーでなければ止める。SDK が次のメジャーへ進んだのに移行を確認していない状態
-  if (!STRIPE_API_VERSION.endsWith(`.${EXPECTED_STRIPE_MAJOR_API_VERSION}`)) {
+  if (!apiVersion.endsWith(`.${EXPECTED_STRIPE_MAJOR_API_VERSION}`)) {
     throw new Error(
       `[stripe] Stripe API のメジャー版が想定 (${EXPECTED_STRIPE_MAJOR_API_VERSION}) と異なります: ` +
-        `${STRIPE_API_VERSION}。破壊的変更の有無を確認し、移行してから ` +
+        `${apiVersion}。破壊的変更の有無を確認し、移行してから ` +
         'EXPECTED_STRIPE_MAJOR_API_VERSION を更新してください。',
     );
   }
@@ -87,20 +88,24 @@ function assertApiVersionSupported(): void {
 
 // Stripe クライアントを取得する関数 (ホットリロード対策のシングルトン)
 export function getStripeClient(): Stripe {
-  // 版の前提を先に確かめる (満たさなければクライアントを作らない)
-  assertApiVersionSupported();
   // 開発環境ではホットリロードのたびに新インスタンスが作られるのを防ぐ
   if (!global._stripeClient) {
-    // 初回のみインスタンスを生成してグローバルにキャッシュ
-    global._stripeClient = new Stripe(getStripeSecretKey(), {
+    // クライアントへ渡すオプションを**先に組み立てる**。
+    // こうして「実際に渡すオブジェクト」を検査対象にするのが要点で、別の定数に差し替えられても、
+    // 後ろのスプレッドで上書きされても、指定ごと消されても、下の検査がその結果を見る。
+    // (組み立てずに定数だけを検査すると、渡している値とは別のものを確かめることになる)
+    const clientOptions = {
       // SDK の申告値をそのまま渡す (互換性は SDK の版ピンで担保)。
-      // **この指定は現時点では実行時の挙動を変えない** — SDK は
+      // **この指定は現時点では送信内容を変えない** — SDK は
       // `version: props.apiVersion || DEFAULT_API_VERSION` で、その既定値が `Stripe.API_VERSION`
       // そのものだから。それでも明示するのは防御的な意味で、将来 SDK の既定値が `API_VERSION` と
-      // 食い違う形に変わったとき (アカウント既定版を使う等)、送る版がこちらの意図から外れるのを防ぐ。
-      // 「無効化されたら気付ける」ようにするのがガードの (b) / (b0) の役割
+      // 食い違う形に変わったとき (アカウント既定版を使う等)、送る版が意図から外れるのを防ぐ
       apiVersion: STRIPE_API_VERSION,
-    });
+    };
+    // 実際に渡す値が前提を満たすことを確かめる (満たさなければクライアントを作らない)
+    assertApiVersionSupported(clientOptions.apiVersion);
+    // 初回のみインスタンスを生成してグローバルにキャッシュ
+    global._stripeClient = new Stripe(getStripeSecretKey(), clientOptions);
   }
   return global._stripeClient;
 }

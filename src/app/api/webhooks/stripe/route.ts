@@ -111,16 +111,30 @@ export async function POST(request: Request): Promise<NextResponse> {
   // それでもこの形にしている根拠はファイル冒頭のセキュリティ要点 4 を参照
   const rawBody = bodyResult.bytes;
 
-  // Stripe クライアントと Webhook Secret を取得する
+  // Stripe クライアントと Webhook Secret を取得する。
+  // **署名検証の try とは分ける。** どちらも throw しうるが原因の種類が違い、まとめると
+  // 設定不備 (シークレット未設定・API バージョンが想定外) まで「署名検証失敗」の 400 として
+  // 報告されてしまう。運用側は鍵の不一致を疑って調べ続けることになり、しかも 400 なので
+  // Stripe は再送を続けてエンドポイントを無効化しうる。設定不備は 500 で、それと分かる文言で返す
+  let stripe;
+  let webhookSecret;
+  try {
+    stripe = getStripeClient();
+    webhookSecret = getStripeWebhookSecret();
+  } catch (err) {
+    // 設定不備: 署名の問題ではないので、区別できる文言とステータスで返す
+    console.error('[stripe-webhook] Stripe クライアントの設定不備:', err);
+    return NextResponse.json({ error: 'Stripe の設定に問題があります' }, { status: 500 });
+  }
+
+  // 署名を検証して Stripe イベントオブジェクトを取り出す
   let stripeEvent;
   try {
-    const stripe = getStripeClient();
-    const webhookSecret = getStripeWebhookSecret();
     // constructEvent で署名を検証し、Stripe イベントオブジェクトを取り出す。
     // 署名が不正なら StripeSignatureVerificationError が throw される。
     stripeEvent = stripe.webhooks.constructEvent(rawBody, signature, webhookSecret);
   } catch (err) {
-    // 署名検証失敗: Stripe 由来でない偽装リクエスト (or 設定ミス) として 400 を返す
+    // 署名検証失敗: Stripe 由来でない偽装リクエストとして 400 を返す
     console.error('[stripe-webhook] 署名検証失敗:', err);
     return NextResponse.json({ error: 'Webhook 署名の検証に失敗しました' }, { status: 400 });
   }
