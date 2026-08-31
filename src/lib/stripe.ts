@@ -25,9 +25,13 @@ export const EXPECTED_STRIPE_MAJOR_API_VERSION = 'dahlia';
 //   書き写して直す」という手間だけで、これは §6 が禁じる「写しを持つ」形そのものだった
 //   (実例: Dependabot の stripe 22.5.0 → 22.6.0 で `npm run typecheck` が TS2322 で落ちた)。
 //
-// 型注釈を省略せず残しているのは、SDK が将来 `API_VERSION` を素の `string` へ広げたときに
-// **この代入で落として気付けるようにする**ため (§9 fail-closed。型が緩んだことに気付かないまま
-// 通すと、上のメジャー版ガードが照合している相手も静かに緩む)。
+// 型注釈は「この定数が満たすべき契約 (= `apiVersion` に渡せる型)」の記録として残している。
+// **ただしこれは上流の型が緩むことへの防御にはならない**: `LatestApiVersion` は
+// `typeof ApiVersion` の別名で、`API_VERSION` の型も同じ `typeof ApiVersion` なので、
+// 上流が `ApiVersion` を素の `string` へ広げると**代入の両側が同時に広がって通ってしまう**。
+// 型が緩んだ場合に実際に効くのは下のメジャー版ガード (`EXPECTED_STRIPE_MAJOR_API_VERSION` を
+// `tests/stripe-api-version-guard.test.ts` が実行時の文字列と突き合わせる) の方で、
+// あちらは型ではなく値を見るため上流の型定義に左右されない。
 const STRIPE_API_VERSION: Stripe.LatestApiVersion = Stripe.API_VERSION;
 
 // Stripe シークレットキーを環境変数から取得する (サーバー側のみで参照 — クライアントに漏らさない)
