@@ -131,8 +131,8 @@ const PATH_SEGMENT_SEPARATORS = ['/', '\\'];
  * 単純な前方一致にすると `generated-reports/limits.ts` のような別ディレクトリまで
  * 走査対象から外れ、そこに置かれたものが検出網に入らなくなる。
  */
-// 相対パスが生成物ディレクトリ配下かを判定する
-export function isGeneratedPath(relativePath: string): boolean {
+// 相対パスが生成物ディレクトリ配下かを判定する (このモジュール内の parseSourceFiles だけが使う)
+function isGeneratedPath(relativePath: string): boolean {
   // ディレクトリ名がちょうど `generated` で、その直後が区切り文字であることを求める
   return PATH_SEGMENT_SEPARATORS.some((sep) => relativePath.startsWith(`generated${sep}`));
 }

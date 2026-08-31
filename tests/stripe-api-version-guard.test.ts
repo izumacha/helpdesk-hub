@@ -56,13 +56,28 @@
 //     import し直すだけで (b)(c) を迂回できる → 走査を src 全体へ広げる
 //     (src 全体で日付の文字列リテラルは 0 件なので、広げても誤検知は増えない)
 //   - `apiVersion: undefined` は弾けても `const V = undefined` を経由すると素通りする
-//     → 識別子の宣言まで辿り、`undefined` への束縛を弾く
+//
+// この最後の 1 件は、当初「識別子の宣言まで辿って `undefined` への束縛を弾く」という静的解析で
+// 塞ごうとしたが、**その方向は終わりのない綴り合わせになる**ことが分かった (`void 0`、
+// 別名の 2 ホップ、同名定数によるファイル横断の誤解決…と、いずれも実測で素通りした)。
+// しかも 1 つ漏らすたびに静かな fail-open が増える。
+//
+// **そこで「渡している値が実際に使えるものか」の判定は本番モジュール側の実行時チェック
+// (`assertApiVersionSupported`) に移した。** 実行時の値を見るので綴りに依存せず、この系統の穴が
+// まとめて閉じる。テスト側 (b) が担うのは「指定が書かれているか」だけ — こちらは SDK の既定値に
+// 隠れて実行時からは見えないので、静的にしか確かめられない。役割を取り違えないこと。
 
+// パスの組み立てと相対化 (走査範囲の指定と、違反箇所の読みやすい表示に使う)
 import path from 'node:path';
+// Vitest の DSL と前後処理
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+// 構文木でソースを読むためのコンパイラ API (自前の字句解析をしないため)
 import ts from 'typescript';
+// 検査の基準となる SDK 本体 (API_VERSION / MAJOR_API_VERSION を読む)
 import Stripe from 'stripe';
+// 検査対象のモジュールが公開している、想定メジャー版とクライアント生成関数
 import { EXPECTED_STRIPE_MAJOR_API_VERSION, getStripeClient } from '@/lib/stripe';
+// src の走査と構文木化は検出網どうしで共有する (tests/entry-body-limit.test.ts と同じ土台)
 import { parseSourceFiles, visitNodes } from './lib/source-module-graph';
 
 // 検査対象のソースファイル (API バージョンを所有するモジュール)
@@ -75,7 +90,7 @@ const SRC_DIR = path.resolve(__dirname, '../src');
 // 分割して書かれた写しは「日付部分」しか 1 つのトークンに残らないため、接尾辞まで要求すると
 // 取り落とす (実測でこの形が素通りしていた)。src 全体で日付の文字列リテラルは 0 件なので
 // 範囲を広げても誤検知は増えない (実測して確認済み)
-const DATED_VERSION_PATTERN = /\d{4}-\d{2}-\d{2}/;
+const DATED_VERSION_PATTERN = /\d{4}-\d{2}-\d{2}\./;
 
 // 走査したソースの構文木。**1 回だけ読んで全テストで使い回す**
 // (テストごとに読み直すと同じ I/O と解析を繰り返すうえ、走査中にファイルが書き換わると
@@ -95,19 +110,30 @@ type Stripe生成箇所 = { パス: string; 呼び出し: ts.NewExpression; 木:
  * 型のみの import (`import type Stripe from 'stripe'`) は `new` できないので対象外にする。
  */
 function stripeの束縛名(木: ts.SourceFile): string | null {
-  // 見つけた束縛名を入れる場所
-  let 束縛名: string | null = null;
-  // import 宣言を探す
-  visitNodes(木, (node) => {
-    if (!ts.isImportDeclaration(node)) return;
+  // import 宣言はトップレベルの文にしか現れないので、木を全走査せず statements だけを見る
+  for (const 文 of 木.statements) {
+    if (!ts.isImportDeclaration(文)) continue;
     // 指定子が 'stripe' のものだけを見る
-    if (!ts.isStringLiteral(node.moduleSpecifier) || node.moduleSpecifier.text !== 'stripe') return;
+    if (!ts.isStringLiteral(文.moduleSpecifier) || 文.moduleSpecifier.text !== 'stripe') continue;
     // 型のみの import は実行時に存在しないので除く
-    if (!node.importClause || node.importClause.isTypeOnly) return;
+    if (!文.importClause || 文.importClause.isTypeOnly) continue;
     // デフォルト import の名前を採る
-    if (node.importClause.name) 束縛名 = node.importClause.name.text;
-  });
-  return 束縛名;
+    if (文.importClause.name) return 文.importClause.name.text;
+  }
+  return null;
+}
+
+/**
+ * オブジェクトリテラルのプロパティ名を、引用符の有無によらず取り出す。
+ *
+ * `getText()` で比べると `{ 'apiVersion': V }` が `'apiVersion'` (引用符込み) になり、
+ * 意味の変わらない書き換えで (b) が「指定なし」と誤判定してしまうため。
+ */
+function プロパティ名(名前: ts.PropertyName): string | null {
+  // 識別子と文字列リテラルはどちらも `.text` が引用符を含まない名前になる
+  if (ts.isIdentifier(名前) || ts.isStringLiteral(名前)) return 名前.text;
+  // 計算プロパティなど静的に決まらない形は名前として扱わない
+  return null;
 }
 
 /** `src/` 全体から `new <stripe のデフォルト import>(...)` の呼び出しを集める */
@@ -132,56 +158,12 @@ function Stripe生成箇所を集める(): Stripe生成箇所[] {
 // 生成箇所も 1 回だけ求めて使い回す ((b0) と (b) が同じものを見るようにする)
 const Stripe生成箇所一覧 = Stripe生成箇所を集める();
 
-/**
- * 識別子の宣言を `src` 全体から探し、その初期化式を返す (見つからなければ null)。
- *
- * `apiVersion` に渡された定数が**別モジュールで `undefined` に束縛されている**形を弾くために要る。
- * `apiVersion: undefined` は (b) が直接弾けるが、`const V = undefined` を経由すると
- * 識別子に見えるので素通りしてしまう (実測で確認済み)。
- */
-function 定数の初期化式を探す(名前: string): ts.Expression | null {
-  // 見つけた初期化式を入れる場所
-  let 初期化式: ts.Expression | null = null;
-  // 走査済みの構文木から、その名前の変数宣言を探す
-  for (const { sourceFile: 木 } of 走査済みソース) {
-    visitNodes(木, (node) => {
-      if (!ts.isVariableDeclaration(node)) return;
-      if (!ts.isIdentifier(node.name) || node.name.text !== 名前) return;
-      // 初期化式があれば採る (無い宣言は後述の判定で弾かれる)
-      if (node.initializer) 初期化式 = node.initializer;
-    });
-    if (初期化式 !== null) break;
-  }
-  return 初期化式;
-}
-
 // `apiVersion` の指定を調べた結果。どの理由で駄目だったかを呼び出し側が区別できるようにする
 type apiVersion指定 =
   | { 種別: 'ok'; 識別子名: string } // 名前付き定数が渡されている (正常)
   | { 種別: '指定なし' } // オプション自体が無い / `apiVersion` が無い
   | { 種別: '不透明'; 詳細: string } // スプレッド等で静的に読めない
   | { 種別: '定数でない'; 詳細: string }; // リテラル・`undefined`・条件式など
-
-/**
- * `apiVersion` に渡された識別子が本当に「値を持つ定数」かを確かめる。
- *
- * `undefined` は指定しないのと同義なので、直接書かれた場合も、`undefined` に束縛された
- * 定数を経由した場合も弾く (SDK は `props.apiVersion || DEFAULT_API_VERSION` なので、
- * どちらも実行時には指定なしと同じ挙動になり、(b') では気付けない)。
- */
-function 識別子を検証する(名前: string): apiVersion指定 {
-  // `undefined` そのものを渡す形
-  if (名前 === 'undefined') return { 種別: '定数でない', 詳細: 'undefined' };
-  // 宣言を探して初期化式を見る
-  const 初期化式 = 定数の初期化式を探す(名前);
-  // 宣言が見つからない (import 元が src 外など) 場合は確かめようがないので不透明として落とす
-  if (初期化式 === null)
-    return { 種別: '不透明', 詳細: `${名前} の宣言と初期化式を src 内で特定できない` };
-  // 初期化式が `undefined` なら、指定なしと同義なので弾く
-  if (ts.isIdentifier(初期化式) && 初期化式.text === 'undefined')
-    return { 種別: '定数でない', 詳細: `${名前} は undefined に束縛されている` };
-  return { 種別: 'ok', 識別子名: 名前 };
-}
 
 /** ある `new Stripe(...)` 呼び出しの `apiVersion` 指定を構文木から読み取る */
 function apiVersion指定を読む(呼び出し: ts.NewExpression, 木: ts.SourceFile): apiVersion指定 {
@@ -200,19 +182,20 @@ function apiVersion指定を読む(呼び出し: ts.NewExpression, 木: ts.Sourc
   // 名前を変えただけのリファクタで赤くしないという方針の一部 (最も普通の書き換え形のため)
   for (const プロパティ of 第2引数.properties) {
     // 通常形 `apiVersion: 値`
-    if (ts.isPropertyAssignment(プロパティ) && プロパティ.name.getText(木) === 'apiVersion') {
+    if (ts.isPropertyAssignment(プロパティ) && プロパティ名(プロパティ.name) === 'apiVersion') {
       const 値 = プロパティ.initializer;
-      // 識別子でなければ (リテラル・キャスト・条件式など) 定数ではない
+      // 識別子でなければ (リテラル直書き・キャスト・条件式など) 名前付き定数ではない
       if (!ts.isIdentifier(値)) return { 種別: '定数でない', 詳細: 値.getText(木) };
-      // 識別子の中身まで確かめる (`undefined` に束縛された定数を経由する形を弾く)
-      return 識別子を検証する(値.text);
+      // `undefined` そのものは指定しないのと同義なので弾く
+      if (値.text === 'undefined') return { 種別: '定数でない', 詳細: 'undefined' };
+      return { 種別: 'ok', 識別子名: 値.text };
     }
     // ショートハンド形 `{ apiVersion }` (プロパティ名がそのまま定数名)
     if (
       ts.isShorthandPropertyAssignment(プロパティ) &&
-      プロパティ.name.getText(木) === 'apiVersion'
+      プロパティ名(プロパティ.name) === 'apiVersion'
     ) {
-      return 識別子を検証する(プロパティ.name.text);
+      return { 種別: 'ok', 識別子名: プロパティ.name.text };
     }
   }
 

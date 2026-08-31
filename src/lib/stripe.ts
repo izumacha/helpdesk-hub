@@ -56,8 +56,39 @@ declare global {
   var _stripeClient: Stripe | undefined;
 }
 
+/**
+ * 送ろうとしている API バージョンが前提を満たすことを、**本番の実行経路でも**確かめる。
+ *
+ * なぜテストだけに任せないのか: `EXPECTED_STRIPE_MAJOR_API_VERSION` の宣言が
+ * 「テストからしか読まれない飾り」になると、テストを流さずにビルド・デプロイした場合に
+ * **想定していないメジャーの API を黙って話し始める**。課金は誤判定がそのまま権限と請求に
+ * 直結する領域なので、不明なら止める側に倒す (§9 fail-closed。このモジュールが
+ * `STRIPE_SECRET_KEY` 未設定でも起動を失敗させているのと同じ扱い)。
+ *
+ * 生成時にだけ呼ぶ (モジュール読み込み時ではない) のは、`STRIPE_PRICE_IDS` だけを import する
+ * 経路 (Webhook ルート等) を巻き添えで落とさないため。
+ */
+function assertApiVersionSupported(): void {
+  // 値が空 (未設定・undefined 相当) なら、版を固定できていないので止める
+  if (!STRIPE_API_VERSION) {
+    throw new Error(
+      '[stripe] 送信する API バージョンを解決できません。stripe SDK の API_VERSION を確認してください。',
+    );
+  }
+  // 想定したメジャーでなければ止める。SDK が次のメジャーへ進んだのに移行を確認していない状態
+  if (!STRIPE_API_VERSION.endsWith(`.${EXPECTED_STRIPE_MAJOR_API_VERSION}`)) {
+    throw new Error(
+      `[stripe] Stripe API のメジャー版が想定 (${EXPECTED_STRIPE_MAJOR_API_VERSION}) と異なります: ` +
+        `${STRIPE_API_VERSION}。破壊的変更の有無を確認し、移行してから ` +
+        'EXPECTED_STRIPE_MAJOR_API_VERSION を更新してください。',
+    );
+  }
+}
+
 // Stripe クライアントを取得する関数 (ホットリロード対策のシングルトン)
 export function getStripeClient(): Stripe {
+  // 版の前提を先に確かめる (満たさなければクライアントを作らない)
+  assertApiVersionSupported();
   // 開発環境ではホットリロードのたびに新インスタンスが作られるのを防ぐ
   if (!global._stripeClient) {
     // 初回のみインスタンスを生成してグローバルにキャッシュ
