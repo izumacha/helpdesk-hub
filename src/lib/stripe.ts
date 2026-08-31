@@ -5,10 +5,34 @@
 // Stripe SDK をインポート (npm install stripe 済み)
 import Stripe from 'stripe';
 
-// Stripe の API バージョン (後方互換を固定するため定数化)
-// Stripe は定期的に API バージョンを更新するため、明示固定して意図しない挙動変化を防ぐ
-// インストール済み stripe SDK が対応するバージョンに合わせる (npm ls stripe で確認)
-const STRIPE_API_VERSION = '2026-07-29.dahlia' as const;
+// Stripe API の「メジャー版」。Stripe の API バージョンは `<日付>.<メジャー名>` という形をしていて、
+// **同じメジャー名のあいだは後方互換が保たれる** (日付だけが進む更新は互換のある変更)。
+// 破壊的変更が入るのはメジャー名が変わるときなので、見張るべきなのは日付ではなくこちら。
+//
+// このモジュールで唯一「人が手で書く」バージョン値で、`tests/stripe-api-version-guard.test.ts` が
+// SDK の申告するメジャー版と突き合わせる。Stripe が次のメジャーへ進んだ SDK が Dependabot で
+// 入ってきた時点でそのテストが落ち、移行の要否を人が判断する入口になる (日常の日付更新では鳴らない)。
+export const EXPECTED_STRIPE_MAJOR_API_VERSION = 'dahlia';
+
+// Stripe へ送る API バージョン。**SDK が申告する値をそのまま使い、手で書き写さない。**
+//
+// なぜ日付入りのリテラルを直書きしないのか (以前は直書きしていた):
+//   SDK の型は `apiVersion?: Stripe.LatestApiVersion` で、これは「その SDK が生成された
+//   ただ 1 つの日付版」を指す**単一のリテラル型**。つまり別の版を書くことは型が許さないので、
+//   直書きのリテラルは「版を固定する」働きを最初から持っていなかった。実際に版を決めていたのは
+//   package.json / package-lock.json でピン留めした **SDK のバージョン**の方。
+//   残っていた効果は「stripe を上げるたびに typecheck だけが落ち、node_modules の中の値を人が
+//   書き写して直す」という手間だけで、これは §6 が禁じる「写しを持つ」形そのものだった
+//   (実例: Dependabot の stripe 22.5.0 → 22.6.0 で `npm run typecheck` が TS2322 で落ちた)。
+//
+// 型注釈は「この定数が満たすべき契約 (= `apiVersion` に渡せる型)」の記録として残している。
+// **ただしこれは上流の型が緩むことへの防御にはならない**: `LatestApiVersion` は
+// `typeof ApiVersion` の別名で、`API_VERSION` の型も同じ `typeof ApiVersion` なので、
+// 上流が `ApiVersion` を素の `string` へ広げると**代入の両側が同時に広がって通ってしまう**。
+// 型が緩んだ場合に実際に効くのは下のメジャー版ガード (`EXPECTED_STRIPE_MAJOR_API_VERSION` を
+// `tests/stripe-api-version-guard.test.ts` が実行時の文字列と突き合わせる) の方で、
+// あちらは型ではなく値を見るため上流の型定義に左右されない。
+const STRIPE_API_VERSION: Stripe.LatestApiVersion = Stripe.API_VERSION;
 
 // Stripe シークレットキーを環境変数から取得する (サーバー側のみで参照 — クライアントに漏らさない)
 function getStripeSecretKey(): string {
@@ -32,14 +56,58 @@ declare global {
   var _stripeClient: Stripe | undefined;
 }
 
+/**
+ * 送ろうとしている API バージョンが前提を満たすことを、**本番の実行経路でも**確かめる。
+ *
+ * なぜテストだけに任せないのか: `EXPECTED_STRIPE_MAJOR_API_VERSION` の宣言が
+ * 「テストからしか読まれない飾り」になると、テストを流さずにビルド・デプロイした場合に
+ * **想定していないメジャーの API を黙って話し始める**。課金は誤判定がそのまま権限と請求に
+ * 直結する領域なので、不明なら止める側に倒す (§9 fail-closed。このモジュールが
+ * `STRIPE_SECRET_KEY` 未設定でも起動を失敗させているのと同じ扱い)。
+ *
+ * モジュール読み込み時ではなく**生成時に**呼ぶのは、`STRIPE_PRICE_IDS` など SDK を使わない
+ * export だけを import する経路を巻き添えで落とさないため (現時点ではそういう利用者は無く、
+ * `@/lib/stripe` の import 元 3 つ — Webhook ルート / チェックアウト / 顧客ポータル — は
+ * いずれも `getStripeClient()` を呼ぶ。つまり**今はどの経路もこの検査を通る**)。
+ */
+function assertApiVersionSupported(apiVersion: string | undefined): void {
+  // 値が空 (指定なし・undefined 相当) なら、版を固定できていないので止める
+  if (!apiVersion) {
+    throw new Error(
+      '[stripe] 送信する API バージョンを解決できません。' +
+        'クライアント生成時の apiVersion 指定と stripe SDK の API_VERSION を確認してください。',
+    );
+  }
+  // 想定したメジャーでなければ止める。SDK が次のメジャーへ進んだのに移行を確認していない状態
+  if (!apiVersion.endsWith(`.${EXPECTED_STRIPE_MAJOR_API_VERSION}`)) {
+    throw new Error(
+      `[stripe] Stripe API のメジャー版が想定 (${EXPECTED_STRIPE_MAJOR_API_VERSION}) と異なります: ` +
+        `${apiVersion}。破壊的変更の有無を確認し、移行してから ` +
+        'EXPECTED_STRIPE_MAJOR_API_VERSION を更新してください。',
+    );
+  }
+}
+
 // Stripe クライアントを取得する関数 (ホットリロード対策のシングルトン)
 export function getStripeClient(): Stripe {
   // 開発環境ではホットリロードのたびに新インスタンスが作られるのを防ぐ
   if (!global._stripeClient) {
+    // クライアントへ渡すオプションを**先に組み立てる**。
+    // こうして「実際に渡すオブジェクト」を検査対象にするのが要点で、別の定数に差し替えられても、
+    // 後ろのスプレッドで上書きされても、指定ごと消されても、下の検査がその結果を見る。
+    // (組み立てずに定数だけを検査すると、渡している値とは別のものを確かめることになる)
+    const clientOptions: Stripe.StripeConfig = {
+      // SDK の申告値をそのまま渡す (互換性は SDK の版ピンで担保)。
+      // **この指定は現時点では送信内容を変えない** — SDK は
+      // `version: props.apiVersion || DEFAULT_API_VERSION` で、その既定値が `Stripe.API_VERSION`
+      // そのものだから。それでも明示するのは防御的な意味で、将来 SDK の既定値が `API_VERSION` と
+      // 食い違う形に変わったとき (アカウント既定版を使う等)、送る版が意図から外れるのを防ぐ
+      apiVersion: STRIPE_API_VERSION,
+    };
+    // 実際に渡す値が前提を満たすことを確かめる (満たさなければクライアントを作らない)
+    assertApiVersionSupported(clientOptions.apiVersion);
     // 初回のみインスタンスを生成してグローバルにキャッシュ
-    global._stripeClient = new Stripe(getStripeSecretKey(), {
-      apiVersion: STRIPE_API_VERSION, // API バージョンを固定して安定性を確保
-    });
+    global._stripeClient = new Stripe(getStripeSecretKey(), clientOptions);
   }
   return global._stripeClient;
 }

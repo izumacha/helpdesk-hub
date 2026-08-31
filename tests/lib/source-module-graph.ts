@@ -11,7 +11,7 @@
 // 拾ってしまう / 実際の import を取り落とす、どちらの間違いも検査を緩める方向に効くため。
 
 // ファイルの読み込みと存在確認 (Node 標準の同期 API で十分)
-import { existsSync, readFileSync, statSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 // 構文木でソースを読むためのコンパイラ API
 import ts from 'typescript';
@@ -120,4 +120,48 @@ export function collectModuleSpecifiers(sourceFile: ts.SourceFile): string[] {
   });
   // 集めた指定子を返す
   return specifiers;
+}
+
+// リポジトリのルート (このファイルは <root>/tests/lib/ にあるので 2 つ上)
+const REPO_ROOT = join(__dirname, '..', '..');
+
+/**
+ * 走査対象のソースディレクトリ。**検出網どうしで 1 つの定義を共有する。**
+ *
+ * `parseSourceFiles` の生成物除外はこのディレクトリからの相対パスで判断するので、
+ * 走査範囲と除外規則は同じ場所が持っているべき (別々に持つと、片方だけ動かしたときに
+ * 除外が別の意味になる)。
+ */
+export const SRC_DIR = join(REPO_ROOT, 'src');
+
+// パス区切り (POSIX/Windows いずれの表記でも同じ判定になるようにする)
+const PATH_SEGMENT_SEPARATORS = ['/', '\\'];
+
+/**
+ * 生成物ディレクトリ (`src/generated/`) 配下かどうかを、**パス区切り単位**で判定する。
+ *
+ * 単純な前方一致にすると `generated-reports/limits.ts` のような別ディレクトリまで
+ * 走査対象から外れ、そこに置かれたものが検出網に入らなくなる。
+ */
+// 相対パスが生成物ディレクトリ配下かを判定する (このモジュール内の parseSourceFiles だけが使う)
+function isGeneratedPath(relativePath: string): boolean {
+  // ディレクトリ名がちょうど `generated` で、その直後が区切り文字であることを求める
+  return PATH_SEGMENT_SEPARATORS.some((sep) => relativePath.startsWith(`generated${sep}`));
+}
+
+/**
+ * `src/` 配下の .ts / .tsx を読み込み、構文木にして返す。
+ *
+ * `.tsx` も見るのは、検出対象がコンポーネント側に置かれても検出網から外れないようにするため。
+ * **呼び出し側は結果を 1 回だけ取得して使い回すこと** — テストごとに読み直すと同じ I/O と解析を
+ * 何度も行ううえ、走査中にファイルが書き換わるとテストごとに見ている対象がずれる。
+ */
+// src 配下のソースをすべて構文木にして返す
+export function parseSourceFiles(): { path: string; sourceFile: ts.SourceFile }[] {
+  // src/ 配下を再帰的にたどり、対象拡張子だけを絶対パスにする (生成物は対象外)
+  const files = readdirSync(SRC_DIR, { recursive: true, encoding: 'utf8' })
+    .filter((rel) => (rel.endsWith('.ts') || rel.endsWith('.tsx')) && !isGeneratedPath(rel))
+    .map((rel) => join(SRC_DIR, rel));
+  // 1 ファイルずつ構文木にして返す
+  return files.map((path) => ({ path, sourceFile: parseSourceFile(path) }));
 }
