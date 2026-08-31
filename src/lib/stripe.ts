@@ -62,7 +62,13 @@ export function getStripeClient(): Stripe {
   if (!global._stripeClient) {
     // 初回のみインスタンスを生成してグローバルにキャッシュ
     global._stripeClient = new Stripe(getStripeSecretKey(), {
-      apiVersion: STRIPE_API_VERSION, // SDK の申告値をそのまま渡す (互換性は SDK の版ピンで担保)
+      // SDK の申告値をそのまま渡す (互換性は SDK の版ピンで担保)。
+      // **この指定は現時点では実行時の挙動を変えない** — SDK は
+      // `version: props.apiVersion || DEFAULT_API_VERSION` で、その既定値が `Stripe.API_VERSION`
+      // そのものだから。それでも明示するのは防御的な意味で、将来 SDK の既定値が `API_VERSION` と
+      // 食い違う形に変わったとき (アカウント既定版を使う等)、送る版がこちらの意図から外れるのを防ぐ。
+      // 「無効化されたら気付ける」ようにするのがガードの (b) / (b0) の役割
+      apiVersion: STRIPE_API_VERSION,
     });
   }
   return global._stripeClient;
