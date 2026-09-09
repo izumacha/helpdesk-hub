@@ -113,6 +113,14 @@ export function Sidebar({ role, mode }: Props) {
       // 先頭・末尾の要素を取り出す
       const first = items[0];
       const last = items[items.length - 1];
+      // フォーカスがドロワーの外にある場合 (ドロワー内の非対話領域をタップして
+      // activeElement が body に落ちた直後など) は、Tab の行き先が背面のコンテンツに
+      // なってしまうため、必ずドロワー内へ引き戻す (/code-review ultra 指摘対応)
+      if (!aside.contains(document.activeElement)) {
+        event.preventDefault();
+        (event.shiftKey ? last : first).focus();
+        return;
+      }
       // Shift+Tab で先頭から抜けようとしたら末尾へ回す
       if (event.shiftKey && document.activeElement === first) {
         event.preventDefault();

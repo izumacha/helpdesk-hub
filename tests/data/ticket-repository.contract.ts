@@ -18,6 +18,8 @@ import {
   TICKET_DETAIL_COMMENTS_LIMIT,
   TICKET_DETAIL_HISTORY_LIMIT,
 } from '@/data/ports/ticket-repository';
+// dueSoon フィルタの「警告帯」の幅 (§6 一元管理: 値を書き写さず実装と同じ定数から導出する)
+import { DEFAULT_WARNING_THRESHOLD_MS } from '@/lib/sla';
 
 // 既定で使うテナント ID (旧テストは単一テナントを前提に書かれているのでここで共通化)
 const TENANT_ID = 'default-tenant';
@@ -985,9 +987,12 @@ export function runTicketRepositoryContract(
       const { requester, categoryId } = await ctx.seedBasicFixture();
       // 基準時刻 (作成済みチケットの期限を相対配置するための固定値)
       const now = new Date('2030-06-01T00:00:00Z');
-      // 警告帯の内側 (残り 1 時間) / 外側 (残り 25 時間 > DEFAULT_WARNING_THRESHOLD_MS=24h) / 過去
-      const inWindow = new Date(now.getTime() + 60 * 60 * 1000);
-      const beyondWindow = new Date(now.getTime() + 25 * 60 * 60 * 1000);
+      // 警告帯の内側 (帯の中央) / 外側 (帯の終端の 1 時間先) / 過去。
+      // /code-review ultra 指摘対応: 「25 時間」のような固定値を書き写すと、
+      // DEFAULT_WARNING_THRESHOLD_MS を変えたときに実装が正しくてもテストだけが落ちる。
+      // 帯の幅から相対で導出する (§6 値の書き写し禁止)
+      const inWindow = new Date(now.getTime() + Math.floor(DEFAULT_WARNING_THRESHOLD_MS / 2));
+      const beyondWindow = new Date(now.getTime() + DEFAULT_WARNING_THRESHOLD_MS + 60 * 60 * 1000);
       const past = new Date(now.getTime() - 60 * 60 * 1000);
 
       // 警告帯の内側 + 未解決 → ヒット対象

@@ -17,7 +17,7 @@ HelpDesk Hub は、社内問い合わせの対応漏れ・属人化・SLA遅延�
 <p align="center">
   <img src="docs/screenshots/dashboard.png" alt="HelpDesk Hub ダッシュボード画面" width="900" />
   <br />
-  <em>ダッシュボード — ステータス別件数・SLA 超過・担当者別ワークロードを一目で把握</em>
+  <em>ダッシュボード — ステータス別件数・対応期限（SLA）・担当者別ワークロード・対応品質を一目で把握</em>
 </p>
 
 <p align="center">
