@@ -88,10 +88,26 @@ export const SLA_LABELS: Record<SlaState, string> = {
   none: '', // 対象外も非表示
 };
 
-// SLA 状態ごとに適用する Tailwind カラークラス (バッジの色)
+// SLA 状態ごとに適用する Tailwind カラークラス (バッジの色)。
+// 監査フォローアップ (2026-09-09): 以前はここが yellow/red、ダッシュボードの SLA タイルが
+// rose と、同じ概念に 2 系統の配色が併存していた。アプリ全体のパレット (WaitingForUser=amber /
+// Escalated=rose の STATUS_COLORS) に合わせて amber/rose へ統一する (§6 配色の一元管理)
 export const SLA_COLORS: Record<SlaState, string> = {
   ok: '',
-  warning: 'bg-yellow-100 text-yellow-700', // 黄色系
-  overdue: 'bg-red-100 text-red-700', // 赤系
+  warning: 'bg-amber-100 text-amber-700', // 期限間近: アンバー (注意)
+  overdue: 'bg-rose-100 text-rose-700', // 期限超過: ロゼ (警告)
   none: '',
+};
+
+// ダッシュボードの SLA タイル (期限間近 / 期限超過) 用の Tailwind カラークラス。
+// バッジ (SLA_COLORS) と同じ色相を、カード形状向けの淡いトーンに展開したもの。
+// SLA の配色をこのファイルに集約し、画面側での直書きを防ぐ (§6 配色の一元管理)
+export const SLA_TILE_COLORS: Record<
+  Exclude<SlaState, 'ok' | 'none'>,
+  { container: string; number: string }
+> = {
+  // 期限間近: アンバーの淡い面 + 濃い数字 (小さめの説明文は slate のまま画面側が持つ)
+  warning: { container: 'bg-amber-50/40 ring-amber-200', number: 'text-amber-700' },
+  // 期限超過: ロゼの淡い面 + 濃い数字
+  overdue: { container: 'bg-rose-50/30 ring-rose-200', number: 'text-rose-700' },
 };
