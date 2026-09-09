@@ -74,13 +74,32 @@ function matchesFilter(t: Ticket, filter: TicketListFilter, tenantId: string): b
   if (filter.locationId !== undefined && t.locationId !== filter.locationId) return false;
   // 作成日時フィルター: この日時以降に作成されたチケットのみ (月間件数カウント用)
   if (filter.createdAfter !== undefined && t.createdAt < filter.createdAfter) return false;
-  // 期限切れフィルター: 期限あり / 期限超過 / 未解決 / 終息状態でない
-  if (filter.overdue) {
-    if (!t.resolutionDueAt) return false;
-    if (t.resolutionDueAt >= filter.overdue.now) return false;
+  // 期限系フィルターで共通の「未完了」判定 (期限あり / 未解決 / 終息状態でない)。
+  // Prisma アダプタの addUnresolvedCondition と同じ規約 (§6 一元管理: 両アダプタで判定を揃える)
+  const isUnresolvedWithDue = () =>
     // != null は null と undefined の両方を弾く (型が将来 Date | null | undefined に広がっても安全)
-    if (t.resolvedAt != null) return false;
-    if (t.status === 'Resolved' || t.status === 'Closed') return false;
+    t.resolutionDueAt != null &&
+    t.resolvedAt == null &&
+    t.status !== 'Resolved' &&
+    t.status !== 'Closed';
+  // 期限切れフィルター: 期限超過 (境界は <) + 未完了
+  if (filter.overdue) {
+    if (!isUnresolvedWithDue()) return false;
+    if (t.resolutionDueAt! >= filter.overdue.now) return false;
+  }
+  // 期限間近フィルター: 解決期限が警告帯 [now, now + DEFAULT_WARNING_THRESHOLD_MS) 内 + 未完了
+  // (getSlaState の 'warning' 判定と同じ範囲。監査フォローアップ 2026-09-09)
+  if (filter.dueSoon) {
+    if (!isUnresolvedWithDue()) return false;
+    if (t.resolutionDueAt! < filter.dueSoon.now) return false;
+    if (t.resolutionDueAt! >= new Date(filter.dueSoon.now.getTime() + DEFAULT_WARNING_THRESHOLD_MS))
+      return false;
+  }
+  // 「指定時刻以前が期限」フィルター: resolutionDueAt <= until + 未完了
+  // (期限がちょうど until のものを含めるため境界は <=。監査フォローアップ 2026-09-09)
+  if (filter.dueUntil) {
+    if (!isUnresolvedWithDue()) return false;
+    if (t.resolutionDueAt! > filter.dueUntil.until) return false;
   }
   // テキスト検索フィルター (title または body の部分一致)
   if (filter.text) {

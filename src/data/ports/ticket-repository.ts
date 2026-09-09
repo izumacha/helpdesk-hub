@@ -55,6 +55,22 @@ export interface TicketListFilter {
    * 省略時はフィルタなし。
    */
   overdue?: { now: Date };
+  /**
+   * 期限間近 (SLA 警告帯) の未解決のみを取得するフィルタ (ダッシュボードの「期限間近」タイルと
+   * ?due=soon の一覧で使用。監査フォローアップ 2026-09-09)。
+   * `now <= resolutionDueAt < now + DEFAULT_WARNING_THRESHOLD_MS` かつ `resolvedAt IS NULL`、
+   * かつ Resolved/Closed は除外する (getSlaState の 'warning' 判定と同じ範囲)。
+   * 省略時はフィルタなし。
+   */
+  dueSoon?: { now: Date };
+  /**
+   * 「指定時刻以前が期限」の未解決のみを取得するフィルタ (Lite タイル「期限切れ・今日まで」と
+   * ?due=today の一覧で使用。監査フォローアップ 2026-09-09)。
+   * `resolutionDueAt <= until` かつ `resolvedAt IS NULL`、かつ Resolved/Closed は除外する。
+   * overdue (厳密な超過。境界は `<`) と違い、期限がちょうど until のもの (今日の終端が期限の
+   * Lite チケット等) を含めるため境界は `<=` にする。省略時はフィルタなし。
+   */
+  dueUntil?: { until: Date };
 }
 
 // findByIdWithDetail が返すコメント/履歴の既定件数上限。

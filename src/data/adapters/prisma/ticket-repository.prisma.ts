@@ -45,17 +45,41 @@ function buildWhere(f: TicketListFilter, tenantId: string): Prisma.TicketWhereIn
   if (f.locationId !== undefined) where.locationId = f.locationId;
   // 作成日時フィルター: この日時以降に作成されたチケットのみ (月間件数カウント用)
   if (f.createdAfter !== undefined) where.createdAt = { gte: f.createdAfter };
-  // 期限切れフィルタ (Lite モードの「期限切れ」タブで使用)
-  // - resolutionDueAt < now (期限を過ぎている)
+  // 期限系フィルタで共通の「未完了」条件を where に積むヘルパー。
   // - resolvedAt IS NULL (まだ解決していない)
   // - status が Resolved/Closed でない (業務上の終息状態は除外)
+  // status の除外条件は AND 句に積む (where.status へ直接代入すると、上で設定済みの
+  // status / statusIn の絞り込みを上書きして「明示したステータス指定が消える」バグになる。
+  // メモリアダプタの matchesFilter と同じく両条件を AND で同時に満たす挙動に揃える)。
+  // AND は配列連結で追加し、期限系フィルタ同士でも上書きし合わないようにする
+  const addUnresolvedCondition = () => {
+    where.resolvedAt = null;
+    where.AND = [
+      ...(Array.isArray(where.AND) ? where.AND : []),
+      { status: { notIn: ['Resolved', 'Closed'] } },
+    ];
+  };
+  // 期限切れフィルタ (Lite/Pro の「期限切れ」タブ・SLA 期限超過タイルで使用)
+  // - resolutionDueAt < now (期限を過ぎている)
   if (f.overdue) {
     where.resolutionDueAt = { lt: f.overdue.now };
-    where.resolvedAt = null;
-    // status の除外条件は AND 句に積む (where.status へ直接代入すると、上で設定済みの
-    // status / statusIn の絞り込みを上書きして「明示したステータス指定が消える」バグになる。
-    // メモリアダプタの matchesFilter と同じく両条件を AND で同時に満たす挙動に揃える)
-    where.AND = [{ status: { notIn: ['Resolved', 'Closed'] } }];
+    addUnresolvedCondition();
+  }
+  // 期限間近フィルタ (SLA 警告帯。ダッシュボード「期限間近」タイルと ?due=soon で使用)
+  // - now <= resolutionDueAt < now + DEFAULT_WARNING_THRESHOLD_MS (残り時間が警告帯内)
+  //   (getSlaState の 'warning' 判定と同じ範囲。§6 一元管理: 閾値は sla.ts の定数を共有)
+  if (f.dueSoon) {
+    where.resolutionDueAt = {
+      gte: f.dueSoon.now,
+      lt: new Date(f.dueSoon.now.getTime() + DEFAULT_WARNING_THRESHOLD_MS),
+    };
+    addUnresolvedCondition();
+  }
+  // 「指定時刻以前が期限」フィルタ (Lite タイル「期限切れ・今日まで」と ?due=today で使用)
+  // - resolutionDueAt <= until (期限がちょうど until のものを含めるため境界は lte)
+  if (f.dueUntil) {
+    where.resolutionDueAt = { lte: f.dueUntil.until };
+    addUnresolvedCondition();
   }
   // テキスト検索: title または body に contains を OR 条件で適用
   if (f.text) {

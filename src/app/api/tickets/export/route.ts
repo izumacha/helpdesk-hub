@@ -167,6 +167,9 @@ export async function GET(req: Request) {
       locationId: searchParams.get('locationId') ?? undefined,
       // タブ絞り込み ('mine' / 'overdue' / 'all')
       tab: searchParams.get('tab') ?? undefined,
+      // 期限絞り込み ('soon' = 期限間近 / 'today' = 期限切れ・今日まで)。
+      // ダッシュボードのタイルから drill-down した一覧をそのままエクスポートできるようにする
+      due: searchParams.get('due') ?? undefined,
     },
     // overdue タブの期限判定に now を渡す (上で一度だけ生成した値を使い回す)
     { isAgent, userId, now },

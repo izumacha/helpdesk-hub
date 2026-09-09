@@ -928,6 +928,136 @@ export function runTicketRepositoryContract(
       expect(resultIn.map((t) => t.id)).toEqual([overdueOpen.id]);
     });
 
+    // 監査フォローアップ (2026-09-09): dueSoon フィルタが「警告帯 [now, now + 閾値) 内の
+    // 未解決」だけを返すこと (ダッシュボードの「期限間近」タイルと ?due=soon の一覧が共有する契約)
+    it('list with dueSoon filter returns only unresolved tickets inside the warning window', async () => {
+      const { requester, categoryId } = await ctx.seedBasicFixture();
+      // 基準時刻 (作成済みチケットの期限を相対配置するための固定値)
+      const now = new Date('2030-06-01T00:00:00Z');
+      // 警告帯の内側 (残り 1 時間) / 外側 (残り 25 時間 > DEFAULT_WARNING_THRESHOLD_MS=24h) / 過去
+      const inWindow = new Date(now.getTime() + 60 * 60 * 1000);
+      const beyondWindow = new Date(now.getTime() + 25 * 60 * 60 * 1000);
+      const past = new Date(now.getTime() - 60 * 60 * 1000);
+
+      // 警告帯の内側 + 未解決 → ヒット対象
+      const dueSoonTicket = await ctx.repos.tickets.create({
+        title: 'due-soon',
+        body: 'b',
+        priority: 'High',
+        creatorId: requester.id,
+        categoryId,
+        tenantId: TENANT_ID,
+        resolutionDueAt: inWindow,
+      });
+      // 警告帯より先の期限 → 除外 (まだ急ぎではない)
+      await ctx.repos.tickets.create({
+        title: 'due-later',
+        body: 'b',
+        priority: 'Low',
+        creatorId: requester.id,
+        categoryId,
+        tenantId: TENANT_ID,
+        resolutionDueAt: beyondWindow,
+      });
+      // 既に超過 → 除外 (期限間近ではなく期限超過の側で数える)
+      await ctx.repos.tickets.create({
+        title: 'already-overdue',
+        body: 'b',
+        priority: 'High',
+        creatorId: requester.id,
+        categoryId,
+        tenantId: TENANT_ID,
+        resolutionDueAt: past,
+      });
+      // 警告帯の内側だが解決済み → 除外
+      const resolvedSoon = await ctx.repos.tickets.create({
+        title: 'due-soon-resolved',
+        body: 'b',
+        priority: 'High',
+        creatorId: requester.id,
+        categoryId,
+        tenantId: TENANT_ID,
+        resolutionDueAt: inWindow,
+      });
+      // New → Open → Resolved に遷移させて解決済みにする
+      await ctx.repos.tickets.updateStatus(
+        resolvedSoon.id,
+        { from: 'New', to: 'Open' },
+        null,
+        TENANT_ID,
+      );
+      await ctx.repos.tickets.updateStatus(
+        resolvedSoon.id,
+        { from: 'Open', to: 'Resolved' },
+        new Date(),
+        TENANT_ID,
+      );
+
+      // dueSoon フィルタで警告帯内 + 未解決の 1 件だけが返る
+      const result = await ctx.repos.tickets.list({
+        filter: { dueSoon: { now } },
+        page: { skip: 0, take: 50 },
+        tenantId: TENANT_ID,
+      });
+      expect(result.map((t) => t.id)).toEqual([dueSoonTicket.id]);
+      // count も list と同じ件数になる (タイルの件数と一覧の表示件数の一致の根拠)
+      expect(await ctx.repos.tickets.count({ dueSoon: { now } }, TENANT_ID)).toBe(1);
+    });
+
+    // 監査フォローアップ (2026-09-09): dueUntil フィルタが「指定時刻**以前** (境界含む) が
+    // 期限の未解決」を返すこと (Lite タイル「期限切れ・今日まで」と ?due=today が共有する契約。
+    // Lite の期限は「その日の終端 23:59:59.999 (JST)」ちょうどに設定されるため、境界を含む
+    // lte でないと今日が期限のチケットが数え漏れる)
+    it('list with dueUntil filter includes tickets due exactly at the boundary', async () => {
+      const { requester, categoryId } = await ctx.seedBasicFixture();
+      // 「今日の終端」に相当する境界時刻
+      const until = new Date('2030-06-01T14:59:59.999Z');
+      // 境界ちょうど / 境界より過去 / 境界より未来 の 3 パターンの期限
+      const beforeUntil = new Date(until.getTime() - 24 * 60 * 60 * 1000);
+      const afterUntil = new Date(until.getTime() + 1);
+
+      // 期限が境界ちょうど → ヒット対象 (lte の境界検証)
+      const dueAtBoundary = await ctx.repos.tickets.create({
+        title: 'due-at-boundary',
+        body: 'b',
+        priority: 'Medium',
+        creatorId: requester.id,
+        categoryId,
+        tenantId: TENANT_ID,
+        resolutionDueAt: until,
+      });
+      // 期限が境界より過去 (既に超過) → ヒット対象 (「期限切れ + 今日まで」の期限切れ側)
+      const dueBefore = await ctx.repos.tickets.create({
+        title: 'due-before',
+        body: 'b',
+        priority: 'Medium',
+        creatorId: requester.id,
+        categoryId,
+        tenantId: TENANT_ID,
+        resolutionDueAt: beforeUntil,
+      });
+      // 期限が境界より未来 (明日以降) → 除外
+      await ctx.repos.tickets.create({
+        title: 'due-after',
+        body: 'b',
+        priority: 'Medium',
+        creatorId: requester.id,
+        categoryId,
+        tenantId: TENANT_ID,
+        resolutionDueAt: afterUntil,
+      });
+
+      // dueUntil フィルタで境界ちょうど + 過去の 2 件が返る
+      const result = await ctx.repos.tickets.list({
+        filter: { dueUntil: { until } },
+        page: { skip: 0, take: 50 },
+        tenantId: TENANT_ID,
+      });
+      expect(result.map((t) => t.id).sort()).toEqual([dueAtBoundary.id, dueBefore.id].sort());
+      // count も list と同じ件数になる (タイルの件数と一覧の表示件数の一致の根拠)
+      expect(await ctx.repos.tickets.count({ dueUntil: { until } }, TENANT_ID)).toBe(2);
+    });
+
     // フォローアップ (2026-07-15 #2): check-then-act 競合 (TOCTOU) の防止。§1.4 で
     // FaqRepository.updateStatus に導入した「期待する現在状態 (from) が一致するときだけ
     // 更新し、一致しなければ false を返す」契約を TicketRepository.updateStatus/markEscalated
