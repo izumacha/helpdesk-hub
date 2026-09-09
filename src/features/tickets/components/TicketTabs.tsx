@@ -46,6 +46,11 @@ export function TicketTabs() {
     }
     // タブ切替時は page を必ず先頭に戻す
     params.delete('page');
+    // 期限絞り込み (?due=...) もタブ切替でリセットする (/code-review ultra 指摘対応)。
+    // タブ (期限切れ) と due (期限間近 等) はどちらも「期限」軸の絞り込みで、残したまま
+    // 切り替えると `tab=overdue&due=soon` のような定義上空集合になる組み合わせが 1 クリックで
+    // 作れてしまい、「0 件」の理由が画面から読み取れなくなる
+    params.delete('due');
     // クエリが空なら "?" は付けない
     const qs = params.toString();
     return qs ? `/tickets?${qs}` : '/tickets';

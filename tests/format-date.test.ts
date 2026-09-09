@@ -5,6 +5,7 @@ import { describe, expect, it } from 'vitest';
 import {
   endOfDayJST,
   startOfMonthJST,
+  startOfDayJST,
   formatDateISO,
   formatDateTimeISO,
   parseDateTimeJST,
@@ -153,5 +154,30 @@ describe('startOfMonthJST', () => {
   it('defaults to the current time when no argument is given', () => {
     expect(() => startOfMonthJST()).not.toThrow();
     expect(startOfMonthJST()).toBeInstanceOf(Date);
+  });
+});
+
+// 監査フォローアップ (2026-09-09): ダッシュボード品質指標の「直近 N 日」の起点計算に使う
+// JST の日の始まりヘルパーの回帰テスト (startOfMonthJST の日版)
+describe('startOfDayJST', () => {
+  // JST の同じ日に属する時刻はどれも同じ「日の始まり」に丸められること
+  it('returns 00:00:00.000 (+09:00) of the JST day the given time belongs to', () => {
+    // UTC 2026-06-16 00:00 = JST 2026-06-16 09:00 → JST の日の始まりは UTC 前日 15:00
+    expect(startOfDayJST(new Date('2026-06-16T00:00:00.000Z')).toISOString()).toBe(
+      '2026-06-15T15:00:00.000Z',
+    );
+  });
+
+  // UTC ではまだ前日でも、JST で日付が変わっていれば JST 側の日で丸めること (日付境界)
+  it('uses the JST date even when the UTC date differs', () => {
+    // UTC 2026-06-15 16:00 = JST 2026-06-16 01:00 → JST の 2026-06-16 の始まりになる
+    expect(startOfDayJST(new Date('2026-06-15T16:00:00.000Z')).toISOString()).toBe(
+      '2026-06-15T15:00:00.000Z',
+    );
+  });
+
+  // 引数省略時は現在時刻を基準に Date を返すこと (startOfMonthJST と同じ既定動作)
+  it('defaults to the current time when no argument is given', () => {
+    expect(startOfDayJST()).toBeInstanceOf(Date);
   });
 });

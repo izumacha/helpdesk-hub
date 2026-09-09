@@ -45,41 +45,42 @@ function buildWhere(f: TicketListFilter, tenantId: string): Prisma.TicketWhereIn
   if (f.locationId !== undefined) where.locationId = f.locationId;
   // 作成日時フィルター: この日時以降に作成されたチケットのみ (月間件数カウント用)
   if (f.createdAfter !== undefined) where.createdAt = { gte: f.createdAfter };
-  // 期限系フィルタで共通の「未完了」条件を where に積むヘルパー。
+  // 期限系フィルタ (overdue / dueSoon / dueUntil) の条件を where に積むヘルパー。
+  // 期限条件 (resolutionDueAt) と共通の「未完了」条件をまとめて追加する:
+  // - 指定された期限条件 (dueCondition)
   // - resolvedAt IS NULL (まだ解決していない)
   // - status が Resolved/Closed でない (業務上の終息状態は除外)
-  // status の除外条件は AND 句に積む (where.status へ直接代入すると、上で設定済みの
-  // status / statusIn の絞り込みを上書きして「明示したステータス指定が消える」バグになる。
-  // メモリアダプタの matchesFilter と同じく両条件を AND で同時に満たす挙動に揃える)。
-  // AND は配列連結で追加し、期限系フィルタ同士でも上書きし合わないようにする
-  const addUnresolvedCondition = () => {
-    where.resolvedAt = null;
+  // **すべて AND 句の配列連結で積む** (where.status / where.resolutionDueAt へ直接代入すると、
+  // 既に設定済みの status / statusIn や別の期限系フィルタの条件を黙って上書きし、
+  // 「明示した絞り込みが消える」バグになる。/code-review ultra 指摘対応: 期限系フィルタを
+  // 複数同時に指定した場合 — 例: `?tab=overdue&due=soon` — も後勝ちで上書きせず、
+  // メモリアダプタの matchesFilter と同じく全条件の AND として評価されるようにする)
+  const addDueCondition = (dueCondition: Prisma.TicketWhereInput['resolutionDueAt']) => {
     where.AND = [
       ...(Array.isArray(where.AND) ? where.AND : []),
+      { resolutionDueAt: dueCondition },
+      { resolvedAt: null },
       { status: { notIn: ['Resolved', 'Closed'] } },
     ];
   };
   // 期限切れフィルタ (Lite/Pro の「期限切れ」タブ・SLA 期限超過タイルで使用)
   // - resolutionDueAt < now (期限を過ぎている)
   if (f.overdue) {
-    where.resolutionDueAt = { lt: f.overdue.now };
-    addUnresolvedCondition();
+    addDueCondition({ lt: f.overdue.now });
   }
   // 期限間近フィルタ (SLA 警告帯。ダッシュボード「期限間近」タイルと ?due=soon で使用)
   // - now <= resolutionDueAt < now + DEFAULT_WARNING_THRESHOLD_MS (残り時間が警告帯内)
   //   (getSlaState の 'warning' 判定と同じ範囲。§6 一元管理: 閾値は sla.ts の定数を共有)
   if (f.dueSoon) {
-    where.resolutionDueAt = {
+    addDueCondition({
       gte: f.dueSoon.now,
       lt: new Date(f.dueSoon.now.getTime() + DEFAULT_WARNING_THRESHOLD_MS),
-    };
-    addUnresolvedCondition();
+    });
   }
   // 「指定時刻以前が期限」フィルタ (Lite タイル「期限切れ・今日まで」と ?due=today で使用)
   // - resolutionDueAt <= until (期限がちょうど until のものを含めるため境界は lte)
   if (f.dueUntil) {
-    where.resolutionDueAt = { lte: f.dueUntil.until };
-    addUnresolvedCondition();
+    addDueCondition({ lte: f.dueUntil.until });
   }
   // テキスト検索: title または body に contains を OR 条件で適用
   if (f.text) {

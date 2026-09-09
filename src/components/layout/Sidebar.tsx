@@ -71,10 +71,22 @@ export function Sidebar({ role, mode }: Props) {
     if (!mobileOpen) return;
     // md 以上ではドロワーではなく常設サイドバーとして表示されるため、トラップは掛けない
     // (掛けるとデスクトップでページ全体のキーボード操作を奪ってしまう)
-    if (window.matchMedia('(min-width: 768px)').matches) return;
-    // ドロワーの DOM が取れなければ何もできない (次の描画で再実行される)
+    const mdQuery = window.matchMedia('(min-width: 768px)');
+    if (mdQuery.matches) return;
+    // ドロワーの DOM が取れなければ何もできない (次の描画で再実行される)。
+    // リスナー登録より前に判定する (登録後に早期 return するとクリーンアップが返らず
+    // リスナーが残留するため §8)
     const aside = asideRef.current;
     if (!aside) return;
+    // 開いたまま画面幅が md 以上へ変わった場合 (タブレットの回転・ウィンドウのリサイズ) は
+    // ドロワー状態ごと閉じる (/code-review ultra 指摘対応: 判定を開いた瞬間の 1 回で
+    // 固定すると、常設サイドバーに切り替わった後もトラップと背面スクロール禁止が残り、
+    // キーボード利用者が本文へ戻れなくなる)。閉じれば本 effect のクリーンアップが走り、
+    // トラップ解除・フォーカス復元・MobileNavProvider 側のスクロール解放が連動する
+    const onBreakpointChange = (event: MediaQueryListEvent) => {
+      if (event.matches) closeNav();
+    };
+    mdQuery.addEventListener('change', onBreakpointChange);
     // 開く前にフォーカスしていた要素 (通常はハンバーガーボタン) を覚えておき、閉じたら戻す
     const previouslyFocused = document.activeElement;
     // ドロワー内の「見えていて」フォーカス可能な要素一覧を返すヘルパー。
@@ -116,6 +128,8 @@ export function Sidebar({ role, mode }: Props) {
     // クリーンアップ: 購読を解除し、フォーカスを開く前の要素へ戻す (§8 リソース解放)
     return () => {
       document.removeEventListener('keydown', onKeyDown);
+      // ブレークポイント監視も忘れずに解除する
+      mdQuery.removeEventListener('change', onBreakpointChange);
       // 覚えておいた要素がまだフォーカス可能ならそこへ戻す
       if (previouslyFocused instanceof HTMLElement) previouslyFocused.focus();
     };

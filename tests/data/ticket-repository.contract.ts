@@ -509,6 +509,57 @@ export function runTicketRepositoryContract(
       expect(metricsB.resolvedCount).toBe(0);
     });
 
+    // 監査フォローアップ (2026-09-09): qualityMetrics の since 絞り込みの契約。
+    // ダッシュボードが「直近 30 日」窓 (dashboard-metrics.ts) で初めて since を渡すように
+    // なったため、生 SQL の `since IS NULL OR createdAt >= since` 分岐を実 DB でも固定する
+    // (/code-review ultra 指摘対応: この分岐はこれまで一度も非 null で実行されていなかった)
+    it('qualityMetrics with since only counts tickets created at/after the boundary', async () => {
+      const { requester, categoryId } = await ctx.seedBasicFixture();
+      // 窓の境界 (この日時以降に作成されたチケットだけが集計対象)
+      const since = new Date('2030-06-01T00:00:00Z');
+      // 境界より古い作成日時 / 新しい作成日時
+      const before = new Date(since.getTime() - 24 * 60 * 60 * 1000);
+      const after = new Date(since.getTime() + 24 * 60 * 60 * 1000);
+
+      // 窓の外 (境界より前に作成) の解決済みチケット → 集計から除外されるべき
+      await ctx.repos.tickets.create({
+        title: 'old-resolved',
+        body: 'b',
+        priority: 'Low',
+        creatorId: requester.id,
+        categoryId,
+        tenantId: TENANT_ID,
+        createdAt: before,
+        resolvedAt: new Date(before.getTime() + 60 * 60 * 1000),
+        firstRespondedAt: new Date(before.getTime() + 30 * 60 * 1000),
+        status: 'Closed',
+      });
+      // 窓の内 (境界より後に作成) の解決済みチケット → 集計対象
+      await ctx.repos.tickets.create({
+        title: 'new-resolved',
+        body: 'b',
+        priority: 'Low',
+        creatorId: requester.id,
+        categoryId,
+        tenantId: TENANT_ID,
+        createdAt: after,
+        resolvedAt: new Date(after.getTime() + 60 * 60 * 1000),
+        firstRespondedAt: new Date(after.getTime() + 30 * 60 * 1000),
+        status: 'Closed',
+      });
+
+      // since 指定なしなら 2 件とも集計される (従来どおりの全期間)
+      const allTime = await ctx.repos.tickets.qualityMetrics({ tenantId: TENANT_ID });
+      expect(allTime.resolvedCount).toBe(2);
+      expect(allTime.totalCount).toBe(2);
+      // since 指定ありなら境界以降に作成された 1 件だけが集計される
+      const windowed = await ctx.repos.tickets.qualityMetrics({ tenantId: TENANT_ID, since });
+      expect(windowed.resolvedCount).toBe(1);
+      expect(windowed.totalCount).toBe(1);
+      // 平均値も窓内 1 件 (解決まで 1 時間) から計算されること
+      expect(windowed.avgResolutionMs).toBe(60 * 60 * 1000);
+    });
+
     // --- ここからクロステナント回帰テスト (Phase 0 仕上げ PR で追加) ---
 
     // テナント A のチケットがテナント B からは findById で取れないこと
@@ -1056,6 +1107,37 @@ export function runTicketRepositoryContract(
       expect(result.map((t) => t.id).sort()).toEqual([dueAtBoundary.id, dueBefore.id].sort());
       // count も list と同じ件数になる (タイルの件数と一覧の表示件数の一致の根拠)
       expect(await ctx.repos.tickets.count({ dueUntil: { until } }, TENANT_ID)).toBe(2);
+    });
+
+    // /code-review ultra 指摘対応 (2026-09-09): 期限系フィルタを複数同時に指定しても
+    // 後勝ちで上書きされず、全条件の AND として評価されること (Prisma アダプタが
+    // where.resolutionDueAt を代入で組み立てると overdue が dueSoon に黙って置き換わり、
+    // メモリアダプタと結果が食い違うバグがあった)。overdue (期限 < now) と dueSoon
+    // (期限 >= now) の積は定義上空集合なので、0 件になることが「AND で評価された」証拠になる
+    it('list with both overdue and dueSoon applies both conditions (empty intersection)', async () => {
+      const { requester, categoryId } = await ctx.seedBasicFixture();
+      // 基準時刻と、警告帯の内側の期限 (dueSoon 単独ならヒットする)
+      const now = new Date('2030-06-01T00:00:00Z');
+      const inWindow = new Date(now.getTime() + 60 * 60 * 1000);
+
+      // 警告帯の内側 + 未解決のチケットを 1 件作成する
+      await ctx.repos.tickets.create({
+        title: 'due-soon-only',
+        body: 'b',
+        priority: 'High',
+        creatorId: requester.id,
+        categoryId,
+        tenantId: TENANT_ID,
+        resolutionDueAt: inWindow,
+      });
+
+      // dueSoon 単独なら 1 件ヒットする (前提の確認)
+      expect(await ctx.repos.tickets.count({ dueSoon: { now } }, TENANT_ID)).toBe(1);
+      // overdue + dueSoon の併用は「期限 < now かつ期限 >= now」で空集合になる
+      // (後勝ち上書きだと dueSoon だけが効いて 1 件返ってしまう)
+      expect(
+        await ctx.repos.tickets.count({ overdue: { now }, dueSoon: { now } }, TENANT_ID),
+      ).toBe(0);
     });
 
     // フォローアップ (2026-07-15 #2): check-then-act 競合 (TOCTOU) の防止。§1.4 で
