@@ -33,6 +33,21 @@
 
 /* base 層: 全ページ共通の下地スタイル */
 @layer base {
+  /* 動きを抑える設定 (prefers-reduced-motion) の利用者にはアニメーション・トランジションを
+     実質無効化する (§7 a11y。前庭障害等で動きが負担になる利用者への配慮)。
+     0ms ではなく 0.01ms にするのは、transitionend 等のイベントに依存する実装が
+     イベント自体を失って壊れるのを防ぐための定石 */
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    ::before,
+    ::after {
+      animation-duration: 0.01ms !important; /* アニメーションを一瞬で終わらせる */
+      animation-iteration-count: 1 !important; /* 無限ループのアニメーションも 1 回で止める */
+      transition-duration: 0.01ms !important; /* ホバー時の移動・変色などの遷移も無効化する */
+      scroll-behavior: auto !important; /* スムーススクロールも無効化する */
+    }
+  }
+
   /* HTML 全体のテキスト色と背景を新トークンに */
   html {
     /* 背景は柔らかなオフホワイト (病院ロビー風) */

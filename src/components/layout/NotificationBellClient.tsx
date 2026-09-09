@@ -73,12 +73,23 @@ export function NotificationBellClient({ initialCount, userId }: Props) {
   }, [userId]);
 
   return (
-    // 通知一覧ページへの導線 + 未読バッジ (件数 > 0 のみ)
-    <Link href="/notifications" className="relative text-sm text-gray-700 hover:text-gray-900">
+    // 通知一覧ページへの導線 + 未読バッジ (件数 > 0 のみ)。
+    // 監査フォローアップ (2026-09-09): バッジは絶対配置の視覚専用表示で、読み上げには
+    // 件数が一切伝わっていなかった。リンクのアクセシブルネームに未読件数を含め、
+    // バッジ本体は読み上げから除外する (§7 スクリーンリーダーに情報を伝える)。
+    // 文字色もアプリ標準の slate 系に揃える (このコンポーネントだけ gray 系だった)
+    <Link
+      href="/notifications"
+      aria-label={count > 0 ? `通知 (未読 ${count} 件)` : '通知'}
+      className="relative text-sm text-slate-700 hover:text-slate-900"
+    >
       通知
       {count > 0 && (
-        // 件数は 9 件超なら "9+" に省略
-        <span className="absolute -right-2 -top-1 flex h-4 w-4 items-center justify-center rounded-full bg-red-500 text-xs font-bold text-white">
+        // 件数は 9 件超なら "9+" に省略 (読み上げは上の aria-label が正確な件数を伝える)
+        <span
+          aria-hidden="true"
+          className="absolute -right-2 -top-1 flex h-4 w-4 items-center justify-center rounded-full bg-red-500 text-xs font-bold text-white"
+        >
           {count > 9 ? '9+' : count}
         </span>
       )}

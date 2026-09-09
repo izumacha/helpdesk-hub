@@ -1,7 +1,7 @@
 'use client';
 
-// React の状態フック (折りたたみ状態を保持)
-import { useState } from 'react';
+// React の状態フック (折りたたみ状態) / 参照フック (ドロワー DOM) / 副作用フック (キー操作の購読)
+import { useEffect, useRef, useState } from 'react';
 // クライアント遷移付きリンク
 import Link from 'next/link';
 // 現在の URL パスを取得 (アクティブ判定に使用)
@@ -60,6 +60,66 @@ export function Sidebar({ role, mode }: Props) {
   // モバイルドロワーの開閉状態と「閉じる」関数を Context から取得
   // (md 未満ではこの open に従って画面外/画面内へスライドする)
   const { open: mobileOpen, closeNav } = useMobileNav();
+  // ドロワー本体 (aside) の DOM 参照 (フォーカストラップの範囲を決めるのに使う)
+  const asideRef = useRef<HTMLElement>(null);
+
+  // モバイルドロワーのキーボード対応 (§7 a11y「モーダルはフォーカストラップ + Esc で閉じ」)。
+  // 監査フォローアップ (2026-09-09): 以前は Esc で閉じられず、Tab で背面のコンテンツへ
+  // フォーカスが抜けてしまい、キーボード利用者はドロワーを閉じる手段が事実上なかった
+  useEffect(() => {
+    // 閉じているあいだは何もしない (リスナーも張らない)
+    if (!mobileOpen) return;
+    // md 以上ではドロワーではなく常設サイドバーとして表示されるため、トラップは掛けない
+    // (掛けるとデスクトップでページ全体のキーボード操作を奪ってしまう)
+    if (window.matchMedia('(min-width: 768px)').matches) return;
+    // ドロワーの DOM が取れなければ何もできない (次の描画で再実行される)
+    const aside = asideRef.current;
+    if (!aside) return;
+    // 開く前にフォーカスしていた要素 (通常はハンバーガーボタン) を覚えておき、閉じたら戻す
+    const previouslyFocused = document.activeElement;
+    // ドロワー内の「見えていて」フォーカス可能な要素一覧を返すヘルパー。
+    // offsetParent が null の要素 (display:none。md 専用の折りたたみボタン等) は
+    // フォーカスできないため除外する
+    const focusables = () =>
+      Array.from(aside.querySelectorAll<HTMLElement>('a[href], button:not([disabled])')).filter(
+        (el) => el.offsetParent !== null,
+      );
+    // 開いた直後にフォーカスをドロワー内の先頭要素へ移す (背面に取り残さない)
+    focusables()[0]?.focus();
+    // キー操作のハンドラ (Esc で閉じる / Tab をドロワー内で循環させる)
+    const onKeyDown = (event: KeyboardEvent) => {
+      // Esc: ドロワーを閉じる
+      if (event.key === 'Escape') {
+        closeNav();
+        return;
+      }
+      // Tab 以外のキーはトラップ対象外
+      if (event.key !== 'Tab') return;
+      // 現時点のフォーカス可能要素一覧 (0 件なら何もしない)
+      const items = focusables();
+      if (items.length === 0) return;
+      // 先頭・末尾の要素を取り出す
+      const first = items[0];
+      const last = items[items.length - 1];
+      // Shift+Tab で先頭から抜けようとしたら末尾へ回す
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        // Tab で末尾から抜けようとしたら先頭へ回す
+        event.preventDefault();
+        first.focus();
+      }
+    };
+    // キー操作の購読を開始する
+    document.addEventListener('keydown', onKeyDown);
+    // クリーンアップ: 購読を解除し、フォーカスを開く前の要素へ戻す (§8 リソース解放)
+    return () => {
+      document.removeEventListener('keydown', onKeyDown);
+      // 覚えておいた要素がまだフォーカス可能ならそこへ戻す
+      if (previouslyFocused instanceof HTMLElement) previouslyFocused.focus();
+    };
+  }, [mobileOpen, closeNav]);
 
   // 権限に応じて表示できる項目だけに絞り込む
   // 1 項目に複数の制約が付きうるため、各制約を個別に判定し
@@ -94,6 +154,8 @@ export function Sidebar({ role, mode }: Props) {
           - md 未満: fixed 配置 + translate-x でスライドイン/アウト (mobileOpen 連動)
           - md 以上: relative 配置 + 常時表示 (collapsed で幅切替) */}
       <aside
+        // フォーカストラップの範囲を決める DOM 参照 (上の useEffect が使う)
+        ref={asideRef}
         // モバイルドロワー時に MobileNavToggle の aria-controls から参照される ID
         id="mobile-sidebar"
         className={`fixed inset-y-0 left-0 z-40 flex flex-col border-r border-slate-200 bg-white/95 backdrop-blur transition-all duration-200 md:relative md:translate-x-0 ${

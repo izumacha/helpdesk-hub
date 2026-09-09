@@ -116,9 +116,15 @@ export const PRIORITY_LABELS: Record<string, string> = {
   High: '高',
 };
 
-// 状態ごとのバッジ配色 (Tailwind CSS クラス) ─ 健診/医療系の柔らかな soft chip
-export const STATUS_COLORS: Record<string, string> = {
-  New: 'bg-slate-100 text-slate-700 ring-1 ring-slate-200', // 新規: ニュートラルグレー
+// 状態ごとのバッジ配色 (Tailwind CSS クラス) ─ 健診/医療系の柔らかな soft chip。
+// 監査フォローアップ (2026-09-09):
+// - キー型を STATUS_LABELS と同じ Record<TicketStatus, string> にし、ステータス追加時の
+//   色の定義漏れをコンパイル時に検出する (Record<string, string> のままだと参照が
+//   undefined になって className が静かに欠けるだけで、テストも型検査も素通りしていた)
+// - New を slate → violet に変更。以前は New と Closed が近い灰色同士で、7 枚並んだときに
+//   「未着手 (要対応)」と「終了」という正反対の状態が見分けづらかった (§7 色の識別性)
+export const STATUS_COLORS: Record<TicketStatus, string> = {
+  New: 'bg-violet-50 text-violet-800 ring-1 ring-violet-200', // 新規: バイオレット (未着手の要対応)
   Open: 'bg-teal-50 text-teal-800 ring-1 ring-teal-200', // オープン: ブランドティール
   WaitingForUser: 'bg-amber-50 text-amber-800 ring-1 ring-amber-200', // ユーザー待ち: アンバー
   InProgress: 'bg-sky-50 text-sky-800 ring-1 ring-sky-200', // 対応中: スカイブルー
