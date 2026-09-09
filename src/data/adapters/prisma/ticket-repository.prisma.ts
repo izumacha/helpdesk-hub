@@ -57,7 +57,9 @@ function buildWhere(f: TicketListFilter, tenantId: string): Prisma.TicketWhereIn
   // メモリアダプタの matchesFilter と同じく全条件の AND として評価されるようにする)
   const addDueCondition = (dueCondition: Prisma.TicketWhereInput['resolutionDueAt']) => {
     where.AND = [
-      ...(Array.isArray(where.AND) ? where.AND : []),
+      // 既存の AND 条件を引き継ぐ (/code-review ultra 指摘対応: Prisma の型は AND に
+      // 単一オブジェクト形も許すため、配列でない場合も破棄せず配列化して残す)
+      ...(where.AND == null ? [] : [where.AND].flat()),
       { resolutionDueAt: dueCondition },
       { resolvedAt: null },
       { status: { notIn: ['Resolved', 'Closed'] } },

@@ -75,7 +75,7 @@ function matchesFilter(t: Ticket, filter: TicketListFilter, tenantId: string): b
   // 作成日時フィルター: この日時以降に作成されたチケットのみ (月間件数カウント用)
   if (filter.createdAfter !== undefined && t.createdAt < filter.createdAfter) return false;
   // 期限系フィルターで共通の「未完了」判定 (期限あり / 未解決 / 終息状態でない)。
-  // Prisma アダプタの addUnresolvedCondition と同じ規約 (§6 一元管理: 両アダプタで判定を揃える)
+  // Prisma アダプタの addDueCondition と同じ規約 (§6 一元管理: 両アダプタで判定を揃える)
   const isUnresolvedWithDue = () =>
     // != null は null と undefined の両方を弾く (型が将来 Date | null | undefined に広がっても安全)
     t.resolutionDueAt != null &&

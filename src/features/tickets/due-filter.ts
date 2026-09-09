@@ -12,6 +12,8 @@
 
 // データ層が公開しているチケット一覧フィルタ型 (期限条件を差し込む対象)
 import type { TicketListFilter } from '@/data/ports/ticket-repository';
+// SLA の日本語ラベル (「期限間近」の呼び名の唯一の参照元。§6 一元管理)
+import { SLA_LABELS } from '@/lib/sla';
 // JST の「今日」の日付文字列化と、その日の終端 (23:59:59.999 JST) の計算 (既存共通関数を再利用)
 // (警告帯の幅そのものは各アダプタが sla.ts の DEFAULT_WARNING_THRESHOLD_MS を参照して展開する)
 import { formatDateISO, endOfDayJST } from '@/lib/format-date';
@@ -21,8 +23,11 @@ export type TicketDueId = 'soon' | 'today';
 
 // 期限絞り込みの日本語表示ラベル (一覧の「絞り込み中」チップとダッシュボードのタイルで共有)
 export const DUE_FILTER_LABELS: Record<TicketDueId, string> = {
-  soon: '期限間近', // SLA 警告帯 (残り DEFAULT_WARNING_THRESHOLD_MS 以内) の未解決
-  today: '期限切れ・今日まで', // 期限超過 + 今日が期限の未解決 (Lite タイルの定義)
+  // SLA 警告帯 (残り DEFAULT_WARNING_THRESHOLD_MS 以内) の未解決。
+  // /code-review ultra 指摘対応: タイル側が表示する SLA_LABELS.warning と同じ概念のため
+  // 文字列を書き写さず導出する (片方だけ改名されて画面間で呼び名が食い違うのを防ぐ §6)
+  soon: SLA_LABELS.warning,
+  today: '期限切れ・今日まで', // 期限超過 + 今日が期限の未解決 (Lite タイルの定義。Pivot plan §3.1)
 };
 
 /**
