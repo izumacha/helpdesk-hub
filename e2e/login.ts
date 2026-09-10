@@ -10,7 +10,7 @@
 // 新しいスペックはこのヘルパーを使うこと。
 import { expect, type Page } from '@playwright/test';
 // ハイドレーション前のクリックに耐える共通の再試行ヘルパー
-import { actUntil } from './hydration';
+import { actUntil, assertAttemptFitsBudget } from './hydration';
 
 // seed が投入するテスト用アカウントの共通パスワード (ローカル/CI のシード専用の値)
 export const SEED_PASSWORD = 'password123';
@@ -18,17 +18,27 @@ export const SEED_PASSWORD = 'password123';
 // ログイン後の遷移先 (ロールによって /dashboard か /tickets のどちらかになる)
 const LANDED = /\/dashboard|\/tickets/;
 
-// 1 回の試行の中で使う上限 (ミリ秒)。**3 つの合計 (10 秒) が下の総枠の半分**になるようにして、
-// 「1 回目の試行だけで枠を使い切り再試行が走らない」形を避ける (hydration.ts の注意書き)。
+// 1 回の試行の中で使う上限 (ミリ秒)。**合計が下の総枠の半分以下**になるようにして、
+// 「1 回目の試行だけで枠を使い切り再試行が走らない」形を避ける (hydration.ts の注意書き。
+// 条件は下の assertAttemptFitsBudget が機械的に確かめる)。
 // 短めなのは意図的で、どれも「そこで待ち続けても状況は好転しない」待機だから
 // (遅い 1 回に賭けるより、クッキーを捨ててやり直したほうが早く着く)
 // ログインページへの遷移の上限 (既定の 30 秒のままだと総枠を単独で超えうる)
-const NAV_TIMEOUT_MS = 4_000;
+const NAV_TIMEOUT_MS = 3_000;
 // ログインフォームが現れるまでの上限 (クッキーを捨てた直後なので本来は即座に出る)
 const FORM_WAIT_MS = 2_000;
+// 入力・クリック 1 回あたりの上限。**Playwright の操作の既定の上限は無制限**
+// (`actionTimeout` の既定は 0) なので、渡さないと 1 回の試行が枠も制限時間も
+// 超えて待ち続ける (/code-review ultra 指摘対応)。要素は既に見えているので短くてよい
+const ACTION_TIMEOUT_MS = 1_000;
+// 1 回の試行に含まれる操作の数 (メール入力・パスワード入力・ログインのクリック)
+const ACTION_COUNT = 3;
 // クリック後、遷移先へ着くまでの上限。**期待される失敗 (ハイドレーション前のクリックが
 // 効かない) はここだけが枠を使う**ので、枠はこの値の何回分かが収まればよい
 const LANDING_WAIT_MS = 4_000;
+// 1 回の試行で使いうる上限の合計 (枠との関係を下で機械的に確かめるために名前を付ける)
+const ATTEMPT_MS =
+  NAV_TIMEOUT_MS + FORM_WAIT_MS + ACTION_TIMEOUT_MS * ACTION_COUNT + LANDING_WAIT_MS;
 
 /**
  * ログインの再試行に使う総枠 (ミリ秒)。
@@ -45,7 +55,10 @@ const LANDING_WAIT_MS = 4_000;
  * 前提を満たすかどうかを各呼び出し側の記憶に頼らせない)。既定より小さい値にして、
  * 上書きしない呼び出し側でも 2 回目の試行が必ず始まるようにする。
  */
-export const LOGIN_RETRY_BUDGET_MS = 20_000;
+export const LOGIN_RETRY_BUDGET_MS = 24_000;
+
+// 上の枠と 1 回の試行の上限の関係が崩れていないことを、読み込み時に確かめる
+assertAttemptFitsBudget('e2e/login.ts', ATTEMPT_MS, LOGIN_RETRY_BUDGET_MS);
 
 /**
  * seed 済みユーザーでログインし、ロール別の遷移先 (/dashboard か /tickets) まで待つ。
@@ -73,11 +86,13 @@ export async function login(page: Page, email = 'agent1@example.com') {
     // もう一度クッキーを捨ててやり直す (入力欄を待ち続けてハングしない)
     await expect(emailField).toBeVisible({ timeout: FORM_WAIT_MS });
     // メールアドレスを入力する
-    await emailField.fill(email);
+    await emailField.fill(email, { timeout: ACTION_TIMEOUT_MS });
     // 共通パスワードを入力する
-    await page.getByLabel(/パスワード|Password/i).fill(SEED_PASSWORD);
+    await page
+      .getByLabel(/パスワード|Password/i)
+      .fill(SEED_PASSWORD, { timeout: ACTION_TIMEOUT_MS });
     // ログインボタンを押す (ハイドレーション前ならこのクリックは効かない)
-    await page.getByRole('button', { name: /ログイン/i }).click();
+    await page.getByRole('button', { name: /ログイン/i }).click({ timeout: ACTION_TIMEOUT_MS });
   };
   // 遷移先へ着いたことの確認 (着かなければ試行をやり直す)
   const landed = async () => {

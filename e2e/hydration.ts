@@ -13,6 +13,30 @@
 import { expect } from '@playwright/test';
 
 /**
+ * 「1 回の試行の上限の合計が枠の半分以下」を**モジュール読み込み時に機械的に確かめる**。
+ *
+ * この条件は下の docstring が求めているものだが、書いてあるだけでは守られない
+ * (実際に login.ts が自分で破っていた)。上限を 1 つ足したり枠を縮めたりしたときに
+ * 気付けるよう、条件そのものをコードにする。**Playwright の既定の操作上限は無制限**
+ * (`actionTimeout` の既定は 0) なので、上限を渡していない操作があると合計は
+ * 事実上「無限」になる — 呼び出し側は待ちうる操作すべてに上限を渡すこと。
+ *
+ * @param label 失敗メッセージに出す呼び出し側の名前
+ * @param attemptMs 1 回の試行で使いうる上限の合計 (ミリ秒)
+ * @param budgetMs 再試行の総枠 (ミリ秒)
+ */
+export function assertAttemptFitsBudget(label: string, attemptMs: number, budgetMs: number): void {
+  // 合計が枠の半分を超えていたら、2 回目の試行が始まらない可能性がある
+  if (attemptMs * 2 > budgetMs) {
+    // 実行前に落として、原因の分からない「Test timeout」に化けるのを防ぐ
+    throw new Error(
+      `${label}: 1 回の試行の上限の合計 ${attemptMs}ms が枠 ${budgetMs}ms の半分を超えています。` +
+        '上限を縮めるか枠を広げてください (枠はテストの制限時間より小さいこと)。',
+    );
+  }
+}
+
+/**
  * `act` を実行し `verify` が通るまで、`budgetMs` の枠内で繰り返す。
  *
  * `act` は **何度実行しても安全** (冪等) でなければならない。

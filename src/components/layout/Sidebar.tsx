@@ -138,8 +138,26 @@ export function Sidebar({ role, mode }: Props) {
       document.removeEventListener('keydown', onKeyDown);
       // ブレークポイント監視も忘れずに解除する
       mdQuery.removeEventListener('change', onBreakpointChange);
-      // 覚えておいた要素がまだフォーカス可能ならそこへ戻す
-      if (previouslyFocused instanceof HTMLElement) previouslyFocused.focus();
+      // 覚えておいた要素が**まだ描画されているときだけ**そこへ戻す。
+      // checkVisibility() が無い環境では offsetParent で代用する (display:none は null)
+      const stillRendered =
+        previouslyFocused instanceof HTMLElement &&
+        previouslyFocused.isConnected &&
+        (previouslyFocused.checkVisibility?.() ?? previouslyFocused.offsetParent !== null);
+      if (stillRendered) {
+        // 通常の閉じ方 (Esc・閉じるボタン・背景タップ): 開く前の位置へ戻す
+        (previouslyFocused as HTMLElement).focus();
+      } else {
+        // /code-review ultra 指摘対応: md 以上へ広げて閉じた場合、開く前にフォーカスして
+        // いたハンバーガー (md:hidden) は display:none になっており、focus() は何も起きない
+        // no-op になる。しかも**いまフォーカスしている要素も消えている**ことが多い
+        // (ドロワー内の先頭はモバイル専用の「ナビゲーションを閉じる」ボタンで、これも
+        // md:hidden)。放っておくと activeElement が <body> に落ち、キーボード利用者は
+        // 文書の先頭から Tab をやり直すことになる。ドロワーは md 以上では常設サイドバーと
+        // して見えているので、その中の最初のフォーカス可能要素へ移して居場所を保つ
+        // (要素が 1 つも無い＝アンマウント時などは ?. で何もしない)
+        focusables()[0]?.focus();
+      }
     };
   }, [mobileOpen, closeNav]);
 

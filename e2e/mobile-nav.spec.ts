@@ -3,7 +3,7 @@ import { test, expect, Page } from '@playwright/test';
 // E2E 共通のログインヘルパーと、その再試行に必要な枠 (§6 DRY: スペックごとに書き写さない)
 import { login, LOGIN_RETRY_BUDGET_MS } from './login';
 // ハイドレーション前のクリックに耐える共通の再試行ヘルパー
-import { actUntil } from './hydration';
+import { actUntil, assertAttemptFitsBudget } from './hydration';
 
 // モバイル幅 (md 未満) のナビゲーションドロワーの挙動を検証する。
 //
@@ -18,8 +18,15 @@ test.describe('モバイルのナビゲーションドロワー', () => {
 
   // ドロワーが開いたことを 1 回の試行で待つ上限 (外れた試行を早く見切る)
   const DRAWER_SHOWN_WAIT_MS = 5_000;
-  // ドロワーを開く操作の再試行に使う枠 (ログインと同じ考え方。上の上限の 3 回分)
+  // 属性の読み取り・クリック 1 回あたりの上限。**Playwright の操作の既定の上限は無制限**
+  // なので、渡さないと 1 回の試行が枠を超えて待ち続ける (/code-review ultra 指摘対応)
+  const ACTION_TIMEOUT_MS = 1_000;
+  // 1 回の試行で使いうる上限の合計 (属性の読み取り + クリック + 表示の確認)
+  const DRAWER_ATTEMPT_MS = ACTION_TIMEOUT_MS * 2 + DRAWER_SHOWN_WAIT_MS;
+  // ドロワーを開く操作の再試行に使う枠 (ログインと同じ考え方。上の合計の 2 回分以上)
   const DRAWER_RETRY_BUDGET_MS = 20_000;
+  // 枠と 1 回の試行の関係が崩れていないことを機械的に確かめる (login.ts と同じ検査)
+  assertAttemptFitsBudget('e2e/mobile-nav.spec.ts', DRAWER_ATTEMPT_MS, DRAWER_RETRY_BUDGET_MS);
   // 再試行以外 (表明・キー操作・画面遷移) に充てる余裕
   const BODY_HEADROOM_MS = 20_000;
 
@@ -73,7 +80,9 @@ test.describe('モバイルのナビゲーションドロワー', () => {
     // 「閉じていれば押す」= 何度実行しても開いた状態に収束する冪等な操作
     const openIfClosed = async () => {
       // 既に開いている状態で押すと閉じてしまうので、閉じているときだけ押す
-      if ((await toggle.getAttribute('aria-expanded')) === 'false') await toggle.click();
+      // (どちらの操作にも上限を渡す。渡さないと既定は無制限で、この試行が枠を食い潰す)
+      const expanded = await toggle.getAttribute('aria-expanded', { timeout: ACTION_TIMEOUT_MS });
+      if (expanded === 'false') await toggle.click({ timeout: ACTION_TIMEOUT_MS });
     };
     // ドロワー内のリンクがロールで引けるようになったかの確認
     const drawerShown = async () => {
@@ -185,6 +194,24 @@ test.describe('モバイルのナビゲーションドロワー', () => {
       .click();
     // 閉じるとナビリンクは再び不可視になる
     await expect(navLinkByRole(page)).toHaveCount(0);
+  });
+
+  // md 以上へ広げてドロワーが閉じたとき、フォーカスが <body> へ落ちないこと。
+  // 開く前にフォーカスしていたハンバーガーは md 以上では display:none になるため、
+  // 「覚えた要素へ無条件に戻す」実装だと focus() が no-op になり、キーボード利用者は
+  // 文書の先頭から Tab をやり直すことになる (/code-review ultra 指摘対応)
+  test('md 以上へ広げて閉じてもフォーカスが本文の先頭へ落ちない', async ({ page }) => {
+    // ドロワーを開く (この時点でフォーカスはドロワー内へ移っている)
+    await openDrawer(page);
+    // ナビリンクが可視になるまで待つ
+    await expect(navLinkByRole(page)).toBeVisible();
+    // md 以上へ広げる (ドロワーは閉じ、同じ要素が常設サイドバーとして残る)
+    await page.setViewportSize({ width: 1280, height: 812 });
+    // ハンバーガーが消えたこと = md 境界を跨いだことを確かめる
+    await expect(page.getByRole('button', { name: /メニューを(開く|閉じる)/ })).toHaveCount(0);
+    // フォーカスが常設サイドバーの中に残っていることを確かめる
+    // (<body> へ落ちていれば 0 件になる。閉じる処理は非同期なので expect の再試行に任せる)
+    await expect(page.locator('#mobile-sidebar :focus')).toHaveCount(1);
   });
 
   // Esc キーでも閉じられ、フォーカスが開く前の要素 (ハンバーガー) へ戻ること
