@@ -1,10 +1,13 @@
 -- TicketHistory の (ticketId, createdAt) 複合インデックスを追加する。
 --
 -- PostgreSQL では Prisma が外部キー列にインデックスを自動生成しないため、この表には
--- 主キーしか無く、ticketId での絞り込みが毎回 Seq Scan になっていた。引くのは
---   1. ダッシュボードの再オープン率 (Ticket との JOIN 条件 th."ticketId" = t.id)
---   2. チケット詳細の変更履歴 (ticketId で絞り createdAt 降順で上限件数を取る)
--- の 2 経路で、2 が createdAt 順に読むため第 2 キーに createdAt を置く。
+-- 主キーしか無く、ticketId での絞り込みが毎回 Seq Scan になっていた。
+--
+-- 効かせたい経路はチケット詳細の変更履歴 (ticketId で絞り createdAt 降順で上限件数を取る)。
+-- 1 チケットぶんだけを新しい順に読むアクセスなので、第 2 キーに createdAt を置くと
+-- 絞り込みと並べ替えが 1 本のインデックスで済む。
+-- ダッシュボードの再オープン率の集約はテナント全体への LEFT JOIN + GROUP BY で、
+-- プランナは hash / merge join を選ぶためこのインデックスを使わない (両者は独立)。
 --
 -- 運用上の注意: Prisma のマイグレーションは CREATE INDEX を CONCURRENTLY なしで実行するため、
 -- 作成中は当該テーブルへの書き込みがブロックされる。履歴行が非常に多い環境へ適用する場合は、

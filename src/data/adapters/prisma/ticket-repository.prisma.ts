@@ -479,8 +479,8 @@ export function makeTicketRepo(db: PrismaLike): TicketRepository {
             AND (${locationIdValue}::text IS NULL OR "locationId" = ${locationIdValue})
         `,
         // ── クエリ 3: 再オープン率 ──
-        // 「対応を終えたチケットのうち、いくつが差し戻されたか」を返す。
-        // 分母 (total) は **窓の中で対応を終えたチケット**、分子 (reopened) はそのうち
+        // 「対応が一区切りついたチケットのうち、いくつが差し戻されたか」を返す。
+        // 分母 (total) は **窓の中で対応が一区切りついたチケット**、分子 (reopened) はそのうち
         // **窓の中で差し戻されたチケット**。分子は必ず分母の部分集合になるので率は 1 を超えない。
         //
         // 分母を「解決済み ∪ 差し戻し済み」の和集合にしているのは、再オープン時に
@@ -552,7 +552,7 @@ export function makeTicketRepo(db: PrismaLike): TicketRepository {
         avgResolutionMs,
         reopenRate,
         resolvedCount,
-        // 再オープン率の分母は「窓の中で対応を終えたチケット件数」
+        // 再オープン率の分母は「窓の中で対応が一区切りついたチケット件数」
         // (全チケット件数でも resolvedCount でもない。上のクエリ 3 のコメントを参照)
         totalCount: total,
       } satisfies QualityMetrics;

@@ -477,7 +477,7 @@ async function QualityMetricsSection({
         </p>
         <p className="mt-1 text-xs text-slate-500">平均解決時間</p>
       </div>
-      {/* 再オープン率 (分母: totalCount = 窓の中で対応を終えた件数。全チケット数ではない) */}
+      {/* 再オープン率 (分母: totalCount = 窓の中で対応が一区切りついた件数。全チケット数ではない) */}
       <div className="rounded-2xl bg-white p-5 shadow-sm ring-1 ring-slate-100">
         <p className="text-2xl font-bold text-slate-900">
           {metrics.reopenRate != null ? (

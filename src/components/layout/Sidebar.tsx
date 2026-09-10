@@ -222,27 +222,41 @@ export function Sidebar({ role, mode }: Props) {
           </div>
           {/* 折りたたみ切り替えボタン (md 以上でのみ表示。モバイルでは下の閉じるボタンが担当) */}
           <button
+            // 既定の type は submit なので明示する (将来サイドバーに <form> を足したとき、
+            // 押下で意図しない送信が起きるのを防ぐ。MobileNavToggle と同じ理由)
+            type="button"
             onClick={() => setCollapsed(!collapsed)}
             className="ml-auto hidden rounded-md p-1 text-slate-400 transition hover:bg-slate-100 hover:text-slate-700 md:block"
             aria-label={collapsed ? 'サイドバーを展開' : 'サイドバーを折りたたむ'}
           >
             {collapsed ? '›' : '‹'}
           </button>
-          {/* ドロワーを閉じるボタン (md 未満でのみ表示)。
+          {/* ドロワーを閉じるボタン (md 未満で、かつ開いているときだけ描画する)。
               /code-review ultra 指摘対応 (2026-09-10): aria-modal="true" は「このダイアログの
               外は無いものとして扱う」指示なので、Header にあるハンバーガー (唯一の閉じる操作) も
               支援技術から見えなくなる。ドロワー内に閉じる手段が無いと、Esc キーを持たない
               タッチ端末のスクリーンリーダー利用者 (iOS VoiceOver / TalkBack) は
               「どれかのメニュー項目をタップして意図しない画面へ移る」以外にメニューを出られない。
-              WAI-ARIA APG がモーダルダイアログに dismiss コントロールを必須としているのはこのため */}
-          <button
-            onClick={closeNav}
-            className="ml-auto rounded-md p-1 text-slate-400 transition hover:bg-slate-100 hover:text-slate-700 md:hidden"
-            aria-label="メニューを閉じる"
-          >
-            {/* 視覚的な × 記号 (意味は上の aria-label が持つので読み上げからは外す) */}
-            <span aria-hidden="true">✕</span>
-          </button>
+              WAI-ARIA APG がモーダルダイアログに dismiss コントロールを必須としているのはこのため。
+
+              **mobileOpen で描画自体を切り替える** (2 巡目指摘対応): 閉じたドロワーは
+              -translate-x-full で画面外へ出ているだけで display:none でも inert でもないため、
+              常に描画すると「画面のどこにも見えないのに Tab で最初に到達し、押しても何も
+              起きないボタン」がタブ順の先頭付近に居座る。
+              ラベルを「ナビゲーションを閉じる」にしているのは、開いている間 Header の
+              MobileNavToggle も「メニューを閉じる」になり、同名のボタンが 2 つできるため
+              (読み上げで区別できず、Playwright の getByRole も strict mode violation になる) */}
+          {mobileOpen && (
+            <button
+              type="button"
+              onClick={closeNav}
+              className="ml-auto rounded-md p-1 text-slate-400 transition hover:bg-slate-100 hover:text-slate-700 md:hidden"
+              aria-label="ナビゲーションを閉じる"
+            >
+              {/* 視覚的な × 記号 (意味は上の aria-label が持つので読み上げからは外す) */}
+              <span aria-hidden="true">✕</span>
+            </button>
+          )}
         </div>
         {/* メニュー本体は常に DOM に描画する。
             collapsed の効果は md 以上だけに限定 (md:hidden) し、モバイルでは必ず表示する。

@@ -611,13 +611,20 @@ model TicketHistory {
   changedBy User   @relation(fields: [changedById], references: [id]) // 変更者
 
   // 対象チケット + 変更日時の複合インデックス (§8「よく絞り込む列にインデックスを張る」)。
-  // /code-review ultra 指摘対応 (2026-09-10): PostgreSQL では Prisma は外部キー列に
-  // インデックスを自動生成しないため、この表には主キーしか無く ticketId での絞り込みが
-  // 毎回 Seq Scan になっていた。この列を引くのは
-  //   - ダッシュボードの再オープン率 (Ticket との JOIN 条件が th.ticketId = t.id)
-  //   - チケット詳細の変更履歴 (ticketId で絞り createdAt の降順で上限件数を取る)
-  // の 2 経路で、後者が createdAt 順に読むため第 2 キーに createdAt を置く
-  // (ticketId 単独の絞り込みも先頭列だけで効く)。
+  // PostgreSQL では Prisma は外部キー列にインデックスを自動生成しないため、この表には
+  // 主キーしか無く ticketId での絞り込みが毎回 Seq Scan になっていた。
+  //
+  // 効かせたい経路は **チケット詳細の変更履歴**
+  // (findByIdWithDetail の histories: ticketId で絞り createdAt 降順で上限件数を取る)。
+  // 1 チケットぶんだけを新しい順に読むアクセスなので、第 2 キーに createdAt を置くと
+  // 絞り込みと並べ替えが 1 本のインデックスで済む。
+  //
+  // **ダッシュボードの再オープン率の集約はこのインデックスに依存していない**
+  // (/code-review ultra 指摘対応 2026-09-10)。あちらは「テナントの全チケット」に対する
+  // LEFT JOIN + GROUP BY で、JOIN の他の述語 (field / newValue / oldValue) がこの
+  // インデックスに含まれないうえ外側が大きいため、プランナは nested-loop + Index Scan では
+  // なく hash / merge join + Seq Scan を選ぶ (20 万行規模の実測で確認)。
+  // 両者を結び付けて読まないこと — 片方を消してよいかの判断を誤る。
   @@index([ticketId, createdAt])
 }
 

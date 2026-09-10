@@ -512,11 +512,11 @@ export function makeTicketRepo(store: Store): TicketRepository {
           )
           .map((h) => h.ticketId),
       );
-      // 再オープン率の分母 = 窓の中で「対応を終えた」チケット = 窓内で解決した ∪ 窓内で差し戻された。
+      // 再オープン率の分母 = 窓の中で「対応が一区切りついた」チケット = 窓内で解決した ∪ 窓内で差し戻された。
       // 和集合にする理由は Prisma アダプタのクエリ 3 のコメントが正本 (再オープンで resolvedAt が
       // クリアされるため解決分だけでは分子が分母を上回りうる / 履歴だけでは CSV 取り込み分が抜ける)
       const completedIds = new Set([...resolved.map((t) => t.id), ...reopenedIds]);
-      // 再オープン率 = 差し戻された件数 / 対応を終えた件数 (対象なしは null で 0 除算を避ける)
+      // 再オープン率 = 差し戻された件数 / 対応が一区切りついた件数 (対象なしは null で 0 除算を避ける)
       const reopenRate = completedIds.size > 0 ? reopenedIds.size / completedIds.size : null;
 
       // QualityMetrics 型に準拠して返す
@@ -525,7 +525,7 @@ export function makeTicketRepo(store: Store): TicketRepository {
         avgResolutionMs,
         reopenRate,
         resolvedCount: resolved.length,
-        // 再オープン率の分母は「窓の中で対応を終えた件数」(解決 ∪ 差し戻し)。
+        // 再オープン率の分母は「窓の中で対応が一区切りついた件数」(解決 ∪ 差し戻し)。
         // 差し戻されたチケットは resolvedAt がクリアされ resolved に入らないため
         // resolvedCount とは一致しないことがある
         totalCount: completedIds.size,
