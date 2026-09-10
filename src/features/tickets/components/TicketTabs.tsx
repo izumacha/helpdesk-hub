@@ -4,6 +4,8 @@
 import Link from 'next/link';
 // 現在 URL のクエリパラメータを読み取るフック (アクティブタブ判定用)
 import { useSearchParams } from 'next/navigation';
+// 一覧 URL の組み立て (ページャ・期限チップ・絞り込みフォームと共有する純粋関数)
+import { buildTicketsHref } from '@/features/tickets/tickets-href';
 
 // 共有型ファイルから import してこのモジュール内で型として使えるようにする
 import type { TicketTabId } from '@/features/tickets/types';
@@ -30,25 +32,24 @@ export function TicketTabs() {
   const searchParams = useSearchParams();
   // 現在のタブ ID。未指定 / 不正値は 'all' にフォールバック
   const currentRaw = searchParams.get('tab');
-  const current: TicketTabId = (TABS.some((t) => t.id === currentRaw) ? currentRaw : 'all') as TicketTabId;
+  const current: TicketTabId = (
+    TABS.some((t) => t.id === currentRaw) ? currentRaw : 'all'
+  ) as TicketTabId;
 
   // 指定タブへ遷移するための URL を組み立てるヘルパー
   // - tab パラメータだけ差し替え、他のクエリ (q など) は維持する
   // - タブを切り替えると検索結果のページ番号 (page) はリセットする
   function tabHref(tabId: TicketTabId): string {
-    // 既存クエリを複製
-    const params = new URLSearchParams(searchParams.toString());
-    // 'all' は既定なのでクエリから削る (URL を綺麗に保つ)
-    if (tabId === 'all') {
-      params.delete('tab');
-    } else {
-      params.set('tab', tabId);
-    }
-    // タブ切替時は page を必ず先頭に戻す
-    params.delete('page');
-    // クエリが空なら "?" は付けない
-    const qs = params.toString();
-    return qs ? `/tickets?${qs}` : '/tickets';
+    // 'all' は既定なのでクエリから削り、それ以外は tab を差し替える (URL を綺麗に保つ)。
+    // 期限絞り込み (?due=...) もタブ切替でリセットする (/code-review ultra 指摘対応)。
+    // タブ (期限切れ) と due (期限間近 等) はどちらも「期限」軸の絞り込みで、残したまま
+    // 切り替えると `tab=overdue&due=soon` のような定義上空集合になる組み合わせが 1 クリックで
+    // 作れてしまい、「0 件」の理由が画面から読み取れなくなる。
+    // page のリセットと "?" の省略は共通ヘルパーが行う (§6 DRY: 組み立ての規則を写さない)
+    return buildTicketsHref(searchParams, {
+      set: tabId === 'all' ? {} : { tab: tabId },
+      remove: tabId === 'all' ? ['tab', 'due'] : ['due'],
+    });
   }
 
   return (

@@ -1,3 +1,5 @@
+// React の Suspense (重い品質指標の読み込みを待たずにページ本体を先に表示するため)
+import { Suspense } from 'react';
 // クライアント遷移付きリンク
 import Link from 'next/link';
 // セッション取得
@@ -14,6 +16,13 @@ import { getCurrentTenantMode } from '@/lib/tenant';
 import { getTutorialVideoUrl } from '@/lib/tutorial-video';
 // タブ ('mine' / 'overdue') の絞り込み条件を一元管理する純粋関数 (一覧ページと共有)
 import { applyTabFilter } from '@/features/tickets/tab-filter';
+// 期限絞り込み ('soon' / 'today') の条件とラベルを一元管理する純粋関数 (一覧ページと共有。
+// タイルの件数と drill-down 先の一覧の表示件数を必ず一致させる。監査フォローアップ 2026-09-09)
+import { applyDueFilter, DUE_FILTER_LABELS } from '@/features/tickets/due-filter';
+// SLA の日本語ラベル・タイル配色・警告帯の閾値 (§6 一元管理: SLA の見せ方は sla.ts が正)
+import { SLA_LABELS, SLA_TILE_COLORS, DEFAULT_WARNING_THRESHOLD_MS } from '@/lib/sla';
+// 品質指標の取得 (直近 N 日 + 60 秒キャッシュ) と期間定数 (監査フォローアップ 2026-09-09)
+import { getCachedQualityMetrics, QUALITY_METRICS_WINDOW_DAYS } from '@/lib/dashboard-metrics';
 // 監査で発見したギャップ対応: /tickets への drill-down リンクに選択中の拠点フィルタを
 // 引き継ぐための共通ヘルパー (Pro/Lite 両ブランチで共有 / §6 DRY)
 import { buildTicketListHref } from '@/features/tickets/dashboard-links';
@@ -113,11 +122,14 @@ export default async function DashboardPage({ searchParams }: Props) {
   // URL の locationId は当該テナントの拠点一覧に実在するものだけを有効とみなす
   const selectedLocationId = resolveSelectedLocationId(sp.locationId, locations);
 
-  // ダッシュボード用 3 指標 + 品質メトリクスを並列取得する
+  // ダッシュボード用の集計を並列取得する
   // - byStatus: 7 状態それぞれの件数 (依頼者なら自身のチケットに限定)
   // - slaOverdue / workload: 当該テナント内全件対象 (表示は呼び出し側で role 制御)
-  // - qualityMetrics: 平均初回応答時間・平均解決時間・再オープン率 (エージェント向け)
-  const [stats, metrics] = await Promise.all([
+  // - dueSoonCount: 期限間近 (SLA 警告帯) の件数。タイルの drill-down 先 (?due=soon の一覧) と
+  //   同じ applyDueFilter を通し、件数と一覧の表示件数を必ず一致させる (監査フォローアップ 2026-09-09)
+  // ※ 品質指標 (対応品質) はこの Promise.all に含めない。最も重い集計のため、下の
+  //   Suspense 境界 (QualityMetricsSection) へ分離してページ本体の表示をブロックしないようにする
+  const [stats, dueSoonCount] = await Promise.all([
     // チケット集計 (byStatus / slaOverdue / workload) を取得する
     repos.tickets.dashboardStats({
       // 依頼者は自分が起票したチケットのみ集計する (RBAC)
@@ -131,11 +143,14 @@ export default async function DashboardPage({ searchParams }: Props) {
       // 拠点フィルタ (選択されていれば当該拠点のみ集計)
       locationId: selectedLocationId,
     }),
-    // 品質メトリクスはエージェントにのみ表示する重い全件集計クエリ。
-    // 依頼者には不要なため取得も省略し、DB 負荷を抑える (§8 パフォーマンス)。
+    // 期限間近件数はエージェントにのみ表示するため、依頼者では取得自体を省略する
     isAgent
-      ? repos.tickets.qualityMetrics({ tenantId, locationId: selectedLocationId })
-      : Promise.resolve(null),
+      ? repos.tickets.count(
+          // 拠点フィルタ付きの base に「期限間近」条件を重ねる (一覧の ?due=soon と同一条件)
+          applyDueFilter({ locationId: selectedLocationId }, 'soon', { now }),
+          tenantId,
+        )
+      : Promise.resolve(0),
   ]);
 
   // SLA 超過件数 (依頼者には表示しないので 0 にしておく)
@@ -171,25 +186,32 @@ export default async function DashboardPage({ searchParams }: Props) {
     { status: 'Closed', count: stats.byStatus.Closed },
   ];
 
-  // SLA 超過カードのトーン (件数 0 はニュートラル、>0 はロゼで強調)
-  const slaIsAlert = slaOverdueCount > 0;
+  // ワークロードの最大件数 (負荷バーの長さを最大値比で描くための分母。0 除算は max で回避)
+  const workloadMax = Math.max(1, ...workload.map((row) => row.count));
 
   return (
     <div className="space-y-8">
-      {/* ページヘッダー: タイトル + サブテキスト */}
+      {/* ページヘッダー: タイトル + サブテキスト (ロールに合わせて説明を変える。
+          依頼者には表示されない「担当者別の負荷」を約束する文言を見せない) */}
       <div>
         <h1 className="text-2xl font-bold text-slate-900">ダッシュボード</h1>
         <p className="mt-1 text-sm text-slate-500">
-          現在の対応状況と各担当者の負荷を一目で把握できます。
+          {isAgent
+            ? '現在の対応状況と各担当者の負荷を一目で把握できます。'
+            : 'あなたの問い合わせの状況をまとめています。カードを押すと一覧を開けます。'}
         </p>
       </div>
 
       {/* Phase 4 多拠点: 拠点フィルタ (拠点が 1 つも登録されていないテナントには表示しない) */}
       <LocationFilterPills locations={locations} selectedLocationId={selectedLocationId} />
 
-      {/* ステータス別件数カード群 */}
-      <section>
-        <h2 className="mb-4 text-xs font-semibold tracking-wider text-slate-500 uppercase">
+      {/* ステータス別件数カード群 (見出しとセクションを aria-labelledby で関連づけ、
+          支援技術がランドマーク単位で読み飛ばせるようにする §7) */}
+      <section aria-labelledby="dashboard-status-heading">
+        <h2
+          id="dashboard-status-heading"
+          className="mb-4 text-xs font-semibold tracking-wider text-slate-500 uppercase"
+        >
           ステータス別件数
         </h2>
         {/* フォローアップ (2026-07-11 #3): statCards が 6→7 件になったため sm:4 / lg:7 列に調整 */}
@@ -201,6 +223,9 @@ export default async function DashboardPage({ searchParams }: Props) {
             <Link
               key={card.status}
               href={buildTicketListHref(`status=${card.status}`, selectedLocationId)}
+              // 読み上げでは「2 新規」だけだとリンク先が伝わらないため、
+              // 件数 + 遷移先 (一覧) をまとめたアクセシブルネームを与える (§7)
+              aria-label={`${STATUS_LABELS[card.status]} ${card.count} 件の一覧を見る`}
               className="rounded-2xl bg-white p-5 shadow-sm ring-1 ring-slate-100 transition duration-200 hover:-translate-y-0.5 hover:shadow-md hover:ring-teal-200"
             >
               <p className="text-3xl font-bold text-slate-900">{card.count}</p>
@@ -214,133 +239,307 @@ export default async function DashboardPage({ searchParams }: Props) {
         </div>
       </section>
 
-      {/* SLA 超過件数 (エージェントのみ表示) */}
+      {/* 対応期限 (SLA) セクション (エージェントのみ表示)。
+          監査フォローアップ (2026-09-09): 以前は「超過してから数える」事後の 1 タイルだけで、
+          しかもページ内で唯一クリックできない数字だった。SLA 運用の定石 (超過前に警告する) に
+          合わせて「期限間近」(警告帯) を並置し、両方とも該当一覧へ drill-down できるようにする */}
       {isAgent && (
-        <section>
-          <h2 className="mb-4 text-xs font-semibold tracking-wider text-slate-500 uppercase">
-            SLA 超過
-          </h2>
-          {/* 件数 0 のとき: ニュートラル / >0 のとき: ロゼで注意喚起 */}
-          <div
-            className={`w-48 rounded-2xl bg-white p-5 shadow-sm ring-1 transition ${
-              slaIsAlert ? 'bg-rose-50/30 ring-rose-200' : 'ring-slate-100'
-            }`}
+        <section aria-labelledby="dashboard-sla-heading">
+          <h2
+            id="dashboard-sla-heading"
+            className="mb-4 text-xs font-semibold tracking-wider text-slate-500 uppercase"
           >
-            <p className={`text-3xl font-bold ${slaIsAlert ? 'text-rose-700' : 'text-slate-400'}`}>
-              {slaOverdueCount}
-            </p>
-            <p className="mt-1 text-xs text-slate-500">SLA 期限超過件数</p>
+            対応期限（SLA）
+          </h2>
+          {/* 期限超過 / 期限間近 の 2 タイル (他セクションと同じグリッドで幅も揃える) */}
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+            {/* 期限超過: いま SLA を破っている件数。一覧の「期限切れ」タブと同一条件 */}
+            <SlaTile
+              label={SLA_LABELS.overdue}
+              count={slaOverdueCount}
+              tone="overdue"
+              description="期限を過ぎた未解決の問い合わせ"
+              href={buildTicketListHref('tab=overdue', selectedLocationId)}
+            />
+            {/* 期限間近: これから SLA を破りそうな件数 (警告帯)。?due=soon の一覧と同一条件。
+                説明の残り時間は sla.ts の警告帯閾値から導出する (§6 値の書き写し禁止) */}
+            <SlaTile
+              label={SLA_LABELS.warning}
+              count={dueSoonCount}
+              tone="warning"
+              description={`残り ${DEFAULT_WARNING_THRESHOLD_MS / (60 * 60 * 1000)} 時間以内に期限が来る問い合わせ`}
+              href={buildTicketListHref('due=soon', selectedLocationId)}
+            />
           </div>
         </section>
       )}
 
       {/* 担当者別 未完了件数 (エージェントのみ・データがある場合のみ表示) */}
       {isAgent && workload.length > 0 && (
-        <section>
-          <h2 className="mb-4 text-xs font-semibold tracking-wider text-slate-500 uppercase">
+        <section aria-labelledby="dashboard-workload-heading">
+          <h2
+            id="dashboard-workload-heading"
+            className="mb-4 text-xs font-semibold tracking-wider text-slate-500 uppercase"
+          >
             担当者別 未完了件数
           </h2>
+          {/* 外側は角丸のカード、内側に横スクロール領域を持たせる
+              (monitor 幅の狭い端末で「一覧を見る」列がはみ出して押せなくなるのを防ぐ) */}
           <div className="overflow-hidden rounded-2xl bg-white shadow-sm ring-1 ring-slate-100">
-            <table className="min-w-full divide-y divide-slate-100 text-sm">
-              <thead className="bg-slate-50/80">
-                <tr>
-                  <th className="px-5 py-3 text-left text-[11px] font-semibold tracking-wider text-slate-500 uppercase">
-                    担当者
-                  </th>
-                  <th className="px-5 py-3 text-right text-[11px] font-semibold tracking-wider text-slate-500 uppercase">
-                    件数
-                  </th>
-                  <th className="px-5 py-3 text-right text-[11px] font-semibold tracking-wider text-slate-500 uppercase"></th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-100">
-                {workload.map((row) => {
-                  // 表示名 (担当者未割当行は「未割当」、見つからなければ「不明」)
-                  const name = row.assigneeId ? (nameMap[row.assigneeId] ?? '不明') : '未割当';
-                  // 「一覧を見る」リンク用の検索クエリ
-                  const query = row.assigneeId
-                    ? `assigneeId=${row.assigneeId}`
-                    : 'assigneeId=unassigned';
-                  return (
-                    <tr
-                      key={row.assigneeId ?? 'unassigned'}
-                      className="transition hover:bg-teal-50/40"
-                    >
-                      <td className="px-5 py-3.5 text-slate-700">{name}</td>
-                      <td className="px-5 py-3.5 text-right font-semibold text-slate-900">
-                        {row.count}
-                      </td>
-                      <td className="px-5 py-3.5 text-right">
-                        {/* 監査で発見したギャップ対応: 選択中の拠点フィルタも引き継ぐ */}
-                        <Link
-                          href={buildTicketListHref(query, selectedLocationId)}
-                          className="text-xs text-teal-700 transition hover:text-teal-800 hover:underline"
-                        >
-                          一覧を見る
-                        </Link>
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
+            <div className="overflow-x-auto">
+              <table className="min-w-full divide-y divide-slate-100 text-sm">
+                <thead className="bg-slate-50/80">
+                  <tr>
+                    <th className="px-5 py-3 text-left text-[11px] font-semibold tracking-wider text-slate-500 uppercase">
+                      担当者
+                    </th>
+                    <th className="px-5 py-3 text-right text-[11px] font-semibold tracking-wider text-slate-500 uppercase">
+                      件数
+                    </th>
+                    <th className="px-5 py-3 text-right text-[11px] font-semibold tracking-wider text-slate-500 uppercase">
+                      {/* 操作列の見出し。視覚上は空欄のままにし、読み上げにだけ列名を伝える (§7) */}
+                      <span className="sr-only">操作</span>
+                    </th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {workload.map((row) => {
+                    // 表示名 (担当者未割当行は「未割当」、見つからなければ「不明」)
+                    const name = row.assigneeId ? (nameMap[row.assigneeId] ?? '不明') : '未割当';
+                    // 「一覧を見る」リンク用の検索クエリ
+                    const query = row.assigneeId
+                      ? `assigneeId=${row.assigneeId}`
+                      : 'assigneeId=unassigned';
+                    return (
+                      <tr
+                        key={row.assigneeId ?? 'unassigned'}
+                        className="transition hover:bg-teal-50/40"
+                      >
+                        <td className="px-5 py-3.5 text-slate-700">
+                          {/* 担当者名 */}
+                          {name}
+                          {/* 負荷バー: 最大件数を 100% とした相対量を面で示し、
+                              数字を読み比べなくても偏りが一目で分かるようにする。
+                              実数値は隣の「件数」セルが持つため、バー自体は装飾として
+                              読み上げ対象から外す (§7 色や図形だけに意味を持たせない) */}
+                          <div
+                            className="mt-1.5 h-1.5 w-full max-w-48 rounded-full bg-slate-100"
+                            aria-hidden="true"
+                          >
+                            <div
+                              className="h-1.5 rounded-full bg-teal-600"
+                              style={{ width: `${Math.round((row.count / workloadMax) * 100)}%` }}
+                            />
+                          </div>
+                        </td>
+                        <td className="px-5 py-3.5 text-right font-semibold text-slate-900">
+                          {row.count}
+                        </td>
+                        <td className="px-5 py-3.5 text-right">
+                          {/* 監査で発見したギャップ対応: 選択中の拠点フィルタも引き継ぐ。
+                              リンク名は行ごとに一意にする (全行「一覧を見る」だと読み上げ・
+                              音声操作でリンクを区別できない §7)。
+                              **見えている文字列「一覧を見る」をそのまま含む形にする** —
+                              音声操作 (Voice Control 等) は見えている文字を読み上げて操作するため、
+                              「一覧で見る」のように 1 文字でも変えるとリンクを起動できなくなる
+                              (WCAG 2.5.3 Label in Name)。他のタイルの aria-label も同じ規則 */}
+                          <Link
+                            href={buildTicketListHref(query, selectedLocationId)}
+                            aria-label={`${name} の未完了 ${row.count} 件の一覧を見る`}
+                            className="text-xs text-teal-700 transition hover:text-teal-800 hover:underline"
+                          >
+                            一覧を見る
+                          </Link>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
           </div>
         </section>
       )}
 
-      {/* 品質メトリクス (エージェントのみ。issue-backlog #25)
-          metrics は isAgent=false のとき null なので null チェックを必ず通す */}
-      {isAgent && metrics && (
-        <section>
-          <h2 className="mb-4 text-xs font-semibold tracking-wider text-slate-500 uppercase">
+      {/* 品質メトリクス (エージェントのみ。issue-backlog #25)。
+          監査フォローアップ (2026-09-09): このページで最も重い 3 本の集計クエリが
+          ページ全体の初期表示をブロックしていたため、Suspense 境界で分離して
+          カード群を先に描画し、このセクションだけ後から流し込む (§8 表示を止めない)。
+          集計期間も全期間 → 直近 QUALITY_METRICS_WINDOW_DAYS 日の移動窓に変更した
+          (全期間の累積平均はデータが増えるほど動かなくなり、指標として機能しないため) */}
+      {isAgent && (
+        <section aria-labelledby="dashboard-quality-heading">
+          <h2
+            id="dashboard-quality-heading"
+            className="mb-4 text-xs font-semibold tracking-wider text-slate-500 uppercase"
+          >
             対応品質
+            {/* 集計期間の明示 (期間の分からない平均値は解釈できないため必ず添える)。
+                値は dashboard-metrics.ts の定数から導出する (§6 値の書き写し禁止) */}
+            <span className="ml-2 font-normal tracking-normal text-slate-400">
+              （直近 {QUALITY_METRICS_WINDOW_DAYS} 日）
+            </span>
           </h2>
-          {/* 3 指標がすべて null のときはデータ不足を明示する
-              各指標はそれぞれ独立した分母を持つため、個別の null チェックで表示を制御する */}
-          {metrics.avgFirstResponseMs == null &&
-          metrics.avgResolutionMs == null &&
-          metrics.reopenRate == null ? (
-            <p className="text-sm text-slate-400">
-              対応済みのチケットが蓄積されると指標が表示されます。
-            </p>
-          ) : (
-            <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
-              {/* 平均初回応答時間 (分母: 初回応答済みチケット数) */}
-              <div className="rounded-2xl bg-white p-5 shadow-sm ring-1 ring-slate-100">
-                <p className="text-2xl font-bold text-slate-900">
-                  {metrics.avgFirstResponseMs != null
-                    ? formatDurationMs(metrics.avgFirstResponseMs)
-                    : '—'}
-                </p>
-                <p className="mt-1 text-xs text-slate-500">平均初回応答時間</p>
-              </div>
-              {/* 平均解決時間 (分母: resolvedCount = 解決済みチケット数) */}
-              <div className="rounded-2xl bg-white p-5 shadow-sm ring-1 ring-slate-100">
-                <p className="text-2xl font-bold text-slate-900">
-                  {metrics.avgResolutionMs != null
-                    ? formatDurationMs(metrics.avgResolutionMs)
-                    : '—'}
-                </p>
-                <p className="mt-1 text-xs text-slate-500">平均解決時間</p>
-              </div>
-              {/* 再オープン率 (分母: totalCount = 全チケット数。resolvedCount ではない) */}
-              <div className="rounded-2xl bg-white p-5 shadow-sm ring-1 ring-slate-100">
-                <p className="text-2xl font-bold text-slate-900">
-                  {metrics.reopenRate != null ? `${Math.round(metrics.reopenRate * 100)} %` : '—'}
-                </p>
-                <p className="mt-1 text-xs text-slate-500">
-                  再オープン率{' '}
-                  {/* 分母ラベルは再オープン率が実際に計算されたときだけ表示する。
-                      null (データ不足) の場合は「—」と並べて件数を出すと誤解を招くため非表示にする */}
-                  {metrics.reopenRate != null && (
-                    <span className="text-slate-400">(全 {metrics.totalCount} 件中)</span>
-                  )}
-                </p>
-              </div>
-            </div>
-          )}
+          {/* 読み込み中はタイルと同形のスケルトンを出し、後から数値に差し替わっても
+              レイアウトが動かないようにする (§8 CLS を悪化させない) */}
+          <Suspense fallback={<QualityMetricsSkeleton />}>
+            <QualityMetricsSection tenantId={tenantId} locationId={selectedLocationId} now={now} />
+          </Suspense>
         </section>
       )}
+    </div>
+  );
+}
+
+// 対応期限 (SLA) セクションのタイル 1 枚分。件数 0 はニュートラル、1 件以上は tone の警告色。
+// 全タイルを Link にし、押すと同一条件で絞り込んだ一覧へ遷移する (数字の根拠に必ず到達できる)
+function SlaTile({
+  label,
+  count,
+  tone,
+  description,
+  href,
+}: {
+  label: string; // タイルの見出し (SLA_LABELS 由来。例: 期限超過 / 期限間近)
+  count: number; // 表示する件数
+  tone: 'warning' | 'overdue'; // 1 件以上のときに使う警告トーン (配色は sla.ts が正)
+  description: string; // 件数の意味を説明する短文 (専門用語の言い換え)
+  href: string; // drill-down 先の一覧 URL (件数と同一条件)
+}) {
+  // 1 件以上なら警告トーン、0 件ならニュートラルな見た目にする
+  const isAlert = count > 0;
+  // tone に応じたタイル配色を sla.ts の一元管理から引く
+  const colors = SLA_TILE_COLORS[tone];
+  return (
+    <Link
+      href={href}
+      // 読み上げ用に「何の件数で、押すとどこへ行くか」をまとめて伝える (§7)
+      aria-label={`${label} ${count} 件の一覧を見る`}
+      className={`rounded-2xl bg-white p-5 shadow-sm ring-1 transition duration-200 hover:-translate-y-0.5 hover:shadow-md ${
+        isAlert ? colors.container : 'ring-slate-100 hover:ring-teal-200'
+      }`}
+    >
+      {/* 件数 (0 件は薄いグレーで「問題なし」を伝える) */}
+      <p className={`text-3xl font-bold ${isAlert ? colors.number : 'text-slate-400'}`}>{count}</p>
+      {/* タイルの見出し */}
+      <p className="mt-2 text-sm font-medium text-slate-700">{label}</p>
+      {/* 件数の意味の説明 */}
+      <p className="mt-1 text-xs text-slate-500">{description}</p>
+    </Link>
+  );
+}
+
+// 対応品質セクションの本体 (Suspense 境界の内側で遅延描画される非同期 Server Component)。
+// 直近 QUALITY_METRICS_WINDOW_DAYS 日の品質指標を 60 秒キャッシュ付きで取得して表示する
+async function QualityMetricsSection({
+  tenantId,
+  locationId,
+  now,
+}: {
+  tenantId: string; // テナントスコープ (クロステナント漏洩防止に必須)
+  locationId: string | undefined; // 拠点フィルタ (未選択は undefined = 全拠点)
+  now: Date; // 現在時刻 (集計期間の起点計算に使う)
+}) {
+  // 品質指標を取得する (期間・キャッシュの方針は dashboard-metrics.ts に集約)
+  const metrics = await getCachedQualityMetrics(tenantId, locationId, now);
+  // 3 指標がすべて null のときはデータ不足を明示する
+  // 各指標はそれぞれ独立した分母を持つため、個別の null チェックで表示を制御する
+  if (
+    metrics.avgFirstResponseMs == null &&
+    metrics.avgResolutionMs == null &&
+    metrics.reopenRate == null
+  ) {
+    // /code-review ultra 指摘対応: 以前の「蓄積されると表示されます」は全期間の累積平均だった
+    // 頃の文言で、集計が直近 N 日の移動窓になった今は事実と食い違う。1 年で 500 件解決していても
+    // 直近 N 日に完了した対応が無ければここへ来るので、「まだデータが貯まっていない＝壊れている」
+    // と読まれてしまう。窓を明示して「この期間に完了した対応が無い」と正確に伝える
+    // (日数は見出しと同じ定数から組み立てる。§6 マジックナンバーを散らさない)
+    return (
+      <p className="text-sm text-slate-400">
+        直近 {QUALITY_METRICS_WINDOW_DAYS} 日に完了した対応がないため、指標を表示できません。
+      </p>
+    );
+  }
+  return (
+    <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+      {/* 平均初回応答時間 (分母: 初回応答済みチケット数) */}
+      <div className="rounded-2xl bg-white p-5 shadow-sm ring-1 ring-slate-100">
+        <p className="text-2xl font-bold text-slate-900">
+          {metrics.avgFirstResponseMs != null ? (
+            formatDurationMs(metrics.avgFirstResponseMs)
+          ) : (
+            <MetricUnavailable />
+          )}
+        </p>
+        <p className="mt-1 text-xs text-slate-500">平均初回応答時間</p>
+      </div>
+      {/* 平均解決時間 (分母: resolvedCount = 解決済みチケット数) */}
+      <div className="rounded-2xl bg-white p-5 shadow-sm ring-1 ring-slate-100">
+        <p className="text-2xl font-bold text-slate-900">
+          {metrics.avgResolutionMs != null ? (
+            formatDurationMs(metrics.avgResolutionMs)
+          ) : (
+            <MetricUnavailable />
+          )}
+        </p>
+        <p className="mt-1 text-xs text-slate-500">平均解決時間</p>
+      </div>
+      {/* 再オープン率 (分母: totalCount = 窓の中で対応が一区切りついた件数。全チケット数ではない) */}
+      <div className="rounded-2xl bg-white p-5 shadow-sm ring-1 ring-slate-100">
+        <p className="text-2xl font-bold text-slate-900">
+          {metrics.reopenRate != null ? (
+            `${Math.round(metrics.reopenRate * 100)} %`
+          ) : (
+            <MetricUnavailable />
+          )}
+        </p>
+        <p className="mt-1 text-xs text-slate-500">
+          再オープン率{' '}
+          {/* 分母ラベルは再オープン率が実際に計算されたときだけ表示する。
+              null (データ不足) の場合は「—」と並べて件数を出すと誤解を招くため非表示にする。
+              分母は「全チケット」ではなく「この期間に一度対応が区切られた件数」
+              (窓内で解決した ∪ 窓内で差し戻された) なので、そう読める文言にする:
+              - 「全 N 件中」だと未対応のチケットまで含む数字だと誤読される
+              - 「対応を終えた N 件中」だと、差し戻されていま未対応に戻っているチケットが
+                分母に入っていることを説明できない (/code-review ultra 指摘対応 2026-09-10) */}
+          {metrics.reopenRate != null && (
+            <span className="text-slate-400">(対応が一区切りついた {metrics.totalCount} 件中)</span>
+          )}
+        </p>
+      </div>
+    </div>
+  );
+}
+
+// 指標が計算できない (データ不足) ことを示す表示。
+// 見た目は従来どおりダッシュ「—」だが、読み上げには「データ不足」と意味を伝える (§7)
+function MetricUnavailable() {
+  return (
+    <>
+      {/* 視覚向けのダッシュ (読み上げからは除外する) */}
+      <span aria-hidden="true">—</span>
+      {/* 読み上げ専用の説明 */}
+      <span className="sr-only">データ不足のため表示できません</span>
+    </>
+  );
+}
+
+// 対応品質セクションの読み込み中スケルトン (タイル 3 枚と同じ形・同じ高さで場所を確保する)
+function QualityMetricsSkeleton() {
+  return (
+    // role=status + 読み上げ用テキストで「読み込み中」であることを支援技術にも伝える
+    <div role="status" className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+      {/* 読み上げ専用の状態説明 */}
+      <span className="sr-only">対応品質を読み込み中</span>
+      {/* タイルと同形のプレースホルダを 3 枚並べる (差し替え時のレイアウトシフト防止) */}
+      {[0, 1, 2].map((i) => (
+        <div key={i} className="rounded-2xl bg-white p-5 shadow-sm ring-1 ring-slate-100">
+          {/* 数値部分のプレースホルダ (点滅の reduced-motion 対応は globals.css が担う。§6) */}
+          <div className="h-8 w-24 animate-pulse rounded bg-slate-100" />
+          {/* ラベル部分のプレースホルダ */}
+          <div className="mt-2 h-4 w-32 animate-pulse rounded bg-slate-100" />
+        </div>
+      ))}
     </div>
   );
 }
@@ -472,14 +671,19 @@ async function LiteDashboard({
     creatorId: isAgent ? undefined : userId,
     locationId: selectedLocationId,
   };
-  // 一覧タブと同一の条件を再利用して「自分の未対応」「期限切れ」のフィルタを組み立てる
+  // 一覧と同一の条件を再利用して 2 タイルのフィルタを組み立てる。
+  // 「自分の未対応」は一覧の 'mine' タブと同じ条件。
+  // 2 枚目は Pivot plan §3.1 の正本仕様どおり **「期限切れ・今日まで」** (期限超過 + 今日が期限)。
+  // 監査フォローアップ (2026-09-09): 従来は厳密な期限超過 ('overdue' タブ) だけを数えており、
+  // 「今日中に対応すべきもの」が正本仕様に反して見えていなかった。?due=today の一覧と
+  // 同じ applyDueFilter を通し、タイルの件数と遷移先の表示件数を一致させる
   const mineFilter = applyTabFilter(baseFilter, 'mine', { isAgent, userId, now });
-  const overdueFilter = applyTabFilter(baseFilter, 'overdue', { isAgent, userId, now });
+  const dueTodayFilter = applyDueFilter(baseFilter, 'today', { now });
 
   // 2 つの件数を並列に取得 (どちらも tenantId スコープ)
-  const [mineCount, overdueCount] = await Promise.all([
+  const [mineCount, dueTodayCount] = await Promise.all([
     repos.tickets.count(mineFilter, tenantId),
-    repos.tickets.count(overdueFilter, tenantId),
+    repos.tickets.count(dueTodayFilter, tenantId),
   ]);
   // チュートリアル動画リンク (未設定ならセクション自体を出さないため showTutorial のときだけ解決する)
   const tutorialVideoUrl = showTutorial ? getTutorialVideoUrl() : null;
@@ -503,6 +707,8 @@ async function LiteDashboard({
             監査で発見したギャップ対応: 選択中の拠点フィルタも引き継ぐ */}
         <Link
           href={buildTicketListHref('tab=mine', selectedLocationId)}
+          // 読み上げでは件数と遷移先をまとめて伝える (§7)
+          aria-label={`自分の未対応 ${mineCount} 件の一覧を見る`}
           className="rounded-2xl bg-white p-6 shadow-sm ring-1 ring-slate-100 transition duration-200 hover:-translate-y-0.5 hover:shadow-md hover:ring-teal-200"
         >
           <p className="text-sm font-medium text-slate-500">自分の未対応</p>
@@ -510,23 +716,37 @@ async function LiteDashboard({
           <p className="mt-1 text-xs text-slate-400">未対応・対応中の問い合わせ</p>
         </Link>
 
-        {/* 期限切れ。件数 0 はニュートラル、1 件以上はロゼで注意喚起。
-            監査で発見したギャップ対応: 選択中の拠点フィルタも引き継ぐ */}
+        {/* 期限切れ・今日まで (Pivot plan §3.1 の正本仕様)。件数 0 はニュートラル、
+            1 件以上は期限超過トーンで注意喚起。ラベルは一覧の絞り込みチップと同じ
+            DUE_FILTER_LABELS を参照する (§6 一元管理)。監査で発見したギャップ対応:
+            選択中の拠点フィルタも引き継ぐ。
+            /code-review ultra 指摘対応 (2026-09-10): 配色を rose 直書きから
+            SLA_TILE_COLORS.overdue の参照に変えた。直書きのままだと、この PR が
+            sla.ts へ一元化したはずの警告色がここだけ 2 つ目の真実の源として残り、
+            パレット変更のたびに 2 か所を直す必要が出る (§6 配色の一元管理)。
+            SlaTile コンポーネント自体は再利用しない — Lite の 2 枚タイルは隣の
+            「自分の未対応」と同じ大きさ (p-6 / text-4xl) で対になっているのに対し、
+            SlaTile は Pro の 3 列グリッド向けの一回り小さい寸法 (p-5 / text-3xl) で、
+            共有すると Lite の 2 枚だけ大きさが食い違うため。共有するのは配色だけでよい */}
         <Link
-          href={buildTicketListHref('tab=overdue', selectedLocationId)}
+          href={buildTicketListHref('due=today', selectedLocationId)}
+          // 読み上げでは件数と遷移先をまとめて伝える (§7)
+          aria-label={`${DUE_FILTER_LABELS.today} ${dueTodayCount} 件の一覧を見る`}
           className={`rounded-2xl bg-white p-6 shadow-sm ring-1 transition duration-200 hover:-translate-y-0.5 hover:shadow-md ${
-            overdueCount > 0
-              ? 'ring-rose-200 hover:ring-rose-300'
+            dueTodayCount > 0
+              ? SLA_TILE_COLORS.overdue.container
               : 'ring-slate-100 hover:ring-teal-200'
           }`}
         >
-          <p className="text-sm font-medium text-slate-500">期限切れ</p>
+          <p className="text-sm font-medium text-slate-500">{DUE_FILTER_LABELS.today}</p>
           <p
-            className={`mt-2 text-4xl font-bold ${overdueCount > 0 ? 'text-rose-700' : 'text-slate-400'}`}
+            className={`mt-2 text-4xl font-bold ${dueTodayCount > 0 ? SLA_TILE_COLORS.overdue.number : 'text-slate-400'}`}
           >
-            {overdueCount}
+            {dueTodayCount}
           </p>
-          <p className="mt-1 text-xs text-slate-400">期限を過ぎた未完了の問い合わせ</p>
+          <p className="mt-1 text-xs text-slate-400">
+            期限を過ぎた・今日が期限の未完了の問い合わせ
+          </p>
         </Link>
       </div>
 

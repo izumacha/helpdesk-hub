@@ -18,6 +18,8 @@ import {
   TICKET_DETAIL_COMMENTS_LIMIT,
   TICKET_DETAIL_HISTORY_LIMIT,
 } from '@/data/ports/ticket-repository';
+// dueSoon フィルタの「警告帯」の幅 (§6 一元管理: 値を書き写さず実装と同じ定数から導出する)
+import { DEFAULT_WARNING_THRESHOLD_MS } from '@/lib/sla';
 
 // 既定で使うテナント ID (旧テストは単一テナントを前提に書かれているのでここで共通化)
 const TENANT_ID = 'default-tenant';
@@ -509,6 +511,126 @@ export function runTicketRepositoryContract(
       expect(metricsB.resolvedCount).toBe(0);
     });
 
+    // 監査フォローアップ (2026-09-10): qualityMetrics の since 絞り込みの契約。
+    // **窓は起票日時ではなく「解決した日時」に掛かる**ことを実 DB で固定する。
+    // 起票日時で切っていた版では、窓より長くかかったチケットは解決した日にはもう窓の外に
+    // いて平均へ一度も入らなかった (平均解決時間が窓の長さで頭打ちになり、遅い案件が
+    // 増えるほど「速い分だけ」の平均に寄って数字が下がる = 悪化を改善として表示する)。
+    // 下の 'slow' がその再現ケースで、起票日時で切る実装ではこのテストが落ちる。
+    it('qualityMetrics with since windows on when work finished, not when it was created', async () => {
+      const { requester, categoryId } = await ctx.seedBasicFixture();
+      // 窓の境界 (この日時以降に「対応を終えた」ものが集計対象)
+      const since = new Date('2030-06-01T00:00:00Z');
+      // 1 時間・1 日をミリ秒で表した読みやすさ用の定数
+      const oneHour = 60 * 60 * 1000;
+      const oneDay = 24 * oneHour;
+
+      // (1) 窓より前に起票し、窓より前に解決した → 完全に窓の外なので除外されるべき
+      await ctx.repos.tickets.create({
+        title: 'old-resolved',
+        body: 'b',
+        priority: 'Low',
+        creatorId: requester.id,
+        categoryId,
+        tenantId: TENANT_ID,
+        createdAt: new Date(since.getTime() - 10 * oneDay),
+        resolvedAt: new Date(since.getTime() - 9 * oneDay),
+        firstRespondedAt: new Date(since.getTime() - 10 * oneDay + oneHour),
+        status: 'Closed',
+      });
+      // (2) 窓の中で起票し、窓の中で解決した → 集計対象 (解決まで 1 時間)
+      await ctx.repos.tickets.create({
+        title: 'fast',
+        body: 'b',
+        priority: 'Low',
+        creatorId: requester.id,
+        categoryId,
+        tenantId: TENANT_ID,
+        createdAt: new Date(since.getTime() + oneDay),
+        resolvedAt: new Date(since.getTime() + oneDay + oneHour),
+        firstRespondedAt: new Date(since.getTime() + oneDay + oneHour),
+        status: 'Closed',
+      });
+      // (3) 窓より前に起票したが、窓の中で解決した長期案件 → **集計対象**。
+      //     起票日時で窓を切ると、この「時間がかかった案件」だけが平均から消える
+      await ctx.repos.tickets.create({
+        title: 'slow',
+        body: 'b',
+        priority: 'Low',
+        creatorId: requester.id,
+        categoryId,
+        tenantId: TENANT_ID,
+        createdAt: new Date(since.getTime() - 2 * oneHour),
+        resolvedAt: new Date(since.getTime() + oneHour),
+        firstRespondedAt: new Date(since.getTime() + oneHour),
+        status: 'Closed',
+      });
+
+      // since 指定なしなら 3 件とも集計される (全期間)
+      const allTime = await ctx.repos.tickets.qualityMetrics({ tenantId: TENANT_ID });
+      expect(allTime.resolvedCount).toBe(3);
+      // since 指定ありなら「窓の中で解決した」(2) と (3) の 2 件が対象になる
+      const windowed = await ctx.repos.tickets.qualityMetrics({ tenantId: TENANT_ID, since });
+      expect(windowed.resolvedCount).toBe(2);
+      // 再オープン率の分母も「窓の中で対応を終えた件数」= 2 件
+      expect(windowed.totalCount).toBe(2);
+      // 平均解決時間は (2) の 1 時間 と (3) の 3 時間 の平均 = 2 時間。
+      // 起票日時で切る実装だと (3) が抜けて 1 時間になり、遅い案件を隠してしまう
+      expect(windowed.avgResolutionMs).toBe(2 * oneHour);
+      // 平均初回応答時間も同じ窓の掛け方 ((2) 1 時間 / (3) 3 時間 の平均)
+      expect(windowed.avgFirstResponseMs).toBe(2 * oneHour);
+    });
+
+    // 監査フォローアップ (2026-09-10): 再オープン率の分母の契約。
+    // 差し戻し (Resolved/Closed → Open) では update-ticket.ts が resolvedAt をクリアするため、
+    // 分母を「解決済み」だけで決めると差し戻されたチケットが分子にだけ残り率が 1 を超えうる。
+    // 分母は「窓の中で解決した ∪ 窓の中で差し戻された」の和集合であることを固定する
+    it('qualityMetrics counts reopened tickets in the denominator even after resolvedAt is cleared', async () => {
+      const { requester, categoryId } = await ctx.seedBasicFixture();
+      // 履歴の記録日時は「いま」になるため、窓の境界は過去に置いて履歴が窓に入るようにする
+      const since = new Date(Date.now() - 24 * 60 * 60 * 1000);
+
+      // (1) 解決したまま据え置きのチケット (分母に入るが分子には入らない)
+      await ctx.repos.tickets.create({
+        title: 'stayed-resolved',
+        body: 'b',
+        priority: 'Low',
+        creatorId: requester.id,
+        categoryId,
+        tenantId: TENANT_ID,
+        resolvedAt: new Date(),
+        status: 'Closed',
+      });
+      // (2) 差し戻されたチケット。再オープン後は resolvedAt が null に戻っている状態を再現する
+      const reopened = await ctx.repos.tickets.create({
+        title: 'reopened',
+        body: 'b',
+        priority: 'Low',
+        creatorId: requester.id,
+        categoryId,
+        tenantId: TENANT_ID,
+        resolvedAt: null,
+        status: 'Open',
+      });
+      // 差し戻しの履歴 (Closed → Open) を記録する
+      await ctx.repos.history.record({
+        ticketId: reopened.id,
+        changedById: requester.id,
+        field: 'status',
+        oldValue: 'Closed',
+        newValue: 'Open',
+      });
+
+      // 分母は解決 1 件 + 差し戻し 1 件 = 2 件、分子は差し戻し 1 件 → 50%
+      const metrics = await ctx.repos.tickets.qualityMetrics({ tenantId: TENANT_ID, since });
+      expect(metrics.totalCount).toBe(2);
+      expect(metrics.reopenRate).toBe(0.5);
+      // 率は決して 1 を超えない (分子は必ず分母の部分集合)
+      expect(metrics.reopenRate).toBeLessThanOrEqual(1);
+      // resolvedAt がクリアされている差し戻し分は「解決済み件数」には数えない
+      expect(metrics.resolvedCount).toBe(1);
+    });
+
     // --- ここからクロステナント回帰テスト (Phase 0 仕上げ PR で追加) ---
 
     // テナント A のチケットがテナント B からは findById で取れないこと
@@ -926,6 +1048,170 @@ export function runTicketRepositoryContract(
         tenantId: TENANT_ID,
       });
       expect(resultIn.map((t) => t.id)).toEqual([overdueOpen.id]);
+    });
+
+    // 監査フォローアップ (2026-09-09): dueSoon フィルタが「警告帯 [now, now + 閾値) 内の
+    // 未解決」だけを返すこと (ダッシュボードの「期限間近」タイルと ?due=soon の一覧が共有する契約)
+    it('list with dueSoon filter returns only unresolved tickets inside the warning window', async () => {
+      const { requester, categoryId } = await ctx.seedBasicFixture();
+      // 基準時刻 (作成済みチケットの期限を相対配置するための固定値)
+      const now = new Date('2030-06-01T00:00:00Z');
+      // 警告帯の内側 (帯の中央) / 外側 (帯の終端の 1 時間先) / 過去。
+      // /code-review ultra 指摘対応: 「25 時間」のような固定値を書き写すと、
+      // DEFAULT_WARNING_THRESHOLD_MS を変えたときに実装が正しくてもテストだけが落ちる。
+      // 帯の幅から相対で導出する (§6 値の書き写し禁止)
+      const inWindow = new Date(now.getTime() + Math.floor(DEFAULT_WARNING_THRESHOLD_MS / 2));
+      const beyondWindow = new Date(now.getTime() + DEFAULT_WARNING_THRESHOLD_MS + 60 * 60 * 1000);
+      const past = new Date(now.getTime() - 60 * 60 * 1000);
+
+      // 警告帯の内側 + 未解決 → ヒット対象
+      const dueSoonTicket = await ctx.repos.tickets.create({
+        title: 'due-soon',
+        body: 'b',
+        priority: 'High',
+        creatorId: requester.id,
+        categoryId,
+        tenantId: TENANT_ID,
+        resolutionDueAt: inWindow,
+      });
+      // 警告帯より先の期限 → 除外 (まだ急ぎではない)
+      await ctx.repos.tickets.create({
+        title: 'due-later',
+        body: 'b',
+        priority: 'Low',
+        creatorId: requester.id,
+        categoryId,
+        tenantId: TENANT_ID,
+        resolutionDueAt: beyondWindow,
+      });
+      // 既に超過 → 除外 (期限間近ではなく期限超過の側で数える)
+      await ctx.repos.tickets.create({
+        title: 'already-overdue',
+        body: 'b',
+        priority: 'High',
+        creatorId: requester.id,
+        categoryId,
+        tenantId: TENANT_ID,
+        resolutionDueAt: past,
+      });
+      // 警告帯の内側だが解決済み → 除外
+      const resolvedSoon = await ctx.repos.tickets.create({
+        title: 'due-soon-resolved',
+        body: 'b',
+        priority: 'High',
+        creatorId: requester.id,
+        categoryId,
+        tenantId: TENANT_ID,
+        resolutionDueAt: inWindow,
+      });
+      // New → Open → Resolved に遷移させて解決済みにする
+      await ctx.repos.tickets.updateStatus(
+        resolvedSoon.id,
+        { from: 'New', to: 'Open' },
+        null,
+        TENANT_ID,
+      );
+      await ctx.repos.tickets.updateStatus(
+        resolvedSoon.id,
+        { from: 'Open', to: 'Resolved' },
+        new Date(),
+        TENANT_ID,
+      );
+
+      // dueSoon フィルタで警告帯内 + 未解決の 1 件だけが返る
+      const result = await ctx.repos.tickets.list({
+        filter: { dueSoon: { now } },
+        page: { skip: 0, take: 50 },
+        tenantId: TENANT_ID,
+      });
+      expect(result.map((t) => t.id)).toEqual([dueSoonTicket.id]);
+      // count も list と同じ件数になる (タイルの件数と一覧の表示件数の一致の根拠)
+      expect(await ctx.repos.tickets.count({ dueSoon: { now } }, TENANT_ID)).toBe(1);
+    });
+
+    // 監査フォローアップ (2026-09-09): dueUntil フィルタが「指定時刻**以前** (境界含む) が
+    // 期限の未解決」を返すこと (Lite タイル「期限切れ・今日まで」と ?due=today が共有する契約。
+    // Lite の期限は「その日の終端 23:59:59.999 (JST)」ちょうどに設定されるため、境界を含む
+    // lte でないと今日が期限のチケットが数え漏れる)
+    it('list with dueUntil filter includes tickets due exactly at the boundary', async () => {
+      const { requester, categoryId } = await ctx.seedBasicFixture();
+      // 「今日の終端」に相当する境界時刻
+      const until = new Date('2030-06-01T14:59:59.999Z');
+      // 境界ちょうど / 境界より過去 / 境界より未来 の 3 パターンの期限
+      const beforeUntil = new Date(until.getTime() - 24 * 60 * 60 * 1000);
+      const afterUntil = new Date(until.getTime() + 1);
+
+      // 期限が境界ちょうど → ヒット対象 (lte の境界検証)
+      const dueAtBoundary = await ctx.repos.tickets.create({
+        title: 'due-at-boundary',
+        body: 'b',
+        priority: 'Medium',
+        creatorId: requester.id,
+        categoryId,
+        tenantId: TENANT_ID,
+        resolutionDueAt: until,
+      });
+      // 期限が境界より過去 (既に超過) → ヒット対象 (「期限切れ + 今日まで」の期限切れ側)
+      const dueBefore = await ctx.repos.tickets.create({
+        title: 'due-before',
+        body: 'b',
+        priority: 'Medium',
+        creatorId: requester.id,
+        categoryId,
+        tenantId: TENANT_ID,
+        resolutionDueAt: beforeUntil,
+      });
+      // 期限が境界より未来 (明日以降) → 除外
+      await ctx.repos.tickets.create({
+        title: 'due-after',
+        body: 'b',
+        priority: 'Medium',
+        creatorId: requester.id,
+        categoryId,
+        tenantId: TENANT_ID,
+        resolutionDueAt: afterUntil,
+      });
+
+      // dueUntil フィルタで境界ちょうど + 過去の 2 件が返る
+      const result = await ctx.repos.tickets.list({
+        filter: { dueUntil: { until } },
+        page: { skip: 0, take: 50 },
+        tenantId: TENANT_ID,
+      });
+      expect(result.map((t) => t.id).sort()).toEqual([dueAtBoundary.id, dueBefore.id].sort());
+      // count も list と同じ件数になる (タイルの件数と一覧の表示件数の一致の根拠)
+      expect(await ctx.repos.tickets.count({ dueUntil: { until } }, TENANT_ID)).toBe(2);
+    });
+
+    // /code-review ultra 指摘対応 (2026-09-09): 期限系フィルタを複数同時に指定しても
+    // 後勝ちで上書きされず、全条件の AND として評価されること (Prisma アダプタが
+    // where.resolutionDueAt を代入で組み立てると overdue が dueSoon に黙って置き換わり、
+    // メモリアダプタと結果が食い違うバグがあった)。overdue (期限 < now) と dueSoon
+    // (期限 >= now) の積は定義上空集合なので、0 件になることが「AND で評価された」証拠になる
+    it('list with both overdue and dueSoon applies both conditions (empty intersection)', async () => {
+      const { requester, categoryId } = await ctx.seedBasicFixture();
+      // 基準時刻と、警告帯の内側の期限 (dueSoon 単独ならヒットする)
+      const now = new Date('2030-06-01T00:00:00Z');
+      const inWindow = new Date(now.getTime() + 60 * 60 * 1000);
+
+      // 警告帯の内側 + 未解決のチケットを 1 件作成する
+      await ctx.repos.tickets.create({
+        title: 'due-soon-only',
+        body: 'b',
+        priority: 'High',
+        creatorId: requester.id,
+        categoryId,
+        tenantId: TENANT_ID,
+        resolutionDueAt: inWindow,
+      });
+
+      // dueSoon 単独なら 1 件ヒットする (前提の確認)
+      expect(await ctx.repos.tickets.count({ dueSoon: { now } }, TENANT_ID)).toBe(1);
+      // overdue + dueSoon の併用は「期限 < now かつ期限 >= now」で空集合になる
+      // (後勝ち上書きだと dueSoon だけが効いて 1 件返ってしまう)
+      expect(
+        await ctx.repos.tickets.count({ overdue: { now }, dueSoon: { now } }, TENANT_ID),
+      ).toBe(0);
     });
 
     // フォローアップ (2026-07-15 #2): check-then-act 競合 (TOCTOU) の防止。§1.4 で

@@ -12,6 +12,9 @@ import type { TicketStatus, Priority } from '@/domain/types';
 import type { TicketListFilter } from '@/data/ports/ticket-repository';
 // タブ絞り込みを共通ヘルパーに委譲する (mine / overdue タブは一覧とダッシュボードで共有)
 import { applyTabFilter } from '@/features/tickets/tab-filter';
+// 期限絞り込み (?due=soon / ?due=today) を共通ヘルパーに委譲する
+// (ダッシュボードの SLA 系タイルの件数と drill-down 先の一覧を一致させる。監査フォローアップ 2026-09-09)
+import { applyDueFilter, parseDueParam } from '@/features/tickets/due-filter';
 // 一覧タブ型 — クライアントコンポーネントではなく共有型ファイルから import する (依存境界の明確化)
 import type { TicketTabId } from '@/features/tickets/types';
 
@@ -24,6 +27,7 @@ export interface TicketFilterParams {
   assigneeId?: string; // 担当者 ID (または 'unassigned')
   locationId?: string; // 拠点 ID (Phase 4 多拠点)
   tab?: string; // 一覧タブ ('mine' / 'overdue' / 'all' または未指定)
+  due?: string; // 期限絞り込み ('soon' = 期限間近 / 'today' = 期限切れ・今日まで。未指定は絞り込みなし)
 }
 
 // buildTicketListFilter が必要とする実行コンテキスト
@@ -122,9 +126,16 @@ export function buildTicketListFilter(
   // タブ別の追加条件 ('mine' / 'overdue') を共通ヘルパーで適用する
   // (ダッシュボードと同一ロジックを共有し、タブの意味を二重定義しない)
   const tab = parseTabParam(params.tab);
-  return applyTabFilter(baseFilter, tab, {
+  const tabApplied = applyTabFilter(baseFilter, tab, {
     isAgent: ctx.isAgent,
     userId: ctx.userId,
     now: ctx.now,
   });
+  // 期限絞り込み ('soon' / 'today') を共通ヘルパーで適用する
+  // (ダッシュボードのタイル件数と同一ロジックを共有し、期限条件の意味を二重定義しない)
+  const due = parseDueParam(params.due);
+  // 不正値・未指定は絞り込みなし (isValidStatus 等と同じ「列挙外は無視」の方針)
+  if (!due) return tabApplied;
+  // 期限条件を追加したフィルタを返す
+  return applyDueFilter(tabApplied, due, { now: ctx.now });
 }

@@ -1,7 +1,7 @@
 'use client';
 
-// React の状態フック (折りたたみ状態を保持)
-import { useState } from 'react';
+// React の状態フック (折りたたみ状態) / 参照フック (ドロワー DOM) / 副作用フック (キー操作の購読)
+import { useEffect, useRef, useState } from 'react';
 // クライアント遷移付きリンク
 import Link from 'next/link';
 // 現在の URL パスを取得 (アクティブ判定に使用)
@@ -60,6 +60,114 @@ export function Sidebar({ role, mode }: Props) {
   // モバイルドロワーの開閉状態と「閉じる」関数を Context から取得
   // (md 未満ではこの open に従って画面外/画面内へスライドする)
   const { open: mobileOpen, closeNav } = useMobileNav();
+  // ドロワー本体の DOM 参照 (フォーカストラップの範囲を決めるのに使う)
+  const asideRef = useRef<HTMLDivElement>(null);
+
+  // モバイルドロワーのキーボード対応 (§7 a11y「モーダルはフォーカストラップ + Esc で閉じ」)。
+  // 監査フォローアップ (2026-09-09): 以前は Esc で閉じられず、Tab で背面のコンテンツへ
+  // フォーカスが抜けてしまい、キーボード利用者はドロワーを閉じる手段が事実上なかった
+  useEffect(() => {
+    // 閉じているあいだは何もしない (リスナーも張らない)
+    if (!mobileOpen) return;
+    // md 以上ではドロワーではなく常設サイドバーとして表示されるため、トラップは掛けない
+    // (掛けるとデスクトップでページ全体のキーボード操作を奪ってしまう)
+    // **単位は px ではなく rem にする** (/code-review ultra 指摘対応)。Tailwind v4 の `md:` は
+    // `@media (min-width:48rem)` を出力する (生成 CSS で実測: 48rem が 1 件、768px は 0 件)。
+    // ここだけ px で書くと、既定の文字サイズを 16px から変えている利用者 (a11y の設定として
+    // よくある) で CSS と JS の境界がずれる。たとえば 20px なら CSS の境界は 960px なので、
+    // 幅 800px では見た目はドロワー (ハンバーガーも出ている) なのに、この判定は
+    // 「md 以上」と答えて **早期 return し、Esc もフォーカストラップも初期フォーカス移動も
+    // 効かなくなる**。しかも描画側は role="dialog" / aria-modal="true" を付けているので、
+    // 背面は支援技術から隠れたまま Tab でそこへ抜けられる状態になる
+    const mdQuery = window.matchMedia('(min-width: 48rem)');
+    if (mdQuery.matches) return;
+    // ドロワーの DOM が取れなければ何もできない (次の描画で再実行される)。
+    // リスナー登録より前に判定する (登録後に早期 return するとクリーンアップが返らず
+    // リスナーが残留するため §8)
+    const aside = asideRef.current;
+    if (!aside) return;
+    // 開いたまま画面幅が md 以上へ変わった場合 (タブレットの回転・ウィンドウのリサイズ) は
+    // ドロワー状態ごと閉じる (/code-review ultra 指摘対応: 判定を開いた瞬間の 1 回で
+    // 固定すると、常設サイドバーに切り替わった後もトラップと背面スクロール禁止が残り、
+    // キーボード利用者が本文へ戻れなくなる)。閉じれば本 effect のクリーンアップが走り、
+    // トラップ解除・フォーカス復元・MobileNavProvider 側のスクロール解放が連動する
+    const onBreakpointChange = (event: MediaQueryListEvent) => {
+      if (event.matches) closeNav();
+    };
+    mdQuery.addEventListener('change', onBreakpointChange);
+    // 開く前にフォーカスしていた要素 (通常はハンバーガーボタン) を覚えておき、閉じたら戻す
+    const previouslyFocused = document.activeElement;
+    // ドロワー内の「見えていて」フォーカス可能な要素一覧を返すヘルパー。
+    // offsetParent が null の要素 (display:none。md 専用の折りたたみボタン等) は
+    // フォーカスできないため除外する
+    const focusables = () =>
+      Array.from(aside.querySelectorAll<HTMLElement>('a[href], button:not([disabled])')).filter(
+        (el) => el.offsetParent !== null,
+      );
+    // 開いた直後にフォーカスをドロワー内の先頭要素へ移す (背面に取り残さない)
+    focusables()[0]?.focus();
+    // キー操作のハンドラ (Esc で閉じる / Tab をドロワー内で循環させる)
+    const onKeyDown = (event: KeyboardEvent) => {
+      // Esc: ドロワーを閉じる
+      if (event.key === 'Escape') {
+        closeNav();
+        return;
+      }
+      // Tab 以外のキーはトラップ対象外
+      if (event.key !== 'Tab') return;
+      // 現時点のフォーカス可能要素一覧 (0 件なら何もしない)
+      const items = focusables();
+      if (items.length === 0) return;
+      // 先頭・末尾の要素を取り出す
+      const first = items[0];
+      const last = items[items.length - 1];
+      // フォーカスがドロワーの外にある場合 (ドロワー内の非対話領域をタップして
+      // activeElement が body に落ちた直後など) は、Tab の行き先が背面のコンテンツに
+      // なってしまうため、必ずドロワー内へ引き戻す (/code-review ultra 指摘対応)
+      if (!aside.contains(document.activeElement)) {
+        event.preventDefault();
+        (event.shiftKey ? last : first).focus();
+        return;
+      }
+      // Shift+Tab で先頭から抜けようとしたら末尾へ回す
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        // Tab で末尾から抜けようとしたら先頭へ回す
+        event.preventDefault();
+        first.focus();
+      }
+    };
+    // キー操作の購読を開始する
+    document.addEventListener('keydown', onKeyDown);
+    // クリーンアップ: 購読を解除し、フォーカスを開く前の要素へ戻す (§8 リソース解放)
+    return () => {
+      document.removeEventListener('keydown', onKeyDown);
+      // ブレークポイント監視も忘れずに解除する
+      mdQuery.removeEventListener('change', onBreakpointChange);
+      // 覚えておいた要素が**まだ描画されているときだけ**そこへ戻す。
+      // checkVisibility() が無い環境では offsetParent で代用する (display:none は null)
+      const stillRendered =
+        previouslyFocused instanceof HTMLElement &&
+        previouslyFocused.isConnected &&
+        (previouslyFocused.checkVisibility?.() ?? previouslyFocused.offsetParent !== null);
+      if (stillRendered) {
+        // 通常の閉じ方 (Esc・閉じるボタン・背景タップ): 開く前の位置へ戻す
+        (previouslyFocused as HTMLElement).focus();
+      } else {
+        // /code-review ultra 指摘対応: md 以上へ広げて閉じた場合、開く前にフォーカスして
+        // いたハンバーガー (md:hidden) は display:none になっており、focus() は何も起きない
+        // no-op になる。しかも**いまフォーカスしている要素も消えている**ことが多い
+        // (ドロワー内の先頭はモバイル専用の「ナビゲーションを閉じる」ボタンで、これも
+        // md:hidden)。放っておくと activeElement が <body> に落ち、キーボード利用者は
+        // 文書の先頭から Tab をやり直すことになる。ドロワーは md 以上では常設サイドバーと
+        // して見えているので、その中の最初のフォーカス可能要素へ移して居場所を保つ
+        // (要素が 1 つも無い＝アンマウント時などは ?. で何もしない)
+        focusables()[0]?.focus();
+      }
+    };
+  }, [mobileOpen, closeNav]);
 
   // 権限に応じて表示できる項目だけに絞り込む
   // 1 項目に複数の制約が付きうるため、各制約を個別に判定し
@@ -93,17 +201,69 @@ export function Sidebar({ role, mode }: Props) {
       {/* 折りたたみで幅を切り替えるサイドバー本体 (柔らかな白 + 右ボーダー)
           - md 未満: fixed 配置 + translate-x でスライドイン/アウト (mobileOpen 連動)
           - md 以上: relative 配置 + 常時表示 (collapsed で幅切替) */}
-      <aside
+      <div
+        // フォーカストラップの範囲を決める DOM 参照 (上の useEffect が使う)
+        ref={asideRef}
         // モバイルドロワー時に MobileNavToggle の aria-controls から参照される ID
         id="mobile-sidebar"
-        className={`fixed inset-y-0 left-0 z-40 flex flex-col border-r border-slate-200 bg-white/95 backdrop-blur transition-all duration-200 md:relative md:translate-x-0 ${
-          // モバイル時の表示/非表示制御 (true = 画面内, false = 画面外左)
-          mobileOpen ? 'translate-x-0 shadow-2xl' : '-translate-x-full'
+        // transition の対象を明示列挙する (transition-all にしない)。
+        // /code-review ultra 指摘対応 (計画書 §4.28.4): `transition-property: all` は
+        // **visibility も遷移対象に含む**。CSS の仕様では visible → hidden の遷移中の
+        // 計算値は「visible」のままで、hidden になるのは遷移の終端。つまり
+        // transition-all のままだと閉じてから 200ms のあいだドロワーの中身が
+        // フォーカス可能・読み上げ可能なまま画面外を滑っていき、その隙に Shift+Tab で
+        // 見えないリンクへ入れてしまう (フォーカストラップは既に解除済み)。
+        //
+        // 列挙する property 名は **translate であって transform ではない**
+        // (計画書 §4.28.4。生成 CSS で実測): Tailwind v4 の `translate-x-*` は
+        // `transform:` ではなく独立した `translate:` プロパティへコンパイルされる
+        // (`.-translate-x-full{--tw-translate-x:-100%;translate:var(--tw-translate-x) …}`)。
+        // transform と書くとこの要素では誰も設定しないプロパティを指すことになり、
+        // スライドのアニメーションが丸ごと効かなくなる。
+        //
+        // **トレードオフ (意図的)**: visibility を遷移対象から外したので、閉じるときは
+        // スライドせず即座に消える (開くときはスライドする)。見た目の対称性より
+        // 「閉じた瞬間にフォーカス対象から外れる」ことを優先している。
+        // **これを『閉じるアニメーションが無い』と見て visibility を遷移対象へ戻さないこと** —
+        // 上記 200ms の穴がそのまま復活する。両立させたいなら visibility ではなく
+        // `inert` でフォーカス可能性を切り離す設計に変えること。
+        //
+        // 動きを抑える設定 (prefers-reduced-motion) への対応は globals.css の全体指定が
+        // 担う (`*` に transition-duration: 0.01ms !important)。ここに
+        // motion-reduce:transition-none を重ねても挙動は変わらず、
+        // 「どちらが効いているのか」が読めなくなるだけなので置かない (§6 / §7)
+        className={`fixed inset-y-0 left-0 z-40 flex flex-col border-r border-slate-200 bg-white/95 backdrop-blur transition-[translate,width,box-shadow] duration-200 md:visible md:relative md:translate-x-0 ${
+          // モバイル時の表示/非表示制御 (true = 画面内, false = 画面外左)。
+          // 閉じているときは translate に加えて **invisible (visibility:hidden)** も付ける
+          // (/code-review ultra 指摘対応 2026-09-10): translate で画面外へずらしただけの
+          // 要素は依然フォーカス可能なので、md 未満でドロワーを閉じていても中のナビリンクが
+          // タブ順・読み上げ順に残り、「画面のどこにも見えないリンクに Tab で最初に到達し、
+          // Enter を押すと実際に遷移する」状態になっていた。visibility:hidden なら
+          // 中の要素はまとめてフォーカス対象から外れる。
+          // md 以上は常設サイドバーとして必ず見せるので、ベースクラスの md:visible で戻す
+          mobileOpen ? 'visible translate-x-0 shadow-2xl' : 'invisible -translate-x-full'
         } ${
           // 幅切替: モバイルではフル幅相当 (w-64) を確保、md 以上は collapsed に応じて w-14/w-60 を切替
           collapsed ? 'w-64 md:w-14' : 'w-64 md:w-60'
         }`}
-        // モバイルナビゲーションを意味するランドマーク
+        // モバイルドロワーとして開いているあいだだけ「モーダルダイアログ」として扱う
+        // (/code-review ultra 指摘対応 2026-09-10)。Tab のフォーカストラップだけでは
+        // **スクリーンリーダーの仮想カーソル**は止められず、スワイプ/矢印キーで読み進めた
+        // 利用者は最後のナビ項目の先で背面のチケット一覧 — 視覚的にはオーバーレイで
+        // 覆われて操作もできない領域 — へ、メニューを出たことに気づかないまま入ってしまう。
+        // aria-modal="true" は「このダイアログの外は今は無いものとして扱う」という指示で、
+        // 支援技術側が仮想カーソルの移動範囲をこの要素の中に閉じてくれる (WAI-ARIA APG の
+        // モーダルダイアログの作法。フォーカストラップと対で初めて成立する)。
+        // md 以上の常設サイドバー表示 (mobileOpen=false) では従来どおり
+        // 補助的なランドマーク (complementary) のままにする — 常に dialog にすると
+        // デスクトップでランドマーク単位の読み飛ばしができなくなるため。
+        // /code-review ultra 指摘対応 (2026-09-10): 要素を <aside> から <div> に変えている。
+        // ARIA in HTML は aside に dialog ロールを許しておらず (complementary / region /
+        // note 等のみ)、そのままだと axe の aria-allowed-role で新規違反になるため。
+        // <aside> の既定ロールは complementary なので、閉じているときに明示すれば等価
+        role={mobileOpen ? 'dialog' : 'complementary'}
+        aria-modal={mobileOpen ? true : undefined}
+        // ランドマーク名 / ダイアログ名 (どちらの役割でも同じ呼び名を使う)
         aria-label="メインナビゲーション"
       >
         {/* ヘッダー領域 (ブランドマーク + 折りたたみボタン)
@@ -119,13 +279,42 @@ export function Sidebar({ role, mode }: Props) {
           <div className="hidden md:block">
             <Logo showWordmark={!collapsed} size={collapsed ? 28 : 30} />
           </div>
-          {/* 折りたたみ切り替えボタン (md 以上でのみ表示。モバイルでは Header のハンバーガーが担当) */}
+          {/* 折りたたみ切り替えボタン (md 以上でのみ表示。モバイルでは下の閉じるボタンが担当) */}
           <button
+            // 既定の type は submit なので明示する (将来サイドバーに <form> を足したとき、
+            // 押下で意図しない送信が起きるのを防ぐ。MobileNavToggle と同じ理由)
+            type="button"
             onClick={() => setCollapsed(!collapsed)}
             className="ml-auto hidden rounded-md p-1 text-slate-400 transition hover:bg-slate-100 hover:text-slate-700 md:block"
             aria-label={collapsed ? 'サイドバーを展開' : 'サイドバーを折りたたむ'}
           >
             {collapsed ? '›' : '‹'}
+          </button>
+          {/* ドロワーを閉じるボタン (md 未満でのみ表示)。
+              /code-review ultra 指摘対応 (2026-09-10): aria-modal="true" は「このダイアログの
+              外は無いものとして扱う」指示なので、Header にあるハンバーガー (唯一の閉じる操作) も
+              支援技術から見えなくなる。ドロワー内に閉じる手段が無いと、Esc キーを持たない
+              タッチ端末のスクリーンリーダー利用者 (iOS VoiceOver / TalkBack) は
+              「どれかのメニュー項目をタップして意図しない画面へ移る」以外にメニューを出られない。
+              WAI-ARIA APG がモーダルダイアログに dismiss コントロールを必須としているのはこのため。
+
+              **mobileOpen による条件描画は付けない**: 閉じているあいだドロワーごと
+              visibility:hidden になる (上の className を参照) ので、この中の要素は
+              まとめてタブ順・読み上げ順から外れる。要素ごとに描画を出し分けると、
+              「タブ順を守っているのはこの条件式だ」と読めてしまい、visibility の方を
+              外されたときに気づけない (4 巡目レビュー指摘)。
+
+              ラベルを「ナビゲーションを閉じる」にしているのは、開いている間 Header の
+              MobileNavToggle も「メニューを閉じる」になり、同名のボタンが 2 つできるため
+              (読み上げで区別できず、Playwright の getByRole も strict mode violation になる) */}
+          <button
+            type="button"
+            onClick={closeNav}
+            className="ml-auto rounded-md p-1 text-slate-400 transition hover:bg-slate-100 hover:text-slate-700 md:hidden"
+            aria-label="ナビゲーションを閉じる"
+          >
+            {/* 視覚的な × 記号 (意味は上の aria-label が持つので読み上げからは外す) */}
+            <span aria-hidden="true">✕</span>
           </button>
         </div>
         {/* メニュー本体は常に DOM に描画する。
@@ -166,7 +355,7 @@ export function Sidebar({ role, mode }: Props) {
         >
           © HelpDesk Hub
         </div>
-      </aside>
+      </div>
     </>
   );
 }

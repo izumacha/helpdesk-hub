@@ -609,6 +609,32 @@ model TicketHistory {
 
   ticket    Ticket @relation(fields: [ticketId], references: [id], onDelete: Cascade) // 親チケット削除時に履歴も削除
   changedBy User   @relation(fields: [changedById], references: [id]) // 変更者
+
+  // 対象チケット + 変更日時の複合インデックス (§8「よく絞り込む列にインデックスを張る」)。
+  // PostgreSQL では Prisma は外部キー列にインデックスを自動生成しないため、この表には
+  // 主キーしか無く ticketId での絞り込みが毎回 Seq Scan になっていた。
+  //
+  // 効かせたい主な経路は **チケット詳細の変更履歴**
+  // (findByIdWithDetail の histories: ticketId で絞り createdAt 降順で上限件数を取る)。
+  // 1 チケットぶんだけを新しい順に読むアクセスなので、第 2 キーに createdAt を置くと
+  // 絞り込みと **並べ替えの大部分** をこのインデックスだけで賄える。
+  // 「大部分」なのは、実際の orderBy が同時刻タイを決定的にするため
+  // [{createdAt:'desc'}, {id:'desc'}] と id を第 2 ソートキーに持つため
+  // (インデックスに id は含めていないので追加のソートが少し残る)。
+  // id まで含めなかったのは、並べ替える対象が take の上限 (TICKET_DETAIL_HISTORY_LIMIT) で
+  // 頭打ちになっており、列を 1 本増やす対価に見合わないと判断したため
+  // (定数の実値はここに写さない。src/data/ports/ticket-repository.ts が唯一の定義)。
+  //
+  // **ダッシュボードの再オープン率の集約がこのインデックスを使うかどうかは規模による**
+  // (/code-review ultra 指摘対応 2026-09-10)。あちらは「テナントの全チケット」に対する
+  // LEFT JOIN + GROUP BY で、JOIN の他の述語 (field / newValue / oldValue) はこの
+  // インデックスに含まれず、外側が「テナントの全チケット」で大きいため、規模が上がるほど
+  // プランナは nested loop + Index Scan ではなく hash / merge join + Seq Scan を選びやすい
+  // (シードデータ規模では Index Scan が選ばれてコストが下がることを実測。大きな規模での
+  // 実測値はこのリポジトリに記録が無いので、ここでは断定しない)。
+  // **このインデックスの存在理由は上のチケット詳細の経路**であり、再オープン率の
+  // 集約が速いことを前提にしないこと (規模によっては効かない)。
+  @@index([ticketId, createdAt])
 }
 
 // ─────────────────────────────────────────────

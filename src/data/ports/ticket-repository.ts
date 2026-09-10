@@ -55,6 +55,22 @@ export interface TicketListFilter {
    * 省略時はフィルタなし。
    */
   overdue?: { now: Date };
+  /**
+   * 期限間近 (SLA 警告帯) の未解決のみを取得するフィルタ (ダッシュボードの「期限間近」タイルと
+   * ?due=soon の一覧で使用。監査フォローアップ 2026-09-09)。
+   * `now <= resolutionDueAt < now + DEFAULT_WARNING_THRESHOLD_MS` かつ `resolvedAt IS NULL`、
+   * かつ Resolved/Closed は除外する (getSlaState の 'warning' 判定と同じ範囲)。
+   * 省略時はフィルタなし。
+   */
+  dueSoon?: { now: Date };
+  /**
+   * 「指定時刻以前が期限」の未解決のみを取得するフィルタ (Lite タイル「期限切れ・今日まで」と
+   * ?due=today の一覧で使用。監査フォローアップ 2026-09-09)。
+   * `resolutionDueAt <= until` かつ `resolvedAt IS NULL`、かつ Resolved/Closed は除外する。
+   * overdue (厳密な超過。境界は `<`) と違い、期限がちょうど until のもの (今日の終端が期限の
+   * Lite チケット等) を含めるため境界は `<=` にする。省略時はフィルタなし。
+   */
+  dueUntil?: { until: Date };
 }
 
 // findByIdWithDetail が返すコメント/履歴の既定件数上限。
@@ -153,21 +169,38 @@ export interface MarkEscalatedInput {
  *
  * Pro モードのダッシュボードに表示し、対応品質の傾向を把握するために使う。
  * 集計対象チケットが 0 件の場合はデータ不足として各値を null で返す (0 との混同を避ける)。
+ *
+ * **期間の窓 (`since`) は「起票日時」ではなく「各指標の出来事が起きた時刻」に掛ける**
+ * (監査フォローアップ 2026-09-10)。起票日時で切ると、窓より長くかかったチケットは
+ * 解決した日にはもう窓の外にいて平均へ一度も入らない。平均解決時間が窓の長さで頭打ちになり、
+ * 遅いチケットが増えるほど「速い分だけ」の平均に寄って数字が下がる —— つまり悪化を改善として
+ * 表示してしまい、指標として機能しなくなる。
  */
 export interface QualityMetrics {
-  /** 平均初回応答時間 (ミリ秒)。firstRespondedAt が設定されたチケットの平均値。集計対象なしなら null */
+  /**
+   * 平均初回応答時間 (ミリ秒)。**窓の中で初回応答した** チケットの
+   * `firstRespondedAt - createdAt` の平均値。集計対象なしなら null
+   */
   avgFirstResponseMs: number | null;
-  /** 平均解決時間 (ミリ秒)。resolvedAt が設定されたチケットの平均値。集計対象なしなら null */
+  /**
+   * 平均解決時間 (ミリ秒)。**窓の中で解決した** チケットの
+   * `resolvedAt - createdAt` の平均値。集計対象なしなら null
+   */
   avgResolutionMs: number | null;
   /**
    * 再オープン率 (0.0〜1.0)。
-   * 全チケットのうち「Resolved または Closed から Open に戻った履歴」を持つ割合。
+   * **窓の中で対応が一区切りついたチケット (totalCount)** のうち、**窓の中で Resolved または Closed から
+   * Open へ差し戻された** ものの割合。分子は必ず分母の部分集合なので 1 を超えない。
    * 集計対象なしなら null
    */
   reopenRate: number | null;
-  /** avgResolutionMs の計算に使った解決済みチケット件数 */
+  /** avgResolutionMs の計算に使った「窓の中で解決した」チケット件数 */
   resolvedCount: number;
-  /** reopenRate の計算に使った全チケット件数 (分母)。再オープン率ラベルに表示する */
+  /**
+   * reopenRate の分母 = 窓の中で対応が一区切りついたチケット件数
+   * (窓内で解決した ∪ 窓内で差し戻された)。差し戻し時に `resolvedAt` がクリアされる実装のため
+   * `resolvedCount` とは一致しないことがある。再オープン率ラベルに表示する
+   */
   totalCount: number;
 }
 
@@ -216,11 +249,13 @@ export interface TicketRepository {
 
   /**
    * 品質メトリクスを算出して返す (issue-backlog #25)。
-   * - avgFirstResponseMs : 初回応答があったチケットの平均初回応答時間 (ms)
-   * - avgResolutionMs    : 解決済みチケットの平均解決時間 (ms)
-   * - reopenRate         : 全チケット中「再オープンした」チケットの割合 (0.0〜1.0)
+   * - avgFirstResponseMs : 窓の中で初回応答したチケットの平均初回応答時間 (ms)
+   * - avgResolutionMs    : 窓の中で解決したチケットの平均解決時間 (ms)
+   * - reopenRate         : 窓の中で対応が一区切りついたチケットのうち差し戻された割合 (0.0〜1.0)
    * @param args.tenantId テナントスコープ (必須)
-   * @param args.since    この日時以降に作成されたチケットのみ対象 (省略時は全期間)
+   * @param args.since    集計期間の開始日時 (省略時は全期間)。**起票日時ではなく、各指標の
+   *   出来事が起きた時刻 (初回応答日時 / 解決日時 / 差し戻し履歴の発生日時) に掛ける**。
+   *   理由は QualityMetrics の doc コメントを参照 (監査フォローアップ 2026-09-10)
    * @param args.locationId 拠点で絞る (Phase 4 多拠点。省略時は全拠点対象)
    */
   qualityMetrics(args: {

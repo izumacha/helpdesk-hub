@@ -144,6 +144,18 @@ export function endOfDayJST(yyyyMmDd: string): Date | null {
   return d;
 }
 
+// 指定した日時が属する「JST の日の始まり 00:00:00.000」を表す Date を返す関数
+// - サーバの実行タイムゾーンが UTC/JST どちらでも結果が変わらないよう、'Asia/Tokyo' で
+//   年月日を取り出してから明示的に +09:00 オフセット付きで組み立てる
+// - ダッシュボードの品質指標「直近 N 日」の起点 (src/lib/dashboard-metrics.ts) など、
+//   JST の暦日境界で期間を切りたい箇所から共通で使う (startOfMonthJST の日版)
+export function startOfDayJST(date: Date = new Date()): Date {
+  // formatDateISO で JST の 'YYYY-MM-DD' を取り出す (§6 DRY: 既存の JST 日付化を再利用)
+  const yyyyMmDd = formatDateISO(date);
+  // その日の 00:00:00.000 (+09:00) を表す Date を組み立てて返す
+  return new Date(`${yyyyMmDd}T00:00:00.000+09:00`);
+}
+
 // 指定した日時が属する「JST の月初 00:00:00.000」を表す Date を返す関数
 // - サーバの実行タイムゾーンが UTC/JST どちらでも結果が変わらないよう、'Asia/Tokyo' で
 //   年・月を取り出してから明示的に +09:00 オフセット付きで組み立てる

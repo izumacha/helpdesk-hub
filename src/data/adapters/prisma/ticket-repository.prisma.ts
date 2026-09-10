@@ -45,17 +45,44 @@ function buildWhere(f: TicketListFilter, tenantId: string): Prisma.TicketWhereIn
   if (f.locationId !== undefined) where.locationId = f.locationId;
   // 作成日時フィルター: この日時以降に作成されたチケットのみ (月間件数カウント用)
   if (f.createdAfter !== undefined) where.createdAt = { gte: f.createdAfter };
-  // 期限切れフィルタ (Lite モードの「期限切れ」タブで使用)
-  // - resolutionDueAt < now (期限を過ぎている)
+  // 期限系フィルタ (overdue / dueSoon / dueUntil) の条件を where に積むヘルパー。
+  // 期限条件 (resolutionDueAt) と共通の「未完了」条件をまとめて追加する:
+  // - 指定された期限条件 (dueCondition)
   // - resolvedAt IS NULL (まだ解決していない)
   // - status が Resolved/Closed でない (業務上の終息状態は除外)
+  // **すべて AND 句の配列連結で積む** (where.status / where.resolutionDueAt へ直接代入すると、
+  // 既に設定済みの status / statusIn や別の期限系フィルタの条件を黙って上書きし、
+  // 「明示した絞り込みが消える」バグになる。/code-review ultra 指摘対応: 期限系フィルタを
+  // 複数同時に指定した場合 — 例: `?tab=overdue&due=soon` — も後勝ちで上書きせず、
+  // メモリアダプタの matchesFilter と同じく全条件の AND として評価されるようにする)
+  const addDueCondition = (dueCondition: Prisma.TicketWhereInput['resolutionDueAt']) => {
+    where.AND = [
+      // 既存の AND 条件を引き継ぐ (/code-review ultra 指摘対応: Prisma の型は AND に
+      // 単一オブジェクト形も許すため、配列でない場合も破棄せず配列化して残す)
+      ...(where.AND == null ? [] : [where.AND].flat()),
+      { resolutionDueAt: dueCondition },
+      { resolvedAt: null },
+      { status: { notIn: ['Resolved', 'Closed'] } },
+    ];
+  };
+  // 期限切れフィルタ (Lite/Pro の「期限切れ」タブ・SLA 期限超過タイルで使用)
+  // - resolutionDueAt < now (期限を過ぎている)
   if (f.overdue) {
-    where.resolutionDueAt = { lt: f.overdue.now };
-    where.resolvedAt = null;
-    // status の除外条件は AND 句に積む (where.status へ直接代入すると、上で設定済みの
-    // status / statusIn の絞り込みを上書きして「明示したステータス指定が消える」バグになる。
-    // メモリアダプタの matchesFilter と同じく両条件を AND で同時に満たす挙動に揃える)
-    where.AND = [{ status: { notIn: ['Resolved', 'Closed'] } }];
+    addDueCondition({ lt: f.overdue.now });
+  }
+  // 期限間近フィルタ (SLA 警告帯。ダッシュボード「期限間近」タイルと ?due=soon で使用)
+  // - now <= resolutionDueAt < now + DEFAULT_WARNING_THRESHOLD_MS (残り時間が警告帯内)
+  //   (getSlaState の 'warning' 判定と同じ範囲。§6 一元管理: 閾値は sla.ts の定数を共有)
+  if (f.dueSoon) {
+    addDueCondition({
+      gte: f.dueSoon.now,
+      lt: new Date(f.dueSoon.now.getTime() + DEFAULT_WARNING_THRESHOLD_MS),
+    });
+  }
+  // 「指定時刻以前が期限」フィルタ (Lite タイル「期限切れ・今日まで」と ?due=today で使用)
+  // - resolutionDueAt <= until (期限がちょうど until のものを含めるため境界は lte)
+  if (f.dueUntil) {
+    addDueCondition({ lte: f.dueUntil.until });
   }
   // テキスト検索: title または body に contains を OR 条件で適用
   if (f.text) {
@@ -198,14 +225,14 @@ export function makeTicketRepo(db: PrismaLike): TicketRepository {
           where: byStatusWhere,
           _count: { id: true },
         }),
-        // SLA 超過件数 (テナント内かつ未解決かつ期限切れ)
+        // SLA 超過件数 (テナント内かつ未解決かつ期限切れ)。
+        // **条件は一覧と同じ buildWhere から導く** (/code-review ultra 指摘対応)。
+        // ここに条件を書き写すと、タイルの数字は自前の定義・タイルを押した先の一覧は
+        // overdue フィルタの定義、と 2 つの真実の源ができる。片方だけ直したときに
+        // 「N 件と出ているタイルを開いたら M 件」になり、しかも一覧側の契約テストは
+        // 緑のままなので気付けない (このタイルは本 PR で drill-down 可能になった)
         db.ticket.count({
-          where: {
-            ...baseWhere,
-            resolutionDueAt: { lt: now },
-            resolvedAt: null,
-            status: { notIn: ['Resolved', 'Closed'] },
-          },
+          where: buildWhere({ overdue: { now }, locationId }, tenantId),
         }),
         // 担当者別の保持件数 (テナント内、指定状態は除外)
         db.ticket.groupBy({
@@ -408,7 +435,14 @@ export function makeTicketRepo(db: PrismaLike): TicketRepository {
     // EXTRACT(EPOCH FROM ...) 関数を使う。
     async qualityMetrics({ tenantId, since, locationId }) {
       // 期間フィルタの境界値。since が指定されない場合は全期間が対象
-      // (Prisma は tagged template の型安全性を保持するため引数型に null を使う)
+      // (Prisma は tagged template の型安全性を保持するため引数型に null を使う)。
+      //
+      // **窓は各指標の「出来事が起きた時刻」に掛ける** (起票日時 createdAt ではない)。
+      // 監査フォローアップ 2026-09-10: 3 本とも createdAt で切っていたため、窓より長く
+      // かかったチケットは **解決した日にはもう窓の外** となり平均に一度も入らなかった。
+      // 平均解決時間が窓の長さで頭打ちになり、遅いチケットが増えるほど「速い分だけ」の
+      // 平均になって数字が下がる = 悪化を改善に見せる。指標として機能しないので、
+      // 初回応答は firstRespondedAt、解決は resolvedAt、再オープンは履歴の発生時刻で切る。
       const sinceValue: Date | null = since ?? null;
       // 拠点フィルタの境界値。locationId が指定されない場合は全拠点が対象
       // (sinceValue と同じ「NULL なら条件を無視する」パターン)
@@ -428,7 +462,7 @@ export function makeTicketRepo(db: PrismaLike): TicketRepository {
           FROM "Ticket"
           WHERE "tenantId" = ${tenantId}
             AND "firstRespondedAt" IS NOT NULL
-            AND (${sinceValue}::timestamptz IS NULL OR "createdAt" >= ${sinceValue}::timestamptz)
+            AND (${sinceValue}::timestamptz IS NULL OR "firstRespondedAt" >= ${sinceValue}::timestamptz)
             AND (${locationIdValue}::text IS NULL OR "locationId" = ${locationIdValue})
         `,
         // ── クエリ 2: 平均解決時間 ──
@@ -441,27 +475,64 @@ export function makeTicketRepo(db: PrismaLike): TicketRepository {
           FROM "Ticket"
           WHERE "tenantId" = ${tenantId}
             AND "resolvedAt" IS NOT NULL
-            AND (${sinceValue}::timestamptz IS NULL OR "createdAt" >= ${sinceValue}::timestamptz)
+            AND (${sinceValue}::timestamptz IS NULL OR "resolvedAt" >= ${sinceValue}::timestamptz)
             AND (${locationIdValue}::text IS NULL OR "locationId" = ${locationIdValue})
         `,
         // ── クエリ 3: 再オープン率 ──
-        // 全チケット数のうち、「Resolved または Closed → Open への遷移履歴」を持つ
-        // チケットの割合を返す。
-        // TicketHistory.field = 'status' かつ newValue = 'Open' かつ
-        // oldValue IN ('Resolved', 'Closed') の行を持つ ticket を「再オープン済み」とみなす。
+        // 「対応が一区切りついたチケットのうち、いくつが差し戻されたか」を返す。
+        // 分母 (total) は **窓の中で対応が一区切りついたチケット**、分子 (reopened) はそのうち
+        // **窓の中で差し戻されたチケット**。分子は必ず分母の部分集合になるので率は 1 を超えない。
+        //
+        // 分母を「解決済み ∪ 差し戻し済み」の和集合にしているのは、再オープン時に
+        // update-ticket.ts が resolvedAt を **クリアする** ため (完了系ステータスのときだけ
+        // 保持する実装)。resolvedAt だけで分母を決めると、いま差し戻されているチケットが
+        // 分母から抜けて分子にだけ残り、率が 1 を超えうる。
+        // 逆に履歴だけで分母を決めると、CSV 取り込みで resolvedAt を直接設定した
+        // (状態遷移履歴を持たない) チケットが丸ごと分母から抜ける。両方を足して塞ぐ。
+        // **相関サブクエリ (EXISTS) ではなく LEFT JOIN + 集約で書く。**
+        // /code-review ultra 指摘対応 (2026-09-10): EXISTS 版は実 DB の EXPLAIN で
+        // `SubPlan 2 -> Seq Scan on "TicketHistory"` として残り、生き残ったチケット 1 行ごとに
+        // 履歴を走査する O(チケット数 × 履歴数) になっていた (実測 cost 44.18)。
+        // LEFT JOIN 1 回 + GROUP BY なら履歴を 1 度読むだけで済む (同 25.23、SubPlan なし)。
         db.$queryRaw<[{ total: bigint; reopened: bigint }]>`
           SELECT
-            COUNT(DISTINCT t.id) AS total,
-            COUNT(DISTINCT th."ticketId") AS reopened
-          FROM "Ticket" t
-          LEFT JOIN "TicketHistory" th
-            ON th."ticketId" = t.id
-            AND th.field = 'status'
-            AND th."newValue" = 'Open'
-            AND th."oldValue" IN ('Resolved', 'Closed')
-          WHERE t."tenantId" = ${tenantId}
-            AND (${sinceValue}::timestamptz IS NULL OR t."createdAt" >= ${sinceValue}::timestamptz)
-            AND (${locationIdValue}::text IS NULL OR t."locationId" = ${locationIdValue})
+            COUNT(*) AS total,
+            COUNT(*) FILTER (WHERE x.reopened) AS reopened
+          FROM (
+            SELECT
+              -- 窓の中で Resolved/Closed から Open へ差し戻された履歴を 1 件でも持つか
+              -- (結合条件に一致する行が無ければ th.id は NULL になるので bool_or は false)
+              bool_or(th.id IS NOT NULL) AS reopened
+            FROM "Ticket" t
+            LEFT JOIN "TicketHistory" th
+              ON th."ticketId" = t.id
+              AND th.field = 'status'
+              AND th."newValue" = 'Open'
+              AND th."oldValue" IN ('Resolved', 'Closed')
+              AND (${sinceValue}::timestamptz IS NULL OR th."createdAt" >= ${sinceValue}::timestamptz)
+            WHERE t."tenantId" = ${tenantId}
+              AND (${locationIdValue}::text IS NULL OR t."locationId" = ${locationIdValue})
+              -- **窓の絞り込みは集約の前に掛ける** (/code-review ultra 指摘対応)。
+              -- 以前は畳んでから外側で捨てていたため、集約に流れる行数が窓の長さではなく
+              -- テナントの累積チケット数に比例していた (60 秒ごとのキャッシュミスで
+              -- 全チケットを読み、グループを作ってから 30 日分だけ残す形)。
+              -- 実測 (チケット 20 万件・うち窓の中 2,495 件): 集約へ流れる行が
+              -- 200,000 → 2,495、実行時間 178ms → 117ms。返る値は両者一致 (2495 / 500)。
+              -- 行の条件として同じことが書けるので、ここで落とす:
+              --   ・窓の中で解決した (完了状態のまま resolvedAt が残っている) 行、または
+              --   ・窓の中の差し戻し履歴と結合できた行
+              -- 前者はそのチケットの全行で真になるので bool_or の結果は変わらず、
+              -- 後者だけが残ったチケットは bool_or が必ず true になる。
+              -- したがって畳んだあとの集合は以前とまったく同じ (契約テストが固定)
+              AND (
+                (t."resolvedAt" IS NOT NULL
+                  AND (${sinceValue}::timestamptz IS NULL
+                    OR t."resolvedAt" >= ${sinceValue}::timestamptz))
+                OR th.id IS NOT NULL
+              )
+            -- チケット単位に畳む
+            GROUP BY t.id
+          ) x
         `,
       ]);
 
@@ -494,7 +565,8 @@ export function makeTicketRepo(db: PrismaLike): TicketRepository {
         avgResolutionMs,
         reopenRate,
         resolvedCount,
-        // 再オープン率の分母は全チケット件数 (resolvedCount ではない)
+        // 再オープン率の分母は「窓の中で対応が一区切りついたチケット件数」
+        // (全チケット件数でも resolvedCount でもない。上のクエリ 3 のコメントを参照)
         totalCount: total,
       } satisfies QualityMetrics;
     },

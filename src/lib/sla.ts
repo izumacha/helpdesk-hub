@@ -88,10 +88,35 @@ export const SLA_LABELS: Record<SlaState, string> = {
   none: '', // 対象外も非表示
 };
 
-// SLA 状態ごとに適用する Tailwind カラークラス (バッジの色)
+// SLA 状態ごとに適用する Tailwind カラークラス (バッジの色)。
+// 監査フォローアップ (2026-09-09): 以前はここが yellow/red、ダッシュボードの SLA タイルが
+// rose と、同じ概念に 2 系統の配色が併存していた。アプリ全体のパレット (WaitingForUser=amber /
+// Escalated=rose の STATUS_COLORS) に合わせて amber/rose へ統一する (§6 配色の一元管理)
 export const SLA_COLORS: Record<SlaState, string> = {
   ok: '',
-  warning: 'bg-yellow-100 text-yellow-700', // 黄色系
-  overdue: 'bg-red-100 text-red-700', // 赤系
+  warning: 'bg-amber-100 text-amber-700', // 期限間近: アンバー (注意)
+  overdue: 'bg-rose-100 text-rose-700', // 期限超過: ロゼ (警告)
   none: '',
+};
+
+// ダッシュボードの SLA タイル (期限間近 / 期限超過) 用の Tailwind カラークラス。
+// バッジ (SLA_COLORS) と同じ色相を、カード形状向けのリング (枠線) として展開したもの。
+// SLA の配色をこのファイルに集約し、画面側での直書きを防ぐ (§6 配色の一元管理)。
+//
+// **背景色 (bg-*) はあえて持たない。** /code-review ultra 指摘対応 (2026-09-10): 以前は
+// `bg-amber-50/40` / `bg-rose-50/30` を含めていたが、タイル側の基底クラスに `bg-white` があり、
+// 詳細度が同じユーティリティ同士では生成 CSS の出力順が後の `bg-white` が勝つため、
+// **この淡色は一度も描画されていなかった** (ビルド済み CSS の出現位置で実測)。
+// 効かない値を一元管理の参照元に残すと「変えたのに反映されない」調査を生むので削除する。
+// 面に色を付けたくなったら、タイル側の基底から bg-white を外す変更とセットで行うこと。
+// hover 時のリング強調も含めるのは、画面側が hover バリアントを直書きすると
+// 一元化が半分だけになるため (実際 Lite タイルの hover:ring-rose-300 がそうなっていた)。
+export const SLA_TILE_COLORS: Record<
+  Exclude<SlaState, 'ok' | 'none'>,
+  { container: string; number: string }
+> = {
+  // 期限間近: アンバーのリング (hover で 1 段濃く) + 濃い数字 (説明文は slate のまま画面側が持つ)
+  warning: { container: 'ring-amber-200 hover:ring-amber-300', number: 'text-amber-700' },
+  // 期限超過: ロゼのリング (hover で 1 段濃く) + 濃い数字
+  overdue: { container: 'ring-rose-200 hover:ring-rose-300', number: 'text-rose-700' },
 };
