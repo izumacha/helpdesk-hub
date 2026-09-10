@@ -180,7 +180,7 @@ export function Sidebar({ role, mode }: Props) {
         ref={asideRef}
         // モバイルドロワー時に MobileNavToggle の aria-controls から参照される ID
         id="mobile-sidebar"
-        className={`fixed inset-y-0 left-0 z-40 flex flex-col border-r border-slate-200 bg-white/95 backdrop-blur transition-all duration-200 md:relative md:visible md:translate-x-0 ${
+        className={`fixed inset-y-0 left-0 z-40 flex flex-col border-r border-slate-200 bg-white/95 backdrop-blur transition-all duration-200 md:visible md:relative md:translate-x-0 ${
           // モバイル時の表示/非表示制御 (true = 画面内, false = 画面外左)。
           // 閉じているときは translate に加えて **invisible (visibility:hidden)** も付ける
           // (/code-review ultra 指摘対応 2026-09-10): translate で画面外へずらしただけの
@@ -238,7 +238,7 @@ export function Sidebar({ role, mode }: Props) {
           >
             {collapsed ? '›' : '‹'}
           </button>
-          {/* ドロワーを閉じるボタン (md 未満で、かつ開いているときだけ描画する)。
+          {/* ドロワーを閉じるボタン (md 未満でのみ表示)。
               /code-review ultra 指摘対応 (2026-09-10): aria-modal="true" は「このダイアログの
               外は無いものとして扱う」指示なので、Header にあるハンバーガー (唯一の閉じる操作) も
               支援技術から見えなくなる。ドロワー内に閉じる手段が無いと、Esc キーを持たない
@@ -246,24 +246,24 @@ export function Sidebar({ role, mode }: Props) {
               「どれかのメニュー項目をタップして意図しない画面へ移る」以外にメニューを出られない。
               WAI-ARIA APG がモーダルダイアログに dismiss コントロールを必須としているのはこのため。
 
-              **mobileOpen で描画自体を切り替える** (2 巡目指摘対応): 閉じたドロワーは
-              -translate-x-full で画面外へ出ているだけで display:none でも inert でもないため、
-              常に描画すると「画面のどこにも見えないのに Tab で最初に到達し、押しても何も
-              起きないボタン」がタブ順の先頭付近に居座る。
+              **mobileOpen による条件描画は付けない**: 閉じているあいだドロワーごと
+              visibility:hidden になる (上の className を参照) ので、この中の要素は
+              まとめてタブ順・読み上げ順から外れる。要素ごとに描画を出し分けると、
+              「タブ順を守っているのはこの条件式だ」と読めてしまい、visibility の方を
+              外されたときに気づけない (4 巡目レビュー指摘)。
+
               ラベルを「ナビゲーションを閉じる」にしているのは、開いている間 Header の
               MobileNavToggle も「メニューを閉じる」になり、同名のボタンが 2 つできるため
               (読み上げで区別できず、Playwright の getByRole も strict mode violation になる) */}
-          {mobileOpen && (
-            <button
-              type="button"
-              onClick={closeNav}
-              className="ml-auto rounded-md p-1 text-slate-400 transition hover:bg-slate-100 hover:text-slate-700 md:hidden"
-              aria-label="ナビゲーションを閉じる"
-            >
-              {/* 視覚的な × 記号 (意味は上の aria-label が持つので読み上げからは外す) */}
-              <span aria-hidden="true">✕</span>
-            </button>
-          )}
+          <button
+            type="button"
+            onClick={closeNav}
+            className="ml-auto rounded-md p-1 text-slate-400 transition hover:bg-slate-100 hover:text-slate-700 md:hidden"
+            aria-label="ナビゲーションを閉じる"
+          >
+            {/* 視覚的な × 記号 (意味は上の aria-label が持つので読み上げからは外す) */}
+            <span aria-hidden="true">✕</span>
+          </button>
         </div>
         {/* メニュー本体は常に DOM に描画する。
             collapsed の効果は md 以上だけに限定 (md:hidden) し、モバイルでは必ず表示する。

@@ -621,15 +621,17 @@ model TicketHistory {
   // 「大部分」なのは、実際の orderBy が同時刻タイを決定的にするため
   // [{createdAt:'desc'}, {id:'desc'}] と id を第 2 ソートキーに持つため
   // (インデックスに id は含めていないので追加のソートが少し残る)。
-  // id まで含めなかったのは、並べ替える対象が take の上限 (200 件) で頭打ちになっており、
-  // 列を 1 本増やす対価に見合わないと判断したため。
+  // id まで含めなかったのは、並べ替える対象が take の上限 (TICKET_DETAIL_HISTORY_LIMIT) で
+  // 頭打ちになっており、列を 1 本増やす対価に見合わないと判断したため
+  // (定数の実値はここに写さない。src/data/ports/ticket-repository.ts が唯一の定義)。
   //
   // **ダッシュボードの再オープン率の集約がこのインデックスを使うかどうかは規模による**
   // (/code-review ultra 指摘対応 2026-09-10)。あちらは「テナントの全チケット」に対する
   // LEFT JOIN + GROUP BY で、JOIN の他の述語 (field / newValue / oldValue) はこの
   // インデックスに含まれない。実測では、シードデータ規模ではプランナが nested loop +
-  // Index Scan を選んでコストが下がった一方 (25.23 → 9.30)、20 万行規模では
-  // hash / merge join + Seq Scan を選んでこのインデックスを参照しなかった。
+  // Index Scan を選んでコストが下がった一方、20 万行規模では
+  // hash / merge join + Seq Scan を選んでこのインデックスを参照しなかった
+  // (測定値そのものは docs/smb-dx-pivot-plan.md §4.28.2 に記録してある)。
   // **このインデックスの存在理由は上のチケット詳細の経路**であり、再オープン率の
   // 集約が速いことを前提にしないこと (規模によっては効かない)。
   @@index([ticketId, createdAt])
