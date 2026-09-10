@@ -22,7 +22,11 @@ import type { QualityMetrics } from '@/data/ports/ticket-repository';
 import { startOfDayJST } from '@/lib/format-date';
 
 // 品質指標の集計対象期間 (日数)。画面のラベル「直近 30 日」もこの値から組み立てる
-// (§6 マジックナンバー禁止: 期間を変えるときはこの 1 か所だけを直す)
+// (§6 マジックナンバー禁止: 期間を変えるときはこの 1 か所だけを直す)。
+// **README / docs の機能一覧には日数を書かない**（/code-review ultra 指摘対応）:
+// 散文に数値を写すと、ここを変えたときに画面と食い違ったまま残る。日数を機械照合する
+// 仕組みは無い（tests/doc-body-size-drift.test.ts はバイトサイズ表記しか見ない）ので、
+// 一覧側は「直近の移動窓」と書いて実際の日数は画面に語らせている
 export const QUALITY_METRICS_WINDOW_DAYS = 30;
 
 // 1 日をミリ秒で表した定数 (期間計算用)
