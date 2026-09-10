@@ -60,8 +60,8 @@ export function Sidebar({ role, mode }: Props) {
   // モバイルドロワーの開閉状態と「閉じる」関数を Context から取得
   // (md 未満ではこの open に従って画面外/画面内へスライドする)
   const { open: mobileOpen, closeNav } = useMobileNav();
-  // ドロワー本体 (aside) の DOM 参照 (フォーカストラップの範囲を決めるのに使う)
-  const asideRef = useRef<HTMLElement>(null);
+  // ドロワー本体の DOM 参照 (フォーカストラップの範囲を決めるのに使う)
+  const asideRef = useRef<HTMLDivElement>(null);
 
   // モバイルドロワーのキーボード対応 (§7 a11y「モーダルはフォーカストラップ + Esc で閉じ」)。
   // 監査フォローアップ (2026-09-09): 以前は Esc で閉じられず、Tab で背面のコンテンツへ
@@ -175,7 +175,7 @@ export function Sidebar({ role, mode }: Props) {
       {/* 折りたたみで幅を切り替えるサイドバー本体 (柔らかな白 + 右ボーダー)
           - md 未満: fixed 配置 + translate-x でスライドイン/アウト (mobileOpen 連動)
           - md 以上: relative 配置 + 常時表示 (collapsed で幅切替) */}
-      <aside
+      <div
         // フォーカストラップの範囲を決める DOM 参照 (上の useEffect が使う)
         ref={asideRef}
         // モバイルドロワー時に MobileNavToggle の aria-controls から参照される ID
@@ -196,9 +196,13 @@ export function Sidebar({ role, mode }: Props) {
         // 支援技術側が仮想カーソルの移動範囲をこの要素の中に閉じてくれる (WAI-ARIA APG の
         // モーダルダイアログの作法。フォーカストラップと対で初めて成立する)。
         // md 以上の常設サイドバー表示 (mobileOpen=false) では従来どおり
-        // ナビゲーションのランドマークのままにする — 常に dialog にすると
-        // デスクトップでランドマーク単位の読み飛ばしができなくなるため
-        role={mobileOpen ? 'dialog' : undefined}
+        // 補助的なランドマーク (complementary) のままにする — 常に dialog にすると
+        // デスクトップでランドマーク単位の読み飛ばしができなくなるため。
+        // /code-review ultra 指摘対応 (2026-09-10): 要素を <aside> から <div> に変えている。
+        // ARIA in HTML は aside に dialog ロールを許しておらず (complementary / region /
+        // note 等のみ)、そのままだと axe の aria-allowed-role で新規違反になるため。
+        // <aside> の既定ロールは complementary なので、閉じているときに明示すれば等価
+        role={mobileOpen ? 'dialog' : 'complementary'}
         aria-modal={mobileOpen ? true : undefined}
         // ランドマーク名 / ダイアログ名 (どちらの役割でも同じ呼び名を使う)
         aria-label="メインナビゲーション"
@@ -216,13 +220,28 @@ export function Sidebar({ role, mode }: Props) {
           <div className="hidden md:block">
             <Logo showWordmark={!collapsed} size={collapsed ? 28 : 30} />
           </div>
-          {/* 折りたたみ切り替えボタン (md 以上でのみ表示。モバイルでは Header のハンバーガーが担当) */}
+          {/* 折りたたみ切り替えボタン (md 以上でのみ表示。モバイルでは下の閉じるボタンが担当) */}
           <button
             onClick={() => setCollapsed(!collapsed)}
             className="ml-auto hidden rounded-md p-1 text-slate-400 transition hover:bg-slate-100 hover:text-slate-700 md:block"
             aria-label={collapsed ? 'サイドバーを展開' : 'サイドバーを折りたたむ'}
           >
             {collapsed ? '›' : '‹'}
+          </button>
+          {/* ドロワーを閉じるボタン (md 未満でのみ表示)。
+              /code-review ultra 指摘対応 (2026-09-10): aria-modal="true" は「このダイアログの
+              外は無いものとして扱う」指示なので、Header にあるハンバーガー (唯一の閉じる操作) も
+              支援技術から見えなくなる。ドロワー内に閉じる手段が無いと、Esc キーを持たない
+              タッチ端末のスクリーンリーダー利用者 (iOS VoiceOver / TalkBack) は
+              「どれかのメニュー項目をタップして意図しない画面へ移る」以外にメニューを出られない。
+              WAI-ARIA APG がモーダルダイアログに dismiss コントロールを必須としているのはこのため */}
+          <button
+            onClick={closeNav}
+            className="ml-auto rounded-md p-1 text-slate-400 transition hover:bg-slate-100 hover:text-slate-700 md:hidden"
+            aria-label="メニューを閉じる"
+          >
+            {/* 視覚的な × 記号 (意味は上の aria-label が持つので読み上げからは外す) */}
+            <span aria-hidden="true">✕</span>
           </button>
         </div>
         {/* メニュー本体は常に DOM に描画する。
@@ -263,7 +282,7 @@ export function Sidebar({ role, mode }: Props) {
         >
           © HelpDesk Hub
         </div>
-      </aside>
+      </div>
     </>
   );
 }

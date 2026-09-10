@@ -609,6 +609,16 @@ model TicketHistory {
 
   ticket    Ticket @relation(fields: [ticketId], references: [id], onDelete: Cascade) // 親チケット削除時に履歴も削除
   changedBy User   @relation(fields: [changedById], references: [id]) // 変更者
+
+  // 対象チケット + 変更日時の複合インデックス (§8「よく絞り込む列にインデックスを張る」)。
+  // /code-review ultra 指摘対応 (2026-09-10): PostgreSQL では Prisma は外部キー列に
+  // インデックスを自動生成しないため、この表には主キーしか無く ticketId での絞り込みが
+  // 毎回 Seq Scan になっていた。この列を引くのは
+  //   - ダッシュボードの再オープン率 (Ticket との JOIN 条件が th.ticketId = t.id)
+  //   - チケット詳細の変更履歴 (ticketId で絞り createdAt の降順で上限件数を取る)
+  // の 2 経路で、後者が createdAt 順に読むため第 2 キーに createdAt を置く
+  // (ticketId 単独の絞り込みも先頭列だけで効く)。
+  @@index([ticketId, createdAt])
 }
 
 // ─────────────────────────────────────────────

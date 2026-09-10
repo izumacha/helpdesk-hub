@@ -489,6 +489,11 @@ export function makeTicketRepo(db: PrismaLike): TicketRepository {
         // 分母から抜けて分子にだけ残り、率が 1 を超えうる。
         // 逆に履歴だけで分母を決めると、CSV 取り込みで resolvedAt を直接設定した
         // (状態遷移履歴を持たない) チケットが丸ごと分母から抜ける。両方を足して塞ぐ。
+        // **相関サブクエリ (EXISTS) ではなく LEFT JOIN + 集約で書く。**
+        // /code-review ultra 指摘対応 (2026-09-10): EXISTS 版は実 DB の EXPLAIN で
+        // `SubPlan 2 -> Seq Scan on "TicketHistory"` として残り、生き残ったチケット 1 行ごとに
+        // 履歴を走査する O(チケット数 × 履歴数) になっていた (実測 cost 44.18)。
+        // LEFT JOIN 1 回 + GROUP BY なら履歴を 1 度読むだけで済む (同 25.23、SubPlan なし)。
         db.$queryRaw<[{ total: bigint; reopened: bigint }]>`
           SELECT
             COUNT(*) AS total,
@@ -496,21 +501,23 @@ export function makeTicketRepo(db: PrismaLike): TicketRepository {
           FROM (
             SELECT
               -- 窓の中で解決した (完了状態のまま resolvedAt が残っている) か
-              t."resolvedAt" IS NOT NULL
-                AND (${sinceValue}::timestamptz IS NULL OR t."resolvedAt" >= ${sinceValue}::timestamptz)
+              (t."resolvedAt" IS NOT NULL
+                AND (${sinceValue}::timestamptz IS NULL OR t."resolvedAt" >= ${sinceValue}::timestamptz))
                 AS resolved_in_window,
-              -- 窓の中で Resolved/Closed から Open へ差し戻された履歴を持つか
-              EXISTS (
-                SELECT 1 FROM "TicketHistory" th
-                WHERE th."ticketId" = t.id
-                  AND th.field = 'status'
-                  AND th."newValue" = 'Open'
-                  AND th."oldValue" IN ('Resolved', 'Closed')
-                  AND (${sinceValue}::timestamptz IS NULL OR th."createdAt" >= ${sinceValue}::timestamptz)
-              ) AS reopened
+              -- 窓の中で Resolved/Closed から Open へ差し戻された履歴を 1 件でも持つか
+              -- (結合条件に一致する行が無ければ th.id は NULL になるので bool_or は false)
+              bool_or(th.id IS NOT NULL) AS reopened
             FROM "Ticket" t
+            LEFT JOIN "TicketHistory" th
+              ON th."ticketId" = t.id
+              AND th.field = 'status'
+              AND th."newValue" = 'Open'
+              AND th."oldValue" IN ('Resolved', 'Closed')
+              AND (${sinceValue}::timestamptz IS NULL OR th."createdAt" >= ${sinceValue}::timestamptz)
             WHERE t."tenantId" = ${tenantId}
               AND (${locationIdValue}::text IS NULL OR t."locationId" = ${locationIdValue})
+            -- チケット単位に畳む (resolvedAt も集約の外で使うのでキーに含める)
+            GROUP BY t.id, t."resolvedAt"
           ) x
           WHERE x.resolved_in_window OR x.reopened
         `,

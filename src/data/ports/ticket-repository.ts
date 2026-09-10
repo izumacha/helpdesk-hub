@@ -189,7 +189,7 @@ export interface QualityMetrics {
   avgResolutionMs: number | null;
   /**
    * 再オープン率 (0.0〜1.0)。
-   * **窓の中で対応を終えたチケット (totalCount)** のうち、**窓の中で Resolved または Closed から
+   * **窓の中で対応が一区切りついたチケット (totalCount)** のうち、**窓の中で Resolved または Closed から
    * Open へ差し戻された** ものの割合。分子は必ず分母の部分集合なので 1 を超えない。
    * 集計対象なしなら null
    */
@@ -197,7 +197,7 @@ export interface QualityMetrics {
   /** avgResolutionMs の計算に使った「窓の中で解決した」チケット件数 */
   resolvedCount: number;
   /**
-   * reopenRate の分母 = 窓の中で対応を終えたチケット件数
+   * reopenRate の分母 = 窓の中で対応が一区切りついたチケット件数
    * (窓内で解決した ∪ 窓内で差し戻された)。差し戻し時に `resolvedAt` がクリアされる実装のため
    * `resolvedCount` とは一致しないことがある。再オープン率ラベルに表示する
    */
@@ -251,7 +251,7 @@ export interface TicketRepository {
    * 品質メトリクスを算出して返す (issue-backlog #25)。
    * - avgFirstResponseMs : 窓の中で初回応答したチケットの平均初回応答時間 (ms)
    * - avgResolutionMs    : 窓の中で解決したチケットの平均解決時間 (ms)
-   * - reopenRate         : 窓の中で対応を終えたチケットのうち差し戻された割合 (0.0〜1.0)
+   * - reopenRate         : 窓の中で対応が一区切りついたチケットのうち差し戻された割合 (0.0〜1.0)
    * @param args.tenantId テナントスコープ (必須)
    * @param args.since    集計期間の開始日時 (省略時は全期間)。**起票日時ではなく、各指標の
    *   出来事が起きた時刻 (初回応答日時 / 解決日時 / 差し戻し履歴の発生日時) に掛ける**。
