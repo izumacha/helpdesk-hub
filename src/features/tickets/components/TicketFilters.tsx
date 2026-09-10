@@ -6,6 +6,8 @@ import { useRouter, usePathname, useSearchParams } from 'next/navigation';
 import { useTransition, useCallback, useRef } from 'react';
 // ステータスの日本語ラベルを mode (lite | pro) に応じて返す mode-aware ヘルパーと優先度ラベル
 import { getStatusLabel, PRIORITY_LABELS } from '@/lib/constants';
+// 一覧 URL の組み立て (ページャ・期限チップ・タブと共有する純粋関数)
+import { buildTicketsHref } from '@/features/tickets/tickets-href';
 // Lite モードで使う 3 ステータス (未対応 / 対応中 / 完了) の定義
 import { LITE_STATUSES } from '@/domain/ticket-status';
 // 列挙型 (正準のドメイン型)
@@ -63,20 +65,18 @@ export function TicketFilters({ categories, agents, isAgent, mode, locations }: 
   // 1 つのクエリパラメータを更新して URL に反映するヘルパー
   const update = useCallback(
     (key: string, value: string) => {
-      // 既存のクエリを複製
-      const params = new URLSearchParams(searchParams.toString());
-      // 値があればセット、空なら削除
-      if (value) {
-        params.set(key, value);
-      } else {
-        params.delete(key);
-      }
-      // 絞り込み変更時はページ番号を 1 に戻す (page を消す)
-      params.delete('page');
+      // 値があればセット、空なら取り除く (page のリセットと "?" の省略は共通ヘルパーが行う)。
+      // /code-review ultra 指摘対応: 「複製して差し替え、page を落とす」という同じ規則が
+      // ページャ・期限チップ・タブにも書かれていたため、組み立てだけ 1 か所へ寄せた (§6 DRY)
+      const href = buildTicketsHref(
+        searchParams,
+        value ? { set: { [key]: value } } : { remove: [key] },
+      );
       // 非ブロッキングでルーター遷移
-      startTransition(() => router.push(`${pathname}?${params.toString()}`));
+      startTransition(() => router.push(href));
     },
-    [pathname, router, searchParams],
+    // pathname は使わない (遷移先は共通ヘルパーが /tickets を返す)
+    [router, searchParams],
   );
 
   // 「リセット」: パスのみへ遷移して全クエリを消す (tab クエリも消えるが既定タブに戻す挙動でよい)

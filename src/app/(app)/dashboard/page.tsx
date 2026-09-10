@@ -449,8 +449,15 @@ async function QualityMetricsSection({
     metrics.avgResolutionMs == null &&
     metrics.reopenRate == null
   ) {
+    // /code-review ultra 指摘対応: 以前の「蓄積されると表示されます」は全期間の累積平均だった
+    // 頃の文言で、集計が直近 N 日の移動窓になった今は事実と食い違う。1 年で 500 件解決していても
+    // 直近 N 日に完了した対応が無ければここへ来るので、「まだデータが貯まっていない＝壊れている」
+    // と読まれてしまう。窓を明示して「この期間に完了した対応が無い」と正確に伝える
+    // (日数は見出しと同じ定数から組み立てる。§6 マジックナンバーを散らさない)
     return (
-      <p className="text-sm text-slate-400">対応済みのチケットが蓄積されると指標が表示されます。</p>
+      <p className="text-sm text-slate-400">
+        直近 {QUALITY_METRICS_WINDOW_DAYS} 日に完了した対応がないため、指標を表示できません。
+      </p>
     );
   }
   return (
@@ -496,9 +503,7 @@ async function QualityMetricsSection({
               - 「対応を終えた N 件中」だと、差し戻されていま未対応に戻っているチケットが
                 分母に入っていることを説明できない (/code-review ultra 指摘対応 2026-09-10) */}
           {metrics.reopenRate != null && (
-            <span className="text-slate-400">
-              (対応が一区切りついた {metrics.totalCount} 件中)
-            </span>
+            <span className="text-slate-400">(対応が一区切りついた {metrics.totalCount} 件中)</span>
           )}
         </p>
       </div>
@@ -739,7 +744,9 @@ async function LiteDashboard({
           >
             {dueTodayCount}
           </p>
-          <p className="mt-1 text-xs text-slate-400">期限を過ぎた・今日が期限の未完了の問い合わせ</p>
+          <p className="mt-1 text-xs text-slate-400">
+            期限を過ぎた・今日が期限の未完了の問い合わせ
+          </p>
         </Link>
       </div>
 

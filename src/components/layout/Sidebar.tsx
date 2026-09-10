@@ -71,7 +71,15 @@ export function Sidebar({ role, mode }: Props) {
     if (!mobileOpen) return;
     // md 以上ではドロワーではなく常設サイドバーとして表示されるため、トラップは掛けない
     // (掛けるとデスクトップでページ全体のキーボード操作を奪ってしまう)
-    const mdQuery = window.matchMedia('(min-width: 768px)');
+    // **単位は px ではなく rem にする** (/code-review ultra 指摘対応)。Tailwind v4 の `md:` は
+    // `@media (min-width:48rem)` を出力する (生成 CSS で実測: 48rem が 1 件、768px は 0 件)。
+    // ここだけ px で書くと、既定の文字サイズを 16px から変えている利用者 (a11y の設定として
+    // よくある) で CSS と JS の境界がずれる。たとえば 20px なら CSS の境界は 960px なので、
+    // 幅 800px では見た目はドロワー (ハンバーガーも出ている) なのに、この判定は
+    // 「md 以上」と答えて **早期 return し、Esc もフォーカストラップも初期フォーカス移動も
+    // 効かなくなる**。しかも描画側は role="dialog" / aria-modal="true" を付けているので、
+    // 背面は支援技術から隠れたまま Tab でそこへ抜けられる状態になる
+    const mdQuery = window.matchMedia('(min-width: 48rem)');
     if (mdQuery.matches) return;
     // ドロワーの DOM が取れなければ何もできない (次の描画で再実行される)。
     // リスナー登録より前に判定する (登録後に早期 return するとクリーンアップが返らず
