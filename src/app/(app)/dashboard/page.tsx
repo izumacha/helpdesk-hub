@@ -534,10 +534,10 @@ function QualityMetricsSkeleton() {
       {/* タイルと同形のプレースホルダを 3 枚並べる (差し替え時のレイアウトシフト防止) */}
       {[0, 1, 2].map((i) => (
         <div key={i} className="rounded-2xl bg-white p-5 shadow-sm ring-1 ring-slate-100">
-          {/* 数値部分のプレースホルダ (motion-safe: reduced-motion 環境では点滅させない §7) */}
-          <div className="h-8 w-24 rounded bg-slate-100 motion-safe:animate-pulse" />
+          {/* 数値部分のプレースホルダ (点滅の reduced-motion 対応は globals.css が担う。§6) */}
+          <div className="h-8 w-24 animate-pulse rounded bg-slate-100" />
           {/* ラベル部分のプレースホルダ */}
-          <div className="mt-2 h-4 w-32 rounded bg-slate-100 motion-safe:animate-pulse" />
+          <div className="mt-2 h-4 w-32 animate-pulse rounded bg-slate-100" />
         </div>
       ))}
     </div>

@@ -266,14 +266,10 @@ export function makeTicketRepo(store: Store): TicketRepository {
         if (creatorId === undefined || t.creatorId === creatorId) {
           byStatus[t.status] += 1;
         }
-        // slaOverdue: 期限あり / 期限切れ / 未解決 / 終息状態でない
-        if (
-          t.resolutionDueAt &&
-          t.resolutionDueAt < now &&
-          t.resolvedAt == null &&
-          t.status !== 'Resolved' &&
-          t.status !== 'Closed'
-        ) {
+        // slaOverdue: 条件は一覧と同じ matchesFilter から導く (/code-review ultra 指摘対応)。
+        // 条件を書き写すと、タイルの数字と「タイルを押した先の一覧」で定義が割れる
+        // (Prisma アダプタ側も同じ理由で buildWhere に寄せてある)
+        if (matchesFilter(t, { overdue: { now }, locationId }, tenantId)) {
           slaOverdue += 1;
         }
         // workload: 除外状態でなければ担当者ごとに加算

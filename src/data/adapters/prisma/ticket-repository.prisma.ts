@@ -225,14 +225,14 @@ export function makeTicketRepo(db: PrismaLike): TicketRepository {
           where: byStatusWhere,
           _count: { id: true },
         }),
-        // SLA 超過件数 (テナント内かつ未解決かつ期限切れ)
+        // SLA 超過件数 (テナント内かつ未解決かつ期限切れ)。
+        // **条件は一覧と同じ buildWhere から導く** (/code-review ultra 指摘対応)。
+        // ここに条件を書き写すと、タイルの数字は自前の定義・タイルを押した先の一覧は
+        // overdue フィルタの定義、と 2 つの真実の源ができる。片方だけ直したときに
+        // 「N 件と出ているタイルを開いたら M 件」になり、しかも一覧側の契約テストは
+        // 緑のままなので気付けない (このタイルは本 PR で drill-down 可能になった)
         db.ticket.count({
-          where: {
-            ...baseWhere,
-            resolutionDueAt: { lt: now },
-            resolvedAt: null,
-            status: { notIn: ['Resolved', 'Closed'] },
-          },
+          where: buildWhere({ overdue: { now }, locationId }, tenantId),
         }),
         // 担当者別の保持件数 (テナント内、指定状態は除外)
         db.ticket.groupBy({

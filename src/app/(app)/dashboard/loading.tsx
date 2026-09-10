@@ -17,10 +17,14 @@ export default function DashboardLoading() {
       <span className="sr-only">ダッシュボードを読み込み中</span>
       {/* ページタイトル相当のプレースホルダ */}
       <div>
-        {/* h1 相当 (motion-safe: reduced-motion 環境では点滅させない §7) */}
-        <div className="h-8 w-48 rounded bg-slate-200/70 motion-safe:animate-pulse" />
+        {/* h1 相当 */}
+        {/* スケルトンの点滅 (animate-pulse)。**motion-reduce の手当てはここに書かない** —
+            globals.css の prefers-reduced-motion 指定が * に対して animation-duration を
+            上書きするので既に止まっており、重ねても挙動は変わらず「どちらが効いているのか」が
+            読めなくなるだけ (Sidebar.tsx の transition と同じ判断。§6 / §7) */}
+        <div className="h-8 w-48 animate-pulse rounded bg-slate-200/70" />
         {/* サブテキスト相当 */}
-        <div className="mt-2 h-4 w-72 rounded bg-slate-100 motion-safe:animate-pulse" />
+        <div className="mt-2 h-4 w-72 animate-pulse rounded bg-slate-100" />
       </div>
       {/* タイル群相当のプレースホルダ (Lite の 2 枚タイルと同じ配置。Pro でも
           「この位置に集計タイルが来る」ことだけを予告する控えめな形に留める) */}
@@ -29,11 +33,11 @@ export default function DashboardLoading() {
         {[0, 1].map((i) => (
           <div key={i} className="rounded-2xl bg-white p-6 shadow-sm ring-1 ring-slate-100">
             {/* ラベル部分 */}
-            <div className="h-4 w-28 rounded bg-slate-100 motion-safe:animate-pulse" />
+            <div className="h-4 w-28 animate-pulse rounded bg-slate-100" />
             {/* 件数部分 */}
-            <div className="mt-3 h-10 w-16 rounded bg-slate-100 motion-safe:animate-pulse" />
+            <div className="mt-3 h-10 w-16 animate-pulse rounded bg-slate-100" />
             {/* 説明部分 */}
-            <div className="mt-2 h-3 w-40 rounded bg-slate-100 motion-safe:animate-pulse" />
+            <div className="mt-2 h-3 w-40 animate-pulse rounded bg-slate-100" />
           </div>
         ))}
       </div>
