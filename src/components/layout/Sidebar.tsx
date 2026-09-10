@@ -180,9 +180,16 @@ export function Sidebar({ role, mode }: Props) {
         ref={asideRef}
         // モバイルドロワー時に MobileNavToggle の aria-controls から参照される ID
         id="mobile-sidebar"
-        className={`fixed inset-y-0 left-0 z-40 flex flex-col border-r border-slate-200 bg-white/95 backdrop-blur transition-all duration-200 md:relative md:translate-x-0 ${
-          // モバイル時の表示/非表示制御 (true = 画面内, false = 画面外左)
-          mobileOpen ? 'translate-x-0 shadow-2xl' : '-translate-x-full'
+        className={`fixed inset-y-0 left-0 z-40 flex flex-col border-r border-slate-200 bg-white/95 backdrop-blur transition-all duration-200 md:relative md:visible md:translate-x-0 ${
+          // モバイル時の表示/非表示制御 (true = 画面内, false = 画面外左)。
+          // 閉じているときは translate に加えて **invisible (visibility:hidden)** も付ける
+          // (/code-review ultra 指摘対応 2026-09-10): translate で画面外へずらしただけの
+          // 要素は依然フォーカス可能なので、md 未満でドロワーを閉じていても中のナビリンクが
+          // タブ順・読み上げ順に残り、「画面のどこにも見えないリンクに Tab で最初に到達し、
+          // Enter を押すと実際に遷移する」状態になっていた。visibility:hidden なら
+          // 中の要素はまとめてフォーカス対象から外れる。
+          // md 以上は常設サイドバーとして必ず見せるので、ベースクラスの md:visible で戻す
+          mobileOpen ? 'visible translate-x-0 shadow-2xl' : 'invisible -translate-x-full'
         } ${
           // 幅切替: モバイルではフル幅相当 (w-64) を確保、md 以上は collapsed に応じて w-14/w-60 を切替
           collapsed ? 'w-64 md:w-14' : 'w-64 md:w-60'
