@@ -3,7 +3,7 @@ import { test, expect, Page } from '@playwright/test';
 // E2E 共通のログインヘルパーと、その再試行に必要な枠 (§6 DRY: スペックごとに書き写さない)
 import { login, LOGIN_RETRY_BUDGET_MS } from './login';
 // ハイドレーション前のクリックに耐える共通の再試行ヘルパー
-import { actUntil, HYDRATION_ATTEMPT_MS } from './hydration';
+import { actUntil } from './hydration';
 
 // モバイル幅 (md 未満) のナビゲーションドロワーの挙動を検証する。
 //
@@ -16,7 +16,9 @@ test.describe('モバイルのナビゲーションドロワー', () => {
   // このスペックだけ iPhone 相当の幅にする (プロジェクト設定は Desktop Chrome のまま)
   test.use({ viewport: { width: 375, height: 812 } });
 
-  // ドロワーを開く操作の再試行に使う枠 (ログインと同じ考え方)
+  // ドロワーが開いたことを 1 回の試行で待つ上限 (外れた試行を早く見切る)
+  const DRAWER_SHOWN_WAIT_MS = 5_000;
+  // ドロワーを開く操作の再試行に使う枠 (ログインと同じ考え方。上の上限の 3 回分)
   const DRAWER_RETRY_BUDGET_MS = 20_000;
   // 再試行以外 (表明・キー操作・画面遷移) に充てる余裕
   const BODY_HEADROOM_MS = 20_000;
@@ -26,7 +28,11 @@ test.describe('モバイルのナビゲーションドロワー', () => {
   // 再試行する」形なので、再試行が 1 度でも走ると既定の 30 秒では
   // **2 回目が始まる前に打ち切られて再試行そのものが機能しない**。
   // 値を直接書かず**使う枠の合計から導く**ことで、どちらかの枠を変えたときに
-  // ここが取り残されないようにする (§6 マジックナンバーを散らさない)
+  // ここが取り残されないようにする (§6 マジックナンバーを散らさない)。
+  //
+  // **この式は「1 テストにつき login が 1 回・openDrawer が 1 回」を前提にしている。**
+  // 再試行を伴う操作を足す (2 回目の login、別の actUntil など) ときは、その枠も
+  // ここへ足すこと。足さないと、増えた分だけ余裕が削られて先に打ち切られる
   test.describe.configure({
     timeout: LOGIN_RETRY_BUDGET_MS + DRAWER_RETRY_BUDGET_MS + BODY_HEADROOM_MS,
   });
@@ -72,7 +78,7 @@ test.describe('モバイルのナビゲーションドロワー', () => {
     // ドロワー内のリンクがロールで引けるようになったかの確認
     const drawerShown = async () => {
       // 短めの制限時間で判定し、外れた試行を早く見切る
-      await expect(navLinkByRole(page)).toBeVisible({ timeout: HYDRATION_ATTEMPT_MS });
+      await expect(navLinkByRole(page)).toBeVisible({ timeout: DRAWER_SHOWN_WAIT_MS });
     };
     // 開くまで、枠の範囲で繰り返す (再試行の仕組みは hydration.ts に集約)
     await actUntil(openIfClosed, drawerShown, DRAWER_RETRY_BUDGET_MS);

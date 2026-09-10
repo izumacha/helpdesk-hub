@@ -12,9 +12,6 @@
 // 「操作して、狙った結果になったか確かめる」を成立するまで繰り返す。
 import { expect } from '@playwright/test';
 
-// 1 回の試行で結果を待つ時間 (ミリ秒)。短くして、外れた試行を早く見切る
-export const HYDRATION_ATTEMPT_MS = 5_000;
-
 /**
  * `act` を実行し `verify` が通るまで、`budgetMs` の枠内で繰り返す。
  *
@@ -22,8 +19,14 @@ export const HYDRATION_ATTEMPT_MS = 5_000;
  * 例: 「閉じているときだけ押す」「毎回 goto からやり直す」など、
  * 途中まで成功した状態で再実行しても壊れない形にすること。
  *
- * @param act 実行する操作 (冪等であること)
- * @param verify 操作が効いたことを確かめる表明
+ * **`act` / `verify` の中身に上限を掛けるのは呼び出し側の責任**。この関数は
+ * 全体の締切 (`budgetMs`) しか持たないので、内側に既定の上限が大きい操作
+ * (`page.goto` の既定は 30 秒) を素で置くと、1 回目の試行だけで枠を使い切って
+ * **再試行が 1 度も走らない**。呼び出し側は 1 回の試行に掛かる上限の合計が
+ * `budgetMs` の半分以下に収まるよう、個別に `timeout` を渡すこと。
+ *
+ * @param act 実行する操作 (冪等であること。内側の待機に上限を渡すこと)
+ * @param verify 操作が効いたことを確かめる表明 (同上)
  * @param budgetMs 再試行の総枠 (呼び出し側のテスト制限時間より十分小さいこと)
  */
 export async function actUntil(
