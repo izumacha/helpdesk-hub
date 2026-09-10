@@ -1,7 +1,9 @@
 // Playwright のテスト DSL と Page 型
 import { test, expect, Page } from '@playwright/test';
-// E2E 共通のログインヘルパー (§6 DRY: スペックごとに書き写さない)
-import { login } from './login';
+// E2E 共通のログインヘルパーと、その再試行に必要な枠 (§6 DRY: スペックごとに書き写さない)
+import { login, LOGIN_RETRY_BUDGET_MS } from './login';
+// ハイドレーション前のクリックに耐える共通の再試行ヘルパー
+import { actUntil, HYDRATION_ATTEMPT_MS } from './hydration';
 
 // モバイル幅 (md 未満) のナビゲーションドロワーの挙動を検証する。
 //
@@ -14,12 +16,20 @@ test.describe('モバイルのナビゲーションドロワー', () => {
   // このスペックだけ iPhone 相当の幅にする (プロジェクト設定は Desktop Chrome のまま)
   test.use({ viewport: { width: 375, height: 812 } });
 
+  // ドロワーを開く操作の再試行に使う枠 (ログインと同じ考え方)
+  const DRAWER_RETRY_BUDGET_MS = 20_000;
+  // 再試行以外 (表明・キー操作・画面遷移) に充てる余裕
+  const BODY_HEADROOM_MS = 20_000;
+
   // このスペックだけ制限時間を延ばす (プロジェクト全体の既定 30 秒は変えない)。
-  // beforeEach のログイン + 本体のドロワー操作はどちらも「ハイドレーション前のクリックを
-  // 再試行する」形になっており、再試行が 1 度でも走ると既定の 30 秒では
+  // beforeEach のログインも本体のドロワー操作も「ハイドレーション前のクリックを
+  // 再試行する」形なので、再試行が 1 度でも走ると既定の 30 秒では
   // **2 回目が始まる前に打ち切られて再試行そのものが機能しない**。
-  // 枠が足りているかは「hooks + 本体で使いうる最大の再試行枠」を足して決める
-  test.describe.configure({ timeout: 90_000 });
+  // 値を直接書かず**使う枠の合計から導く**ことで、どちらかの枠を変えたときに
+  // ここが取り残されないようにする (§6 マジックナンバーを散らさない)
+  test.describe.configure({
+    timeout: LOGIN_RETRY_BUDGET_MS + DRAWER_RETRY_BUDGET_MS + BODY_HEADROOM_MS,
+  });
 
   // 各テスト共通の前準備 (ログイン → チケット一覧を開く)
   test.beforeEach(async ({ page }) => {
@@ -46,20 +56,26 @@ test.describe('モバイルのナビゲーションドロワー', () => {
   // 「開いていなければ押す → 開いたか確かめる」を成立するまで繰り返す形にすれば、
   // 合図の有無に依存しない。
   //
-  // ボタンは **ラベルではなく aria-controls で指す**: ラベルは開閉で
-  // 「メニューを開く」⇄「メニューを閉じる」と入れ替わるため、名前で指すと
+  // ボタンは **開閉どちらのラベルにも当たる正規表現**で指す: ラベルは開閉で
+  // 「メニューを開く」⇄「メニューを閉じる」と入れ替わるため、片方の名前で指すと
   // 「1 回目のクリックで開いたが表示の検査に失敗した」場合に再試行が
-  // 存在しない要素を待ち続け、本来の失敗理由が制限時間切れに化ける
+  // 存在しない要素を待ち続け、本来の失敗理由が制限時間切れに化ける。
+  // ロール + 日本語コピーで指す形はこのリポジトリのセレクタ規約 (§3 テスト) でもある
   async function openDrawer(page: Page) {
     // ハンバーガーを開閉状態に依存しないセレクタで指す
-    const toggle = page.locator('button[aria-controls="mobile-sidebar"]');
-    // 「閉じていれば押す」と「開いたか」の確認を 1 組にして、成立するまで再試行する
-    await expect(async () => {
+    const toggle = page.getByRole('button', { name: /メニューを(開く|閉じる)/ });
+    // 「閉じていれば押す」= 何度実行しても開いた状態に収束する冪等な操作
+    const openIfClosed = async () => {
       // 既に開いている状態で押すと閉じてしまうので、閉じているときだけ押す
       if ((await toggle.getAttribute('aria-expanded')) === 'false') await toggle.click();
-      // ドロワー内のリンクがロールで引けるようになるまで待つ (短めの制限時間で判定する)
-      await expect(navLinkByRole(page)).toBeVisible({ timeout: 3_000 });
-    }).toPass({ timeout: 20_000 });
+    };
+    // ドロワー内のリンクがロールで引けるようになったかの確認
+    const drawerShown = async () => {
+      // 短めの制限時間で判定し、外れた試行を早く見切る
+      await expect(navLinkByRole(page)).toBeVisible({ timeout: HYDRATION_ATTEMPT_MS });
+    };
+    // 開くまで、枠の範囲で繰り返す (再試行の仕組みは hydration.ts に集約)
+    await actUntil(openIfClosed, drawerShown, DRAWER_RETRY_BUDGET_MS);
   }
 
   // 閉じているドロワーは「画面外へずらしただけ」ではなく、中の要素ごと
@@ -106,10 +122,14 @@ test.describe('モバイルのナビゲーションドロワー', () => {
     expect(closed.transitionProperty).not.toContain('visibility');
     // ドロワーを開く
     await openDrawer(page);
-    // 開いたあとの translate 値を読む
-    const opened = await drawer.evaluate((el) => getComputedStyle(el).translate);
-    // 開閉で translate が実際に変わっていること (変わらなければ位置が動いていない)
-    expect(opened).not.toBe(closed.translate);
+    // 開いたあとの translate 値が閉じていたときと変わるまで待つ。
+    // **一度読んで比べる形にしない**: openDrawer はリンクが可視になった時点で戻るが、
+    // 可視化と 200ms の遷移開始は同じスタイル更新で起きるため、その瞬間の
+    // translate はまだ開始値 (画面外) のことがある。値を固定で読むと
+    // 正しい実装でも落ちる断続的な失敗になるので、変化するまで再取得する
+    await expect
+      .poll(() => drawer.evaluate((el) => getComputedStyle(el).translate))
+      .not.toBe(closed.translate);
   });
 
   // 開いた直後にフォーカスがドロワーの中へ移ること (背面に取り残さない §7)。
