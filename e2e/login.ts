@@ -13,24 +13,28 @@ import { expect, type Page } from '@playwright/test';
 // seed が投入するテスト用アカウントの共通パスワード (ローカル/CI のシード専用の値)
 export const SEED_PASSWORD = 'password123';
 
+// ログイン後の遷移先 (ロールによって /dashboard か /tickets のどちらかになる)
+const LANDED = /\/dashboard|\/tickets/;
+
 /**
  * seed 済みユーザーでログインし、ロール別の遷移先 (/dashboard か /tickets) まで待つ。
  * @param page Playwright のページ
  * @param email ログインするユーザー (既定はエージェント)
  */
 export async function login(page: Page, email = 'agent1@example.com') {
-  // **ハイドレーション前のクリックに耐える形で 1 手順ごとやり直す** (6 巡目レビュー指摘)。
+  // **ハイドレーション前のクリックに耐えるため、goto からまとめて再試行する**。
   // ログインフォームは `<form onSubmit={...}>` で action を持たないため、React の
   // ハイドレーション前に送信ボタンが押されると preventDefault が走らず、ブラウザが
-  // ネイティブの GET を投げる (= 遷移せず、しかも入力値が URL に載る)。
-  // Playwright は「成功したクリック」を再試行しないので、後続の待機がタイムアウトする。
-  // goto からやり直す形で丸ごと再試行すれば、その 1 回目が外れても URL は次の goto で
-  // 上書きされ、ハイドレーション済みの状態で必ずやり直せる
+  // ネイティブの GET を投げる (= 遷移しない)。Playwright は「成功したクリック」を
+  // 再試行しないので、この形にしないと後続の待機がタイムアウトする。
   await expect(async () => {
     // ログインページへ遷移する (再試行のたびに入力状態ごとリセットする)
     await page.goto('/login');
-    // JS チャンクの読み込みが落ち着くまで待つ (ハイドレーション前クリックの窓を狭める)
-    await page.waitForLoadState('networkidle');
+    // **既にログイン済みなら proxy が /login から退避させる**ので、そのまま成功として抜ける。
+    // (1 回目の試行が「認証は通ったが router.push が内側の制限時間に間に合わなかった」形で
+    //  失敗した場合、2 回目以降はログインフォームが存在しない。ここで抜けないと
+    //  入力欄を待ち続けてテスト全体のタイムアウトまでハングする)
+    if (!/\/login/.test(page.url())) return;
     // メールアドレスを入力する
     await page.getByLabel(/メールアドレス|Email/i).fill(email);
     // 共通パスワードを入力する
@@ -38,6 +42,9 @@ export async function login(page: Page, email = 'agent1@example.com') {
     // ログインボタンを押す
     await page.getByRole('button', { name: /ログイン/i }).click();
     // ロール別の遷移先まで待機する (届かなければこの試行は失敗し、上の goto からやり直す)
-    await page.waitForURL(/\/dashboard|\/tickets/, { timeout: 10_000 });
-  }).toPass({ timeout: 45_000 });
+    await page.waitForURL(LANDED, { timeout: 8_000 });
+    // 再試行の総枠。呼び出し側のテスト制限時間に収まる値にしておく
+    // (枠がテスト制限時間を超えていると 2 回目の試行が始まる前に打ち切られ、
+    //  再試行そのものが機能しないまま「Test timeout」だけが報告される)
+  }).toPass({ timeout: 20_000 });
 }

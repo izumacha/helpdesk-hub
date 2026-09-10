@@ -14,6 +14,13 @@ test.describe('モバイルのナビゲーションドロワー', () => {
   // このスペックだけ iPhone 相当の幅にする (プロジェクト設定は Desktop Chrome のまま)
   test.use({ viewport: { width: 375, height: 812 } });
 
+  // このスペックだけ制限時間を延ばす (プロジェクト全体の既定 30 秒は変えない)。
+  // beforeEach のログイン + 本体のドロワー操作はどちらも「ハイドレーション前のクリックを
+  // 再試行する」形になっており、再試行が 1 度でも走ると既定の 30 秒では
+  // **2 回目が始まる前に打ち切られて再試行そのものが機能しない**。
+  // 枠が足りているかは「hooks + 本体で使いうる最大の再試行枠」を足して決める
+  test.describe.configure({ timeout: 90_000 });
+
   // 各テスト共通の前準備 (ログイン → チケット一覧を開く)
   test.beforeEach(async ({ page }) => {
     // エージェントでログインする
@@ -33,15 +40,23 @@ test.describe('モバイルのナビゲーションドロワー', () => {
   // 成功したクリックを再試行しないので後続の待機がタイムアウトする
   // (CI の retries: 2 が flake として覆い隠すため、検出網としてはむしろ有害)。
   //
-  // 6 巡目レビュー指摘の反映: 当初は aria-expanded の値を待って「ハイドレーション済み」の
-  // 合図にしていたが、**この属性はサーバ側の初期 HTML にも同じ値で出る**ため
-  // ハイドレーションの前後を区別できず、ガードとして機能していなかった。
-  // 「クリックして開かなければもう一度クリックする」形にすれば、合図の有無に依存しない
+  // 当初は aria-expanded の値を待って「ハイドレーション済み」の合図にしていたが、
+  // **この属性はサーバ側の初期 HTML にも同じ値で出る**ためハイドレーションの前後を
+  // 区別できず、ガードとして機能していなかった。
+  // 「開いていなければ押す → 開いたか確かめる」を成立するまで繰り返す形にすれば、
+  // 合図の有無に依存しない。
+  //
+  // ボタンは **ラベルではなく aria-controls で指す**: ラベルは開閉で
+  // 「メニューを開く」⇄「メニューを閉じる」と入れ替わるため、名前で指すと
+  // 「1 回目のクリックで開いたが表示の検査に失敗した」場合に再試行が
+  // 存在しない要素を待ち続け、本来の失敗理由が制限時間切れに化ける
   async function openDrawer(page: Page) {
-    // クリックと「開いたか」の確認を 1 組にして、成立するまで再試行する
+    // ハンバーガーを開閉状態に依存しないセレクタで指す
+    const toggle = page.locator('button[aria-controls="mobile-sidebar"]');
+    // 「閉じていれば押す」と「開いたか」の確認を 1 組にして、成立するまで再試行する
     await expect(async () => {
-      // ハンバーガー (閉じているときのラベル) を押す
-      await page.getByRole('button', { name: 'メニューを開く' }).click();
+      // 既に開いている状態で押すと閉じてしまうので、閉じているときだけ押す
+      if ((await toggle.getAttribute('aria-expanded')) === 'false') await toggle.click();
       // ドロワー内のリンクがロールで引けるようになるまで待つ (短めの制限時間で判定する)
       await expect(navLinkByRole(page)).toBeVisible({ timeout: 3_000 });
     }).toPass({ timeout: 20_000 });
@@ -67,6 +82,34 @@ test.describe('モバイルのナビゲーションドロワー', () => {
     await expect(
       page.locator('#mobile-sidebar').getByRole('button', { name: 'ナビゲーションを閉じる' }),
     ).toHaveCount(0);
+  });
+
+  // スライドのアニメーションが実際に効いていること。
+  // 7 巡目レビューで、遷移対象に `transform` と書いてしまい (Tailwind v4 の translate-x-* は
+  // 独立した `translate:` プロパティへコンパイルされる) スライドが丸ごと死んでいたのに
+  // lint / typecheck / unit / contract / E2E すべてが緑のまま通った。人が生成 CSS を
+  // 読んで初めて気付いた欠陥なので、計算後のスタイルで機械的に固定する
+  test('遷移対象に translate が含まれ、開閉で translate が実際に変わる', async ({ page }) => {
+    // ドロワー本体を指す
+    const drawer = page.locator('#mobile-sidebar');
+    // 閉じているときの計算後スタイルを読む
+    const closed = await drawer.evaluate((el) => {
+      // 計算後のスタイル一式を取得する
+      const s = getComputedStyle(el);
+      // 遷移対象のプロパティ一覧と、現在の translate 値を返す
+      return { transitionProperty: s.transitionProperty, translate: s.translate };
+    });
+    // 遷移対象に translate が含まれること (transform と書き間違えるとここで落ちる)
+    expect(closed.transitionProperty).toContain('translate');
+    // 遷移対象に visibility を含めないこと
+    // (含めると閉じてから遷移が終わるまでフォーカス可能なままになる。§4.28.4)
+    expect(closed.transitionProperty).not.toContain('visibility');
+    // ドロワーを開く
+    await openDrawer(page);
+    // 開いたあとの translate 値を読む
+    const opened = await drawer.evaluate((el) => getComputedStyle(el).translate);
+    // 開閉で translate が実際に変わっていること (変わらなければ位置が動いていない)
+    expect(opened).not.toBe(closed.translate);
   });
 
   // 開いた直後にフォーカスがドロワーの中へ移ること (背面に取り残さない §7)。

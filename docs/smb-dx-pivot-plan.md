@@ -1756,7 +1756,7 @@ complete-signup.ts`）だけは対象から漏れていた。`requestSignup`・`
   `invisible` の削除・初期フォーカス移動の削除・Tab トラップの無効化のいずれでも
   対応するテストが落ちることを実測で確認済み。
 
-#### 4.28.4 追補（2026-09-10・6 巡目レビュー）: `transition-all` が visibility も遷移させていた
+#### 4.28.4 追補（2026-09-10・6〜8 巡目レビュー）: `transition-all` が visibility も遷移させていた
 
 - §4.28.3 で閉状態に `invisible` を足したが、同要素の `transition-all` は
   `transition-property: all`＝**visibility も遷移対象**だった。CSS の仕様では
@@ -1771,8 +1771,7 @@ complete-signup.ts`）だけは対象から漏れていた。`requestSignup`・`
   Tailwind v4 の `translate-x-*` は `transform:` ではなく独立した `translate:` プロパティへ
   コンパイルされるため、`transform` と書くとこの要素では誰も設定しないプロパティを指すことになり、
   スライドのアニメーションが丸ごと止まる（初版がこの誤りで、生成 CSS を見て気付いた）。
-  あわせて `motion-reduce:transition-none` を付けた（§7）。
-  **トレードオフ（意図的）**: visibility を遷移対象から外したので、閉じるときはスライドせず
+    **トレードオフ（意図的）**: visibility を遷移対象から外したので、閉じるときはスライドせず
   即座に消える。見た目の対称性より「閉じた瞬間にフォーカス対象から外れる」ことを優先している。
   これを「閉じるアニメーションが無い」と見て visibility を遷移対象へ戻すと上記 200ms の穴が
   復活するので、両立させたいなら `inert` でフォーカス可能性を切り離す設計へ変えること。
