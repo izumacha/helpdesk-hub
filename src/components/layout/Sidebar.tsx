@@ -180,7 +180,16 @@ export function Sidebar({ role, mode }: Props) {
         ref={asideRef}
         // モバイルドロワー時に MobileNavToggle の aria-controls から参照される ID
         id="mobile-sidebar"
-        className={`fixed inset-y-0 left-0 z-40 flex flex-col border-r border-slate-200 bg-white/95 backdrop-blur transition-all duration-200 md:visible md:relative md:translate-x-0 ${
+        // transition の対象を明示列挙する (transition-all にしない)。
+        // /code-review ultra 指摘対応 (2026-09-10): `transition-property: all` は
+        // **visibility も遷移対象に含む**。CSS の仕様では visible → hidden の遷移中の
+        // 計算値は「visible」のままで、hidden になるのは遷移の終端。つまり
+        // transition-all のままだと閉じてから 200ms のあいだドロワーの中身が
+        // フォーカス可能・読み上げ可能なまま画面外を滑っていき、その隙に Shift+Tab で
+        // 見えないリンクへ入れてしまう (フォーカストラップは既に解除済み)。
+        // 実際に動かしたいのは位置・幅・影だけなので、その 3 つだけを列挙して
+        // visibility は即座に切り替わるようにする
+        className={`fixed inset-y-0 left-0 z-40 flex flex-col border-r border-slate-200 bg-white/95 backdrop-blur transition-[transform,width,box-shadow] duration-200 md:visible md:relative md:translate-x-0 ${
           // モバイル時の表示/非表示制御 (true = 画面内, false = 画面外左)。
           // 閉じているときは translate に加えて **invisible (visibility:hidden)** も付ける
           // (/code-review ultra 指摘対応 2026-09-10): translate で画面外へずらしただけの

@@ -628,10 +628,10 @@ model TicketHistory {
   // **ダッシュボードの再オープン率の集約がこのインデックスを使うかどうかは規模による**
   // (/code-review ultra 指摘対応 2026-09-10)。あちらは「テナントの全チケット」に対する
   // LEFT JOIN + GROUP BY で、JOIN の他の述語 (field / newValue / oldValue) はこの
-  // インデックスに含まれない。実測では、シードデータ規模ではプランナが nested loop +
-  // Index Scan を選んでコストが下がった一方、20 万行規模では
-  // hash / merge join + Seq Scan を選んでこのインデックスを参照しなかった
-  // (測定値そのものは docs/smb-dx-pivot-plan.md §4.28.2 に記録してある)。
+  // インデックスに含まれず、外側が「テナントの全チケット」で大きいため、規模が上がるほど
+  // プランナは nested loop + Index Scan ではなく hash / merge join + Seq Scan を選びやすい
+  // (シードデータ規模では Index Scan が選ばれてコストが下がることを実測。大きな規模での
+  // 実測値はこのリポジトリに記録が無いので、ここでは断定しない)。
   // **このインデックスの存在理由は上のチケット詳細の経路**であり、再オープン率の
   // 集約が速いことを前提にしないこと (規模によっては効かない)。
   @@index([ticketId, createdAt])
