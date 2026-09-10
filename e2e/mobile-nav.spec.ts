@@ -22,25 +22,30 @@ test.describe('モバイルのナビゲーションドロワー', () => {
     await page.goto('/tickets');
   });
 
-  // ドロワーを開くヘルパー。**ハイドレーション完了を待ってからクリックする**。
+  // ドロワー内の「ダッシュボード」リンクをロールで指すロケータ
+  const navLinkByRole = (page: Page) =>
+    page.locator('#mobile-sidebar').getByRole('link', { name: 'ダッシュボード' });
+
+  // ドロワーを開くヘルパー。**クリック自体を再試行する**。
   // MobileNavToggle は SSR されるので、ハイドレーション前でもボタンは存在し
   // Playwright の操作可能判定を通ってしまう。その隙にクリックすると onClick が
   // まだ結び付いておらず「押せたのに何も起きない」状態になり、Playwright は
   // 成功したクリックを再試行しないので後続の待機がタイムアウトする
   // (CI の retries: 2 が flake として覆い隠すため、検出網としてはむしろ有害)。
-  // aria-expanded は Client Component が描く属性なので、その存在を合図に使う
+  //
+  // 6 巡目レビュー指摘の反映: 当初は aria-expanded の値を待って「ハイドレーション済み」の
+  // 合図にしていたが、**この属性はサーバ側の初期 HTML にも同じ値で出る**ため
+  // ハイドレーションの前後を区別できず、ガードとして機能していなかった。
+  // 「クリックして開かなければもう一度クリックする」形にすれば、合図の有無に依存しない
   async function openDrawer(page: Page) {
-    // ハンバーガー (閉じているときのラベル) を指す
-    const toggle = page.getByRole('button', { name: 'メニューを開く' });
-    // ハイドレーション済みであることを aria-expanded の値で確かめる
-    await expect(toggle).toHaveAttribute('aria-expanded', 'false');
-    // 開く
-    await toggle.click();
+    // クリックと「開いたか」の確認を 1 組にして、成立するまで再試行する
+    await expect(async () => {
+      // ハンバーガー (閉じているときのラベル) を押す
+      await page.getByRole('button', { name: 'メニューを開く' }).click();
+      // ドロワー内のリンクがロールで引けるようになるまで待つ (短めの制限時間で判定する)
+      await expect(navLinkByRole(page)).toBeVisible({ timeout: 3_000 });
+    }).toPass({ timeout: 20_000 });
   }
-
-  // ドロワー内の「ダッシュボード」リンクをロールで指すロケータ
-  const navLinkByRole = (page: Page) =>
-    page.locator('#mobile-sidebar').getByRole('link', { name: 'ダッシュボード' });
 
   // 閉じているドロワーは「画面外へずらしただけ」ではなく、中の要素ごと
   // タブ順・読み上げ順から外れていること (visibility:hidden)。

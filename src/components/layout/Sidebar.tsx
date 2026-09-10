@@ -187,9 +187,25 @@ export function Sidebar({ role, mode }: Props) {
         // transition-all のままだと閉じてから 200ms のあいだドロワーの中身が
         // フォーカス可能・読み上げ可能なまま画面外を滑っていき、その隙に Shift+Tab で
         // 見えないリンクへ入れてしまう (フォーカストラップは既に解除済み)。
-        // 実際に動かしたいのは位置・幅・影だけなので、その 3 つだけを列挙して
-        // visibility は即座に切り替わるようにする
-        className={`fixed inset-y-0 left-0 z-40 flex flex-col border-r border-slate-200 bg-white/95 backdrop-blur transition-[transform,width,box-shadow] duration-200 md:visible md:relative md:translate-x-0 ${
+        //
+        // 列挙する property 名は **translate であって transform ではない**
+        // (6 巡目レビュー指摘。生成 CSS で実測): Tailwind v4 の `translate-x-*` は
+        // `transform:` ではなく独立した `translate:` プロパティへコンパイルされる
+        // (`.-translate-x-full{--tw-translate-x:-100%;translate:var(--tw-translate-x) …}`)。
+        // transform と書くとこの要素では誰も設定しないプロパティを指すことになり、
+        // スライドのアニメーションが丸ごと効かなくなる。
+        //
+        // **トレードオフ (意図的)**: visibility を遷移対象から外したので、閉じるときは
+        // スライドせず即座に消える (開くときはスライドする)。見た目の対称性より
+        // 「閉じた瞬間にフォーカス対象から外れる」ことを優先している。
+        // **これを『閉じるアニメーションが無い』と見て visibility を遷移対象へ戻さないこと** —
+        // 上記 200ms の穴がそのまま復活する。両立させたいなら visibility ではなく
+        // `inert` でフォーカス可能性を切り離す設計に変えること。
+        //
+        // motion-reduce: 動きを抑える設定の利用者には遷移そのものを無効化する (§7)。
+        // globals.css の全体指定と重複するが、この要素は遷移対象を明示しているので
+        // ここでも意図を明示しておく
+        className={`fixed inset-y-0 left-0 z-40 flex flex-col border-r border-slate-200 bg-white/95 backdrop-blur transition-[translate,width,box-shadow] duration-200 motion-reduce:transition-none md:visible md:relative md:translate-x-0 ${
           // モバイル時の表示/非表示制御 (true = 画面内, false = 画面外左)。
           // 閉じているときは translate に加えて **invisible (visibility:hidden)** も付ける
           // (/code-review ultra 指摘対応 2026-09-10): translate で画面外へずらしただけの
