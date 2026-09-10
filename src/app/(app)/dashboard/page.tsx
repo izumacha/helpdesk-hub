@@ -338,10 +338,14 @@ export default async function DashboardPage({ searchParams }: Props) {
                         <td className="px-5 py-3.5 text-right">
                           {/* 監査で発見したギャップ対応: 選択中の拠点フィルタも引き継ぐ。
                               リンク名は行ごとに一意にする (全行「一覧を見る」だと読み上げ・
-                              音声操作でリンクを区別できない §7) */}
+                              音声操作でリンクを区別できない §7)。
+                              **見えている文字列「一覧を見る」をそのまま含む形にする** —
+                              音声操作 (Voice Control 等) は見えている文字を読み上げて操作するため、
+                              「一覧で見る」のように 1 文字でも変えるとリンクを起動できなくなる
+                              (WCAG 2.5.3 Label in Name)。他のタイルの aria-label も同じ規則 */}
                           <Link
                             href={buildTicketListHref(query, selectedLocationId)}
-                            aria-label={`${name} の未完了 ${row.count} 件を一覧で見る`}
+                            aria-label={`${name} の未完了 ${row.count} 件の一覧を見る`}
                             className="text-xs text-teal-700 transition hover:text-teal-800 hover:underline"
                           >
                             一覧を見る
@@ -473,7 +477,7 @@ async function QualityMetricsSection({
         </p>
         <p className="mt-1 text-xs text-slate-500">平均解決時間</p>
       </div>
-      {/* 再オープン率 (分母: totalCount = 全チケット数。resolvedCount ではない) */}
+      {/* 再オープン率 (分母: totalCount = 窓の中で対応を終えた件数。全チケット数ではない) */}
       <div className="rounded-2xl bg-white p-5 shadow-sm ring-1 ring-slate-100">
         <p className="text-2xl font-bold text-slate-900">
           {metrics.reopenRate != null ? (
@@ -485,9 +489,11 @@ async function QualityMetricsSection({
         <p className="mt-1 text-xs text-slate-500">
           再オープン率{' '}
           {/* 分母ラベルは再オープン率が実際に計算されたときだけ表示する。
-              null (データ不足) の場合は「—」と並べて件数を出すと誤解を招くため非表示にする */}
+              null (データ不足) の場合は「—」と並べて件数を出すと誤解を招くため非表示にする。
+              分母は「全チケット」ではなく「この期間に対応を終えた件数」なのでそう明示する
+              (「全 N 件中」と書くと未対応のチケットまで含む数字だと誤読される) */}
           {metrics.reopenRate != null && (
-            <span className="text-slate-400">(全 {metrics.totalCount} 件中)</span>
+            <span className="text-slate-400">(対応を終えた {metrics.totalCount} 件中)</span>
           )}
         </p>
       </div>
@@ -701,21 +707,30 @@ async function LiteDashboard({
         </Link>
 
         {/* 期限切れ・今日まで (Pivot plan §3.1 の正本仕様)。件数 0 はニュートラル、
-            1 件以上はロゼで注意喚起。ラベルは一覧の絞り込みチップと同じ DUE_FILTER_LABELS を
-            参照する (§6 一元管理)。監査で発見したギャップ対応: 選択中の拠点フィルタも引き継ぐ */}
+            1 件以上は期限超過トーンで注意喚起。ラベルは一覧の絞り込みチップと同じ
+            DUE_FILTER_LABELS を参照する (§6 一元管理)。監査で発見したギャップ対応:
+            選択中の拠点フィルタも引き継ぐ。
+            /code-review ultra 指摘対応 (2026-09-10): 配色を rose 直書きから
+            SLA_TILE_COLORS.overdue の参照に変えた。直書きのままだと、この PR が
+            sla.ts へ一元化したはずの警告色がここだけ 2 つ目の真実の源として残り、
+            パレット変更のたびに 2 か所を直す必要が出る (§6 配色の一元管理)。
+            SlaTile コンポーネント自体は再利用しない — Lite の 2 枚タイルは隣の
+            「自分の未対応」と同じ大きさ (p-6 / text-4xl) で対になっているのに対し、
+            SlaTile は Pro の 3 列グリッド向けの一回り小さい寸法 (p-5 / text-3xl) で、
+            共有すると Lite の 2 枚だけ大きさが食い違うため。共有するのは配色だけでよい */}
         <Link
           href={buildTicketListHref('due=today', selectedLocationId)}
           // 読み上げでは件数と遷移先をまとめて伝える (§7)
           aria-label={`${DUE_FILTER_LABELS.today} ${dueTodayCount} 件の一覧を見る`}
           className={`rounded-2xl bg-white p-6 shadow-sm ring-1 transition duration-200 hover:-translate-y-0.5 hover:shadow-md ${
             dueTodayCount > 0
-              ? 'ring-rose-200 hover:ring-rose-300'
+              ? SLA_TILE_COLORS.overdue.container
               : 'ring-slate-100 hover:ring-teal-200'
           }`}
         >
           <p className="text-sm font-medium text-slate-500">{DUE_FILTER_LABELS.today}</p>
           <p
-            className={`mt-2 text-4xl font-bold ${dueTodayCount > 0 ? 'text-rose-700' : 'text-slate-400'}`}
+            className={`mt-2 text-4xl font-bold ${dueTodayCount > 0 ? SLA_TILE_COLORS.overdue.number : 'text-slate-400'}`}
           >
             {dueTodayCount}
           </p>

@@ -511,19 +511,21 @@ export function runTicketRepositoryContract(
       expect(metricsB.resolvedCount).toBe(0);
     });
 
-    // 監査フォローアップ (2026-09-09): qualityMetrics の since 絞り込みの契約。
-    // ダッシュボードが「直近 30 日」窓 (dashboard-metrics.ts) で初めて since を渡すように
-    // なったため、生 SQL の `since IS NULL OR createdAt >= since` 分岐を実 DB でも固定する
-    // (/code-review ultra 指摘対応: この分岐はこれまで一度も非 null で実行されていなかった)
-    it('qualityMetrics with since only counts tickets created at/after the boundary', async () => {
+    // 監査フォローアップ (2026-09-10): qualityMetrics の since 絞り込みの契約。
+    // **窓は起票日時ではなく「解決した日時」に掛かる**ことを実 DB で固定する。
+    // 起票日時で切っていた版では、窓より長くかかったチケットは解決した日にはもう窓の外に
+    // いて平均へ一度も入らなかった (平均解決時間が窓の長さで頭打ちになり、遅い案件が
+    // 増えるほど「速い分だけ」の平均に寄って数字が下がる = 悪化を改善として表示する)。
+    // 下の 'slow' がその再現ケースで、起票日時で切る実装ではこのテストが落ちる。
+    it('qualityMetrics with since windows on when work finished, not when it was created', async () => {
       const { requester, categoryId } = await ctx.seedBasicFixture();
-      // 窓の境界 (この日時以降に作成されたチケットだけが集計対象)
+      // 窓の境界 (この日時以降に「対応を終えた」ものが集計対象)
       const since = new Date('2030-06-01T00:00:00Z');
-      // 境界より古い作成日時 / 新しい作成日時
-      const before = new Date(since.getTime() - 24 * 60 * 60 * 1000);
-      const after = new Date(since.getTime() + 24 * 60 * 60 * 1000);
+      // 1 時間・1 日をミリ秒で表した読みやすさ用の定数
+      const oneHour = 60 * 60 * 1000;
+      const oneDay = 24 * oneHour;
 
-      // 窓の外 (境界より前に作成) の解決済みチケット → 集計から除外されるべき
+      // (1) 窓より前に起票し、窓より前に解決した → 完全に窓の外なので除外されるべき
       await ctx.repos.tickets.create({
         title: 'old-resolved',
         body: 'b',
@@ -531,35 +533,102 @@ export function runTicketRepositoryContract(
         creatorId: requester.id,
         categoryId,
         tenantId: TENANT_ID,
-        createdAt: before,
-        resolvedAt: new Date(before.getTime() + 60 * 60 * 1000),
-        firstRespondedAt: new Date(before.getTime() + 30 * 60 * 1000),
+        createdAt: new Date(since.getTime() - 10 * oneDay),
+        resolvedAt: new Date(since.getTime() - 9 * oneDay),
+        firstRespondedAt: new Date(since.getTime() - 10 * oneDay + oneHour),
         status: 'Closed',
       });
-      // 窓の内 (境界より後に作成) の解決済みチケット → 集計対象
+      // (2) 窓の中で起票し、窓の中で解決した → 集計対象 (解決まで 1 時間)
       await ctx.repos.tickets.create({
-        title: 'new-resolved',
+        title: 'fast',
         body: 'b',
         priority: 'Low',
         creatorId: requester.id,
         categoryId,
         tenantId: TENANT_ID,
-        createdAt: after,
-        resolvedAt: new Date(after.getTime() + 60 * 60 * 1000),
-        firstRespondedAt: new Date(after.getTime() + 30 * 60 * 1000),
+        createdAt: new Date(since.getTime() + oneDay),
+        resolvedAt: new Date(since.getTime() + oneDay + oneHour),
+        firstRespondedAt: new Date(since.getTime() + oneDay + oneHour),
+        status: 'Closed',
+      });
+      // (3) 窓より前に起票したが、窓の中で解決した長期案件 → **集計対象**。
+      //     起票日時で窓を切ると、この「時間がかかった案件」だけが平均から消える
+      await ctx.repos.tickets.create({
+        title: 'slow',
+        body: 'b',
+        priority: 'Low',
+        creatorId: requester.id,
+        categoryId,
+        tenantId: TENANT_ID,
+        createdAt: new Date(since.getTime() - 2 * oneHour),
+        resolvedAt: new Date(since.getTime() + oneHour),
+        firstRespondedAt: new Date(since.getTime() + oneHour),
         status: 'Closed',
       });
 
-      // since 指定なしなら 2 件とも集計される (従来どおりの全期間)
+      // since 指定なしなら 3 件とも集計される (全期間)
       const allTime = await ctx.repos.tickets.qualityMetrics({ tenantId: TENANT_ID });
-      expect(allTime.resolvedCount).toBe(2);
-      expect(allTime.totalCount).toBe(2);
-      // since 指定ありなら境界以降に作成された 1 件だけが集計される
+      expect(allTime.resolvedCount).toBe(3);
+      // since 指定ありなら「窓の中で解決した」(2) と (3) の 2 件が対象になる
       const windowed = await ctx.repos.tickets.qualityMetrics({ tenantId: TENANT_ID, since });
-      expect(windowed.resolvedCount).toBe(1);
-      expect(windowed.totalCount).toBe(1);
-      // 平均値も窓内 1 件 (解決まで 1 時間) から計算されること
-      expect(windowed.avgResolutionMs).toBe(60 * 60 * 1000);
+      expect(windowed.resolvedCount).toBe(2);
+      // 再オープン率の分母も「窓の中で対応を終えた件数」= 2 件
+      expect(windowed.totalCount).toBe(2);
+      // 平均解決時間は (2) の 1 時間 と (3) の 3 時間 の平均 = 2 時間。
+      // 起票日時で切る実装だと (3) が抜けて 1 時間になり、遅い案件を隠してしまう
+      expect(windowed.avgResolutionMs).toBe(2 * oneHour);
+      // 平均初回応答時間も同じ窓の掛け方 ((2) 1 時間 / (3) 3 時間 の平均)
+      expect(windowed.avgFirstResponseMs).toBe(2 * oneHour);
+    });
+
+    // 監査フォローアップ (2026-09-10): 再オープン率の分母の契約。
+    // 差し戻し (Resolved/Closed → Open) では update-ticket.ts が resolvedAt をクリアするため、
+    // 分母を「解決済み」だけで決めると差し戻されたチケットが分子にだけ残り率が 1 を超えうる。
+    // 分母は「窓の中で解決した ∪ 窓の中で差し戻された」の和集合であることを固定する
+    it('qualityMetrics counts reopened tickets in the denominator even after resolvedAt is cleared', async () => {
+      const { requester, categoryId } = await ctx.seedBasicFixture();
+      // 履歴の記録日時は「いま」になるため、窓の境界は過去に置いて履歴が窓に入るようにする
+      const since = new Date(Date.now() - 24 * 60 * 60 * 1000);
+
+      // (1) 解決したまま据え置きのチケット (分母に入るが分子には入らない)
+      await ctx.repos.tickets.create({
+        title: 'stayed-resolved',
+        body: 'b',
+        priority: 'Low',
+        creatorId: requester.id,
+        categoryId,
+        tenantId: TENANT_ID,
+        resolvedAt: new Date(),
+        status: 'Closed',
+      });
+      // (2) 差し戻されたチケット。再オープン後は resolvedAt が null に戻っている状態を再現する
+      const reopened = await ctx.repos.tickets.create({
+        title: 'reopened',
+        body: 'b',
+        priority: 'Low',
+        creatorId: requester.id,
+        categoryId,
+        tenantId: TENANT_ID,
+        resolvedAt: null,
+        status: 'Open',
+      });
+      // 差し戻しの履歴 (Closed → Open) を記録する
+      await ctx.repos.history.record({
+        ticketId: reopened.id,
+        changedById: requester.id,
+        field: 'status',
+        oldValue: 'Closed',
+        newValue: 'Open',
+      });
+
+      // 分母は解決 1 件 + 差し戻し 1 件 = 2 件、分子は差し戻し 1 件 → 50%
+      const metrics = await ctx.repos.tickets.qualityMetrics({ tenantId: TENANT_ID, since });
+      expect(metrics.totalCount).toBe(2);
+      expect(metrics.reopenRate).toBe(0.5);
+      // 率は決して 1 を超えない (分子は必ず分母の部分集合)
+      expect(metrics.reopenRate).toBeLessThanOrEqual(1);
+      // resolvedAt がクリアされている差し戻し分は「解決済み件数」には数えない
+      expect(metrics.resolvedCount).toBe(1);
     });
 
     // --- ここからクロステナント回帰テスト (Phase 0 仕上げ PR で追加) ---

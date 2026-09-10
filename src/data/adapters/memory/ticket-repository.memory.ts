@@ -460,18 +460,23 @@ export function makeTicketRepo(store: Store): TicketRepository {
       store.tickets.set(id, { ...t, slaReminderNotifiedForDueAt: dueAt });
     },
 
-    // 品質メトリクスを算出して返す (tenantId スコープ。since 指定時はその日時以降作成分のみ)
+    // 品質メトリクスを算出して返す (tenantId スコープ)。
+    // since 指定時は **各指標の「出来事が起きた時刻」** で窓を切る (起票日時ではない)。
+    // 理由は Prisma アダプタの同名メソッドのコメントが正本 (窓より長くかかったチケットが
+    // 平均から丸ごと抜け、悪化が改善に見える問題への対処。監査フォローアップ 2026-09-10)
     async qualityMetrics({ tenantId, since, locationId }) {
-      // テナントスコープ + since 条件 + locationId 条件 (指定時のみ) でチケットを絞り込む
+      // テナントスコープ + locationId 条件 (指定時のみ) でチケットを絞り込む。
+      // 期間の窓はここでは掛けない (指標ごとに見る時刻が違うため、各指標側で判定する)
       const allTickets = [...store.tickets.values()].filter(
         (t) =>
-          t.tenantId === tenantId &&
-          (!since || t.createdAt >= since) &&
-          (locationId === undefined || t.locationId === locationId),
+          t.tenantId === tenantId && (locationId === undefined || t.locationId === locationId),
       );
+      // 「その時刻が窓の中か」を判定する共通ヘルパー (since 未指定なら全期間が対象)
+      const inWindow = (at: Date | null | undefined): boolean =>
+        at != null && (!since || at >= since);
 
-      // 初回応答済みチケット (firstRespondedAt が設定されているもの) を抽出する
-      const responded = allTickets.filter((t) => t.firstRespondedAt != null);
+      // 窓の中で初回応答したチケットを抽出する
+      const responded = allTickets.filter((t) => inWindow(t.firstRespondedAt));
       // 初回応答時間 (ms) の平均を計算する (対象なしは null)
       const avgFirstResponseMs =
         responded.length > 0
@@ -481,8 +486,8 @@ export function makeTicketRepo(store: Store): TicketRepository {
             ) / responded.length
           : null;
 
-      // 解決済みチケット (resolvedAt が設定されているもの) を抽出する
-      const resolved = allTickets.filter((t) => t.resolvedAt != null);
+      // 窓の中で解決したチケットを抽出する
+      const resolved = allTickets.filter((t) => inWindow(t.resolvedAt));
       // 解決時間 (ms) の平均を計算する (対象なしは null)
       const avgResolutionMs =
         resolved.length > 0
@@ -494,8 +499,7 @@ export function makeTicketRepo(store: Store): TicketRepository {
 
       // 対象チケットの ID セットを作っておく (履歴検索の絞り込みに使う)
       const ticketIds = new Set(allTickets.map((t) => t.id));
-      // 再オープン履歴を持つチケット ID を収集する
-      // (field='status', newValue='Open', oldValue='Resolved' or 'Closed' の履歴が 1 件以上存在するもの)
+      // 窓の中で差し戻された (Resolved/Closed → Open) チケット ID を収集する
       const reopenedIds = new Set(
         [...store.histories.values()]
           .filter(
@@ -503,12 +507,17 @@ export function makeTicketRepo(store: Store): TicketRepository {
               ticketIds.has(h.ticketId) &&
               h.field === 'status' &&
               h.newValue === 'Open' &&
-              (h.oldValue === 'Resolved' || h.oldValue === 'Closed'),
+              (h.oldValue === 'Resolved' || h.oldValue === 'Closed') &&
+              inWindow(h.createdAt),
           )
           .map((h) => h.ticketId),
       );
-      // 再オープン率 = 再オープン済みチケット数 / 全対象チケット数 (対象なしは null)
-      const reopenRate = allTickets.length > 0 ? reopenedIds.size / allTickets.length : null;
+      // 再オープン率の分母 = 窓の中で「対応を終えた」チケット = 窓内で解決した ∪ 窓内で差し戻された。
+      // 和集合にする理由は Prisma アダプタのクエリ 3 のコメントが正本 (再オープンで resolvedAt が
+      // クリアされるため解決分だけでは分子が分母を上回りうる / 履歴だけでは CSV 取り込み分が抜ける)
+      const completedIds = new Set([...resolved.map((t) => t.id), ...reopenedIds]);
+      // 再オープン率 = 差し戻された件数 / 対応を終えた件数 (対象なしは null で 0 除算を避ける)
+      const reopenRate = completedIds.size > 0 ? reopenedIds.size / completedIds.size : null;
 
       // QualityMetrics 型に準拠して返す
       return {
@@ -516,8 +525,10 @@ export function makeTicketRepo(store: Store): TicketRepository {
         avgResolutionMs,
         reopenRate,
         resolvedCount: resolved.length,
-        // 再オープン率の分母は解決済み件数ではなく全対象チケット件数
-        totalCount: allTickets.length,
+        // 再オープン率の分母は「窓の中で対応を終えた件数」(解決 ∪ 差し戻し)。
+        // 差し戻されたチケットは resolvedAt がクリアされ resolved に入らないため
+        // resolvedCount とは一致しないことがある
+        totalCount: completedIds.size,
       } satisfies QualityMetrics;
     },
   };

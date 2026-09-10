@@ -435,7 +435,14 @@ export function makeTicketRepo(db: PrismaLike): TicketRepository {
     // EXTRACT(EPOCH FROM ...) 関数を使う。
     async qualityMetrics({ tenantId, since, locationId }) {
       // 期間フィルタの境界値。since が指定されない場合は全期間が対象
-      // (Prisma は tagged template の型安全性を保持するため引数型に null を使う)
+      // (Prisma は tagged template の型安全性を保持するため引数型に null を使う)。
+      //
+      // **窓は各指標の「出来事が起きた時刻」に掛ける** (起票日時 createdAt ではない)。
+      // 監査フォローアップ 2026-09-10: 3 本とも createdAt で切っていたため、窓より長く
+      // かかったチケットは **解決した日にはもう窓の外** となり平均に一度も入らなかった。
+      // 平均解決時間が窓の長さで頭打ちになり、遅いチケットが増えるほど「速い分だけ」の
+      // 平均になって数字が下がる = 悪化を改善に見せる。指標として機能しないので、
+      // 初回応答は firstRespondedAt、解決は resolvedAt、再オープンは履歴の発生時刻で切る。
       const sinceValue: Date | null = since ?? null;
       // 拠点フィルタの境界値。locationId が指定されない場合は全拠点が対象
       // (sinceValue と同じ「NULL なら条件を無視する」パターン)
@@ -455,7 +462,7 @@ export function makeTicketRepo(db: PrismaLike): TicketRepository {
           FROM "Ticket"
           WHERE "tenantId" = ${tenantId}
             AND "firstRespondedAt" IS NOT NULL
-            AND (${sinceValue}::timestamptz IS NULL OR "createdAt" >= ${sinceValue}::timestamptz)
+            AND (${sinceValue}::timestamptz IS NULL OR "firstRespondedAt" >= ${sinceValue}::timestamptz)
             AND (${locationIdValue}::text IS NULL OR "locationId" = ${locationIdValue})
         `,
         // ── クエリ 2: 平均解決時間 ──
@@ -468,27 +475,44 @@ export function makeTicketRepo(db: PrismaLike): TicketRepository {
           FROM "Ticket"
           WHERE "tenantId" = ${tenantId}
             AND "resolvedAt" IS NOT NULL
-            AND (${sinceValue}::timestamptz IS NULL OR "createdAt" >= ${sinceValue}::timestamptz)
+            AND (${sinceValue}::timestamptz IS NULL OR "resolvedAt" >= ${sinceValue}::timestamptz)
             AND (${locationIdValue}::text IS NULL OR "locationId" = ${locationIdValue})
         `,
         // ── クエリ 3: 再オープン率 ──
-        // 全チケット数のうち、「Resolved または Closed → Open への遷移履歴」を持つ
-        // チケットの割合を返す。
-        // TicketHistory.field = 'status' かつ newValue = 'Open' かつ
-        // oldValue IN ('Resolved', 'Closed') の行を持つ ticket を「再オープン済み」とみなす。
+        // 「対応を終えたチケットのうち、いくつが差し戻されたか」を返す。
+        // 分母 (total) は **窓の中で対応を終えたチケット**、分子 (reopened) はそのうち
+        // **窓の中で差し戻されたチケット**。分子は必ず分母の部分集合になるので率は 1 を超えない。
+        //
+        // 分母を「解決済み ∪ 差し戻し済み」の和集合にしているのは、再オープン時に
+        // update-ticket.ts が resolvedAt を **クリアする** ため (完了系ステータスのときだけ
+        // 保持する実装)。resolvedAt だけで分母を決めると、いま差し戻されているチケットが
+        // 分母から抜けて分子にだけ残り、率が 1 を超えうる。
+        // 逆に履歴だけで分母を決めると、CSV 取り込みで resolvedAt を直接設定した
+        // (状態遷移履歴を持たない) チケットが丸ごと分母から抜ける。両方を足して塞ぐ。
         db.$queryRaw<[{ total: bigint; reopened: bigint }]>`
           SELECT
-            COUNT(DISTINCT t.id) AS total,
-            COUNT(DISTINCT th."ticketId") AS reopened
-          FROM "Ticket" t
-          LEFT JOIN "TicketHistory" th
-            ON th."ticketId" = t.id
-            AND th.field = 'status'
-            AND th."newValue" = 'Open'
-            AND th."oldValue" IN ('Resolved', 'Closed')
-          WHERE t."tenantId" = ${tenantId}
-            AND (${sinceValue}::timestamptz IS NULL OR t."createdAt" >= ${sinceValue}::timestamptz)
-            AND (${locationIdValue}::text IS NULL OR t."locationId" = ${locationIdValue})
+            COUNT(*) AS total,
+            COUNT(*) FILTER (WHERE x.reopened) AS reopened
+          FROM (
+            SELECT
+              -- 窓の中で解決した (完了状態のまま resolvedAt が残っている) か
+              t."resolvedAt" IS NOT NULL
+                AND (${sinceValue}::timestamptz IS NULL OR t."resolvedAt" >= ${sinceValue}::timestamptz)
+                AS resolved_in_window,
+              -- 窓の中で Resolved/Closed から Open へ差し戻された履歴を持つか
+              EXISTS (
+                SELECT 1 FROM "TicketHistory" th
+                WHERE th."ticketId" = t.id
+                  AND th.field = 'status'
+                  AND th."newValue" = 'Open'
+                  AND th."oldValue" IN ('Resolved', 'Closed')
+                  AND (${sinceValue}::timestamptz IS NULL OR th."createdAt" >= ${sinceValue}::timestamptz)
+              ) AS reopened
+            FROM "Ticket" t
+            WHERE t."tenantId" = ${tenantId}
+              AND (${locationIdValue}::text IS NULL OR t."locationId" = ${locationIdValue})
+          ) x
+          WHERE x.resolved_in_window OR x.reopened
         `,
       ]);
 
@@ -521,7 +545,8 @@ export function makeTicketRepo(db: PrismaLike): TicketRepository {
         avgResolutionMs,
         reopenRate,
         resolvedCount,
-        // 再オープン率の分母は全チケット件数 (resolvedCount ではない)
+        // 再オープン率の分母は「窓の中で対応を終えたチケット件数」
+        // (全チケット件数でも resolvedCount でもない。上のクエリ 3 のコメントを参照)
         totalCount: total,
       } satisfies QualityMetrics;
     },

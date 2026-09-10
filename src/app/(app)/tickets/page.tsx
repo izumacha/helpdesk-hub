@@ -338,16 +338,9 @@ function Pagination({
   totalPages: number;
   sp: Record<string, string | undefined>;
 }) {
-  // 現在のクエリを引き継ぎつつ page だけ差し替えた URL を作る
+  // 現在のクエリを引き継ぎつつ page だけ差し替えた URL を作る (組み立ては共通ヘルパーに委譲)
   function pageUrl(p: number) {
-    // undefined を除外し URLSearchParams に詰め直す
-    const params = new URLSearchParams(
-      Object.entries(sp)
-        .filter((entry): entry is [string, string] => entry[1] !== undefined)
-        .map(([k, v]) => [k, v]),
-    );
-    params.set('page', String(p));
-    return `/tickets?${params.toString()}`;
+    return buildTicketsHref(sp, { set: { page: String(p) } });
   }
 
   // ページャ用ボタンの共通クラス (健診的に丸みのある柔らかなボタン)
@@ -376,6 +369,29 @@ function Pagination({
   );
 }
 
+// 現在の URL クエリ (sp) を土台に、一部のキーを差し替え/削除した /tickets の URL を作る共通ヘルパー。
+// /code-review ultra 指摘対応 (2026-09-10): ページャと期限絞り込みチップが同じ
+// 「undefined を除いて URLSearchParams に詰め直す」処理を書き写しており、片方だけ直したときに
+// もう片方が黙って古い規則のまま残る形になっていた (§6 DRY: 2 箇所目で共通化する)。
+function buildTicketsHref(
+  sp: Record<string, string | undefined>, // 現在の URL クエリ
+  changes: { set?: Record<string, string>; remove?: string[] } = {}, // 差し替える値 / 取り除くキー
+): string {
+  // 取り除くキーの集合 (指定が無ければ空)
+  const removed = new Set(changes.remove ?? []);
+  // 値が undefined のキーと、取り除く指定のあったキーを落として詰め直す
+  const params = new URLSearchParams(
+    Object.entries(sp)
+      .filter((entry): entry is [string, string] => entry[1] !== undefined)
+      .filter(([k]) => !removed.has(k)),
+  );
+  // 差し替える値を上書きする (page の付け替えなど)
+  for (const [k, v] of Object.entries(changes.set ?? {})) params.set(k, v);
+  // クエリが空なら "?" を付けない素の一覧 URL にする
+  const qs = params.toString();
+  return qs ? `/tickets?${qs}` : '/tickets';
+}
+
 // 期限絞り込み (?due=...) の適用中チップ。何で絞られているかのラベルと解除リンクを表示する。
 // 監査フォローアップ (2026-09-09): ダッシュボードのタイルから遷移した一覧で、URL にしか
 // 現れない絞り込みが「送ったのに効いていないように見える / 解除できない」状態を防ぐ
@@ -386,17 +402,9 @@ function DueFilterChip({
   due: keyof typeof DUE_FILTER_LABELS; // 適用中の期限絞り込み ID ('soon' | 'today')
   sp: Record<string, string | undefined>; // 現在の URL クエリ (解除 URL の組み立てに使う)
 }) {
-  // due 以外のクエリを維持したまま due だけ取り除いた解除 URL を作る (Pagination と同じ手法)
-  const params = new URLSearchParams(
-    Object.entries(sp)
-      // 値が無いキーと due 本体、およびページ番号を除外する
-      // (絞り込み解除で件数が変わるため、page はリセットして 1 ページ目から見せる)
-      .filter((entry): entry is [string, string] => entry[1] !== undefined)
-      .filter(([k]) => k !== 'due' && k !== 'page'),
-  );
-  // クエリが空なら "?" を付けない素の一覧 URL にする
-  const qs = params.toString();
-  const clearHref = qs ? `/tickets?${qs}` : '/tickets';
+  // due 以外のクエリを維持したまま due だけ取り除いた解除 URL を作る。
+  // page も一緒に落とす (絞り込み解除で件数が変わるため 1 ページ目から見せる)
+  const clearHref = buildTicketsHref(sp, { remove: ['due', 'page'] });
   return (
     // 適用中の絞り込みをアンバーの帯で明示する (タブとは別軸の絞り込みであることが分かる色)
     <div className="flex flex-wrap items-center gap-2 rounded-xl bg-amber-50 px-4 py-2.5 text-sm text-amber-800 ring-1 ring-amber-200">
