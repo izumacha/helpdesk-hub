@@ -1,4 +1,5 @@
-// nodemailer の本体 (SMTP トランスポート提供)
+// nodemailer の本体 (SMTP トランスポート提供)。型は 10 系が同梱するものを使うため
+// @types/nodemailer は依存に入れない (理由は docs/next-auth-v5-migration.md §3.5)
 import nodemailer, { type Transporter } from 'nodemailer';
 // EmailSender 契約をインポート
 import type { EmailMessage, EmailSender } from './email-sender';
