@@ -58,9 +58,11 @@
   自前の `src/lib/email/nodemailer-email-sender.ts` が直接 `nodemailer` を呼ぶため、
   `@auth/core` 側の Nodemailer プロバイダは読み込まれない。
 - **型定義は nodemailer 10 が同梱する**ため、`@types/nodemailer`（DefinitelyTyped）は
-  依存から外してある。10 系は TypeScript で書き直されて `types` フィールドを持ち、
-  TypeScript の解決も同梱側を選ぶ（`tsc --traceResolution` で
-  `nodemailer/dist/esm/nodemailer.d.ts@10` に解決されることを確認済み）。
+  依存から外してある。10 系は配布物に `.d.ts` を同梱しており、`package.json` に `types`
+  フィールドや `exports` の `types` 条件は**無い**が、TypeScript は解決した JS エントリの
+  隣にある同名の `.d.ts` を拾う（`tsc --traceResolution` で `nodemailer` が
+  `node_modules/nodemailer/dist/esm/nodemailer.d.ts@10` に解決されることを確認済み。
+  型検査は `@types/nodemailer` を外した状態でエラー 0）。
   `@types/nodemailer` を入れ直すと、9 系までの API を写した古い型が依存ツリーに残り、
   本体と型が別々に版ずれする経路を作る。**再追加しないこと。**
 
