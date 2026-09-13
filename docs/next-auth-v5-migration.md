@@ -44,18 +44,25 @@
    大きいため現段階では行わない。**半年ごと（次回 2027-01）にリリース状況を再確認**し、
    本書の §1 を更新する。
 
-## 3.5 nodemailer の override について（2026-08-19 追加）
+## 3.5 nodemailer の override について（2026-08-19 追加 / 2026-09-13 更新）
 
 `package.json` の `overrides` で `next-auth` が使う `nodemailer` をルートの解決
-（9.x）に一致させている。理由と前提は次のとおり:
+（10.x）に一致させている。理由と前提は次のとおり:
 
 - `nodemailer <= 9.0.0` は `envelope.size` 未サニタイズによる SMTP コマンド
   インジェクション（HIGH）の対象で、9.0.5 へ上げる必要があった。
 - 一方 `next-auth@5.0.0-beta.32` の optional peer は `nodemailer` を
   `^7.0.7 || ^8.0.5` に制限しており、override 無しでは `npm ci` が ERESOLVE で失敗する。
+  ルートを 10.x へ上げた後も、override が peer の解決を上書きするため事情は変わらない。
 - **前提**: 本アプリは `next-auth` から Credentials プロバイダしか使わず、メール送信は
   自前の `src/lib/email/nodemailer-email-sender.ts` が直接 `nodemailer` を呼ぶため、
   `@auth/core` 側の Nodemailer プロバイダは読み込まれない。
+- **型定義は nodemailer 10 が同梱する**ため、`@types/nodemailer`（DefinitelyTyped）は
+  依存から外してある。10 系は TypeScript で書き直されて `types` フィールドを持ち、
+  TypeScript の解決も同梱側を選ぶ（`tsc --traceResolution` で
+  `nodemailer/dist/esm/nodemailer.d.ts@10` に解決されることを確認済み）。
+  `@types/nodemailer` を入れ直すと、9 系までの API を写した古い型が依存ツリーに残り、
+  本体と型が別々に版ずれする経路を作る。**再追加しないこと。**
 
 したがって **`next-auth` の Email / Nodemailer プロバイダを有効化しない**こと。
 有効にする場合は、上流が対応する `nodemailer` のメジャーを確認し、override を外せるか
