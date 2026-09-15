@@ -18,6 +18,36 @@ const ALLOWED_TRANSITIONS: Record<TicketStatus, TicketStatus[]> = {
   Closed: ['Open'], // 完了からでも再オープン可 (要件定義で明示)
 };
 
+// アプリが扱う全ステータスを、遷移表のキーから導出する (値を書き並べない)。
+// ALLOWED_TRANSITIONS は Record<TicketStatus, ...> なので、domain/types.ts に
+// ステータスを足すと型エラーでキーの追加が強制される = この一覧も必ず追随する。
+// 並びは遷移表の宣言順 (New → … → Closed) で、そのままライフサイクル順になっている。
+export const ALL_TICKET_STATUSES = Object.keys(ALLOWED_TRANSITIONS) as TicketStatus[];
+
+// 業務上「対応が一区切りついた」終息ステータス。
+// 期限系フィルタの「未完了」判定・ワークロード集計の除外・再オープン率の分母など、
+// 複数の場所が同じ集合を見るため **リテラルを書き写さずここだけを参照する**。
+// 以前は 'Resolved' / 'Closed' の組が Prisma アダプタ・メモリアダプタ・ダッシュボードに
+// 散らばっており、終息ステータスを 1 つ足しただけで片方だけが取り残される形だった。
+export const COMPLETED_STATUSES = ['Resolved', 'Closed'] as const satisfies readonly TicketStatus[];
+
+// 上の tuple から union 型を導出 ('Resolved' | 'Closed')
+export type CompletedStatus = (typeof COMPLETED_STATUSES)[number];
+
+// 終息ステータス (Resolved / Closed) かどうかを判定する型ガード
+export function isCompletedStatus(status: TicketStatus): status is CompletedStatus {
+  // readonly tuple なので includes は string キャストで判定する (LITE_STATUSES と同じ書き方)
+  return (COMPLETED_STATUSES as readonly string[]).includes(status);
+}
+
+// 終息していない (= 未完了の) ステータス一覧。
+// **列挙せず全ステータスから終息ぶんを差し引いて導出する** — 書き並べると、
+// ステータスを 1 つ足したときに「未完了なのに未完了の一覧に入らない」取りこぼしが
+// 型エラーにならないまま生まれる (フィルタが黙って件数を減らす fail-open になる)。
+export const UNRESOLVED_STATUSES: TicketStatus[] = ALL_TICKET_STATUSES.filter(
+  (status) => !isCompletedStatus(status),
+);
+
 // 現在状態 from から次状態 to に遷移してよいかを true/false で返す関数
 // mode 省略時は従来どおり Pro 表を引く (後方互換)。Lite テナントから呼ぶ場合は 'lite' を渡す。
 export function isValidTransition(

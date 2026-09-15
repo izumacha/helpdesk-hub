@@ -26,6 +26,8 @@ import {
 import type { PrismaLike } from './types';
 // SLA 期限接近リマインダーの「警告帯」窓の長さ (§6 一元管理: sla.ts の getSlaState と同じ値を使う)
 import { DEFAULT_WARNING_THRESHOLD_MS } from '@/lib/sla';
+// 終息ステータス (Resolved / Closed) の唯一の参照元。リテラルを書き写さない (§6 一元管理)
+import { COMPLETED_STATUSES } from '@/domain/ticket-status';
 
 // ドメインのフィルター条件 + tenantId を Prisma の WhereInput に変換するヘルパー
 // tenantId は **必ず AND 条件として注入** し、テナント越境参照を遮断する
@@ -76,7 +78,7 @@ function buildWhere(f: TicketListFilter, tenantId: string): Prisma.TicketWhereIn
       ...(where.AND == null ? [] : [where.AND].flat()),
       { resolutionDueAt: dueCondition },
       { resolvedAt: null },
-      { status: { notIn: ['Resolved', 'Closed'] } },
+      { status: { notIn: [...COMPLETED_STATUSES] } },
     ];
   };
   // 期限切れフィルタ (Lite/Pro の「期限切れ」タブ・SLA 期限超過タイルで使用)
@@ -412,7 +414,7 @@ export function makeTicketRepo(db: PrismaLike): TicketRepository {
       const rows = await db.ticket.findMany({
         where: {
           resolvedAt: null, // 未解決のみ
-          status: { notIn: ['Resolved', 'Closed'] }, // 業務上の終息状態は除外 (overdue フィルタと同じ規約)
+          status: { notIn: [...COMPLETED_STATUSES] }, // 業務上の終息状態は除外 (overdue フィルタと同じ規約)
           assigneeId: { not: null }, // 担当者未アサインは通知先が無いので対象外
           resolutionDueAt: {
             gt: now, // まだ超過していない (超過後は対象外。sla-reminder.ts のコメント参照)
@@ -522,7 +524,10 @@ export function makeTicketRepo(db: PrismaLike): TicketRepository {
               ON th."ticketId" = t.id
               AND th.field = 'status'
               AND th."newValue" = 'Open'
-              AND th."oldValue" IN ('Resolved', 'Closed')
+              -- 終息ステータスの一覧はドメインの唯一の参照元から渡す (リテラルを書き写さない)。
+              -- IN (...) ではなく = ANY(配列パラメータ) にするのは、要素数が変わっても
+              -- プレースホルダの数が変わらず、SQL 文そのものを組み立てずに済むため
+              AND th."oldValue" = ANY(${[...COMPLETED_STATUSES]}::text[])
               AND (${sinceValue}::timestamptz IS NULL OR th."createdAt" >= ${sinceValue}::timestamptz)
             WHERE t."tenantId" = ${tenantId}
               AND (${locationIdValue}::text IS NULL OR t."locationId" = ${locationIdValue})

@@ -15,6 +15,8 @@ import { getCurrentTenantMode } from '@/lib/tenant';
 // チュートリアル動画リンクの解決ヘルパー (未設定/不正 URL のときは null)
 import { getTutorialVideoUrl } from '@/lib/tutorial-video';
 // タブ ('mine' / 'overdue') の絞り込み条件を一元管理する純粋関数 (一覧ページと共有)
+// 終息ステータス (Resolved / Closed) の唯一の参照元。ワークロード集計の除外に使う (§6 一元管理)
+import { COMPLETED_STATUSES } from '@/domain/ticket-status';
 import { applyTabFilter } from '@/features/tickets/tab-filter';
 // 期限絞り込み ('soon' / 'today') の条件とラベルを一元管理する純粋関数 (一覧ページと共有。
 // タイルの件数と drill-down 先の一覧の表示件数を必ず一致させる。監査フォローアップ 2026-09-09)
@@ -137,7 +139,7 @@ export default async function DashboardPage({ searchParams }: Props) {
       // SLA 期限判定の基準時刻
       now,
       // ワークロード集計で完了済みを除外するステータス一覧
-      excludeStatusesForWorkload: ['Resolved', 'Closed'],
+      excludeStatusesForWorkload: [...COMPLETED_STATUSES],
       // テナントスコープ (クロステナント漏洩防止)
       tenantId,
       // 拠点フィルタ (選択されていれば当該拠点のみ集計)
