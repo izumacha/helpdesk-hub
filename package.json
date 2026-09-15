@@ -65,6 +65,7 @@
   "overrides": {
     "next-auth": {
       "nodemailer": "$nodemailer"
-    }
+    },
+    "mysql2": "^3.24.4"
   }
 }
