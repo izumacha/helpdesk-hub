@@ -63,9 +63,10 @@ function matchesFilter(t: Ticket, filter: TicketListFilter, tenantId: string): b
   if (filter.creatorId !== undefined && t.creatorId !== filter.creatorId) return false;
   // 状態フィルター (単一)
   if (filter.status !== undefined && t.status !== filter.status) return false;
-  // 状態フィルター (複数)。Lite「自分の未対応」など Open OR InProgress に使う
-  if (filter.statusIn && filter.statusIn.length > 0 && !filter.statusIn.includes(t.status))
-    return false;
+  // 状態フィルター (複数)。Lite「自分の未対応」など Open OR InProgress に使う。
+  // **空配列は「絞り込みなし」ではなく「どの状態にも当てはまらない = 0 件」**
+  // (理由は Prisma アダプタの同じ条件のコメント。両アダプタで扱いをそろえる)
+  if (filter.statusIn && !filter.statusIn.includes(t.status)) return false;
   // 優先度フィルター
   if (filter.priority !== undefined && t.priority !== filter.priority) return false;
   // カテゴリフィルター

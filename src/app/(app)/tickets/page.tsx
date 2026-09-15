@@ -31,6 +31,13 @@ import { LOCATION_LIST_MATCHING_LIMIT } from '@/data/ports/location-repository';
 // 期限絞り込み (?due=...) のラベルと正規化 (ダッシュボードのタイルからの drill-down 用。
 // タブと違い常設の UI が無い絞り込みのため、適用中は解除チップで可視化する)
 import { DUE_FILTER_LABELS, parseDueParam } from '@/features/tickets/due-filter';
+// 「未完了のみ」絞り込み (?open=1) のラベルと正規化
+// (ダッシュボードの担当者別ワークロード行からの drill-down 用)
+import {
+  OPEN_FILTER_LABEL,
+  OPEN_FILTER_PARAM,
+  parseOpenParam,
+} from '@/features/tickets/open-filter';
 // 一覧 URL の組み立て (ページャ・期限チップ・タブ・絞り込みフォームで共有する純粋関数)
 import { buildTicketsHref } from '@/features/tickets/tickets-href';
 
@@ -65,6 +72,8 @@ interface Props {
     tab?: string;
     // 期限絞り込み ('soon' = 期限間近 / 'today' = 期限切れ・今日まで。ダッシュボードのタイルから遷移)
     due?: string;
+    // 「未完了のみ」絞り込み ('1' のときだけ有効。ダッシュボードのワークロード行から遷移)
+    open?: string;
     page?: string;
   }>;
 }
@@ -101,6 +110,7 @@ export default async function TicketsPage({ searchParams }: Props) {
       locationId: sp.locationId,
       tab: sp.tab,
       due: sp.due,
+      open: sp.open,
     },
     { isAgent, userId: session.user.id, now },
   );
@@ -108,6 +118,9 @@ export default async function TicketsPage({ searchParams }: Props) {
   // 適用中の期限絞り込み (不正値・未指定は undefined = 絞り込みなし)。
   // 下の「絞り込み中」チップの表示判定に使う (フィルタ自体は buildTicketListFilter が適用済み)
   const activeDue = parseDueParam(sp.due);
+  // 「未完了のみ」絞り込みが有効か (下のチップの表示判定に使う)。
+  // 期限絞り込みと同じく URL にしか現れない絞り込みなので、必ず画面上で可視化する
+  const isOpenOnly = parseOpenParam(sp.open);
 
   // セッションから tenantId を取り出して以降の port 呼び出しに伝搬する
   const tenantId = session.user.tenantId;
@@ -177,7 +190,15 @@ export default async function TicketsPage({ searchParams }: Props) {
       {/* 期限絞り込みチップ: ?due=... 適用中のみ表示する。
           タブと違い常設の切替 UI が無い絞り込みのため、「何で絞られているか」と
           「どう解除するか」を必ず画面上で可視化する (見えない絞り込みを作らない) */}
-      {activeDue && <DueFilterChip due={activeDue} sp={sp} />}
+      {activeDue && (
+        <ActiveFilterChip label={DUE_FILTER_LABELS[activeDue]} removeKeys={['due']} sp={sp} />
+      )}
+
+      {/* 「未完了のみ」絞り込みチップ: ?open=1 適用中のみ表示する。
+          期限絞り込みとは別軸なので、両方が同時に適用されることもある */}
+      {isOpenOnly && (
+        <ActiveFilterChip label={OPEN_FILTER_LABEL} removeKeys={[OPEN_FILTER_PARAM]} sp={sp} />
+      )}
 
       {/* 検索フィルタ (Client Component を Suspense で安全にラップ、テナント mode をそのまま伝搬) */}
       <Suspense>
@@ -371,25 +392,30 @@ function Pagination({
   );
 }
 
-// 期限絞り込み (?due=...) の適用中チップ。何で絞られているかのラベルと解除リンクを表示する。
+// URL にしか現れない絞り込み (?due=... / ?open=1) の適用中チップ。
+// 何で絞られているかのラベルと解除リンクを表示する。
 // 監査フォローアップ (2026-09-09): ダッシュボードのタイルから遷移した一覧で、URL にしか
-// 現れない絞り込みが「送ったのに効いていないように見える / 解除できない」状態を防ぐ
-function DueFilterChip({
-  due,
+// 現れない絞り込みが「送ったのに効いていないように見える / 解除できない」状態を防ぐ。
+// /code-review ultra 指摘対応 (2026-09-15): 「未完了のみ」絞り込みが増えたため、
+// 期限専用だったこの部品をラベルと解除キーで受ける形に一般化した (写しを作らない §6 DRY)
+function ActiveFilterChip({
+  label,
+  removeKeys,
   sp,
 }: {
-  due: keyof typeof DUE_FILTER_LABELS; // 適用中の期限絞り込み ID ('soon' | 'today')
+  label: string; // 何で絞り込まれているかの日本語ラベル
+  removeKeys: string[]; // 解除リンクで URL から取り除くクエリキー
   sp: Record<string, string | undefined>; // 現在の URL クエリ (解除 URL の組み立てに使う)
 }) {
-  // due 以外のクエリを維持したまま due だけ取り除いた解除 URL を作る
+  // 対象キー以外のクエリを維持したまま、そのキーだけ取り除いた解除 URL を作る
   // (page は共通ヘルパーが常に落とす。絞り込み解除で件数が変わるため 1 ページ目から見せる)
-  const clearHref = buildTicketsHref(sp, { remove: ['due'] });
+  const clearHref = buildTicketsHref(sp, { remove: removeKeys });
   return (
     // 適用中の絞り込みをアンバーの帯で明示する (タブとは別軸の絞り込みであることが分かる色)
     <div className="flex flex-wrap items-center gap-2 rounded-xl bg-amber-50 px-4 py-2.5 text-sm text-amber-800 ring-1 ring-amber-200">
       {/* 何で絞り込まれているかのラベル */}
       <span>
-        絞り込み中: <span className="font-semibold">{DUE_FILTER_LABELS[due]}</span>
+        絞り込み中: <span className="font-semibold">{label}</span>
       </span>
       {/* 絞り込みを外して全件表示に戻すリンク */}
       <Link href={clearHref} className="font-medium text-amber-900 underline hover:text-amber-950">

@@ -15,6 +15,9 @@ import { applyTabFilter } from '@/features/tickets/tab-filter';
 // 期限絞り込み (?due=soon / ?due=today) を共通ヘルパーに委譲する
 // (ダッシュボードの SLA 系タイルの件数と drill-down 先の一覧を一致させる。監査フォローアップ 2026-09-09)
 import { applyDueFilter, parseDueParam } from '@/features/tickets/due-filter';
+// 「未完了のみ」絞り込み (?open=1) を共通ヘルパーに委譲する
+// (ダッシュボードの担当者別ワークロードの件数と drill-down 先の一覧を一致させる)
+import { applyOpenFilter, parseOpenParam } from '@/features/tickets/open-filter';
 // 一覧タブ型 — クライアントコンポーネントではなく共有型ファイルから import する (依存境界の明確化)
 import type { TicketTabId } from '@/features/tickets/types';
 
@@ -28,6 +31,7 @@ export interface TicketFilterParams {
   locationId?: string; // 拠点 ID (Phase 4 多拠点)
   tab?: string; // 一覧タブ ('mine' / 'overdue' / 'all' または未指定)
   due?: string; // 期限絞り込み ('soon' = 期限間近 / 'today' = 期限切れ・今日まで。未指定は絞り込みなし)
+  open?: string; // 「未完了のみ」絞り込み ('1' のときだけ有効。未指定は絞り込みなし)
 }
 
 // buildTicketListFilter が必要とする実行コンテキスト
@@ -113,8 +117,7 @@ export function buildTicketListFilter(
     // ステータス絞り込み: 列挙値として正しい場合のみ適用 (不正な文字列は無視する)
     status: params.status && isValidStatus(params.status) ? params.status : undefined,
     // 優先度絞り込み: 列挙値として正しい場合のみ適用
-    priority:
-      params.priority && isValidPriority(params.priority) ? params.priority : undefined,
+    priority: params.priority && isValidPriority(params.priority) ? params.priority : undefined,
     // カテゴリ絞り込み: 空文字は無指定として扱う
     categoryId: params.categoryId || undefined,
     // 担当者絞り込み: 'unassigned' を null に正規化する
@@ -131,11 +134,14 @@ export function buildTicketListFilter(
     userId: ctx.userId,
     now: ctx.now,
   });
+  // 「未完了のみ」条件 ('1' のときだけ) を共通ヘルパーで適用する
+  // (ダッシュボードのワークロード件数と同一ロジックを共有し、未完了の定義を二重定義しない)
+  const openApplied = parseOpenParam(params.open) ? applyOpenFilter(tabApplied) : tabApplied;
   // 期限絞り込み ('soon' / 'today') を共通ヘルパーで適用する
   // (ダッシュボードのタイル件数と同一ロジックを共有し、期限条件の意味を二重定義しない)
   const due = parseDueParam(params.due);
   // 不正値・未指定は絞り込みなし (isValidStatus 等と同じ「列挙外は無視」の方針)
-  if (!due) return tabApplied;
+  if (!due) return openApplied;
   // 期限条件を追加したフィルタを返す
-  return applyDueFilter(tabApplied, due, { now: ctx.now });
+  return applyDueFilter(openApplied, due, { now: ctx.now });
 }

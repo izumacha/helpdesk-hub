@@ -49,8 +49,12 @@ function buildWhere(f: TicketListFilter, tenantId: string): Prisma.TicketWhereIn
   const statusFilter: Prisma.EnumTicketStatusFilter = {};
   // 単一状態の指定は equals として積む
   if (f.status !== undefined) statusFilter.equals = f.status;
-  // 複数状態の OR 絞り込み (Lite モードの「自分の未対応」で Open/InProgress を一度に取るため)
-  if (f.statusIn && f.statusIn.length > 0) statusFilter.in = f.statusIn;
+  // 複数状態の OR 絞り込み (Lite モードの「自分の未対応」で Open/InProgress を一度に取るため)。
+  // **空配列は「絞り込みなし」ではなく「どの状態にも当てはまらない = 0 件」**。
+  // 積集合で条件を絞り込む applyOpenFilter が空を作りうるため、
+  // 空を素通りさせると「条件が厳しすぎて 0 件」が「絞り込みが消えて全件」に化ける
+  // (fail-open)。メモリアダプタも同じ扱いで、共有契約テストが両者を固定する
+  if (f.statusIn) statusFilter.in = f.statusIn;
   // どちらか一方でも指定があるときだけ where へ載せる (空オブジェクトを置かない)
   if (Object.keys(statusFilter).length > 0) where.status = statusFilter;
   if (f.priority !== undefined) where.priority = f.priority;

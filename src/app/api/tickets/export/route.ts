@@ -129,7 +129,9 @@ export async function GET(req: Request) {
     // 流量超過の場合のみ 429 を返す。それ以外は想定外エラーとして上位へ投げる
     if (err instanceof RateLimitError) {
       return new Response(
-        JSON.stringify({ error: 'エクスポートのリクエストが多すぎます。しばらくしてから再試行してください。' }),
+        JSON.stringify({
+          error: 'エクスポートのリクエストが多すぎます。しばらくしてから再試行してください。',
+        }),
         {
           status: 429,
           headers: {
@@ -170,6 +172,10 @@ export async function GET(req: Request) {
       // 期限絞り込み ('soon' = 期限間近 / 'today' = 期限切れ・今日まで)。
       // ダッシュボードのタイルから drill-down した一覧をそのままエクスポートできるようにする
       due: searchParams.get('due') ?? undefined,
+      // 「未完了のみ」絞り込み ('1' のときだけ有効)。
+      // ダッシュボードの担当者別ワークロードから drill-down した一覧を
+      // そのままエクスポートできるようにする (一覧と CSV の範囲を一致させる)
+      open: searchParams.get('open') ?? undefined,
     },
     // overdue タブの期限判定に now を渡す (上で一度だけ生成した値を使い回す)
     { isAgent, userId, now },

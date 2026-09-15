@@ -1265,6 +1265,37 @@ export function runTicketRepositoryContract(
       expect(rows).toEqual([]);
     });
 
+    // /code-review ultra 指摘対応 (2026-09-15): 空の statusIn は「絞り込みなし」ではなく
+    // 「どの状態にも当てはまらない = 0 件」であること。
+    // applyOpenFilter が既存の statusIn との積集合を取るため空配列が作られうる。
+    // 空を「指定なし」として素通りさせると、条件が厳しすぎて 0 件のはずの絞り込みが
+    // 全件表示に化ける (fail-open)。両アダプタで同じ扱いになることをここで固定する
+    it('list with an empty statusIn matches nothing instead of ignoring the filter', async () => {
+      const { requester, categoryId } = await ctx.seedBasicFixture();
+
+      // 何らかのチケットが 1 件ある状態を作る (絞り込みが無ければヒットする前提)
+      await ctx.repos.tickets.create({
+        title: 'any-ticket',
+        body: 'b',
+        priority: 'High',
+        creatorId: requester.id,
+        categoryId,
+        tenantId: TENANT_ID,
+      });
+
+      // 絞り込み無しなら 1 件ヒットする (前提の確認)
+      expect(await ctx.repos.tickets.count({}, TENANT_ID)).toBe(1);
+      // 空の statusIn は 0 件 (素通りさせると 1 件返ってしまう)
+      expect(await ctx.repos.tickets.count({ statusIn: [] }, TENANT_ID)).toBe(0);
+      // list 側も同じ扱いであること
+      const rows = await ctx.repos.tickets.list({
+        filter: { statusIn: [] },
+        page: { skip: 0, take: 50 },
+        tenantId: TENANT_ID,
+      });
+      expect(rows).toEqual([]);
+    });
+
     // フォローアップ (2026-07-15 #2): check-then-act 競合 (TOCTOU) の防止。§1.4 で
     // FaqRepository.updateStatus に導入した「期待する現在状態 (from) が一致するときだけ
     // 更新し、一致しなければ false を返す」契約を TicketRepository.updateStatus/markEscalated

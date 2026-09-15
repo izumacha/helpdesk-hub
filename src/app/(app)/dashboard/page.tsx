@@ -17,6 +17,8 @@ import { getTutorialVideoUrl } from '@/lib/tutorial-video';
 // タブ ('mine' / 'overdue') の絞り込み条件を一元管理する純粋関数 (一覧ページと共有)
 // 終息ステータス (Resolved / Closed) の唯一の参照元。ワークロード集計の除外に使う (§6 一元管理)
 import { COMPLETED_STATUSES } from '@/domain/ticket-status';
+// 「未完了のみ」絞り込みの URL クエリ (ワークロード行の drill-down 先を件数と一致させる)
+import { OPEN_FILTER_PARAM, OPEN_FILTER_VALUE } from '@/features/tickets/open-filter';
 import { applyTabFilter } from '@/features/tickets/tab-filter';
 // 期限絞り込み ('soon' / 'today') の条件とラベルを一元管理する純粋関数 (一覧ページと共有。
 // タイルの件数と drill-down 先の一覧の表示件数を必ず一致させる。監査フォローアップ 2026-09-09)
@@ -308,10 +310,16 @@ export default async function DashboardPage({ searchParams }: Props) {
                   {workload.map((row) => {
                     // 表示名 (担当者未割当行は「未割当」、見つからなければ「不明」)
                     const name = row.assigneeId ? (nameMap[row.assigneeId] ?? '不明') : '未割当';
-                    // 「一覧を見る」リンク用の検索クエリ
-                    const query = row.assigneeId
+                    // 「一覧を見る」リンク用の検索クエリ。
+                    // **必ず「未完了のみ」条件を添える** (/code-review ultra 指摘対応 2026-09-15)。
+                    // この表の件数は excludeStatusesForWorkload で終息ステータスを除いた数なので、
+                    // 担当者だけで絞った URL へ飛ばすと完了済みまで並び、タイルの数字と
+                    // 一覧の件数が食い違う (下の読み上げ名が「未完了 N 件」と明言するぶん、
+                    // 一致していないことが a11y の面でもそのまま害になる)
+                    const assigneeQuery = row.assigneeId
                       ? `assigneeId=${row.assigneeId}`
                       : 'assigneeId=unassigned';
+                    const query = `${assigneeQuery}&${OPEN_FILTER_PARAM}=${OPEN_FILTER_VALUE}`;
                     return (
                       <tr
                         key={row.assigneeId ?? 'unassigned'}
