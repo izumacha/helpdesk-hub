@@ -26,6 +26,8 @@ import {
 import type { PrismaLike } from './types';
 // SLA 期限接近リマインダーの「警告帯」窓の長さ (§6 一元管理: sla.ts の getSlaState と同じ値を使う)
 import { DEFAULT_WARNING_THRESHOLD_MS } from '@/lib/sla';
+// 終息ステータス (Resolved / Closed) の唯一の参照元。リテラルを書き写さない (§6 一元管理)
+import { COMPLETED_STATUSES } from '@/domain/ticket-status';
 
 // ドメインのフィルター条件 + tenantId を Prisma の WhereInput に変換するヘルパー
 // tenantId は **必ず AND 条件として注入** し、テナント越境参照を遮断する
@@ -34,9 +36,27 @@ function buildWhere(f: TicketListFilter, tenantId: string): Prisma.TicketWhereIn
   const where: Prisma.TicketWhereInput = { tenantId };
   // 各フィルタが指定されていれば条件を積み上げる
   if (f.creatorId !== undefined) where.creatorId = f.creatorId;
-  if (f.status !== undefined) where.status = f.status;
-  // 複数状態の OR 絞り込み (Lite モードの「自分の未対応」で Open/InProgress を一度に取るため)
-  if (f.statusIn && f.statusIn.length > 0) where.status = { in: f.statusIn };
+  // 状態フィルタ: 単一 (status) と複数 (statusIn) は **両方を AND として積む**。
+  // 以前は where.status へ順に代入していたため statusIn が status を黙って上書きし、
+  // メモリアダプタ (matchesFilter が 2 つを別々に判定する) と結果が食い違っていた。
+  // `?tab=mine&status=Resolved` は画面から 1 クリックで作れる組み合わせ (タブが statusIn、
+  // 状況ドロップダウンが status を立てる) で、上書きされると「解決済み」を選んでいるのに
+  // 未対応チケットが並ぶ — 絞り込みが効いていないのに画面からはそう見えない。
+  // CSV エクスポートも同じ buildTicketListFilter を通るため、書き出す範囲まで一緒にずれる。
+  // Prisma の enum フィルタは equals と in を同じオブジェクトに置くと AND で評価するので、
+  // 2 つの条件を 1 つのフィルタオブジェクトへ積み上げてから代入する
+  // (期限系フィルタを addDueCondition で AND 連結しているのと同じ理由・同じ規約)
+  const statusFilter: Prisma.EnumTicketStatusFilter = {};
+  // 単一状態の指定は equals として積む
+  if (f.status !== undefined) statusFilter.equals = f.status;
+  // 複数状態の OR 絞り込み (Lite モードの「自分の未対応」で Open/InProgress を一度に取るため)。
+  // **空配列は「絞り込みなし」ではなく「どの状態にも当てはまらない = 0 件」**。
+  // 積集合で条件を絞り込む applyOpenFilter が空を作りうるため、
+  // 空を素通りさせると「条件が厳しすぎて 0 件」が「絞り込みが消えて全件」に化ける
+  // (fail-open)。メモリアダプタも同じ扱いで、共有契約テストが両者を固定する
+  if (f.statusIn) statusFilter.in = f.statusIn;
+  // どちらか一方でも指定があるときだけ where へ載せる (空オブジェクトを置かない)
+  if (Object.keys(statusFilter).length > 0) where.status = statusFilter;
   if (f.priority !== undefined) where.priority = f.priority;
   if (f.categoryId !== undefined) where.categoryId = f.categoryId;
   // 担当者条件: null は未アサインのみ、文字列は完全一致
@@ -62,7 +82,7 @@ function buildWhere(f: TicketListFilter, tenantId: string): Prisma.TicketWhereIn
       ...(where.AND == null ? [] : [where.AND].flat()),
       { resolutionDueAt: dueCondition },
       { resolvedAt: null },
-      { status: { notIn: ['Resolved', 'Closed'] } },
+      { status: { notIn: [...COMPLETED_STATUSES] } },
     ];
   };
   // 期限切れフィルタ (Lite/Pro の「期限切れ」タブ・SLA 期限超過タイルで使用)
@@ -398,7 +418,7 @@ export function makeTicketRepo(db: PrismaLike): TicketRepository {
       const rows = await db.ticket.findMany({
         where: {
           resolvedAt: null, // 未解決のみ
-          status: { notIn: ['Resolved', 'Closed'] }, // 業務上の終息状態は除外 (overdue フィルタと同じ規約)
+          status: { notIn: [...COMPLETED_STATUSES] }, // 業務上の終息状態は除外 (overdue フィルタと同じ規約)
           assigneeId: { not: null }, // 担当者未アサインは通知先が無いので対象外
           resolutionDueAt: {
             gt: now, // まだ超過していない (超過後は対象外。sla-reminder.ts のコメント参照)
@@ -443,9 +463,31 @@ export function makeTicketRepo(db: PrismaLike): TicketRepository {
       // 平均解決時間が窓の長さで頭打ちになり、遅いチケットが増えるほど「速い分だけ」の
       // 平均になって数字が下がる = 悪化を改善に見せる。指標として機能しないので、
       // 初回応答は firstRespondedAt、解決は resolvedAt、再オープンは履歴の発生時刻で切る。
-      const sinceValue: Date | null = since ?? null;
-      // 拠点フィルタの境界値。locationId が指定されない場合は全拠点が対象
-      // (sinceValue と同じ「NULL なら条件を無視する」パターン)
+      // 窓の下限は **1 つの値として渡し、条件は常に書く** (/code-review ultra 指摘対応 2026-09-15)。
+      //
+      // 以前は `(${since}::timestamptz IS NULL OR col >= ${since}::timestamptz)` と
+      // 1 本の式に畳んでいたが、この形は **索引が使える形 (sargable) ではない** —
+      // プランナが「パラメータが NULL かどうか」を計画時に決められないため、汎用計画
+      // (generic plan) が選ばれた瞬間に索引が無視される。実測 (20 万件・窓内 2,500 件):
+      // 通常はカスタム計画で Bitmap Index Scan / 7.3ms だが、
+      // `SET plan_cache_mode = force_generic_plan` では Parallel Seq Scan / 23.0ms へ退化し、
+      // 索引を足した意味が「プランナがたまたまカスタム計画を選ぶこと」に依存していた。
+      //
+      // **Prisma.sql の断片を入れ子にして出し分けてはいけない** (実測):
+      // ソースから直接動かす vitest では通るのに、`next build` した本番バンドルでは
+      // 入れ子の Sql が SQL 断片ではなく **バインドパラメータとして扱われ**、
+      // `syntax error at or near "$2"` で全 Pro ダッシュボードが 500 になった。
+      // 型チェックもユニットも契約テストも緑のまま通り、E2E だけが落ちる壊れ方をする。
+      //
+      // そこで **窓を無効にしたいときは PostgreSQL の -infinity を渡す**。
+      // タイムスタンプの下限なのですべての行が該当し、「窓なし」と厳密に同じ集合になる
+      // (epoch のような実在しうる日時を番兵にすると、それ以前のデータで意味が変わる)。
+      // 条件は常に同じ形で SQL に現れるので、計画モードにも束縛の扱いにも依存しない。
+      const sinceBoundary: string = since === undefined ? '-infinity' : since.toISOString();
+      // 拠点フィルタの境界値。locationId が指定されない場合は全拠点が対象。
+      // **こちらは NULL を渡して条件ごと無効にする形のまま**にしている —
+      // 拠点には「すべてに一致する番兵」が無く、窓と違って索引の効きも問題になっていないため
+      // (絞り込みに使う locationId は列の値そのもので、範囲比較ではない)
       const locationIdValue: string | null = locationId ?? null;
 
       // 3 本の SQL クエリを並列実行する (直列だと合計レイテンシが 3 倍になるため)。
@@ -462,7 +504,7 @@ export function makeTicketRepo(db: PrismaLike): TicketRepository {
           FROM "Ticket"
           WHERE "tenantId" = ${tenantId}
             AND "firstRespondedAt" IS NOT NULL
-            AND (${sinceValue}::timestamptz IS NULL OR "firstRespondedAt" >= ${sinceValue}::timestamptz)
+            AND "firstRespondedAt" >= ${sinceBoundary}::timestamptz
             AND (${locationIdValue}::text IS NULL OR "locationId" = ${locationIdValue})
         `,
         // ── クエリ 2: 平均解決時間 ──
@@ -475,7 +517,7 @@ export function makeTicketRepo(db: PrismaLike): TicketRepository {
           FROM "Ticket"
           WHERE "tenantId" = ${tenantId}
             AND "resolvedAt" IS NOT NULL
-            AND (${sinceValue}::timestamptz IS NULL OR "resolvedAt" >= ${sinceValue}::timestamptz)
+            AND "resolvedAt" >= ${sinceBoundary}::timestamptz
             AND (${locationIdValue}::text IS NULL OR "locationId" = ${locationIdValue})
         `,
         // ── クエリ 3: 再オープン率 ──
@@ -508,8 +550,11 @@ export function makeTicketRepo(db: PrismaLike): TicketRepository {
               ON th."ticketId" = t.id
               AND th.field = 'status'
               AND th."newValue" = 'Open'
-              AND th."oldValue" IN ('Resolved', 'Closed')
-              AND (${sinceValue}::timestamptz IS NULL OR th."createdAt" >= ${sinceValue}::timestamptz)
+              -- 終息ステータスの一覧はドメインの唯一の参照元から渡す (リテラルを書き写さない)。
+              -- IN (...) ではなく = ANY(配列パラメータ) にするのは、要素数が変わっても
+              -- プレースホルダの数が変わらず、SQL 文そのものを組み立てずに済むため
+              AND th."oldValue" = ANY(${[...COMPLETED_STATUSES]}::text[])
+              AND th."createdAt" >= ${sinceBoundary}::timestamptz
             WHERE t."tenantId" = ${tenantId}
               AND (${locationIdValue}::text IS NULL OR t."locationId" = ${locationIdValue})
               -- **窓の絞り込みは集約の前に掛ける** (/code-review ultra 指摘対応)。
@@ -524,10 +569,16 @@ export function makeTicketRepo(db: PrismaLike): TicketRepository {
               -- 前者はそのチケットの全行で真になるので bool_or の結果は変わらず、
               -- 後者だけが残ったチケットは bool_or が必ず true になる。
               -- したがって畳んだあとの集合は以前とまったく同じ (契約テストが固定)
+              -- **ここの窓は索引では絞れない** (実測・意図的に残す境界):
+              -- 条件が th.id IS NOT NULL (結合の結果) との OR の中にあるため、
+              -- 結合より前に評価できず索引条件にならない。実測 (20 万件) では
+              -- Ticket_pkey の全走査 (Rows Removed by Filter: 197,500 / 100ms) になる。
+              -- 解消には分母を「窓内で解決した id」と「窓内で差し戻された id」の
+              -- UNION として組み直す必要があり、2 度チューニングした形を作り替えることになる。
+              -- 本 PR の目的 (窓を移した先に索引が無かったことの是正) とは別の変更なので、
+              -- ここでは事実を記録するに留める (計画書 §4.28.6 に追跡項目として記載)
               AND (
-                (t."resolvedAt" IS NOT NULL
-                  AND (${sinceValue}::timestamptz IS NULL
-                    OR t."resolvedAt" >= ${sinceValue}::timestamptz))
+                (t."resolvedAt" IS NOT NULL AND t."resolvedAt" >= ${sinceBoundary}::timestamptz)
                 OR th.id IS NOT NULL
               )
             -- チケット単位に畳む

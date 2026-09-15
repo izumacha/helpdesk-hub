@@ -24,6 +24,8 @@ import {
 import { nextId, type Store } from './store';
 // SLA 期限接近リマインダーの「警告帯」窓の長さ (§6 一元管理: Prisma アダプタと同じ値を使う)
 import { DEFAULT_WARNING_THRESHOLD_MS } from '@/lib/sla';
+// 終息ステータス (Resolved / Closed) の判定。Prisma アダプタと同じ参照元を使う (§6 一元管理)
+import { COMPLETED_STATUSES, isCompletedStatus } from '@/domain/ticket-status';
 
 // ID からユーザー概要を作るヘルパー (見つからなければ null)
 function userSummary(store: Store, id: string | null): UserSummary | null {
@@ -61,9 +63,10 @@ function matchesFilter(t: Ticket, filter: TicketListFilter, tenantId: string): b
   if (filter.creatorId !== undefined && t.creatorId !== filter.creatorId) return false;
   // 状態フィルター (単一)
   if (filter.status !== undefined && t.status !== filter.status) return false;
-  // 状態フィルター (複数)。Lite「自分の未対応」など Open OR InProgress に使う
-  if (filter.statusIn && filter.statusIn.length > 0 && !filter.statusIn.includes(t.status))
-    return false;
+  // 状態フィルター (複数)。Lite「自分の未対応」など Open OR InProgress に使う。
+  // **空配列は「絞り込みなし」ではなく「どの状態にも当てはまらない = 0 件」**
+  // (理由は Prisma アダプタの同じ条件のコメント。両アダプタで扱いをそろえる)
+  if (filter.statusIn && !filter.statusIn.includes(t.status)) return false;
   // 優先度フィルター
   if (filter.priority !== undefined && t.priority !== filter.priority) return false;
   // カテゴリフィルター
@@ -78,10 +81,7 @@ function matchesFilter(t: Ticket, filter: TicketListFilter, tenantId: string): b
   // Prisma アダプタの addDueCondition と同じ規約 (§6 一元管理: 両アダプタで判定を揃える)
   const isUnresolvedWithDue = () =>
     // != null は null と undefined の両方を弾く (型が将来 Date | null | undefined に広がっても安全)
-    t.resolutionDueAt != null &&
-    t.resolvedAt == null &&
-    t.status !== 'Resolved' &&
-    t.status !== 'Closed';
+    t.resolutionDueAt != null && t.resolvedAt == null && !isCompletedStatus(t.status);
   // 期限切れフィルター: 期限超過 (境界は <) + 未完了
   if (filter.overdue) {
     if (!isUnresolvedWithDue()) return false;
@@ -424,7 +424,7 @@ export function makeTicketRepo(store: Store): TicketRepository {
       const candidates: TicketSlaReminderCandidate[] = [];
       for (const t of store.tickets.values()) {
         if (t.resolvedAt != null) continue; // 未解決のみ (null/undefined 両対応)
-        if (t.status === 'Resolved' || t.status === 'Closed') continue; // 終息状態は除外
+        if (isCompletedStatus(t.status)) continue; // 終息状態は除外 (Prisma アダプタと同じ参照元)
         if (!t.assigneeId) continue; // 通知先が無いので対象外
         if (!t.resolutionDueAt) continue; // 期限未設定は対象外
         if (t.resolutionDueAt <= now) continue; // 既に超過
@@ -503,7 +503,9 @@ export function makeTicketRepo(store: Store): TicketRepository {
               ticketIds.has(h.ticketId) &&
               h.field === 'status' &&
               h.newValue === 'Open' &&
-              (h.oldValue === 'Resolved' || h.oldValue === 'Closed') &&
+              // 終息ステータスからの差し戻しか (Prisma アダプタのクエリ 3 と同じ参照元を使う。
+              // oldValue は履歴の生文字列 (string | null) なので、型を widen して突き合わせる)
+              (COMPLETED_STATUSES as readonly string[]).includes(h.oldValue ?? '') &&
               inWindow(h.createdAt),
           )
           .map((h) => h.ticketId),

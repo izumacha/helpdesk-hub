@@ -1209,9 +1209,91 @@ export function runTicketRepositoryContract(
       expect(await ctx.repos.tickets.count({ dueSoon: { now } }, TENANT_ID)).toBe(1);
       // overdue + dueSoon の併用は「期限 < now かつ期限 >= now」で空集合になる
       // (後勝ち上書きだと dueSoon だけが効いて 1 件返ってしまう)
+      expect(await ctx.repos.tickets.count({ overdue: { now }, dueSoon: { now } }, TENANT_ID)).toBe(
+        0,
+      );
+    });
+
+    // /code-review ultra 指摘対応 (2026-09-15): status (単一) と statusIn (複数) を同時に
+    // 指定したとき、両方が AND として評価されること。Prisma アダプタが where.status を
+    // 代入で組み立てていたため statusIn が status を黙って上書きし、メモリアダプタ
+    // (両方を別々に判定) と結果が食い違っていた。
+    // `?tab=mine&status=Resolved` は画面から 1 クリックで作れる組み合わせ (タブが statusIn、
+    // 状況ドロップダウンが status を立てる) で、上書きされると「解決済み」を選んでいるのに
+    // 未対応チケットが並ぶ — 利用者から見て絞り込みが効いていない状態になる。
+    // Resolved ∩ {Open, InProgress} は定義上空集合なので、0 件が「AND で評価された」証拠になる
+    it('list with both status and statusIn applies both conditions (empty intersection)', async () => {
+      const { requester, categoryId } = await ctx.seedBasicFixture();
+
+      // 未対応 (Open) のチケットを 1 件作成する
+      const openTicket = await ctx.repos.tickets.create({
+        title: 'open-only',
+        body: 'b',
+        priority: 'High',
+        creatorId: requester.id,
+        categoryId,
+        tenantId: TENANT_ID,
+      });
+      // 作成直後の New から Open へ進めておく (statusIn の対象に入れるため)
+      await ctx.repos.tickets.updateStatus(
+        openTicket.id,
+        { from: 'New', to: 'Open' },
+        null,
+        TENANT_ID,
+      );
+
+      // statusIn 単独なら 1 件ヒットする (前提の確認)
+      expect(await ctx.repos.tickets.count({ statusIn: ['Open', 'InProgress'] }, TENANT_ID)).toBe(
+        1,
+      );
+      // status 単独 (Resolved) なら 0 件 (前提の確認)
+      expect(await ctx.repos.tickets.count({ status: 'Resolved' }, TENANT_ID)).toBe(0);
+      // 併用は「status = Resolved かつ status ∈ {Open, InProgress}」で空集合になる
+      // (後勝ち上書きだと statusIn だけが効いて 1 件返ってしまう)
       expect(
-        await ctx.repos.tickets.count({ overdue: { now }, dueSoon: { now } }, TENANT_ID),
+        await ctx.repos.tickets.count(
+          { status: 'Resolved', statusIn: ['Open', 'InProgress'] },
+          TENANT_ID,
+        ),
       ).toBe(0);
+      // list 側も同じ扱いであること (count だけ直して list が取り残されるのを防ぐ)
+      const rows = await ctx.repos.tickets.list({
+        filter: { status: 'Resolved', statusIn: ['Open', 'InProgress'] },
+        page: { skip: 0, take: 50 },
+        tenantId: TENANT_ID,
+      });
+      expect(rows).toEqual([]);
+    });
+
+    // /code-review ultra 指摘対応 (2026-09-15): 空の statusIn は「絞り込みなし」ではなく
+    // 「どの状態にも当てはまらない = 0 件」であること。
+    // applyOpenFilter が既存の statusIn との積集合を取るため空配列が作られうる。
+    // 空を「指定なし」として素通りさせると、条件が厳しすぎて 0 件のはずの絞り込みが
+    // 全件表示に化ける (fail-open)。両アダプタで同じ扱いになることをここで固定する
+    it('list with an empty statusIn matches nothing instead of ignoring the filter', async () => {
+      const { requester, categoryId } = await ctx.seedBasicFixture();
+
+      // 何らかのチケットが 1 件ある状態を作る (絞り込みが無ければヒットする前提)
+      await ctx.repos.tickets.create({
+        title: 'any-ticket',
+        body: 'b',
+        priority: 'High',
+        creatorId: requester.id,
+        categoryId,
+        tenantId: TENANT_ID,
+      });
+
+      // 絞り込み無しなら 1 件ヒットする (前提の確認)
+      expect(await ctx.repos.tickets.count({}, TENANT_ID)).toBe(1);
+      // 空の statusIn は 0 件 (素通りさせると 1 件返ってしまう)
+      expect(await ctx.repos.tickets.count({ statusIn: [] }, TENANT_ID)).toBe(0);
+      // list 側も同じ扱いであること
+      const rows = await ctx.repos.tickets.list({
+        filter: { statusIn: [] },
+        page: { skip: 0, take: 50 },
+        tenantId: TENANT_ID,
+      });
+      expect(rows).toEqual([]);
     });
 
     // フォローアップ (2026-07-15 #2): check-then-act 競合 (TOCTOU) の防止。§1.4 で

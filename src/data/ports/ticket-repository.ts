@@ -38,7 +38,16 @@ export interface TicketListFilter {
   /** Searches title OR body. */
   text?: TextFilter; // タイトルまたは本文の部分一致
   status?: TicketStatus; // 状態で絞る
-  statusIn?: TicketStatus[]; // 複数状態の OR 絞り込み (例: Open or InProgress)
+  /**
+   * 複数状態の OR 絞り込み (例: Open or InProgress)。
+   *
+   * `status` と同時に指定した場合は **両方が AND として評価される**
+   * (`status = X かつ status ∈ statusIn`)。片方が片方を上書きする実装にしない —
+   * `?tab=mine&status=Resolved` のように画面から 1 クリックで作れる組み合わせがあり、
+   * 上書きすると指定した絞り込みが黙って消える (両アダプタで同じ結果になることを
+   * `tests/data/ticket-repository.contract.ts` の回帰テストが固定する)。
+   */
+  statusIn?: TicketStatus[];
   priority?: Priority; // 優先度で絞る
   categoryId?: string; // カテゴリで絞る
   /**
