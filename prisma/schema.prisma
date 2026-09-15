@@ -522,10 +522,18 @@ model Ticket {
   // 品質指標 (qualityMetrics) の移動窓が絞り込む列。§4.28 で集計の窓を
   // 「作成日時」から「対応が終わった日時」へ移した結果、tenantId + createdAt の
   // 既存インデックスでは絞り込めなくなり、キャッシュミスのたびにテナントの
-  // 全チケットを走査していた (実測: 20 万件・窓内 2,500 件で Parallel Seq Scan)。
-  // 平均初回応答時間の窓 (firstRespondedAt >= since) 用
+  // 全チケットを走査していた (実測: 20 万件・窓内 2,500 件で Parallel Seq Scan / 31.0ms)。
+  // 平均初回応答時間の窓 (firstRespondedAt >= since) 用。実測 31.0ms → 8.1ms
   @@index([tenantId, firstRespondedAt])
-  // 平均解決時間・再オープン率の分母の窓 (resolvedAt >= since) 用
+  // 平均解決時間の窓 (resolvedAt >= since) 用。実測 31.0ms → 7.3ms。
+  // **再オープン率のクエリ (3 本目) には効かない** — 断定しないよう実測に合わせて書く
+  // (/code-review ultra 指摘 2026-09-15)。あちらの窓の条件は結合結果 (th.id IS NOT NULL)
+  // との OR の中にあり、結合より前に評価できないため索引条件にならない
+  // (実測: 同じ 20 万件で Ticket_pkey の全走査 / Rows Removed by Filter: 197,500 / 100ms)。
+  // 解消には分母を UNION で組み直す必要があり、別の変更として計画書 §4.28.6 に記録している。
+  // なお **この 2 本が効くのは窓の条件を SQL の断片として出し分けているから**で、
+  // `(param IS NULL OR col >= param)` の形に戻すと汎用計画では索引が無視される
+  // (実測: force_generic_plan で Parallel Seq Scan / 23.0ms。理由は同クエリのコメント)
   @@index([tenantId, resolvedAt])
   // issue-backlog #20 フォローアップ: SLA 期限接近リマインダー (POST /api/internal/sla-reminders) の
   // listSlaDueSoonCandidates は全テナント横断で resolutionDueAt の範囲検索を行うため専用索引を追加する

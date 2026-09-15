@@ -1,5 +1,6 @@
 // Prisma の where 条件型を参照するためにインポート
-import type { Prisma } from '@/generated/prisma';
+// 型 (WhereInput 等) と、生 SQL の断片を組み立てる値 (Prisma.sql / Prisma.empty) の両方を使う
+import { Prisma } from '@/generated/prisma';
 // 全ステータスを反復するためドメイン型をインポート
 import type { TicketStatus } from '@/domain/types';
 // チケットリポジトリ契約と関連型をインポート
@@ -464,6 +465,19 @@ export function makeTicketRepo(db: PrismaLike): TicketRepository {
       // 平均になって数字が下がる = 悪化を改善に見せる。指標として機能しないので、
       // 初回応答は firstRespondedAt、解決は resolvedAt、再オープンは履歴の発生時刻で切る。
       const sinceValue: Date | null = since ?? null;
+      // 窓の条件は **SQL の断片として出し分ける** (/code-review ultra 指摘対応 2026-09-15)。
+      // 以前は `(${'$'}{sinceValue} IS NULL OR col >= ${'$'}{sinceValue})` と 1 本の式に畳んでいたが、
+      // この形は **索引が使える形 (sargable) ではない** — プランナが「パラメータが NULL かどうか」を
+      // 計画時に決められないため、汎用計画 (generic plan) が選ばれた瞬間に索引が無視される。
+      // 実測 (チケット 20 万件・窓内 2,500 件): 通常はカスタム計画が選ばれて
+      // Bitmap Index Scan / 7.3ms だが、`SET plan_cache_mode = force_generic_plan` では
+      // Parallel Seq Scan / 23.0ms へ退化し、索引が完全に死ぬ。索引を足した意味が
+      // 「プランナがたまたまカスタム計画を選ぶこと」に依存する状態だった。
+      // 断片で出し分ければ、窓を指定した呼び出し (ダッシュボードは常に指定する) の SQL には
+      // 条件がそのまま現れるので、計画モードに関係なく索引が効く。
+      // 窓の条件を組み立てるヘルパー (列名ごとに 1 つ作る。指定が無ければ空の断片 = 条件なし)
+      const sinceCondition = (column: Prisma.Sql) =>
+        sinceValue === null ? Prisma.empty : Prisma.sql`AND ${column} >= ${sinceValue}`;
       // 拠点フィルタの境界値。locationId が指定されない場合は全拠点が対象
       // (sinceValue と同じ「NULL なら条件を無視する」パターン)
       const locationIdValue: string | null = locationId ?? null;
@@ -482,7 +496,7 @@ export function makeTicketRepo(db: PrismaLike): TicketRepository {
           FROM "Ticket"
           WHERE "tenantId" = ${tenantId}
             AND "firstRespondedAt" IS NOT NULL
-            AND (${sinceValue}::timestamptz IS NULL OR "firstRespondedAt" >= ${sinceValue}::timestamptz)
+            ${sinceCondition(Prisma.sql`"firstRespondedAt"`)}
             AND (${locationIdValue}::text IS NULL OR "locationId" = ${locationIdValue})
         `,
         // ── クエリ 2: 平均解決時間 ──
@@ -495,7 +509,7 @@ export function makeTicketRepo(db: PrismaLike): TicketRepository {
           FROM "Ticket"
           WHERE "tenantId" = ${tenantId}
             AND "resolvedAt" IS NOT NULL
-            AND (${sinceValue}::timestamptz IS NULL OR "resolvedAt" >= ${sinceValue}::timestamptz)
+            ${sinceCondition(Prisma.sql`"resolvedAt"`)}
             AND (${locationIdValue}::text IS NULL OR "locationId" = ${locationIdValue})
         `,
         // ── クエリ 3: 再オープン率 ──
@@ -532,7 +546,7 @@ export function makeTicketRepo(db: PrismaLike): TicketRepository {
               -- IN (...) ではなく = ANY(配列パラメータ) にするのは、要素数が変わっても
               -- プレースホルダの数が変わらず、SQL 文そのものを組み立てずに済むため
               AND th."oldValue" = ANY(${[...COMPLETED_STATUSES]}::text[])
-              AND (${sinceValue}::timestamptz IS NULL OR th."createdAt" >= ${sinceValue}::timestamptz)
+              ${sinceCondition(Prisma.sql`th."createdAt"`)}
             WHERE t."tenantId" = ${tenantId}
               AND (${locationIdValue}::text IS NULL OR t."locationId" = ${locationIdValue})
               -- **窓の絞り込みは集約の前に掛ける** (/code-review ultra 指摘対応)。
@@ -547,10 +561,16 @@ export function makeTicketRepo(db: PrismaLike): TicketRepository {
               -- 前者はそのチケットの全行で真になるので bool_or の結果は変わらず、
               -- 後者だけが残ったチケットは bool_or が必ず true になる。
               -- したがって畳んだあとの集合は以前とまったく同じ (契約テストが固定)
+              -- **ここの窓は索引では絞れない** (実測・意図的に残す境界):
+              -- 条件が th.id IS NOT NULL (結合の結果) との OR の中にあるため、
+              -- 結合より前に評価できず索引条件にならない。実測 (20 万件) では
+              -- Ticket_pkey の全走査 (Rows Removed by Filter: 197,500 / 100ms) になる。
+              -- 解消には分母を「窓内で解決した id」と「窓内で差し戻された id」の
+              -- UNION として組み直す必要があり、2 度チューニングした形を作り替えることになる。
+              -- 本 PR の目的 (窓を移した先に索引が無かったことの是正) とは別の変更なので、
+              -- ここでは事実を記録するに留める (計画書 §4.28.6 に追跡項目として記載)
               AND (
-                (t."resolvedAt" IS NOT NULL
-                  AND (${sinceValue}::timestamptz IS NULL
-                    OR t."resolvedAt" >= ${sinceValue}::timestamptz))
+                (t."resolvedAt" IS NOT NULL ${sinceCondition(Prisma.sql`t."resolvedAt"`)})
                 OR th.id IS NOT NULL
               )
             -- チケット単位に畳む
