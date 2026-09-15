@@ -25,7 +25,7 @@ import { nextId, type Store } from './store';
 // SLA 期限接近リマインダーの「警告帯」窓の長さ (§6 一元管理: Prisma アダプタと同じ値を使う)
 import { DEFAULT_WARNING_THRESHOLD_MS } from '@/lib/sla';
 // 終息ステータス (Resolved / Closed) の判定。Prisma アダプタと同じ参照元を使う (§6 一元管理)
-import { isCompletedStatus } from '@/domain/ticket-status';
+import { COMPLETED_STATUSES, isCompletedStatus } from '@/domain/ticket-status';
 
 // ID からユーザー概要を作るヘルパー (見つからなければ null)
 function userSummary(store: Store, id: string | null): UserSummary | null {
@@ -464,7 +464,8 @@ export function makeTicketRepo(store: Store): TicketRepository {
       // テナントスコープ + locationId 条件 (指定時のみ) でチケットを絞り込む。
       // 期間の窓はここでは掛けない (指標ごとに見る時刻が違うため、各指標側で判定する)
       const allTickets = [...store.tickets.values()].filter(
-        (t) => t.tenantId === tenantId && (locationId === undefined || t.locationId === locationId),
+        (t) =>
+          t.tenantId === tenantId && (locationId === undefined || t.locationId === locationId),
       );
       // 「その時刻が窓の中か」を判定する共通ヘルパー (since 未指定なら全期間が対象)
       const inWindow = (at: Date | null | undefined): boolean =>
@@ -502,7 +503,9 @@ export function makeTicketRepo(store: Store): TicketRepository {
               ticketIds.has(h.ticketId) &&
               h.field === 'status' &&
               h.newValue === 'Open' &&
-              (h.oldValue === 'Resolved' || h.oldValue === 'Closed') &&
+              // 終息ステータスからの差し戻しか (Prisma アダプタのクエリ 3 と同じ参照元を使う。
+              // oldValue は履歴の生文字列 (string | null) なので、型を widen して突き合わせる)
+              (COMPLETED_STATUSES as readonly string[]).includes(h.oldValue ?? '') &&
               inWindow(h.createdAt),
           )
           .map((h) => h.ticketId),

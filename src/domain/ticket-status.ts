@@ -22,9 +22,19 @@ const ALLOWED_TRANSITIONS: Record<TicketStatus, TicketStatus[]> = {
 // ALLOWED_TRANSITIONS は Record<TicketStatus, ...> なので、domain/types.ts に
 // ステータスを足すと型エラーでキーの追加が強制される = この一覧も必ず追随する。
 // 並びは遷移表の宣言順 (New → … → Closed) で、そのままライフサイクル順になっている。
-export const ALL_TICKET_STATUSES = Object.keys(ALLOWED_TRANSITIONS) as TicketStatus[];
+// readonly で公開する — 同ファイルの LITE_STATUSES / COMPLETED_STATUSES と同じ扱いにし、
+// 受け取った側の `sort()` / `push()` が「未完了とは何か」をプロセス全体で書き換えるのを防ぐ
+export const ALL_TICKET_STATUSES: readonly TicketStatus[] = Object.keys(
+  ALLOWED_TRANSITIONS,
+) as TicketStatus[];
 
 // 業務上「対応が一区切りついた」終息ステータス。
+// **下の getCompletionStatuses とは別物なので混同しないこと** (/code-review ultra 指摘対応)。
+// こちらは mode に依らない「終端状態の集合」で、絞り込み (?open=1 / 期限系) と集計の
+// 除外条件が見る。あちらは「このテナントの mode で完了とみなす状態」で、resolvedAt の
+// 打刻と FAQ 候補化の可否が見る (Pro は Resolved のみ)。終端ステータスを足すときは
+// **両方を確認する** — 片方だけ直すと、絞り込みからは消えるのに resolvedAt が打たれない
+// (あるいはその逆) という食い違いが生まれる。
 // 期限系フィルタの「未完了」判定・ワークロード集計の除外・再オープン率の分母など、
 // 複数の場所が同じ集合を見るため **リテラルを書き写さずここだけを参照する**。
 // 以前は 'Resolved' / 'Closed' の組が Prisma アダプタ・メモリアダプタ・ダッシュボードに
@@ -44,7 +54,8 @@ export function isCompletedStatus(status: TicketStatus): status is CompletedStat
 // **列挙せず全ステータスから終息ぶんを差し引いて導出する** — 書き並べると、
 // ステータスを 1 つ足したときに「未完了なのに未完了の一覧に入らない」取りこぼしが
 // 型エラーにならないまま生まれる (フィルタが黙って件数を減らす fail-open になる)。
-export const UNRESOLVED_STATUSES: TicketStatus[] = ALL_TICKET_STATUSES.filter(
+// こちらも readonly (理由は ALL_TICKET_STATUSES と同じ)
+export const UNRESOLVED_STATUSES: readonly TicketStatus[] = ALL_TICKET_STATUSES.filter(
   (status) => !isCompletedStatus(status),
 );
 
@@ -124,6 +135,9 @@ export function initialStatusForMode(mode: TenantMode): TicketStatus | undefined
 
 // 「完了」とみなすステータス集合を mode に応じて返す (「起票直後」の initialStatusForMode と対になる、
 // 「終端」側の単一ルール)。
+// **上の COMPLETED_STATUSES とは別物** (/code-review ultra 指摘対応): あちらは mode に依らない
+// 終端状態の集合で絞り込み・集計の除外が見る。こちらは mode ごとの「完了」の定義で、
+// resolvedAt の打刻と FAQ 候補化の可否が見る。終端ステータスを足すときは両方を確認すること。
 // - Pro: ['Resolved'] (従来どおり「解決済み」のみ完了扱い)
 // - Lite: ['Closed', 'Resolved'] — Lite UI の「完了」は Closed に対応するが、Lite 遷移表が
 //   Lite 非対応ステータス (例: 旧 Pro データの Resolved) から Pro 表へフォールバックするため、
