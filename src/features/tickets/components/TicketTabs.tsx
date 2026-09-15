@@ -6,6 +6,8 @@ import Link from 'next/link';
 import { useSearchParams } from 'next/navigation';
 // 一覧 URL の組み立て (ページャ・期限チップ・絞り込みフォームと共有する純粋関数)
 import { buildTicketsHref } from '@/features/tickets/tickets-href';
+// タブ切替で外すべき絞り込みキーの判定 (状況ドロップダウンと同じ述語を共有する純粋関数)
+import { filtersClearedByTabChange } from '@/features/tickets/build-filter';
 
 // 共有型ファイルから import してこのモジュール内で型として使えるようにする
 import type { TicketTabId } from '@/features/tickets/types';
@@ -41,14 +43,19 @@ export function TicketTabs() {
   // - タブを切り替えると検索結果のページ番号 (page) はリセットする
   function tabHref(tabId: TicketTabId): string {
     // 'all' は既定なのでクエリから削り、それ以外は tab を差し替える (URL を綺麗に保つ)。
-    // 期限絞り込み (?due=...) もタブ切替でリセットする (/code-review ultra 指摘対応)。
+    // 矛盾する絞り込み (期限絞り込み ?due=... と、新しいタブが必ず除く状況) もリセットする。
     // タブ (期限切れ) と due (期限間近 等) はどちらも「期限」軸の絞り込みで、残したまま
     // 切り替えると `tab=overdue&due=soon` のような定義上空集合になる組み合わせが 1 クリックで
     // 作れてしまい、「0 件」の理由が画面から読み取れなくなる。
+    // /code-review ultra 指摘対応 (2026-09-15): 状況 (?status=...) も同じ関係にあるのに
+    // 残していたため、`?status=Resolved` の一覧で「自分の未対応」タブを押すと同じ
+    // 「必ず 0 件」に落ちていた。どのキーを外すかの判定は状況ドロップダウン側と
+    // **同じ述語**を共有する (build-filter.ts。片側だけ直しても塞がらないため §6 DRY)。
     // page のリセットと "?" の省略は共通ヘルパーが行う (§6 DRY: 組み立ての規則を写さない)
+    const conflicting = filtersClearedByTabChange(tabId, searchParams.get('status') ?? undefined);
     return buildTicketsHref(searchParams, {
       set: tabId === 'all' ? {} : { tab: tabId },
-      remove: tabId === 'all' ? ['tab', 'due'] : ['due'],
+      remove: tabId === 'all' ? ['tab', ...conflicting] : conflicting,
     });
   }
 

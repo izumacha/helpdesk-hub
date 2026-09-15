@@ -9,7 +9,7 @@
 // ドメイン型のチケットステータスと優先度 (型ガード用)
 import type { TicketStatus, Priority } from '@/domain/types';
 // 終息ステータス (Resolved / Closed) の判定。未完了前提の絞り込みとの矛盾検出に使う
-import { isCompletedStatus } from '@/domain/ticket-status';
+import { ALL_TICKET_STATUSES, isCompletedStatus } from '@/domain/ticket-status';
 // リポジトリポートが要求するフィルタ型
 import type { TicketListFilter } from '@/data/ports/ticket-repository';
 // タブ絞り込みを共通ヘルパーに委譲する (mine / overdue タブは一覧とダッシュボードで共有)
@@ -43,18 +43,17 @@ export interface TicketFilterContext {
   now: Date; // 現在時刻 (overdue タブの期限判定に使う)
 }
 
-// `as const satisfies` で TicketStatus / Priority の全値を列挙する。
-// 型システムが「domain/types.ts の union 型と一致しているか」を検査するため、
-// domain/types.ts に値を追加してここを更新し忘れると TypeScript エラーになる (ドリフト防止)。
-const VALID_STATUSES = [
-  'New',
-  'Open',
-  'WaitingForUser',
-  'InProgress',
-  'Escalated',
-  'Resolved',
-  'Closed',
-] as const satisfies TicketStatus[];
+// 有効なステータスの一覧は **ドメインの唯一の参照元から導出する** (ここに書き並べない)。
+// /code-review ultra 指摘対応 (2026-09-15): 以前はここで値を列挙し
+// 「`as const satisfies TicketStatus[]` が網羅性を検査する」と書いていたが、**それは誤り**。
+// `satisfies` が確かめるのは「列挙した各要素が TicketStatus であること」だけで、
+// **全部が列挙されていることは検査しない** (実測: 'Escalated' を 1 行消しても
+// typecheck も全テストも緑のまま通った)。その状態で domain/types.ts に
+// ステータスを足すと、`?status=<新しい値>` が黙って捨てられて一覧も CSV も
+// 絞り込み無しの全件になり、filtersClearedByStatusChange も何も外さなくなる
+// (このファイルが塞ごうとしている fail-open そのもの)。
+// ALL_TICKET_STATUSES は遷移表 ALLOWED_TRANSITIONS のキーから導出されるので、
+// Record<TicketStatus, ...> の型検査によって追随が強制される。
 
 const VALID_PRIORITIES = ['Low', 'Medium', 'High'] as const satisfies Priority[];
 
@@ -63,8 +62,8 @@ const VALID_PRIORITIES = ['Low', 'Medium', 'High'] as const satisfies Priority[]
  * URL は信頼できない入力のため、必ずこの関数で検証してから使う。
  */
 export function isValidStatus(s: string): s is TicketStatus {
-  // VALID_STATUSES は satisfies TicketStatus[] で型検査済み
-  return (VALID_STATUSES as readonly string[]).includes(s);
+  // ALL_TICKET_STATUSES は遷移表のキーから導出されるので、ステータスの追加に必ず追随する
+  return (ALL_TICKET_STATUSES as readonly string[]).includes(s);
 }
 
 /**
@@ -99,11 +98,29 @@ export function parseTabParam(raw: string | undefined): TicketTabId {
   return 'all';
 }
 
-// 「未完了であること」を条件に含む絞り込みの URL キー一覧。
-// 期限絞り込み (?due=...) は両アダプタが「status が終息状態でない」を必ず AND で積み、
-// 「未完了のみ」絞り込み (?open=1) は定義そのものが未完了ステータスの集合なので、
-// どちらも終息ステータス (Resolved / Closed) と同時に指定すると **定義上必ず 0 件**になる。
-const UNRESOLVED_IMPLYING_FILTER_PARAMS = ['due', OPEN_FILTER_PARAM] as const;
+// URL 上の「期限」軸の絞り込みキー。タブの 'overdue' と ?due=... は同じ軸で、
+// どちらも両アダプタが「status が終息状態でない」を必ず AND で積む。
+const DUE_FILTER_PARAM = 'due';
+
+/**
+ * そのタブは、指定した状態のチケットを結果から必ず除くか。
+ *
+ * **タブが何を絞るかをここに書き写さない** — 唯一の真実の源である applyTabFilter を
+ * 実際に通し、その結果から判定する (タブの条件を変えたときに、この述語だけが
+ * 古い前提のまま取り残されるのを防ぐ)。
+ */
+function tabExcludesStatus(tab: TicketTabId, status: TicketStatus): boolean {
+  // 空の base にタブ条件だけを適用して、そのタブが立てる条件を取り出す。
+  // isAgent / userId / now は状態の判定に影響しないので代表値でよい
+  const applied = applyTabFilter({}, tab, { isAgent: false, userId: '', now: new Date() });
+  // 状態を列挙で絞るタブ ('mine') は、その一覧に無い状態を必ず除く
+  if (applied.statusIn && !applied.statusIn.includes(status)) return true;
+  // 期限超過で絞るタブ ('overdue') は、期限条件と一緒に「終息状態でない」を積む
+  // (TicketListFilter.overdue の契約。due-filter と同じ理由)
+  if (applied.overdue && isCompletedStatus(status)) return true;
+  // それ以外 ('all') は状態を絞らない
+  return false;
+}
 
 /**
  * 状況 (status) の絞り込みを指定した値に変えるとき、同時に外すべき絞り込みのキーを返す。
@@ -112,21 +129,46 @@ const UNRESOLVED_IMPLYING_FILTER_PARAMS = ['due', OPEN_FILTER_PARAM] as const;
  * 「タブと期限はどちらも期限軸なので、残すと定義上空集合になる組み合わせが 1 クリックで
  * 作れてしまい、0 件の理由が画面から読み取れない」という理由で ?due= を落としていたが、
  * 状況ドロップダウン (TicketFilters) は同じ組み合わせを作れるのに落としていなかった。
- * `?due=soon` の一覧 (ダッシュボードの「期限間近」タイルからの遷移先) で状況に
- * 「解決済み」を選ぶと、同じ「必ず 0 件」の状態へ 1 クリックで落ちる。
- * どちらの入口も同じ方針にそろえるため、判定をここに 1 か所だけ置く (§6 DRY)。
+ * **2 つの入口で同じ述語を共有する**ため、判定をここに 1 か所だけ置く (§6 DRY)。
  *
- * 終息ステータス以外 (未完了ステータス・空文字・列挙外の値) では何も外さない —
- * 矛盾しない組み合わせまで勝手に解除すると、今度は「指定した絞り込みが黙って消える」
- * という逆向きの分かりにくさを生む。
+ * 矛盾しない組み合わせでは何も外さない — 勝手に解除すると、今度は
+ * 「指定した絞り込みが黙って消える」という逆向きの分かりにくさを生む。
  */
-export function filtersClearedByStatusChange(rawStatus: string): string[] {
+export function filtersClearedByStatusChange(
+  rawStatus: string, // これから適用する状況 (URL クエリの生文字列)
+  rawTab: string | undefined, // 現在のタブ (URL クエリの生文字列。未指定は 'all')
+): string[] {
   // 列挙値として読めない値は絞り込み自体が適用されないので、何も外さない
   if (!isValidStatus(rawStatus)) return [];
-  // 未完了ステータスなら矛盾しないので、何も外さない
-  if (!isCompletedStatus(rawStatus)) return [];
-  // 終息ステータスのときだけ、未完了を前提にする絞り込みを外す
-  return [...UNRESOLVED_IMPLYING_FILTER_PARAMS];
+  // 外すキーを集める入れ物
+  const cleared: string[] = [];
+  // 期限絞り込みと「未完了のみ」は定義に「未完了であること」を含むので、終息状態とは必ず空集合
+  if (isCompletedStatus(rawStatus)) cleared.push(DUE_FILTER_PARAM, OPEN_FILTER_PARAM);
+  // 現在のタブがこの状態を除くなら、タブも外す (例: 'mine' タブ + 「解決済み」)
+  if (tabExcludesStatus(parseTabParam(rawTab), rawStatus)) cleared.push('tab');
+  // 集めたキーを返す (空なら何も外さない)
+  return cleared;
+}
+
+/**
+ * タブを切り替えるとき、同時に外すべき絞り込みのキーを返す
+ * (上の filtersClearedByStatusChange の裏返し。同じ述語を共有する)。
+ *
+ * 片側だけを手当てしても意味が無い: 状況ドロップダウンから来る経路を塞いでも、
+ * `?status=Resolved` の一覧で「自分の未対応」タブを押せば同じ「必ず 0 件」に落ちる。
+ */
+export function filtersClearedByTabChange(
+  tab: TicketTabId, // これから適用するタブ
+  rawStatus: string | undefined, // 現在の状況 (URL クエリの生文字列)
+): string[] {
+  // 期限絞り込みは常に外す (タブと同じ期限軸なので、残すと定義上空集合になる組み合わせを作れる)
+  const cleared: string[] = [DUE_FILTER_PARAM];
+  // 現在の状況が読めて、かつ新しいタブがその状態を除くなら、状況も外す
+  if (rawStatus && isValidStatus(rawStatus) && tabExcludesStatus(tab, rawStatus)) {
+    cleared.push('status');
+  }
+  // 集めたキーを返す
+  return cleared;
 }
 
 /**

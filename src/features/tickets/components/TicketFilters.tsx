@@ -72,7 +72,10 @@ export function TicketFilters({ categories, agents, isAgent, mode, locations }: 
       // /code-review ultra 指摘対応: タブ切替 (TicketTabs) は同じ理由で ?due= を落として
       // いたのに、こちらは残していたため「定義上必ず 0 件」の組み合わせが 1 クリックで
       // 作れていた。どのキーを外すかの判定は build-filter.ts に 1 か所だけ置く (§6 DRY)
-      const removeKeys = key === 'status' ? filtersClearedByStatusChange(value) : [];
+      const removeKeys =
+        key === 'status'
+          ? filtersClearedByStatusChange(value, searchParams.get('tab') ?? undefined)
+          : [];
       // 値があればセット、空なら取り除く (page のリセットと "?" の省略は共通ヘルパーが行う)。
       // /code-review ultra 指摘対応: 「複製して差し替え、page を落とす」という同じ規則が
       // ページャ・期限チップ・タブにも書かれていたため、組み立てだけ 1 か所へ寄せた (§6 DRY)
