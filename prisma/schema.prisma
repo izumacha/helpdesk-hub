@@ -519,6 +519,14 @@ model Ticket {
   @@index([tenantId]) // テナントスコープ検索用
   @@index([tenantId, status]) // テナント別ステータス絞り込み用
   @@index([tenantId, createdAt(sort: Desc)]) // テナント別新着順
+  // 品質指標 (qualityMetrics) の移動窓が絞り込む列。§4.28 で集計の窓を
+  // 「作成日時」から「対応が終わった日時」へ移した結果、tenantId + createdAt の
+  // 既存インデックスでは絞り込めなくなり、キャッシュミスのたびにテナントの
+  // 全チケットを走査していた (実測: 20 万件・窓内 2,500 件で Parallel Seq Scan)。
+  // 平均初回応答時間の窓 (firstRespondedAt >= since) 用
+  @@index([tenantId, firstRespondedAt])
+  // 平均解決時間・再オープン率の分母の窓 (resolvedAt >= since) 用
+  @@index([tenantId, resolvedAt])
   // issue-backlog #20 フォローアップ: SLA 期限接近リマインダー (POST /api/internal/sla-reminders) の
   // listSlaDueSoonCandidates は全テナント横断で resolutionDueAt の範囲検索を行うため専用索引を追加する
   // (/code-review ultra 指摘対応: 他の Ticket クエリと異なり resolutionDueAt を絞り込む索引が無かった)
