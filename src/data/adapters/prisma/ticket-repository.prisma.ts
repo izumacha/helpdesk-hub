@@ -34,9 +34,23 @@ function buildWhere(f: TicketListFilter, tenantId: string): Prisma.TicketWhereIn
   const where: Prisma.TicketWhereInput = { tenantId };
   // 各フィルタが指定されていれば条件を積み上げる
   if (f.creatorId !== undefined) where.creatorId = f.creatorId;
-  if (f.status !== undefined) where.status = f.status;
+  // 状態フィルタ: 単一 (status) と複数 (statusIn) は **両方を AND として積む**。
+  // 以前は where.status へ順に代入していたため statusIn が status を黙って上書きし、
+  // メモリアダプタ (matchesFilter が 2 つを別々に判定する) と結果が食い違っていた。
+  // `?tab=mine&status=Resolved` は画面から 1 クリックで作れる組み合わせ (タブが statusIn、
+  // 状況ドロップダウンが status を立てる) で、上書きされると「解決済み」を選んでいるのに
+  // 未対応チケットが並ぶ — 絞り込みが効いていないのに画面からはそう見えない。
+  // CSV エクスポートも同じ buildTicketListFilter を通るため、書き出す範囲まで一緒にずれる。
+  // Prisma の enum フィルタは equals と in を同じオブジェクトに置くと AND で評価するので、
+  // 2 つの条件を 1 つのフィルタオブジェクトへ積み上げてから代入する
+  // (期限系フィルタを addDueCondition で AND 連結しているのと同じ理由・同じ規約)
+  const statusFilter: Prisma.EnumTicketStatusFilter = {};
+  // 単一状態の指定は equals として積む
+  if (f.status !== undefined) statusFilter.equals = f.status;
   // 複数状態の OR 絞り込み (Lite モードの「自分の未対応」で Open/InProgress を一度に取るため)
-  if (f.statusIn && f.statusIn.length > 0) where.status = { in: f.statusIn };
+  if (f.statusIn && f.statusIn.length > 0) statusFilter.in = f.statusIn;
+  // どちらか一方でも指定があるときだけ where へ載せる (空オブジェクトを置かない)
+  if (Object.keys(statusFilter).length > 0) where.status = statusFilter;
   if (f.priority !== undefined) where.priority = f.priority;
   if (f.categoryId !== undefined) where.categoryId = f.categoryId;
   // 担当者条件: null は未アサインのみ、文字列は完全一致
