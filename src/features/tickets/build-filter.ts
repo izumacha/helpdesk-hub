@@ -8,6 +8,8 @@
 
 // ドメイン型のチケットステータスと優先度 (型ガード用)
 import type { TicketStatus, Priority } from '@/domain/types';
+// 終息ステータス (Resolved / Closed) の判定。未完了前提の絞り込みとの矛盾検出に使う
+import { isCompletedStatus } from '@/domain/ticket-status';
 // リポジトリポートが要求するフィルタ型
 import type { TicketListFilter } from '@/data/ports/ticket-repository';
 // タブ絞り込みを共通ヘルパーに委譲する (mine / overdue タブは一覧とダッシュボードで共有)
@@ -17,7 +19,7 @@ import { applyTabFilter } from '@/features/tickets/tab-filter';
 import { applyDueFilter, parseDueParam } from '@/features/tickets/due-filter';
 // 「未完了のみ」絞り込み (?open=1) を共通ヘルパーに委譲する
 // (ダッシュボードの担当者別ワークロードの件数と drill-down 先の一覧を一致させる)
-import { applyOpenFilter, parseOpenParam } from '@/features/tickets/open-filter';
+import { applyOpenFilter, OPEN_FILTER_PARAM, parseOpenParam } from '@/features/tickets/open-filter';
 // 一覧タブ型 — クライアントコンポーネントではなく共有型ファイルから import する (依存境界の明確化)
 import type { TicketTabId } from '@/features/tickets/types';
 
@@ -95,6 +97,36 @@ export function parseTabParam(raw: string | undefined): TicketTabId {
   // 'mine' か 'overdue' に完全一致する場合のみ採用、それ以外は既定の 'all'
   if (raw === 'mine' || raw === 'overdue') return raw;
   return 'all';
+}
+
+// 「未完了であること」を条件に含む絞り込みの URL キー一覧。
+// 期限絞り込み (?due=...) は両アダプタが「status が終息状態でない」を必ず AND で積み、
+// 「未完了のみ」絞り込み (?open=1) は定義そのものが未完了ステータスの集合なので、
+// どちらも終息ステータス (Resolved / Closed) と同時に指定すると **定義上必ず 0 件**になる。
+const UNRESOLVED_IMPLYING_FILTER_PARAMS = ['due', OPEN_FILTER_PARAM] as const;
+
+/**
+ * 状況 (status) の絞り込みを指定した値に変えるとき、同時に外すべき絞り込みのキーを返す。
+ *
+ * /code-review ultra 指摘対応 (2026-09-15): タブ切替 (TicketTabs) は
+ * 「タブと期限はどちらも期限軸なので、残すと定義上空集合になる組み合わせが 1 クリックで
+ * 作れてしまい、0 件の理由が画面から読み取れない」という理由で ?due= を落としていたが、
+ * 状況ドロップダウン (TicketFilters) は同じ組み合わせを作れるのに落としていなかった。
+ * `?due=soon` の一覧 (ダッシュボードの「期限間近」タイルからの遷移先) で状況に
+ * 「解決済み」を選ぶと、同じ「必ず 0 件」の状態へ 1 クリックで落ちる。
+ * どちらの入口も同じ方針にそろえるため、判定をここに 1 か所だけ置く (§6 DRY)。
+ *
+ * 終息ステータス以外 (未完了ステータス・空文字・列挙外の値) では何も外さない —
+ * 矛盾しない組み合わせまで勝手に解除すると、今度は「指定した絞り込みが黙って消える」
+ * という逆向きの分かりにくさを生む。
+ */
+export function filtersClearedByStatusChange(rawStatus: string): string[] {
+  // 列挙値として読めない値は絞り込み自体が適用されないので、何も外さない
+  if (!isValidStatus(rawStatus)) return [];
+  // 未完了ステータスなら矛盾しないので、何も外さない
+  if (!isCompletedStatus(rawStatus)) return [];
+  // 終息ステータスのときだけ、未完了を前提にする絞り込みを外す
+  return [...UNRESOLVED_IMPLYING_FILTER_PARAMS];
 }
 
 /**

@@ -8,6 +8,8 @@ import { useTransition, useCallback, useRef } from 'react';
 import { getStatusLabel, PRIORITY_LABELS } from '@/lib/constants';
 // 一覧 URL の組み立て (ページャ・期限チップ・タブと共有する純粋関数)
 import { buildTicketsHref } from '@/features/tickets/tickets-href';
+// 状況の変更で外すべき絞り込みキーの判定 (タブ切替と同じ方針を共有する純粋関数)
+import { filtersClearedByStatusChange } from '@/features/tickets/build-filter';
 // Lite モードで使う 3 ステータス (未対応 / 対応中 / 完了) の定義
 import { LITE_STATUSES } from '@/domain/ticket-status';
 // 列挙型 (正準のドメイン型)
@@ -65,12 +67,18 @@ export function TicketFilters({ categories, agents, isAgent, mode, locations }: 
   // 1 つのクエリパラメータを更新して URL に反映するヘルパー
   const update = useCallback(
     (key: string, value: string) => {
+      // 状況に終息ステータス (解決済み / 完了) を選んだときは、「未完了であること」を
+      // 前提にする絞り込み (?due=... / ?open=1) を同時に外す。
+      // /code-review ultra 指摘対応: タブ切替 (TicketTabs) は同じ理由で ?due= を落として
+      // いたのに、こちらは残していたため「定義上必ず 0 件」の組み合わせが 1 クリックで
+      // 作れていた。どのキーを外すかの判定は build-filter.ts に 1 か所だけ置く (§6 DRY)
+      const removeKeys = key === 'status' ? filtersClearedByStatusChange(value) : [];
       // 値があればセット、空なら取り除く (page のリセットと "?" の省略は共通ヘルパーが行う)。
       // /code-review ultra 指摘対応: 「複製して差し替え、page を落とす」という同じ規則が
       // ページャ・期限チップ・タブにも書かれていたため、組み立てだけ 1 か所へ寄せた (§6 DRY)
       const href = buildTicketsHref(
         searchParams,
-        value ? { set: { [key]: value } } : { remove: [key] },
+        value ? { set: { [key]: value }, remove: removeKeys } : { remove: [key] },
       );
       // 非ブロッキングでルーター遷移
       startTransition(() => router.push(href));
