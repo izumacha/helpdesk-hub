@@ -72,11 +72,27 @@ describe('filtersClearedByStatusChange', () => {
 // タブ側 (裏返しの入口)。状況ドロップダウン側だけ塞いでも、
 // `?status=Resolved` の一覧でタブを押せば同じ行き止まりに落ちる
 describe('filtersClearedByTabChange', () => {
-  // 期限絞り込みは常に外すこと (タブと同じ期限軸のため。既存の挙動)
-  it('always clears the due filter', () => {
-    expect(filtersClearedByTabChange('all', undefined)).toContain('due');
-    expect(filtersClearedByTabChange('mine', undefined)).toContain('due');
+  // 期限絞り込みを外すのは、**同じ期限軸を絞るタブ ('overdue') へ切り替えるときだけ**。
+  // /code-review ultra 指摘対応: 以前は無条件に外しており、このテストもその挙動を
+  // 「既存の挙動」として固定していた。だが 'all' / 'mine' は ?due= と矛盾しない
+  // ('all' は条件を 1 つも立てず、'mine' が立てるのは statusIn だけ) ので、
+  // 外すと「指定した絞り込みが黙って消える」逆向きの分かりにくさになる ——
+  // 同じファイルの filtersClearedByStatusChange が明文化している方針に反していた。
+  // とくに `/tickets?due=soon` は tab が未指定なので「すべて」が現在のタブとして
+  // 描画され、**いま開いているタブを押しただけで絞り込みが外れて全件に戻る**状態だった。
+  it('clears the due filter only for the tab that filters on the same deadline axis', () => {
+    // 'overdue' は ?due= と同じ期限軸なので外す (残すと定義上空集合になる組み合わせを作れる)
     expect(filtersClearedByTabChange('overdue', undefined)).toContain('due');
+    // 'all' は条件を 1 つも立てないので、期限絞り込みと矛盾しない
+    expect(filtersClearedByTabChange('all', undefined)).not.toContain('due');
+    // 'mine' が立てるのは statusIn (Open / InProgress) だけで、期限の窓とは共存できる
+    expect(filtersClearedByTabChange('mine', undefined)).not.toContain('due');
+  });
+
+  // 矛盾しない組み合わせでは何も外さないこと (上の 2 つの軸をまとめた確認)
+  it('clears nothing when neither axis conflicts', () => {
+    expect(filtersClearedByTabChange('all', undefined)).toEqual([]);
+    expect(filtersClearedByTabChange('mine', 'Open')).toEqual([]);
   });
 
   // 新しいタブが必ず除く状況が指定されていれば、その状況も外すこと

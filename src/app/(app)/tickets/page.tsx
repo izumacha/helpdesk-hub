@@ -30,7 +30,7 @@ import { CATEGORY_LIST_MATCHING_LIMIT } from '@/data/ports/category-repository';
 import { LOCATION_LIST_MATCHING_LIMIT } from '@/data/ports/location-repository';
 // 期限絞り込み (?due=...) のラベルと正規化 (ダッシュボードのタイルからの drill-down 用。
 // タブと違い常設の UI が無い絞り込みのため、適用中は解除チップで可視化する)
-import { DUE_FILTER_LABELS, parseDueParam } from '@/features/tickets/due-filter';
+import { DUE_FILTER_LABELS, DUE_FILTER_PARAM, parseDueParam } from '@/features/tickets/due-filter';
 // 「未完了のみ」絞り込み (?open=1) のラベルと正規化
 // (ダッシュボードの担当者別ワークロード行からの drill-down 用)
 import {
@@ -191,7 +191,11 @@ export default async function TicketsPage({ searchParams }: Props) {
           タブと違い常設の切替 UI が無い絞り込みのため、「何で絞られているか」と
           「どう解除するか」を必ず画面上で可視化する (見えない絞り込みを作らない) */}
       {activeDue && (
-        <ActiveFilterChip label={DUE_FILTER_LABELS[activeDue]} removeKeys={['due']} sp={sp} />
+        <ActiveFilterChip
+          label={DUE_FILTER_LABELS[activeDue]}
+          removeKeys={[DUE_FILTER_PARAM]}
+          sp={sp}
+        />
       )}
 
       {/* 「未完了のみ」絞り込みチップ: ?open=1 適用中のみ表示する。

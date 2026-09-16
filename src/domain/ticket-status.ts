@@ -24,9 +24,14 @@ const ALLOWED_TRANSITIONS: Record<TicketStatus, TicketStatus[]> = {
 // 並びは遷移表の宣言順 (New → … → Closed) で、そのままライフサイクル順になっている。
 // readonly で公開する — 同ファイルの LITE_STATUSES / COMPLETED_STATUSES と同じ扱いにし、
 // 受け取った側の `sort()` / `push()` が「未完了とは何か」をプロセス全体で書き換えるのを防ぐ
-export const ALL_TICKET_STATUSES: readonly TicketStatus[] = Object.keys(
-  ALLOWED_TRANSITIONS,
-) as TicketStatus[];
+// **Object.freeze まで掛ける。** readonly は型の上だけの約束で実行時には消えるため、
+// `(ALL_TICKET_STATUSES as TicketStatus[]).sort()` や型の無い JS からの呼び出しが
+// 1 度でもあれば、モジュールレベルのこの配列がプロセス全体で並べ替わる
+// (以降すべての ?open=1 の statusIn の並びと、この一覧から作るドロップダウンの並びが変わる)。
+// 上のコメントが約束している保護を、実行時にも成り立たせる
+export const ALL_TICKET_STATUSES: readonly TicketStatus[] = Object.freeze(
+  Object.keys(ALLOWED_TRANSITIONS) as TicketStatus[],
+);
 
 // 業務上「対応が一区切りついた」終息ステータス。
 // **下の getCompletionStatuses とは別物なので混同しないこと** (/code-review ultra 指摘対応)。
@@ -55,8 +60,10 @@ export function isCompletedStatus(status: TicketStatus): status is CompletedStat
 // ステータスを 1 つ足したときに「未完了なのに未完了の一覧に入らない」取りこぼしが
 // 型エラーにならないまま生まれる (フィルタが黙って件数を減らす fail-open になる)。
 // こちらも readonly (理由は ALL_TICKET_STATUSES と同じ)
-export const UNRESOLVED_STATUSES: readonly TicketStatus[] = ALL_TICKET_STATUSES.filter(
-  (status) => !isCompletedStatus(status),
+// こちらも Object.freeze を掛ける (理由は ALL_TICKET_STATUSES と同じ。
+// filter は新しい可変配列を返すので、readonly だけでは実行時の保護にならない)
+export const UNRESOLVED_STATUSES: readonly TicketStatus[] = Object.freeze(
+  ALL_TICKET_STATUSES.filter((status) => !isCompletedStatus(status)),
 );
 
 // 現在状態 from から次状態 to に遷移してよいかを true/false で返す関数
