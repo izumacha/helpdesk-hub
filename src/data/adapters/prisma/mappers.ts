@@ -2,6 +2,7 @@
 import type { Prisma } from '@/generated/prisma';
 // ドメイン型 (アダプタが返すべき型) をインポート
 import type {
+  DeflectionEvent,
   Invitation,
   MagicLinkToken,
   Notification,
@@ -38,6 +39,8 @@ type CommentRow = Prisma.TicketCommentGetPayload<Record<string, never>>;
 type HistoryRow = Prisma.TicketHistoryGetPayload<Record<string, never>>;
 // FaqCandidate テーブルの型エイリアス
 type FaqRow = Prisma.FaqCandidateGetPayload<Record<string, never>>;
+// AI FAQ 自己解決の計測記録の行型 (§4.29)
+type DeflectionEventRow = Prisma.DeflectionEventGetPayload<Record<string, never>>;
 // MagicLinkToken テーブルの型エイリアス
 type MagicLinkRow = Prisma.MagicLinkTokenGetPayload<Record<string, never>>;
 // Invitation テーブルの型エイリアス
@@ -94,6 +97,22 @@ export function toTicket(row: TicketRow): Ticket {
     categoryId: row.categoryId,
     locationId: row.locationId, // 拠点 ID (Phase 4 多拠点。null なら未指定)
     tenantId: row.tenantId, // 所属テナント (マルチテナント化のキー)
+  };
+}
+
+// Prisma の DeflectionEvent 行をドメイン型に変換する (§4.29 AI FAQ 自己解決の計測記録)
+export function toDeflectionEvent(row: DeflectionEventRow): DeflectionEvent {
+  return {
+    id: row.id,
+    outcome: row.outcome, // 決着状態 (Prisma enum とドメイン型は同じ文字列値)
+    candidateCount: row.candidateCount,
+    matchedFaqId: row.matchedFaqId,
+    ticketId: row.ticketId,
+    model: row.model,
+    userId: row.userId,
+    tenantId: row.tenantId, // 所属テナント (マルチテナント化のキー)
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
   };
 }
 

@@ -274,6 +274,7 @@ model Tenant {
   lineConfig        TenantLineConfig? // Phase 2 フォローアップ: LINE 公式アカウント連携設定 (1 テナント 1 件・未設定なら null)
   settingsAuditLogs SettingsAuditLog[] // 設定変更監査ログ (SSO/LINE/通知チャネル設定の変更履歴)
   quarantinedEmails QuarantinedEmail[] // §3.2 フォローアップ: 隔離した受信メールの記録
+  deflectionEvents  DeflectionEvent[] // §6.1 Pro「AI FAQ 自己解決」: 起票前の FAQ 提案の計測記録
 }
 
 // Phase 4 Enterprise: テナント単位の SAML シングルサインオン (SSO) 設定。
@@ -565,6 +566,43 @@ model FaqCandidate {
   createdBy User   @relation(fields: [createdById], references: [id]) // 作成者リレーション
 
   @@index([tenantId]) // テナントスコープ検索用
+}
+
+// ─────────────────────────────────────────────
+// DeflectionEvent (AI FAQ 自己解決の計測記録 / docs/smb-dx-pivot-plan.md §6.1 Pro・§4.29)
+// ─────────────────────────────────────────────
+
+// 起票前の FAQ 提案 (AI デフレクション) が「何件提示され、どう決着したか」を記録する。
+// 提示 (suggested) → 依頼者が「解決した」(resolved) または「問い合わせを続ける」(proceeded) の
+// いずれかで決着する。候補が 1 件も無く提示できなかったときは no_match で記録する。
+enum DeflectionOutcome {
+  suggested // FAQ を提示した (決着待ち)
+  resolved // 提示した FAQ で解決した (起票に至らなかった = 自己解決)
+  proceeded // 提示したが解決せず起票に進んだ
+  no_match // 前段抽出または LLM 照合で該当 FAQ が無かった (提示なし)
+}
+
+model DeflectionEvent {
+  id             String             @id @default(cuid()) // 主キー
+  outcome        DeflectionOutcome  @default(suggested) // 決着状態 (上記 enum)
+  candidateCount Int // LLM に渡した前段抽出済み候補の件数 (前段抽出の効きを見るため)
+  matchedFaqId   String? // LLM が「該当」と判定した FAQ の ID (最上位 1 件。無ければ null)
+  // 起票に進んだ場合に紐づく Ticket の ID。計測用のゆるい参照 (FK を張らない) にして、
+  // チケット削除で計測記録まで連鎖削除されないようにする (自己解決率の分母を保つため)
+  ticketId       String?
+  model          String? // 照合に使った LLM のモデル名 (モデル変更前後の精度比較用。no_match で LLM 未呼び出しなら null)
+  createdAt      DateTime           @default(now()) // 記録日時
+  updatedAt      DateTime           @updatedAt // 決着状態の更新日時
+
+  // 依頼者の入力本文 (件名・内容) は意図的に保存しない (§9 最小公開。隔離メールの「本文は保存しない」
+  // と同じ範囲最小化の考え方。計測に必要なのは件数と決着だけ)。
+  userId String // 提案を受けた依頼者 (User.id。計測用のゆるい参照)
+
+  // 所属テナント (テナント削除で連鎖削除)
+  tenantId String
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, createdAt]) // テナント別の期間集計 (自己解決率) 用
 }
 
 // ─────────────────────────────────────────────

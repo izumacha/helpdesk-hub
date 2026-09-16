@@ -5,6 +5,7 @@ import type { Repos, UnitOfWork } from '@/data/ports/unit-of-work';
 import { makeAttachmentRepo } from './attachment-repository.prisma';
 import { makeAuthAuditLogRepo } from './auth-audit-log-repository.prisma';
 import { makeCategoryRepo } from './category-repository.prisma';
+import { makeDeflectionEventRepo } from './deflection-event-repository.prisma';
 import { makeEmailThreadRepo } from './email-thread-repository.prisma';
 import { makeFaqRepo } from './faq-repository.prisma';
 import { makeInvitationRepo } from './invitation-repository.prisma';
@@ -56,6 +57,7 @@ export function buildPrismaRepos(db: PrismaLike): Repos {
     settingsAudit: makeSettingsAuditLogRepo(db), // §4.2 フォローアップ: 設定変更監査ログ
     authAudit: makeAuthAuditLogRepo(db), // 否認防止: 認証イベント監査ログ
     quarantinedEmails: makeQuarantinedEmailRepo(db), // §3.2 フォローアップ: 隔離した受信メールの記録
+    deflectionEvents: makeDeflectionEventRepo(db), // §4.29 AI FAQ 自己解決の計測記録
   };
 }
 

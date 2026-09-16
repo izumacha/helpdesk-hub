@@ -1,7 +1,7 @@
 'use client';
 
-// ローカル状態 (サーバーエラー / 添付ファイル選択状態 / モバイルステップ) 用
-import { useState } from 'react';
+// ローカル状態 (サーバーエラー / 添付ファイル選択状態 / モバイルステップ / FAQ 提案) 用
+import { useRef, useState } from 'react';
 // react-hook-form 本体 (フォーム状態管理)
 import { useForm } from 'react-hook-form';
 // Zod スキーマと react-hook-form を繋ぐリゾルバー
@@ -24,6 +24,14 @@ import type { TenantMode } from '@/domain/types';
 // MAX_ATTACHMENTS_PER_UPLOAD は UI ヒント表示用、findAttachmentPreflightError は送信前の
 // 添付チェック (サーバー側の検証と同じ規則・文言を返すので、事前に弾いても案内がぶれない)
 import { MAX_ATTACHMENTS_PER_UPLOAD, findAttachmentPreflightError } from '@/domain/attachment';
+// AI FAQ 自己解決 (§4.29): 下書きに対する FAQ 提案の取得と決着記録の Server Action
+import {
+  recordDeflectionOutcome,
+  suggestFaqForDraft,
+  type SuggestFaqResult,
+} from '@/features/deflection/actions/deflection-actions';
+// FAQ 提案パネル (表示専用の Client Component)
+import { FaqSuggestionPanel } from '@/features/deflection/components/FaqSuggestionPanel';
 
 // プルダウン項目用の最小型 (id と name)
 type Category = { id: string; name: string };
@@ -37,6 +45,9 @@ interface Props {
   locations: Location[];
   // テナントの動作モード。'lite' (既定) では件名/内容/期限日のみ表示する
   mode: TenantMode;
+  // AI FAQ 自己解決 (§4.29) が使えるか (Pro 以上 + API キー構成済み)。false なら提案の取得自体を行わない。
+  // サーバー側 (suggestFaqForDraft) でも同じゲートを強制するので、これは無駄な呼び出しを避けるためのヒント
+  deflectionEnabled?: boolean;
 }
 
 // 入力欄に共通で当てるベースクラス (フォーカス時のティールリングを統一)
@@ -57,7 +68,7 @@ function RequiredPill() {
 // 新規チケット作成フォーム (POST /api/tickets を呼ぶ)
 // モバイルではステップ式 UI（ステップ 1: タイトル/内容 → ステップ 2: 写真/オプション）、
 // デスクトップ (sm 以上) では全フィールドを 1 ページに表示する。
-export function TicketForm({ categories, locations, mode }: Props) {
+export function TicketForm({ categories, locations, mode, deflectionEnabled = false }: Props) {
   // 登録成功後の遷移用ルーター
   const router = useRouter();
   // サーバー側エラー (フォーム検証エラーとは別) の保持
@@ -70,11 +81,22 @@ export function TicketForm({ categories, locations, mode }: Props) {
   const [step, setStep] = useState<1 | 2>(1);
   // Lite モードフラグ (件名/内容/期限日のみの簡易フォームに切替)
   const isLite = mode === 'lite';
-  // react-hook-form の各種ヘルパー (trigger でステップ 1 の部分検証を行う)
+  // AI FAQ 自己解決 (§4.29): 直近の提案結果 (null = 未取得)
+  const [suggestion, setSuggestion] = useState<SuggestFaqResult | null>(null);
+  // 提案パネルを閉じたか (「問い合わせを続ける」を押した後は同じ下書きに対して再表示しない)
+  const [suggestionDismissed, setSuggestionDismissed] = useState(false);
+  // 「解決した」を選んだか (フォームを畳んでお礼表示に切り替える)
+  const [suggestionResolved, setSuggestionResolved] = useState(false);
+  // 決着記録の送信中フラグ (二重クリック防止)
+  const [suggestionBusy, setSuggestionBusy] = useState(false);
+  // 直近に提案を取得した下書き (件名+内容)。同じ内容で二重に LLM を呼ばないための記憶
+  const lastSuggestedQueryRef = useRef<string | null>(null);
+  // react-hook-form の各種ヘルパー (trigger でステップ 1 の部分検証を行う、getValues で下書きを読む)
   const {
     register,
     handleSubmit,
     trigger,
+    getValues,
     formState: { errors, isSubmitting },
   } = useForm<CreateTicketFormValues>({
     // Zod でフォームの値を検証
@@ -83,12 +105,68 @@ export function TicketForm({ categories, locations, mode }: Props) {
     defaultValues: { priority: 'Medium' as const },
   });
 
+  // 現在の下書き (件名・内容) に対して FAQ 提案を取得する (AI FAQ 自己解決 / §4.29)。
+  // 機能が無効なら何もしない。同じ下書きに対しては 1 回しか取得しない (LLM 呼び出しは有償)
+  async function requestSuggestion() {
+    // 機能が使えないテナント/環境では呼ばない (サーバー側でも同じゲートを強制している)
+    if (!deflectionEnabled) return;
+    // 件名と内容が入力規則を満たしていなければ提案しない (空の下書きで LLM を呼ばない)
+    const valid = await trigger(['title', 'body']);
+    if (!valid) return;
+    // 現在の下書きを読み取り、前回と同じなら再取得しない
+    const { title, body } = getValues();
+    const query = `${title}\n${body}`;
+    if (lastSuggestedQueryRef.current === query) return;
+    lastSuggestedQueryRef.current = query;
+    // 下書きが変わったので、閉じた状態を解除して新しい提案を受け付ける
+    setSuggestionDismissed(false);
+    try {
+      // Server Action で提案を取得する (プランゲート・レート制限はサーバー側)
+      const result = await suggestFaqForDraft({ title, body });
+      // 結果を保持する (unavailable / none ならパネルは表示されない)
+      setSuggestion(result);
+    } catch (err) {
+      // 提案は起票の補助機能なので画面にはエラーを出さず、コンソールに文脈付きで残す (§6 握り潰さない)
+      console.error('[TicketForm] FAQ 提案の取得に失敗しました', err);
+      setSuggestion(null);
+    }
+  }
+
+  // 「この回答で解決した」: 決着を resolved として記録し、フォームを畳んでお礼を表示する
+  async function handleSuggestionResolved() {
+    // 提示中の記録 ID が無ければ何もしない
+    if (suggestion?.status !== 'suggested') return;
+    // 二重クリック防止
+    setSuggestionBusy(true);
+    try {
+      // 決着を記録する (失敗しても画面上は解決扱いにする。記録は計測用途のため)
+      await recordDeflectionOutcome({ eventId: suggestion.eventId, outcome: 'resolved' });
+    } catch (err) {
+      // 記録失敗はコンソールに残す (§6)
+      console.error('[TicketForm] FAQ 提案の決着 (resolved) の記録に失敗しました', err);
+    } finally {
+      // 送信中フラグを戻す
+      setSuggestionBusy(false);
+    }
+    // お礼表示に切り替える (フォーム本体は非表示になる)
+    setSuggestionResolved(true);
+  }
+
+  // 「解決しなかったので問い合わせを続ける」: パネルを閉じるだけ。決着 (proceeded) は
+  // 実際にチケットが登録された時点でチケット ID と一緒に記録する (途中離脱は suggested のまま = 未決着)
+  function handleSuggestionProceed() {
+    // パネルを閉じる
+    setSuggestionDismissed(true);
+  }
+
   // 「次へ」ボタン: ステップ 1 の必須フィールド (タイトル・内容) を検証してからステップ 2 へ進む
   async function handleNext() {
     // タイトルと内容だけを部分的に検証する (ステップ 2 フィールドはスキップ)
     const valid = await trigger(['title', 'body']);
     // 検証が通った場合のみステップを進める
     if (valid) setStep(2);
+    // ステップ 2 に進んだタイミングで FAQ 提案を取得する (モバイルの主経路。結果はステップ 2 の先頭に出る)
+    if (valid) void requestSuggestion();
   }
 
   // モバイルのステップ 2 でフォームを送信したとき、ステップ 1 のフィールド (title/body) に
@@ -190,6 +268,17 @@ export function TicketForm({ categories, locations, mode }: Props) {
     // オブジェクトが素通りして /tickets/[object Object] へ飛んでしまうため。
     // encodeURIComponent は、ID に / や .. が混ざっていても別のパスへ化けないようにする
     if (typeof ticket?.id === 'string' && ticket.id.length > 0) {
+      // FAQ を提示していたのに起票に至った場合は、決着 (proceeded) をチケット ID 付きで記録する。
+      // 計測用途なので遷移を待たせず (await しない)、失敗はコンソールに残すだけにする (§6)
+      if (suggestion?.status === 'suggested') {
+        void recordDeflectionOutcome({
+          eventId: suggestion.eventId,
+          outcome: 'proceeded',
+          ticketId: ticket.id,
+        }).catch((err: unknown) => {
+          console.error('[TicketForm] FAQ 提案の決着 (proceeded) の記録に失敗しました', err);
+        });
+      }
       router.push(`/tickets/${encodeURIComponent(ticket.id)}`);
       return;
     }
@@ -220,7 +309,11 @@ export function TicketForm({ categories, locations, mode }: Props) {
 
       {/* ===== ステップ 1: タイトル + 内容 ===== */}
       {/* モバイル: step === 1 のときだけ表示 (hidden で隠し、sm:block で上書き)。デスクトップ: 常時表示 */}
-      <div className={step === 1 ? 'space-y-6' : 'hidden space-y-6 sm:block'}>
+      <div
+        className={
+          suggestionResolved ? 'hidden' : step === 1 ? 'space-y-6' : 'hidden space-y-6 sm:block'
+        }
+      >
         {/* タイトル */}
         <div>
           <label
@@ -254,7 +347,11 @@ export function TicketForm({ categories, locations, mode }: Props) {
           </label>
           <textarea
             id="body"
-            {...register('body')}
+            {...register('body', {
+              // 内容欄からフォーカスが外れたときに FAQ 提案を取得する (デスクトップの主経路。
+              // react-hook-form の onBlur 登録と両立させるため register のオプションで合成する)
+              onBlur: () => void requestSuggestion(),
+            })}
             rows={6}
             maxLength={10000}
             aria-invalid={errors.body ? 'true' : 'false'}
@@ -265,9 +362,27 @@ export function TicketForm({ categories, locations, mode }: Props) {
         </div>
       </div>
 
+      {/* ===== AI FAQ 自己解決 (§4.29): 下書きに似た公開済み FAQ の提案 ===== */}
+      {/* 提示があり、まだ閉じていない間だけ表示する。モバイルはステップ 2 の先頭、デスクトップは内容欄の直後に出る */}
+      {suggestion?.status === 'suggested' && (suggestionResolved || !suggestionDismissed) && (
+        <div className={step === 2 || suggestionResolved ? '' : 'hidden sm:block'}>
+          <FaqSuggestionPanel
+            matches={suggestion.matches}
+            resolved={suggestionResolved}
+            busy={suggestionBusy}
+            onResolved={handleSuggestionResolved}
+            onProceed={handleSuggestionProceed}
+          />
+        </div>
+      )}
+
       {/* ===== ステップ 2: 写真 + 任意オプション ===== */}
-      {/* モバイル: step === 2 のときだけ表示。デスクトップ: 常時表示 */}
-      <div className={step === 2 ? 'space-y-6' : 'hidden space-y-6 sm:block'}>
+      {/* モバイル: step === 2 のときだけ表示。デスクトップ: 常時表示。「解決した」後は非表示 */}
+      <div
+        className={
+          suggestionResolved ? 'hidden' : step === 2 ? 'space-y-6' : 'hidden space-y-6 sm:block'
+        }
+      >
         {/* 添付ファイル (任意。スマホで撮った写真を最大 5 枚まで添付できる) */}
         <div>
           <label htmlFor="files" className="mb-1.5 block text-sm font-medium text-slate-700">
@@ -370,6 +485,19 @@ export function TicketForm({ categories, locations, mode }: Props) {
         )}
       </div>
 
+      {/* 「解決した」後の導線: 一覧へ戻るボタンだけを出す (フォーム本体と登録ボタンは非表示) */}
+      {suggestionResolved && (
+        <div className="flex justify-end border-t border-slate-100 pt-5">
+          <button
+            type="button"
+            onClick={() => router.push('/tickets')}
+            className="rounded-lg bg-teal-700 px-5 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-teal-800"
+          >
+            一覧へ戻る
+          </button>
+        </div>
+      )}
+
       {/* Lite モードでは優先度を Medium に固定し、Zod 必須バリデーションを満たすために hidden で保持する */}
       {isLite && <input type="hidden" {...register('priority')} value="Medium" />}
 
@@ -387,7 +515,9 @@ export function TicketForm({ categories, locations, mode }: Props) {
       {/* デスクトップ: キャンセル + 登録する (右寄せ) */}
       {/* モバイル ステップ 1: キャンセル + 次へ → */}
       {/* モバイル ステップ 2: ← 戻る + 登録する */}
-      <div className="flex items-center justify-between border-t border-slate-100 pt-5 sm:justify-end sm:gap-3">
+      <div
+        className={`flex items-center justify-between border-t border-slate-100 pt-5 sm:justify-end sm:gap-3 ${suggestionResolved ? 'hidden' : ''}`}
+      >
         {/* キャンセル (デスクトップ常時 + モバイルステップ 1 のみ) */}
         <button
           type="button"
