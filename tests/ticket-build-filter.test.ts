@@ -5,6 +5,9 @@ import { describe, expect, it } from 'vitest';
 import { buildTicketListFilter } from '../src/features/tickets/build-filter';
 // 未完了ステータス一覧 (期待値を書き写さず実装と同じ参照元から導出する。§6 一元管理)
 import { UNRESOLVED_STATUSES } from '../src/domain/ticket-status';
+// 優先度ごとの SLA 時間表。アプリ内で唯一の Record<Priority, …> で、
+// 「存在する優先度の一覧」を型で強制している宣言 (build-filter の導出元と同じ)
+import { SLA_RESOLUTION_HOURS_BY_PRIORITY } from '../src/lib/sla';
 
 // /code-review ultra 指摘対応 (2026-09-15): 個々のヘルパー (applyOpenFilter /
 // parseOpenParam / applyTabFilter / applyDueFilter) には単体テストがあるのに、
@@ -86,5 +89,26 @@ describe('buildTicketListFilter', () => {
     const filter = buildTicketListFilter({ status: 'Bogus', priority: 'Urgent' }, AGENT_CTX);
     expect(filter.status).toBeUndefined();
     expect(filter.priority).toBeUndefined();
+  });
+
+  // **実在するすべての優先度が絞り込みとして通ること。**
+  //
+  // /code-review ultra 指摘対応: 有効な優先度の一覧は
+  // `['Low','Medium','High'] as const satisfies Priority[]` と書き並べられていた。
+  // `satisfies` が確かめるのは「列挙した各要素が Priority であること」だけで、
+  // **全部が列挙されていることは検査しない** (実測: domain/types.ts の Priority に
+  // 値を足しても、その宣言に対する型エラーは 1 件も出なかった)。
+  // 取り残されると `?priority=<新しい値>` が黙って捨てられ、一覧も CSV エクスポートも
+  // **絞り込み無しの全件**を返す一方でドロップダウンはその値を選択済みに見せる。
+  //
+  // いまは Record<Priority, …> のキーから導出しているので、この検査は今日は自明に通る。
+  // **load-bearing になるのは「literal の列挙へ戻され、かつ優先度が増えたとき」**で、
+  // そのとき表 (SLA の Record) だけが型検査で追随し、literal が取り残されて落ちる。
+  it('accepts every priority that actually exists', () => {
+    // 型で網羅性が強制されている唯一の宣言から、実在する優先度を取り出す
+    for (const priority of Object.keys(SLA_RESOLUTION_HOURS_BY_PRIORITY)) {
+      // どの優先度も「絞り込みとして採用された」状態になること (undefined に倒れない)
+      expect(buildTicketListFilter({ priority }, AGENT_CTX).priority).toBe(priority);
+    }
   });
 });

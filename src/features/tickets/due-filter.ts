@@ -21,6 +21,15 @@ import { formatDateISO, endOfDayJST } from '@/lib/format-date';
 // 期限絞り込みの識別子型 (URL クエリ ?due=... と対応する値)
 export type TicketDueId = 'soon' | 'today';
 
+// URL 上の「期限」軸の絞り込みキー。
+// **この概念を所有するこのモジュールが唯一の参照元**として公開する (open-filter.ts の
+// OPEN_FILTER_PARAM と同じ扱い)。以前はキーの綴りが 3 か所 —— build-filter.ts の private 定数・
+// 一覧ページのチップの removeKeys のリテラル・この値を読む側 —— に散っており、
+// 改名すると buildTicketsHref が「もう存在しないキー」を消しに行って
+// **チップは出るのに「解除」リンクが同じ URL を返す (絞り込みを外せない)** 状態になった
+// (CLAUDE.md §6「マジック文字列を避ける…単一の参照元に置く」)
+export const DUE_FILTER_PARAM = 'due';
+
 // 期限絞り込みの日本語表示ラベル (一覧の「絞り込み中」チップとダッシュボードのタイルで共有)
 export const DUE_FILTER_LABELS: Record<TicketDueId, string> = {
   // SLA 警告帯 (残り DEFAULT_WARNING_THRESHOLD_MS 以内) の未解決。

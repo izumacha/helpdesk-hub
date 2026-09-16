@@ -13,10 +13,13 @@ import { ALL_TICKET_STATUSES, isCompletedStatus } from '@/domain/ticket-status';
 // リポジトリポートが要求するフィルタ型
 import type { TicketListFilter } from '@/data/ports/ticket-repository';
 // タブ絞り込みを共通ヘルパーに委譲する (mine / overdue タブは一覧とダッシュボードで共有)
+// 優先度ごとの SLA 時間表。**アプリ内で唯一の Record<Priority, …>** なので、
+// 「存在する優先度の一覧」の導出元として使う (理由は VALID_PRIORITIES のコメント)
+import { SLA_RESOLUTION_HOURS_BY_PRIORITY } from '@/lib/sla';
 import { applyTabFilter } from '@/features/tickets/tab-filter';
 // 期限絞り込み (?due=soon / ?due=today) を共通ヘルパーに委譲する
 // (ダッシュボードの SLA 系タイルの件数と drill-down 先の一覧を一致させる。監査フォローアップ 2026-09-09)
-import { applyDueFilter, parseDueParam } from '@/features/tickets/due-filter';
+import { applyDueFilter, DUE_FILTER_PARAM, parseDueParam } from '@/features/tickets/due-filter';
 // 「未完了のみ」絞り込み (?open=1) を共通ヘルパーに委譲する
 // (ダッシュボードの担当者別ワークロードの件数と drill-down 先の一覧を一致させる)
 import { applyOpenFilter, OPEN_FILTER_PARAM, parseOpenParam } from '@/features/tickets/open-filter';
@@ -55,7 +58,21 @@ export interface TicketFilterContext {
 // ALL_TICKET_STATUSES は遷移表 ALLOWED_TRANSITIONS のキーから導出されるので、
 // Record<TicketStatus, ...> の型検査によって追随が強制される。
 
-const VALID_PRIORITIES = ['Low', 'Medium', 'High'] as const satisfies Priority[];
+// 有効な優先度の一覧も **網羅性が型で強制される宣言から導出する** (ここに書き並べない)。
+// 上のステータスとまったく同じ理由: `as const satisfies Priority[]` が確かめるのは
+// 「列挙した各要素が Priority であること」だけで、**全部が列挙されていることは検査しない**。
+// 実測: domain/types.ts の Priority に値を 1 つ足しても、この宣言に対する型エラーは
+// **1 件も出なかった** (落ちたのは Prisma の enum と SLA の表だけで、どちらも
+// 優先度を足す作業の一環として直る。取り残されるのはここだけ)。
+// その状態で `?priority=<新しい値>` が届くと isValidPriority が false を返し、
+// buildTicketListFilter は priority を undefined にするため、
+// **一覧も CSV エクスポートも「絞り込み無しの全件」を返す一方でドロップダウンは
+// その値を選択済みとして表示する** —— このファイルが塞ごうとしている fail-open そのもの。
+// SLA_RESOLUTION_HOURS_BY_PRIORITY は Record<Priority, number> なので、
+// Priority に値を足すとキー不足で typecheck が落ち、この一覧も必ず追随する
+// (現時点でアプリ内に存在する唯一の Record<Priority, …>。優先度を所有する表が
+// 他にできたらそちらへ移す)。
+const VALID_PRIORITIES = Object.keys(SLA_RESOLUTION_HOURS_BY_PRIORITY) as Priority[];
 
 /**
  * クエリ文字列のステータスが TicketStatus 列挙に含まれるかを判定する型ガード。
@@ -70,7 +87,7 @@ export function isValidStatus(s: string): s is TicketStatus {
  * クエリ文字列の優先度が Priority 列挙に含まれるかを判定する型ガード。
  */
 export function isValidPriority(p: string): p is Priority {
-  // VALID_PRIORITIES は satisfies Priority[] で型検査済み
+  // VALID_PRIORITIES は Record<Priority, …> のキーから導出されるので、優先度の追加に必ず追随する
   return (VALID_PRIORITIES as readonly string[]).includes(p);
 }
 
@@ -98,9 +115,18 @@ export function parseTabParam(raw: string | undefined): TicketTabId {
   return 'all';
 }
 
-// URL 上の「期限」軸の絞り込みキー。タブの 'overdue' と ?due=... は同じ軸で、
-// どちらも両アダプタが「status が終息状態でない」を必ず AND で積む。
-const DUE_FILTER_PARAM = 'due';
+/**
+ * そのタブは、期限 (?due=...) と同じ軸でチケットを絞るか。
+ *
+ * **タブが何を絞るかをここに書き写さない** — tabExcludesStatus と同じく applyTabFilter を
+ * 実際に通し、立った条件から判定する。
+ */
+function tabConstrainsDueDate(tab: TicketTabId): boolean {
+  // 空の base にタブ条件だけを適用して、そのタブが立てる条件を取り出す
+  const applied = applyTabFilter({}, tab, { isAgent: false, userId: '', now: new Date() });
+  // 期限超過で絞るタブ ('overdue') だけが ?due= と同じ「期限」軸に条件を立てる
+  return applied.overdue !== undefined;
+}
 
 /**
  * そのタブは、指定した状態のチケットを結果から必ず除くか。
@@ -161,8 +187,22 @@ export function filtersClearedByTabChange(
   tab: TicketTabId, // これから適用するタブ
   rawStatus: string | undefined, // 現在の状況 (URL クエリの生文字列)
 ): string[] {
-  // 期限絞り込みは常に外す (タブと同じ期限軸なので、残すと定義上空集合になる組み合わせを作れる)
-  const cleared: string[] = [DUE_FILTER_PARAM];
+  // 外すキーを集める入れ物
+  const cleared: string[] = [];
+  // 期限絞り込みを外すのは、**そのタブが同じ期限軸を絞るときだけ** (= 'overdue')。
+  // /code-review ultra 指摘対応: 以前は無条件に外していたため、'all' / 'mine' へ
+  // 切り替えるだけで ?due= が黙って消えていた。とくに `/tickets?due=soon`
+  // (ダッシュボードの「期限間近」タイルからの遷移) では tab が未指定なので
+  // TicketTabs は「すべて」を**現在のタブ**として描画する —— つまり
+  // **いま開いているタブを押しただけで絞り込みが外れ**、一覧が全件に戻り、
+  // チップも消え、理由が画面のどこにも出ない状態だった。
+  // 'all' は条件を 1 つも立てず、'mine' が立てるのは statusIn (Open/InProgress) なので、
+  // どちらも ?due= と組み合わせて空集合にはならない (applyTabFilter が正本)。
+  // これは同じファイルの filtersClearedByStatusChange が
+  // 「矛盾しない組み合わせでは何も外さない — 勝手に解除すると、今度は
+  // 『指定した絞り込みが黙って消える』という逆向きの分かりにくさを生む」と
+  // 書いている方針そのもので、裏返しの関数だけが従っていなかった
+  if (tabConstrainsDueDate(tab)) cleared.push(DUE_FILTER_PARAM);
   // 現在の状況が読めて、かつ新しいタブがその状態を除くなら、状況も外す
   if (rawStatus && isValidStatus(rawStatus) && tabExcludesStatus(tab, rawStatus)) {
     cleared.push('status');

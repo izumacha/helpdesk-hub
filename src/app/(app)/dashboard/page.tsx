@@ -16,7 +16,7 @@ import { getCurrentTenantMode } from '@/lib/tenant';
 import { getTutorialVideoUrl } from '@/lib/tutorial-video';
 // タブ ('mine' / 'overdue') の絞り込み条件を一元管理する純粋関数 (一覧ページと共有)
 // 終息ステータス (Resolved / Closed) の唯一の参照元。ワークロード集計の除外に使う (§6 一元管理)
-import { COMPLETED_STATUSES } from '@/domain/ticket-status';
+import { ALL_TICKET_STATUSES, COMPLETED_STATUSES } from '@/domain/ticket-status';
 // 「未完了のみ」絞り込みの URL クエリ (ワークロード行の drill-down 先を件数と一致させる)
 import { OPEN_FILTER_PARAM, OPEN_FILTER_VALUE } from '@/features/tickets/open-filter';
 import { applyTabFilter } from '@/features/tickets/tab-filter';
@@ -174,21 +174,20 @@ export default async function DashboardPage({ searchParams }: Props) {
   // ID → 名前の辞書を作成
   const nameMap = Object.fromEntries(assigneeNames.map((u) => [u.id, u.name]));
 
-  // ステータスカードに表示する順序付き配列 (byStatus からそのまま取り出す)
-  // status を TicketStatus 型で明示し、STATUS_LABELS[card.status] の型安全な参照を保つ
-  // フォローアップ (2026-07-11 #3): 「Closed」が抜けており、TicketRepository.dashboardStats が
-  // 集計している 7 状態のうち 1 状態が画面に一切表示されていなかった (下の Closed カードを参照)
-  const statCards: { status: TicketStatus; count: number }[] = [
-    { status: 'New', count: stats.byStatus.New },
-    { status: 'Open', count: stats.byStatus.Open },
-    { status: 'WaitingForUser', count: stats.byStatus.WaitingForUser },
-    { status: 'InProgress', count: stats.byStatus.InProgress },
-    { status: 'Escalated', count: stats.byStatus.Escalated },
-    { status: 'Resolved', count: stats.byStatus.Resolved },
-    // フォローアップ (2026-07-11 #3): Resolved とは別の独立した終了状態のため追加する
-    // (ALLOWED_TRANSITIONS 上はどの状態からも直接 Closed へ遷移可能で、Resolved の別名ではない)
-    { status: 'Closed', count: stats.byStatus.Closed },
-  ];
+  // ステータスカードに表示する順序付き配列。
+  // **値を書き並べず ALL_TICKET_STATUSES から導出する。** 手で列挙すると、
+  // ステータスを 1 つ足したときに型エラーにならないまま画面から欠ける
+  // (dashboardStats 側は Record<TicketStatus, number> なので集計はされ、返っても
+  // 誰も描画しない = 「そのステータスのチケットが 0 件」と読める画面になる)。
+  // フォローアップ (2026-07-11 #3) が記録しているとおり、この事故は実際に 1 度出荷されている
+  // ——「Closed」が列挙から抜けており、集計している 7 状態のうち 1 状態が
+  // 画面に一切表示されていなかった。列挙を残すかぎり同じ事故はいつでも再発する。
+  // ALL_TICKET_STATUSES は遷移表 ALLOWED_TRANSITIONS のキーから導出されるので、
+  // Record<TicketStatus, ...> の型検査によって追随が強制される。
+  // 並びも遷移表の宣言順 (New → … → Closed) で、そのままライフサイクル順になっている
+  const statCards: { status: TicketStatus; count: number }[] = ALL_TICKET_STATUSES.map(
+    (status) => ({ status, count: stats.byStatus[status] }),
+  );
 
   // ワークロードの最大件数 (負荷バーの長さを最大値比で描くための分母。0 除算は max で回避)
   const workloadMax = Math.max(1, ...workload.map((row) => row.count));
