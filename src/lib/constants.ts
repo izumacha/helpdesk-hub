@@ -156,6 +156,14 @@ export const FAQ_STATUS_LABELS: Record<string, string> = {
   Rejected: '却下',
 };
 
+// AI FAQ 自己解決 (§4.29) の決着状態の日本語ラベル (計測画面・CSV 等で表示するときの単一の源)
+export const DEFLECTION_OUTCOME_LABELS: Record<string, string> = {
+  suggested: '提示 (未決着)',
+  resolved: '自己解決',
+  proceeded: '起票に進んだ',
+  no_match: '該当なし',
+};
+
 // FAQ 状態ごとのバッジ配色 (Tailwind CSS クラス) ─ ステータスバッジと同方針
 export const FAQ_STATUS_COLORS: Record<string, string> = {
   Candidate: 'bg-amber-50 text-amber-800 ring-1 ring-amber-200', // 候補: アンバー

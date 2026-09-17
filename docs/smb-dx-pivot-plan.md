@@ -1976,6 +1976,49 @@ complete-signup.ts`）だけは対象から漏れていた。`requestSignup`・`
   可視化する）。常設にするかは Lite / Pro の絞り込み UI をまとめて見直す差分で決める
   （§6「変更は最小スコープに保つ」）。
 
+#### 4.29 AI FAQ 自己解決（2026-09-16・Pro 差別化 / §6.1「FAQ」の拡張）
+
+競合調査で見つかったギャップ: Zendesk / Freshdesk / PKSHA / HiTTO など主要競合は「起票前の AI 自動応答」を
+標準機能として持ち（自己解決率 40% 前後を訴求）、本プロダクトには**公開済み FAQ を依頼者に届ける仕組みが
+「/faq 一覧を自分で探しに行く」しか無かった**。§2 のギャップ分析「またこの質問か」を減らすニーズに対し、
+FAQ を作る側（エージェント）の導線しか整っておらず、読む側（依頼者）が起票の瞬間に FAQ へ到達できなかった。
+
+**方針**: 起票フォームの下書き（件名・内容）に似た公開済み FAQ を **AI が照合して起票前に提示**し、
+「この回答で解決した」なら起票せずに終われるようにする（AI デフレクション）。Pro / Enterprise 限定
+（§6.1 の Pro「FAQ」を拡張する差別化要素。LLM 呼び出しコストを伴うためトライアルの Standard 相当では昇格しない）。
+
+- **2 段構え（コストと幻覚の両方を抑える）**: (1) 前段抽出 — 公開済み FAQ 全件（上限 `FAQ_LIST_LIMIT`）から
+  文字 bigram の Dice 係数で上位 `DEFLECTION_CANDIDATE_LIMIT`（8）件を選ぶ純粋関数
+  （`src/domain/deflection.ts` の `rankFaqCandidates`。日本語は分かち書きが無いので単語分割ではなく文字 bigram）。
+  候補ゼロなら LLM を呼ばない。(2) LLM 照合 — Anthropic Messages API（Haiku 級。`src/lib/deflection-llm.ts`。
+  モデル名は `DEFLECTION_MODEL`、キーは `ANTHROPIC_API_KEY`）に候補と入力を渡し、tool use で
+  `{faqId, confidence}` の判定だけを返させる。
+- **引用の真正性を機械的に強制する**: LLM の判定は `validateMatcherVerdict` で候補集合と突き合わせ、
+  **候補に無い ID（幻覚）・確信度 `DEFLECTION_MIN_CONFIDENCE`（0.6）未満・型崩れを捨てる**。画面に出す
+  質問/回答は LLM の生成文ではなく DB の FAQ 本文をそのまま引用する（回答を言い換えさせない）。
+- **計測（`DeflectionEvent`）**: 提示 `suggested` → 「解決した」`resolved` / 起票 `proceeded`（チケット ID 付き）、
+  候補なし `no_match` を記録する。**依頼者の入力本文は保存しない**（§9 最小公開。隔離メールと同じ考え方）。
+  決着の更新はテナント + 本人 + 期待状態の CAS（`updateOutcome`）で、二重送信の後勝ちを防ぐ。
+  自己解決率 = resolved ÷ (resolved + proceeded) をダッシュボードに出すのは次の差分（§6.3 KPI 候補）。
+- **サーバー側ゲート**: Server Action `suggestFaqForDraft` / `recordDeflectionOutcome`
+  （`src/features/deflection/actions/`）が `auth()` → Zod → `isAiDeflectionAllowed(plan)` → レート制限
+  （提案 10 回/分、決着 30 回/分）→ tenantId スコープの順に強制する。起票フォームの `deflectionEnabled` は
+  無駄な呼び出しを避けるヒントに過ぎない。LLM 失敗・未構成・レート超過はいずれも `unavailable`（提案が出ないだけで
+  起票は続行できる fail-safe）。
+- **UI**（`TicketForm` + `FaqSuggestionPanel`）: デスクトップは内容欄のフォーカスが外れたとき、モバイルは
+  「次へ」でステップ 2 に進んだときに 1 回だけ提案を取得する（同じ下書きでは再取得しない）。
+  「この回答で解決した」→ フォームを畳んでお礼表示（起票しない）。「解決しなかったので問い合わせを続ける」→
+  パネルを閉じるだけで、`proceeded` は実際に登録できた時点でチケット ID と一緒に記録する（途中離脱は `suggested` のまま）。
+
+**残っている課題（記録）**:
+
+- **自己解決率のダッシュボード表示**と、`DeflectionEvent` の CSV エクスポートは未実装（計測の蓄積が先）。
+- **解決済みチケットからの FAQ 自動下書き**（フライホイール）は Step 2 として別差分で扱う。
+- **前段抽出の閾値** `DEFLECTION_MIN_PREFILTER_SCORE`（0.05）と確信度 0.6 は初期値。A/B テスト
+  （`ab_test.py`。18/20 精度・20/20 引用真正性・幻覚 0 を採用条件）の実測で見直す。
+- **LINE / メール取り込み経路には提案を出していない**（Web フォームの下書きだけ）。取り込み経路は
+  起票が先に確定するため、自動返信としての FAQ 提示は別設計が要る。
+
 ### スケジュール感
 
 ```
@@ -2143,7 +2186,7 @@ LINE 連携済みの依頼者だけが優先度変更に気づけないという
 | --- | --- | --- | --- |
 | Free | 0 円 | 3 名まで | 月 50 件 / メール取り込み不可 / ロゴ表示 |
 | Standard | 4,980 円 | 10 名まで | Lite モードフル / メール取り込み / 添付 1GB |
-| Pro | 14,800 円 | 30 名まで | Pro モード（SLA・エスカレーション・FAQ）/ LINE 連携 / 監査ログ |
+| Pro | 14,800 円 | 30 名まで | Pro モード（SLA・エスカレーション・FAQ）/ AI FAQ 自己解決（§4.29）/ LINE 連携 / 監査ログ |
 | Enterprise | 個別見積 | 無制限 | SSO（SAML）/ 監査強化 / SLA 契約 |
 
 ### 6.2 販売チャネル

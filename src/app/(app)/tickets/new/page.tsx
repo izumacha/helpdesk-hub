@@ -11,6 +11,10 @@ import { getCurrentTenantMode } from '@/lib/tenant';
 // 網羅的な上限を明示的に渡す (未指定のままだと 201 件目以降が選べなくなる)
 import { CATEGORY_LIST_MATCHING_LIMIT } from '@/data/ports/category-repository';
 import { LOCATION_LIST_MATCHING_LIMIT } from '@/data/ports/location-repository';
+// AI FAQ 自己解決 (§4.29): プランゲート (Pro 以上) と API キー構成の有無で提案 UI を出すか決める
+import { isAiDeflectionAllowed } from '@/lib/plan-guard';
+import { resolveTenantPlan } from '@/lib/tenant-plan';
+import { isDeflectionConfigured } from '@/lib/deflection-llm';
 
 // /tickets/new : 新規チケット作成ページ (Server Component)
 export default async function NewTicketPage() {
@@ -21,13 +25,18 @@ export default async function NewTicketPage() {
 
   // セッションから tenantId を取り出し以降の port 呼び出しに伝搬する
   const tenantId = session.user.tenantId;
-  // カテゴリ一覧・テナント mode・拠点一覧を並列取得する
-  const [categories, mode, locations] = await Promise.all([
+  // カテゴリ一覧・テナント mode・拠点一覧・実効プランを並列取得する
+  const [categories, mode, locations, plan] = await Promise.all([
     repos.categories.list(tenantId, { limit: CATEGORY_LIST_MATCHING_LIMIT }),
     getCurrentTenantMode(tenantId),
     // Phase 4 多拠点: 拠点プルダウン用の一覧を取得する
     repos.locations.listByTenant(tenantId, { limit: LOCATION_LIST_MATCHING_LIMIT }),
+    // §4.29: AI FAQ 自己解決のプランゲート判定用 (トライアル昇格を含む実効プラン)
+    resolveTenantPlan(tenantId),
   ]);
+  // AI FAQ 自己解決の提案 UI を有効にするか (Pro 以上 かつ API キー構成済み)。
+  // サーバー側 (suggestFaqForDraft) でも同じゲートを強制するため、ここは無駄な呼び出しを避けるヒント
+  const deflectionEnabled = isAiDeflectionAllowed(plan) && isDeflectionConfigured();
 
   return (
     // 中央寄せの幅 max-w-2xl コンテナ
@@ -44,7 +53,12 @@ export default async function NewTicketPage() {
       {/* 白カードに包んでフォームを描画 (モバイルは余白を控えめに) */}
       <div className="rounded-2xl bg-white p-6 shadow-sm ring-1 ring-slate-100 sm:p-8">
         {/* locations を渡すことで拠点プルダウンが表示される (登録なしなら非表示) */}
-        <TicketForm categories={categories} locations={locations} mode={mode} />
+        <TicketForm
+          categories={categories}
+          locations={locations}
+          mode={mode}
+          deflectionEnabled={deflectionEnabled}
+        />
       </div>
     </div>
   );

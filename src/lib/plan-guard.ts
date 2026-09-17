@@ -91,6 +91,14 @@ export function isLineIntegrationAllowed(plan: SubscriptionPlan): boolean {
   return plan === 'pro' || plan === 'enterprise';
 }
 
+// AI FAQ 自己解決 (起票前の FAQ 提案。docs/smb-dx-pivot-plan.md §4.29 / §6.1) の利用可否 (Pro 以上)。
+// LLM 呼び出しコストを伴う機能のため Pro / Enterprise の差別化要素として位置づける。
+// トライアル (Standard 相当) では昇格しない (resolveEffectivePlan の「Standard 相当」の範囲外)
+export function isAiDeflectionAllowed(plan: SubscriptionPlan): boolean {
+  // Pro / Enterprise プランのみ AI FAQ 自己解決を利用できる
+  return plan === 'pro' || plan === 'enterprise';
+}
+
 // Pro モードへの切替を許可するプランの一覧 (単一の源)。isProModeAllowed だけでなく、
 // TenantRepository.updateMode の原子的な CAS (compare-and-swap) 更新の where 条件にも
 // そのまま渡す (監査で発見したギャップ対応: 管理者操作と Stripe Webhook 由来の自動

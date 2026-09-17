@@ -1,6 +1,7 @@
 // ドメイン型をインポート (メモリストア内に保持するデータ型)
 import type {
   AuthAuditLog,
+  DeflectionEvent,
   FaqCandidate,
   Invitation,
   Location,
@@ -84,6 +85,7 @@ export interface Store {
   settingsAuditLogs: Map<string, SettingsAuditLog>; // §4.2 フォローアップ: 設定変更監査ログ
   authAuditLogs: Map<string, AuthAuditLog>; // 否認防止 (課題棚卸し 2026-07-26): 認証イベント監査ログ
   quarantinedEmails: Map<string, QuarantinedEmail>; // §3.2 フォローアップ: 隔離した受信メールの記録
+  deflectionEvents: Map<string, DeflectionEvent>; // §4.29 AI FAQ 自己解決の計測記録
   idSeq: { value: number }; // 連番生成用のカウンタ (オブジェクトに包んで参照共有)
 }
 
@@ -113,6 +115,7 @@ export function createEmptyStore(): Store {
     settingsAuditLogs: new Map(), // §4.2 フォローアップ: 設定変更監査ログ
     authAuditLogs: new Map(), // 否認防止: 認証イベント監査ログ
     quarantinedEmails: new Map(), // §3.2 フォローアップ: 隔離した受信メールの記録
+    deflectionEvents: new Map(), // §4.29 AI FAQ 自己解決の計測記録
     idSeq: { value: 0 },
   };
 }
@@ -143,6 +146,7 @@ export function cloneStore(src: Store): Store {
     settingsAuditLogs: new Map(src.settingsAuditLogs), // §4.2 フォローアップ: 設定変更監査ログ
     authAuditLogs: new Map(src.authAuditLogs), // 否認防止: 認証イベント監査ログ
     quarantinedEmails: new Map(src.quarantinedEmails), // §3.2 フォローアップ: 隔離した受信メールの記録
+    deflectionEvents: new Map(src.deflectionEvents), // §4.29 AI FAQ 自己解決の計測記録
     idSeq: { value: src.idSeq.value },
   };
 }
@@ -172,6 +176,7 @@ export function overwriteStore(dst: Store, src: Store): void {
   dst.settingsAuditLogs = new Map(src.settingsAuditLogs); // §4.2 フォローアップ: 設定変更監査ログ
   dst.authAuditLogs = new Map(src.authAuditLogs); // 否認防止: 認証イベント監査ログ
   dst.quarantinedEmails = new Map(src.quarantinedEmails); // §3.2 フォローアップ: 隔離した受信メールの記録
+  dst.deflectionEvents = new Map(src.deflectionEvents); // §4.29 AI FAQ 自己解決の計測記録
   // 連番も元に戻す
   dst.idSeq.value = src.idSeq.value;
 }

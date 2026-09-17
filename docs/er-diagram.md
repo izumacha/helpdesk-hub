@@ -4,7 +4,7 @@
 
 > カラム定義の正本は `prisma/schema.prisma`。本書はその構造を領域別に図解したもので、図には主要カラムのみ載せる（全カラム・インデックス・制約はスキーマを参照）。全モデルはマルチテナント境界 `Tenant` を起点にスコープされる（`docs/smb-dx-pivot-plan.md` §5.1）。
 
-## 全体像（4 領域・22 モデル）
+## 全体像（5 領域・23 モデル）
 
 | 領域 | モデル |
 | --- | --- |
@@ -12,6 +12,7 @@
 | 認証・アカウント | `MagicLinkToken` / `SignupToken` / `Invitation` / `TenantSsoConfig` / `SamlAssertionRef` |
 | 取り込み・外部連携 | `TenantLineConfig` / `EmailThreadRef` / `LineMessageRef` / `LineLinkCodeRef` / `QuarantinedEmail` |
 | 監査ログ | `SettingsAuditLog` / `AuthAuditLog`（＋コアドメインの `TicketHistory`） |
+| 計測 | `DeflectionEvent`（AI FAQ 自己解決の提示と決着。§4.29） |
 
 ## コアドメイン（チケット）
 
@@ -306,7 +307,29 @@ erDiagram
 | `SettingsAuditLog` | SSO・LINE・通知チャネル・拠点・カテゴリ・招待・プラン変更などの設定操作 | **値は記録しない**（秘匿情報を含むため「誰が・いつ・何をしたか」のみ） |
 | `AuthAuditLog` | 全認証経路の成功・失敗（パスワード / マジックリンク / SAML SSO） | イベント種別＋メール（不在ユーザーの失敗も記録） |
 
-## Enum 一覧（14 種）
+## 計測（AI FAQ 自己解決）
+
+```mermaid
+erDiagram
+    Tenant ||--o{ DeflectionEvent : "所属"
+
+    DeflectionEvent {
+        string id PK
+        DeflectionOutcome outcome "suggested / resolved / proceeded / no_match"
+        int candidateCount "LLM に渡した候補件数"
+        string matchedFaqId "最上位の一致 FAQ (ゆるい参照, null 可)"
+        string ticketId "起票に進んだチケット (ゆるい参照, null 可)"
+        string model "照合に使ったモデル名 (null 可)"
+        string userId "提案を受けた依頼者 (ゆるい参照)"
+        string tenantId FK
+        datetime createdAt
+        datetime updatedAt
+    }
+```
+
+起票フォームの下書きに対して公開済み `FaqCandidate` を提案した結果を、**依頼者の入力本文を保存せずに**件数と決着だけ記録する（自己解決率 = resolved ÷ (resolved + proceeded)）。`userId` / `matchedFaqId` / `ticketId` は FK を張らないゆるい参照で、チケットや FAQ の削除で計測記録（自己解決率の分母）が消えないようにしている。
+
+## Enum 一覧（15 種）
 
 | Enum | 値 |
 | --- | --- |
@@ -323,6 +346,7 @@ erDiagram
 | `QuarantineChannel` | email / line |
 | `AuthAuditEvent` | password_login_success / password_login_failure / magic_link_login_success / magic_link_login_failure / sso_login_success / sso_assertion_accepted / sso_assertion_rejected / sso_assertion_replayed / sso_user_not_found |
 | `MagicLinkPurpose` | login / ssoHandoff |
+| `DeflectionOutcome` | suggested / resolved / proceeded / no_match |
 | `SettingsAuditAction` | sso_config_update / sso_config_delete / line_config_update / line_config_delete / notification_channels_update / tenant_mode_update / location_create / location_update / location_delete / inbound_token_regenerate / invitation_issue / subscription_plan_update / tenant_create / category_create / category_update / category_delete |
 
 ## ステータス遷移
