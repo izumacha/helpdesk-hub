@@ -7,6 +7,7 @@ on:
     branches: [main]
 
 concurrency:
+  # 同一ブランチ/PRで複数回pushされた場合、古いCIを止めて最新だけを残す（無駄なDB起動やE2E待ちを削減）
   group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
@@ -101,6 +102,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      # 失敗時にログをPRコメントへ投稿するために必要（fork PR では権限不足でスキップされる可能性あり）
       pull-requests: write
     services:
       postgres:
@@ -118,7 +120,9 @@ jobs:
           --health-retries=10
     env:
       DATABASE_URL: postgresql://postgres:postgres@localhost:5432/helpdesk_hub
+      # CI専用のダミー値。本番は強いランダム値を必ず設定すること（README参照）
       NEXTAUTH_SECRET: ci-test-secret
+      # Auth.js のコールバックURL検証のため、E2Eのbase URL と一致させる
       NEXTAUTH_URL: http://localhost:3000
       AUTH_TRUST_HOST: 'true'
       BASE_URL: http://localhost:3000
@@ -159,12 +163,14 @@ jobs:
 
       - name: Start app
         run: |
+          # Playwrightが起動待ちできるようにバックグラウンド起動し、PIDで生存監視する
           nohup npm run start > app.log 2>&1 &
           echo $! > app.pid
           echo "Started app with PID $(cat app.pid)"
 
       - name: Wait for app
         run: |
+          # E2E前に /login が返るまで待つ（ビルド完了直後はDB接続やseedで遅延しうる）
           for i in {1..60}; do
             if curl -sSf http://localhost:3000/login > /dev/null; then
               echo "App is ready after ${i}s"

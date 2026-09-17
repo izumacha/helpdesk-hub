@@ -24,6 +24,7 @@ export default defineConfig({
   // 全テスト共通のオプション
   use: {
     // 接続先 URL: 環境変数があればそれを優先、なければローカル dev サーバ
+    // CI では `BASE_URL` を固定し、待ち/タイムアウト系のブレを減らすのがおすすめ
     baseURL: process.env.BASE_URL ?? 'http://localhost:3000',
     // 1 度目失敗時にトレース (実行記録) を取る → 失敗時のデバッグが楽
     trace: 'on-first-retry',
