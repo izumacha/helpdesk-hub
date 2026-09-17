@@ -24,6 +24,8 @@ const ACTION_EXPORT_ALLOWLIST: Record<string, string[]> = {
   'auth/actions/logout.ts': ['logout'],
   'auth/actions/request-magic-link.ts': ['requestMagicLink'],
   'auth/actions/request-signup.ts': ['requestSignup'],
+  // §4.29 AI FAQ 自己解決: 下書きへの FAQ 提案と決着記録 (どちらも auth() + tenantId スコープ + レート制限あり)
+  'deflection/actions/deflection-actions.ts': ['suggestFaqForDraft', 'recordDeflectionOutcome'],
   'faq/actions/faq-actions.ts': ['createFaqCandidate', 'updateFaqStatus', 'updateFaqContent'],
   'notifications/actions/notification-actions.ts': ['markAllRead'],
   'settings/actions/create-category.ts': ['createCategory'],

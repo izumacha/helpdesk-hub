@@ -11,6 +11,7 @@ import {
   isEmailInboundAllowed,
   isAuditLogAllowed,
   isLineIntegrationAllowed,
+  isAiDeflectionAllowed,
   isProModeAllowed,
   isSsoAllowed,
   isUserLimitReached,
@@ -87,6 +88,14 @@ describe('plan-guard: プランごとの上限と機能フラグ', () => {
     expect(isLineIntegrationAllowed('standard')).toBe(false); // Standard 不可
     expect(isLineIntegrationAllowed('pro')).toBe(true); // Pro 可
     expect(isLineIntegrationAllowed('enterprise')).toBe(true); // Enterprise 可
+  });
+
+  // AI FAQ 自己解決 (§4.29) は Pro / Enterprise のみ (トライアルの Standard 相当では昇格しない)
+  it('AI FAQ 自己解決は Pro / Enterprise のみ', () => {
+    expect(isAiDeflectionAllowed('free')).toBe(false); // Free 不可
+    expect(isAiDeflectionAllowed('standard')).toBe(false); // Standard 不可 (トライアル中も同じ)
+    expect(isAiDeflectionAllowed('pro')).toBe(true); // Pro 可
+    expect(isAiDeflectionAllowed('enterprise')).toBe(true); // Enterprise 可
   });
 
   // Pro モードは Pro / Enterprise のみ

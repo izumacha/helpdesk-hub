@@ -345,6 +345,25 @@ export interface FaqCandidate {
   tenantId: string; // 所属テナント ID (マルチテナント化のキー)
 }
 
+// AI FAQ 自己解決 (docs/smb-dx-pivot-plan.md §4.29 / §6.1 Pro) の決着状態。
+// suggested (提示・決着待ち) → resolved (解決した) / proceeded (起票に進んだ)。
+// no_match は候補が無く提示できなかった記録 (Prisma enum DeflectionOutcome と同じ値)
+export type DeflectionOutcome = 'suggested' | 'resolved' | 'proceeded' | 'no_match';
+
+// AI FAQ 自己解決の計測記録 (依頼者の入力本文は保存しない。§9 最小公開)
+export interface DeflectionEvent {
+  id: string; // 記録 ID
+  outcome: DeflectionOutcome; // 決着状態
+  candidateCount: number; // LLM に渡した前段抽出済み候補の件数
+  matchedFaqId: string | null; // LLM が該当と判定した最上位 FAQ の ID (無ければ null)
+  ticketId: string | null; // 起票に進んだ場合のチケット ID (ゆるい参照。無ければ null)
+  model: string | null; // 照合に使った LLM のモデル名 (LLM 未呼び出しなら null)
+  userId: string; // 提案を受けた依頼者のユーザー ID
+  tenantId: string; // 所属テナント ID (マルチテナント化のキー)
+  createdAt: Date; // 記録日時
+  updatedAt: Date; // 決着状態の更新日時
+}
+
 // マジックリンクトークンの用途。同じ MagicLinkToken テーブルを、通常のログイン用マジックリンク
 // (login) と SAML SSO ACS のセッション引き渡し (ssoHandoff、src/app/api/auth/sso/<tenantId>/
 // acs/route.ts が発行) の両方が共有しているため、レート制限件数 (countRecentByEmail) や

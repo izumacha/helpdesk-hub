@@ -4,6 +4,7 @@ import type { Repos, UnitOfWork } from '@/data/ports/unit-of-work';
 import { makeAttachmentRepo } from './attachment-repository.memory';
 import { makeAuthAuditLogRepo } from './auth-audit-log-repository.memory';
 import { makeCategoryRepo } from './category-repository.memory';
+import { makeDeflectionEventRepo } from './deflection-event-repository.memory';
 import { makeEmailThreadRepo } from './email-thread-repository.memory';
 import { makeFaqRepo } from './faq-repository.memory';
 import { makeInvitationRepo } from './invitation-repository.memory';
@@ -55,6 +56,7 @@ export function buildMemoryRepos(store: Store): Repos {
     settingsAudit: makeSettingsAuditLogRepo(store), // §4.2 フォローアップ: 設定変更監査ログ
     authAudit: makeAuthAuditLogRepo(store), // 否認防止: 認証イベント監査ログ
     quarantinedEmails: makeQuarantinedEmailRepo(store), // §3.2 フォローアップ: 隔離した受信メールの記録
+    deflectionEvents: makeDeflectionEventRepo(store), // §4.29 AI FAQ 自己解決の計測記録
   };
 }
 
