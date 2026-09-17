@@ -17,6 +17,7 @@ services:
     # ホストの 5432 をコンテナの 5432 に公開 (ローカルから DB クライアントで繋げる)
     ports:
       - '5432:5432'
+    # 注意: 既にホスト側で 5432 を使っている場合は衝突する（例: 5433:5432 に変更）
     # ヘルスチェック: pg_isready で接続可能か 5 秒おきに確認
     healthcheck:
       test: ['CMD-SHELL', 'pg_isready -U postgres']
@@ -41,13 +42,12 @@ services:
       - '3000:3000'
     # 実行時の環境変数
     environment:
-      # コンテナのタイムゾーンを日本時間 (JST) に設定
-      TZ: Asia/Tokyo
       # DB 接続文字列 (db サービスの 5432 を指す)
       DATABASE_URL: postgresql://postgres:postgres@db:5432/helpdesk_hub
       # NextAuth の署名秘密鍵: 未設定なら起動を中止 (?: 構文で必須化)
       NEXTAUTH_SECRET: ${NEXTAUTH_SECRET:?set NEXTAUTH_SECRET in .env — see .env.example}
       # NextAuth が想定する自身のベース URL (デフォルトはローカル)
+      # Compose 経由で公開する場合は `NEXTAUTH_URL` を実アクセスURLに合わせる（認証コールバック不一致の原因になる）
       NEXTAUTH_URL: ${NEXTAUTH_URL:-http://localhost:3000}
       # Auth.js v5: リバースプロキシ/コンテナ環境ではホスト検証を信頼する
       AUTH_TRUST_HOST: 'true'
