@@ -140,4 +140,57 @@ describe('login-throttle', () => {
     // 掃除が走っても被害者のロックアウトは維持されていなければならない
     expect(isLoginBlocked(loginEmailKey('victim@example.com'), start + 1)).toBe(true);
   });
+
+  // 掃除の境界。窓のちょうど端ではまだ残り、1 ミリ秒過ぎて初めて解放されること。
+  // これが無いと「窓の途中で掃除しても消えない」ことしか見ておらず、
+  // cutoff がずれる退行（窓を短くする／長くする）を捕まえられない
+  it('keeps a lockout at the window edge and releases it one ms later', () => {
+    // 窓の起点となる時刻を決める
+    const start = Date.now();
+    // 被害者のアカウントを上限まで失敗させてロックアウト状態にする
+    for (let i = 0; i < LOGIN_MAX_FAILURES; i += 1) {
+      recordLoginFailure(loginEmailKey('edge@example.com'), start);
+    }
+
+    // 窓のちょうど端（= 失敗時刻が cutoff と等しい）ではまだロックアウトが続く
+    expect(isLoginBlocked(loginEmailKey('edge@example.com'), start + LOGIN_FAILURE_WINDOW_MS)).toBe(
+      true,
+    );
+
+    // 1 ミリ秒過ぎると窓から出るので解放される
+    expect(
+      isLoginBlocked(loginEmailKey('edge@example.com'), start + LOGIN_FAILURE_WINDOW_MS + 1),
+    ).toBe(false);
+  });
+
+  // 掃除が「一部だけ古くなったキー」を書き戻す枝（消さずに間引く）を通す。
+  // ここを通らないと、生き残ったキーを変更する唯一の分岐が未検査のまま残る
+  it('prunes stale timestamps from a surviving key without releasing it', () => {
+    // 窓の起点となる時刻を決める
+    const start = Date.now();
+    // 上限に 1 件足りない回数だけ、窓の先頭で失敗させる（これらは後で窓から出る）
+    for (let i = 0; i < LOGIN_MAX_FAILURES - 1; i += 1) {
+      recordLoginFailure(loginEmailKey('partial@example.com'), start);
+    }
+    // 窓の終わり際にもう 1 件失敗させる（合計が上限に達してロックアウトになる）
+    const late = start + LOGIN_FAILURE_WINDOW_MS - 1;
+    recordLoginFailure(loginEmailKey('partial@example.com'), late);
+    // この時点ではロックアウトされている
+    expect(isLoginBlocked(loginEmailKey('partial@example.com'), late)).toBe(true);
+
+    // 古い分だけが窓から出る時刻に、別のキーで失敗を記録して掃除を走らせる。
+    // このキーは「一部だけ間引かれて生き残る」ので、書き戻しの枝を通る
+    const afterOldExpired = start + LOGIN_FAILURE_WINDOW_MS + 1;
+    recordLoginFailure('email:unrelated@example.com', afterOldExpired);
+
+    // キー自体は消えていない（新しい 1 件が窓内に残っているため）
+    expect(__getLoginThrottleKeyCount()).toBe(2);
+    // ただし残り 1 件では上限に達しないのでロックアウトは解けている
+    expect(isLoginBlocked(loginEmailKey('partial@example.com'), afterOldExpired)).toBe(false);
+    // もう一度上限まで失敗させれば再びロックアウトできる（履歴が壊れていないことの確認）
+    for (let i = 0; i < LOGIN_MAX_FAILURES - 1; i += 1) {
+      recordLoginFailure(loginEmailKey('partial@example.com'), afterOldExpired);
+    }
+    expect(isLoginBlocked(loginEmailKey('partial@example.com'), afterOldExpired)).toBe(true);
+  });
 });

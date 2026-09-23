@@ -86,7 +86,14 @@ function sweepStaleKeys(now: number): void {
   }
 }
 
-// 指定キーに対する「ログイン失敗」を 1 件記録する
+// 指定キーに対する「ログイン失敗」を 1 件記録する。
+//
+// **`now` には実時計を渡すこと（既定のまま使うのが正しい）。** 引数はテストから
+// 窓の境界を動かすためのもので、本番の呼び出し元はすべて既定値を使っている。
+// この関数は下で全キーの掃除も行うため、未来にずれた `now` を渡すと
+// 「そのキーの窓」だけでなく **進行中のロックアウトが全部解除される**
+// （掃除を入れる前は影響がそのキーだけに閉じていた）。
+// 外部由来の時刻（Webhook のイベント時刻、監査ログの再生など）を渡さない。
 export function recordLoginFailure(key: string, now: number = Date.now()): void {
   // 窓の開始時刻を求める
   const cutoff = now - LOGIN_FAILURE_WINDOW_MS;

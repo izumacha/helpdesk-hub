@@ -25,6 +25,8 @@
 
 import { auth } from '@/lib/auth';
 import { NextResponse } from 'next/server';
+// 認証ガード対象外のパス判定（純粋関数。src/lib 側に置いてユニットテストで固定している）
+import { isStrictlyUnderPath, isUnderPath } from '@/lib/auth-exempt-path';
 import { isAgent } from '@/lib/role';
 
 // セッション認証ガードの対象外にする、共有シークレット認証の内部 cron エンドポイントの一覧。
@@ -38,22 +40,6 @@ const INTERNAL_CRON_ROUTES = [
   '/api/internal/sla-reminders',
 ];
 
-// パスがある接頭辞の「配下」にあるか (= その接頭辞そのものか、その下のセグメントか) を判定する。
-//
-// 認証ガードの対象外リストは素の startsWith で書いてはいけない。`'/api/auth'` に対して
-// `/api/authz/...` が、`'/login'` に対して `/loginx` が一致してしまい、**そのルートを
-// 足しただけで認証ガードから静かに外れる** (差分にも何にも現れない fail-open)。
-// もともと isApiInbound / isApiWebhook だけが末尾スラッシュ込みで書いてこれを避けていたが、
-// 「スラッシュ付き」と「スラッシュ無し」の 2 つの書き方が同居していると、次に除外を足す人が
-// 危険なほうを写してしまう。判定をこの 1 か所へ寄せて、書き方の選択肢そのものを無くす。
-//
-// 接頭辞そのもの (例: `/help`) も配下に含める。除外したいのは常に「その部分木」であり、
-// 部分木の根だけが対象外から漏れると、ヘルプのトップページだけログインを要求される。
-function isUnderPath(pathname: string, prefix: string): boolean {
-  // 完全一致 (部分木の根) か、区切り文字まで含めた前方一致 (その下) のどちらかなら配下
-  return pathname === prefix || pathname.startsWith(`${prefix}/`);
-}
-
 // 認証プロキシ (Next.js 16 の `proxy` file convention。15 までの `middleware` の後継 / issue #298)
 // - ログイン状態のチェック (未ログインは /login に飛ばす or API は 401 を返す)
 // - tenantId 不在セッションを強制的にリログインさせる (Phase 0 マルチテナント化の前提)
@@ -63,10 +49,14 @@ function isUnderPath(pathname: string, prefix: string): boolean {
 // 名前付きエクスポートにしておくと「この関数がリクエスト入口である」ことがファイル内で自明になる。
 export const proxy = auth((req) => {
   const isLoggedIn = !!req.auth;
-  // 以下の「認証ガードの対象外」判定はすべて isUnderPath を通す。
-  // 素の startsWith だと接頭辞がセグメントの途中で一致してしまい、
-  // /loginx ・ /helpdesk ・ /api/authz のようなルートを足しただけで、
-  // そのルートが静かに公開扱いになる (このファイルの banner が戒めている事故)。
+  // 以下の「認証ガードの対象外」判定は、素の startsWith を使わない。
+  // 接頭辞がセグメントの途中で一致してしまい、/loginx ・ /helpdesk ・ /api/authz の
+  // ようなルートを足しただけで静かに公開扱いになるため (banner が戒めている事故)。
+  //
+  // 公開ページは根も含めて外す isUnderPath、受信 Webhook は根を含めない
+  // isStrictlyUnderPath を使う (使い分けの理由は src/lib/auth-exempt-path.ts)。
+  // 内部 cron (isApiInternal) だけは前方一致ですらなく、INTERNAL_CRON_ROUTES の
+  // 完全一致で判定する (いちばん狭い形なので、これも startsWith へ寄せないこと)。
   const isAuthPage = isUnderPath(req.nextUrl.pathname, '/login');
   // 招待受諾ページは未認証で開ける公開ページ (トークン自体が認可の根拠)。
   // /login と同様にログインガードの対象外にする。
@@ -80,11 +70,11 @@ export const proxy = auth((req) => {
   const isApiAuth = isUnderPath(req.nextUrl.pathname, '/api/auth');
   // メール取り込み等の受信 Webhook はセッションを持たず、ルート側で共有シークレットを
   // 検証して自前で認可する (Phase 2)。セッション認証ガードの対象外にする。
-  const isApiInbound = isUnderPath(req.nextUrl.pathname, '/api/inbound');
+  const isApiInbound = isStrictlyUnderPath(req.nextUrl.pathname, '/api/inbound');
   // Stripe Webhook はサーバー間通信のためセッションを持たない。
   // ルート側で HMAC 署名検証 (stripe.webhooks.constructEvent) を行うため、
   // セッション認証ガードの対象外にする (Phase 4 課金)。
-  const isApiWebhook = isUnderPath(req.nextUrl.pathname, '/api/webhooks');
+  const isApiWebhook = isStrictlyUnderPath(req.nextUrl.pathname, '/api/webhooks');
   // 内部 cron 専用エンドポイント (trial-reminders / sla-reminders) はブラウザセッションを持たず、
   // GitHub Actions 等の定期実行ジョブから共有シークレット (Authorization: Bearer) で
   // 叩かれる。ルート側で constantTimeStringEqual による検証を行うため、ここでは
