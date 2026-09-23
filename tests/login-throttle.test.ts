@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 
 // ログイン失敗スロットルの本体と、テスト用に内部状態をリセットする関数
 import {
+  __getLoginThrottleKeyCount,
   __resetLoginThrottle,
   clearLoginFailures,
   isLoginBlocked,
@@ -99,5 +100,44 @@ describe('login-throttle', () => {
   it('treats email keys case-insensitively', () => {
     // 大文字混じりと小文字で同じキーになることを確認する
     expect(loginEmailKey('Foo@Example.com')).toBe(loginEmailKey('foo@example.com'));
+  });
+
+  // 使い捨てキー (毎回違うメールアドレス / 偽装した X-Forwarded-For 由来の IP) は
+  // 二度と参照されないので、掃除が無いとレジストリがプロセス再起動まで単調増加する。
+  // 未認証の攻撃者が自由に増やせるキー空間なので、これはメモリ枯渇 DoS になる。
+  it('reclaims one-shot keys instead of growing without bound', () => {
+    // 窓の起点となる時刻を決める
+    const start = Date.now();
+    // 毎回異なるキーで失敗を記録する (攻撃者が使い捨てメールを送り続ける状況)
+    for (let i = 0; i < 50; i += 1) {
+      recordLoginFailure(`email:one-shot-${i}@example.com`, start);
+    }
+    // この時点では 50 件すべてが窓内なので、まだ保持されているのが正しい
+    expect(__getLoginThrottleKeyCount()).toBe(50);
+
+    // 窓を 1 つ分過ぎたあとに、無関係なキーで 1 件だけ失敗を記録する
+    recordLoginFailure('email:later@example.com', start + LOGIN_FAILURE_WINDOW_MS + 1);
+
+    // 期限切れの 50 件は掃除され、いま記録した 1 件だけが残っている。
+    // (掃除が無いと 51 件のまま残り、この数字は増え続ける)
+    expect(__getLoginThrottleKeyCount()).toBe(1);
+  });
+
+  // 掃除は「期限切れのキー」だけを消す。窓内で進行中のロックアウトを巻き込んではいけない
+  it('does not drop keys that still have failures inside the window', () => {
+    // 窓の起点となる時刻を決める
+    const start = Date.now();
+    // 被害者のアカウントを上限まで失敗させてロックアウト状態にする
+    for (let i = 0; i < LOGIN_MAX_FAILURES; i += 1) {
+      recordLoginFailure(loginEmailKey('victim@example.com'), start);
+    }
+    // ロックアウトが成立していることを確認する
+    expect(isLoginBlocked(loginEmailKey('victim@example.com'), start)).toBe(true);
+
+    // まだ窓内である時刻に、別のキーで失敗を記録して掃除を走らせる
+    recordLoginFailure('email:other@example.com', start + 1);
+
+    // 掃除が走っても被害者のロックアウトは維持されていなければならない
+    expect(isLoginBlocked(loginEmailKey('victim@example.com'), start + 1)).toBe(true);
   });
 });

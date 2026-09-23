@@ -62,6 +62,30 @@ export function isLoginBlocked(key: string, now: number = Date.now()): boolean {
   return live.length >= LOGIN_MAX_FAILURES;
 }
 
+// failures 全体を走査し、窓内に 1 件も残っていないキーを Map から削除する。
+// isLoginBlocked / clearLoginFailures が消せるのは「いま処理しているキー」だけなので、
+// 一度しか現れないキーは誰にも再訪されず、prune() も走らないまま Map に残り続ける。
+// このキー空間は未認証の攻撃者が自由に増やせる (毎回違うメールアドレス、偽装した
+// X-Forwarded-For 由来の IP) ため、掃除が無いとプロセス再起動まで単調増加する。
+// 定期実行ジョブが無いので rate-limit.ts の sweepStaleBuckets と同じく
+// 「ながら掃除」にする (失敗記録の頻度がそのまま掃除頻度になる)。
+function sweepStaleKeys(now: number): void {
+  // 窓の開始時刻を求める (全キーで窓長が同じなので cutoff は 1 つで足りる)
+  const cutoff = now - LOGIN_FAILURE_WINDOW_MS;
+  // レジストリの全エントリを走査する
+  for (const [key, timestamps] of failures) {
+    // このキーの履歴のうち窓内に残る分だけに絞り込む
+    const live = prune(timestamps, cutoff);
+    if (live.length === 0) {
+      // 窓内に 1 件も残っていない = もう追跡不要なのでエントリごと削除する
+      failures.delete(key);
+    } else if (live.length !== timestamps.length) {
+      // 一部だけ古くなった場合は間引いた結果を書き戻す
+      failures.set(key, live);
+    }
+  }
+}
+
 // 指定キーに対する「ログイン失敗」を 1 件記録する
 export function recordLoginFailure(key: string, now: number = Date.now()): void {
   // 窓の開始時刻を求める
@@ -72,6 +96,8 @@ export function recordLoginFailure(key: string, now: number = Date.now()): void 
   live.push(now);
   // レジストリを更新する
   failures.set(key, live);
+  // このキー以外も含めて、完全に期限切れになったエントリをここで掃除する
+  sweepStaleKeys(now);
 }
 
 // 指定キーの失敗履歴を消去する (ログイン成功時に呼ぶ)
@@ -90,6 +116,13 @@ export function loginEmailKey(email: string): string {
 export function loginIpKey(ip: string): string {
   // "ip:" 接頭辞で email キーと衝突しないようにする
   return `ip:${ip}`;
+}
+
+/** Testing helper: number of tracked keys (asserts the sweep actually reclaims). */
+// レジストリに残っているキー数を返す (掃除が効いているかをテストから観測するための窓口)
+export function __getLoginThrottleKeyCount(): number {
+  // Map の現在のエントリ数をそのまま返す
+  return failures.size;
 }
 
 /** Testing helper: clear all failure buckets between test cases. */
