@@ -25,6 +25,8 @@
 
 import { auth } from '@/lib/auth';
 import { NextResponse } from 'next/server';
+// 認証ガード対象外のパス判定（純粋関数。src/lib 側に置いてユニットテストで固定している）
+import { isStrictlyUnderPath, isUnderPath } from '@/lib/auth-exempt-path';
 import { isAgent } from '@/lib/role';
 
 // セッション認証ガードの対象外にする、共有シークレット認証の内部 cron エンドポイントの一覧。
@@ -47,25 +49,32 @@ const INTERNAL_CRON_ROUTES = [
 // 名前付きエクスポートにしておくと「この関数がリクエスト入口である」ことがファイル内で自明になる。
 export const proxy = auth((req) => {
   const isLoggedIn = !!req.auth;
-  const isAuthPage = req.nextUrl.pathname.startsWith('/login');
+  // 以下の「認証ガードの対象外」判定は、素の startsWith を使わない。
+  // 接頭辞がセグメントの途中で一致してしまい、/loginx ・ /helpdesk ・ /api/authz の
+  // ようなルートを足しただけで静かに公開扱いになるため (banner が戒めている事故)。
+  //
+  // 公開ページは根も含めて外す isUnderPath、受信 Webhook は根を含めない
+  // isStrictlyUnderPath を使う (使い分けの理由は src/lib/auth-exempt-path.ts)。
+  // 内部 cron (isApiInternal) だけは前方一致ですらなく、INTERNAL_CRON_ROUTES の
+  // 完全一致で判定する (いちばん狭い形なので、これも startsWith へ寄せないこと)。
+  const isAuthPage = isUnderPath(req.nextUrl.pathname, '/login');
   // 招待受諾ページは未認証で開ける公開ページ (トークン自体が認可の根拠)。
   // /login と同様にログインガードの対象外にする。
-  const isInvitePage = req.nextUrl.pathname.startsWith('/invite');
+  const isInvitePage = isUnderPath(req.nextUrl.pathname, '/invite');
   // セルフサーブサインアップ (§7.1) も未認証で開ける公開ページ。まだテナント/アカウントが
   // 存在しない見込み客が最初に訪れる入口のため、/login・/invite と同様に対象外にする。
-  const isSignupPage = req.nextUrl.pathname.startsWith('/signup');
+  const isSignupPage = isUnderPath(req.nextUrl.pathname, '/signup');
   // ヘルプセンター (Phase 3) は未認証でも閲覧できる公開ページ。
   // 「30 分で導入開始」シナリオで、ログイン前にヘルプを参照できることが重要。
-  const isHelpPage = req.nextUrl.pathname.startsWith('/help');
-  const isApiAuth = req.nextUrl.pathname.startsWith('/api/auth');
+  const isHelpPage = isUnderPath(req.nextUrl.pathname, '/help');
+  const isApiAuth = isUnderPath(req.nextUrl.pathname, '/api/auth');
   // メール取り込み等の受信 Webhook はセッションを持たず、ルート側で共有シークレットを
   // 検証して自前で認可する (Phase 2)。セッション認証ガードの対象外にする。
-  // 末尾スラッシュ込みで前方一致させ、/api/inboundx のような別名ルートまで誤って開けない。
-  const isApiInbound = req.nextUrl.pathname.startsWith('/api/inbound/');
+  const isApiInbound = isStrictlyUnderPath(req.nextUrl.pathname, '/api/inbound');
   // Stripe Webhook はサーバー間通信のためセッションを持たない。
   // ルート側で HMAC 署名検証 (stripe.webhooks.constructEvent) を行うため、
   // セッション認証ガードの対象外にする (Phase 4 課金)。
-  const isApiWebhook = req.nextUrl.pathname.startsWith('/api/webhooks/');
+  const isApiWebhook = isStrictlyUnderPath(req.nextUrl.pathname, '/api/webhooks');
   // 内部 cron 専用エンドポイント (trial-reminders / sla-reminders) はブラウザセッションを持たず、
   // GitHub Actions 等の定期実行ジョブから共有シークレット (Authorization: Bearer) で
   // 叩かれる。ルート側で constantTimeStringEqual による検証を行うため、ここでは
