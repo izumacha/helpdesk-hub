@@ -89,7 +89,7 @@ Phase 0 でマルチテナント基盤を入れた際に `prisma/migrations/` �
 
 `docs/smb-dx-pivot-plan.md` §5.1 として基盤導入済み。
 
-- 全テーブル（`User` / `Category` / `Ticket` / `FaqCandidate` / `Notification`）が `tenantId String NOT NULL` を持つ。`TicketComment` / `TicketHistory` は親 `Ticket.tenantId` 経由で辿る。
+- **テナントに属する資源が `tenantId` を持つ。「全テーブル」ではなく、`NOT NULL` でもない表がある** — どの表が持つかは `prisma/schema.prisma` と `docs/er-diagram.md` が正本で、一覧も件数もここへ写さない（写した側が黙って古くなる）。書くときに効く形は 3 つ: (a) 列を持つ表は `where.tenantId` を必ず差し込む、(b) **親経由でしか到達しない表（`TicketComment` / `TicketHistory`）は列を持たないので、親を `tenantId` で絞ってから辿る** — 子の外部キーだけで引くとクロステナント漏洩になる（`src/data/adapters/prisma/ticket-history-repository.prisma.ts` の `ticket: { tenantId }` が手本。§9 の「クエリに必ずテナント条件を差し込む」をこの形で満たす）、(c) **`tenantId` が nullable な列もある（`AuthAuditLog`。ユーザー不在の失敗時は null で、FK も張らない）** — そこは `where: { tenantId }` を差し込んでも**型が通ったまま**その行が落ちるので、集計で非 null を前提にしない（不在ユーザーへのログイン失敗＝まさに監視したい行が黙って消える）。
 - `Tenant` モデルは `mode: lite | pro` と `industry?` を持つ。開発・初期投入は `id='default-tenant'` の単一テナント。
 - `session.user.tenantId` は JWT 経由で常に取得可能（旧 JWT は `jwt` callback で DB 補完）。
 - 全 Server Action / Query での `where.tenantId = session.user.tenantId` 強制・proxy でのスコープ必須化・テナント作成画面・マルチテナント E2E はいずれも実装済み（`issue-backlog.md` の Phase 0 チェック済み）。**新規 Server Action を書く際は冒頭で `session.user.tenantId` を取り出して `where` に必ず差し込む**（足し忘れはクロステナント漏洩）。
