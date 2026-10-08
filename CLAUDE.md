@@ -148,6 +148,32 @@ Phase 0 でマルチテナント基盤を入れた際に `prisma/migrations/` �
 
 整合性は `tests/types-node-runtime-alignment.test.ts` が機械的に見張る。見張る対象は 5 つ: (a) 型と実行時のずれ（`package.json` の宣言と `package-lock.json` の解決済み版の**両方**を見る）、(b) 4 か所の食い違い・読み取り不能（前提が崩れるので fail-closed で落とす）、(c) 保留の消失、(d) 効きすぎ（`update-types` の欠落・`versions` の追加・エントリの重複）、(e) 置き場所間違い（別エコシステム・別ディレクトリ）。`dependabot.yml` の読み方は `tests/lib/dependabot-config.ts` に集約し、ESLint 保留のテストと共有している（§6 DRY）。
 
+### `npm audit` の high を据え置いている理由（受け入れの記録）
+
+**`npm audit --audit-level=high` は現在 8 件を報告する。** CI は `npm audit` を流していないので
+（`.github/workflows/ci.yml` の 4 ジョブは lint / typecheck / test ・契約テスト ・ E2E ・ shellcheck）、
+**この記録が無いと誰も再確認しない** — §9 の「既知脆弱性を定期的に確認し、放置しない」を満たすため、
+据え置きの判断をここに置く。根は 2 つで、どちらも**塞ぐには major の変更が要る**。
+
+| 根 | 経路 | npm が示す唯一の修正 |
+| --- | --- | --- |
+| `deepmerge-ts <8.0.0`（GHSA-ggr8-5vv4-36mx。再帰的なオブジェクトのマージでスタック枯渇） | `prisma` → `@prisma/config` → `deepmerge-ts`（3 経路） | `prisma@6.12.0`（**ダウングレード**。このリポジトリは Prisma 7 前提） |
+| `braces`（GHSA。深い入力でスタック枯渇。**修正版が存在せず範囲は `*`**） | `eslint-config-next` → `@next/eslint-plugin-next` → `fast-glob` → `micromatch` → `braces`（5 経路） | `eslint-config-next@14.2.35`（**major ダウングレード**。Next 16 と組み合わせられない） |
+
+**「開発時の依存だから実行時に関係ない」と書かないこと（実測で誤り）。** 3 つとも
+`package-lock.json` では `dev` ではなく **`devOptional`** で（本番依存の `@prisma/client` が
+`prisma` を optional peer に宣言しているため）、`npm audit --omit=dev` でも **3 件報告される**。
+さらに `Dockerfile` は実行イメージへ **`node_modules` を丸ごと** コピーする（`prisma migrate deploy` /
+`prisma db seed` をコンテナ内で叩けるようにするため）ので、**本番イメージに同梱される**。
+正しい言い方は「**リクエスト処理の経路には乗らないが、実行イメージには入っており、運用者が
+マイグレーション／シードを叩くときに実行される**」。マージする入力はリポジトリ自身の
+`prisma.config.ts` と評価セットで、外部から与えられないので悪用の経路は無い。
+
+**据え置きを解除する条件**: `prisma` 側は上流が `deepmerge-ts` を 8 系へ上げた版が出たとき
+（`overrides` で跨ぐ手もあるが、`@prisma/config` が完全一致でピンしているので要検証）。
+`braces` 側は `eslint-config-next` が `fast-glob` を上げた版が出たとき。
+**確認は `npm audit --audit-level=high`（`--omit=dev` を付けると `devOptional` の 3 件だけになる）。**
+
 ### Stripe の API バージョンは SDK から導出する（手で書き写さない）
 
 **`src/lib/stripe.ts` の `apiVersion` に日付入りリテラル（`'2026-07-29.dahlia'` 等）を直書きしない。** SDK の型 `Stripe.LatestApiVersion` は「その SDK が生成されたただ 1 つの日付版」を指す**単一のリテラル型**なので、そもそも別の版を書くことは型が許さない。つまり直書きは「版を固定する」働きを最初から持っておらず（実際に版を決めているのは `package.json` / `package-lock.json` でピン留めした **SDK のバージョン**の方）、残る効果は「`stripe` を上げるたびに `npm run typecheck` だけが落ち、`node_modules` の中の値を人が書き写して直す」という手間だけになる。§6 が禁じる「写しを持つ」形そのもので、実際 Dependabot の `stripe` 22.5.0 → 22.6.0（PR #317）が `TS2322` で落ちた。値は `Stripe.API_VERSION`（SDK が申告する定数。型は `LatestApiVersion` と同一）から導出する。
