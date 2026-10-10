@@ -293,6 +293,10 @@ export function TicketForm({ categories, locations, mode, deflectionEnabled = fa
     setServerError(TICKET_RESULT_UNKNOWN_MESSAGE);
   }
 
+  // 内容欄の登録結果（ref / name / onChange / onBlur）。**1 度だけ呼んで使い回す** —
+  // onBlur を要素側で合成するために、RHF 本来の onBlur への参照がここで必要になる
+  const bodyField = register('body');
+
   return (
     <form onSubmit={handleSubmit(onSubmit, handleInvalid)} className="space-y-6">
       {/* ステップインジケーター (モバイルのみ表示。デスクトップは全フィールドを 1 画面で見せる) */}
@@ -347,11 +351,19 @@ export function TicketForm({ categories, locations, mode, deflectionEnabled = fa
           </label>
           <textarea
             id="body"
-            {...register('body', {
-              // 内容欄からフォーカスが外れたときに FAQ 提案を取得する (デスクトップの主経路。
-              // react-hook-form の onBlur 登録と両立させるため register のオプションで合成する)
-              onBlur: () => void requestSuggestion(),
-            })}
+            {...bodyField}
+            // 内容欄からフォーカスが外れたときに FAQ 提案を取得する (デスクトップの主経路)。
+            // **合成は要素側で行う** — register の第 2 引数に onBlur を渡す形は
+            // eslint-config-next 16.4 で入った react-hooks/refs が
+            // 「Cannot access refs during render」として落とす (register が返す ref を
+            // 描画中に読んでいると判定される)。先に register の onBlur を呼んでから
+            // 提案を取れば、検証と touched の更新は従来どおり RHF が行う
+            onBlur={(event) => {
+              // 検証・touched の更新（RHF 本来の処理）
+              void bodyField.onBlur(event);
+              // そのうえで FAQ 提案を取る
+              void requestSuggestion();
+            }}
             rows={6}
             maxLength={10000}
             aria-invalid={errors.body ? 'true' : 'false'}
