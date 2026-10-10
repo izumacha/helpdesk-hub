@@ -293,8 +293,14 @@ export function TicketForm({ categories, locations, mode, deflectionEnabled = fa
     setServerError(TICKET_RESULT_UNKNOWN_MESSAGE);
   }
 
-  // 内容欄の登録結果（ref / name / onChange / onBlur）。**1 度だけ呼んで使い回す** —
-  // onBlur を要素側で合成するために、RHF 本来の onBlur への参照がここで必要になる
+  // 各欄の登録結果（ref / name / onChange / onBlur）をまとめて受け取る。
+  // **画面に出てくる順に呼ぶこと** — RHF は register() が呼ばれた順を控えており
+  // (control._names.mount)、検証に失敗した送信では**その順で最初のエラー欄**へ
+  // カーソルを移す (shouldFocusError)。内容欄だけを先に呼ぶと、タイトル欄が空でも
+  // カーソルが内容欄へ飛び、画面の上に出ているエラーを飛び越してしまう
+  const titleField = register('title');
+  // 内容欄だけ **1 度だけ呼んで使い回す** — onBlur を要素側で合成するために
+  // RHF 本来の onBlur への参照がここで必要になる
   const bodyField = register('body');
 
   return (
@@ -329,7 +335,7 @@ export function TicketForm({ categories, locations, mode, deflectionEnabled = fa
           </label>
           <input
             id="title"
-            {...register('title')}
+            {...titleField}
             type="text"
             maxLength={200}
             aria-invalid={errors.title ? 'true' : 'false'}
@@ -353,11 +359,15 @@ export function TicketForm({ categories, locations, mode, deflectionEnabled = fa
             id="body"
             {...bodyField}
             // 内容欄からフォーカスが外れたときに FAQ 提案を取得する (デスクトップの主経路)。
-            // **合成は要素側で行う** — register の第 2 引数に onBlur を渡す形は
+            // **合成は要素側で行う** — register の第 2 引数へ渡していた onBlur が
+            // requestSuggestion ごしに ref (lastSuggestedQueryRef) を読んでいるため、
             // eslint-config-next 16.4 で入った react-hooks/refs が
-            // 「Cannot access refs during render」として落とす (register が返す ref を
-            // 描画中に読んでいると判定される)。先に register の onBlur を呼んでから
-            // 提案を取れば、検証と touched の更新は従来どおり RHF が行う
+            // 「描画中に ref を読むかもしれない関数を渡している」として落とす。
+            // 落ちる原因は **ref を読む関数を描画中に他の関数へ渡すこと**で、
+            // register の第 2 引数そのものは禁じられていない (ref を読まない onBlur なら通る)。
+            // 要素の onBlur なら描画中には呼ばれないので、ここで合成すれば規則に適う。
+            // 先に register の onBlur を呼んでから提案を取るので、検証と touched の
+            // 更新は従来どおり RHF が行う
             onBlur={(event) => {
               // 検証・touched の更新（RHF 本来の処理）
               void bodyField.onBlur(event);
