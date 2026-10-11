@@ -21,6 +21,17 @@
 //   その欄は (b) の一覧に載らないので順番の照合から外れる。欄を増やす正当な変更を
 //   「直しようの無い赤」にしないためにこうしてあり、代わりに (b) が空になる／
 //   1 件しか取れない状態は前提崩れとして落とす（検査が無言で空回りするのを防ぐ）。
+//
+//   **ただし「持ち上げた欄」(`const xField = register('x')`) はこの例外に入れない。**
+//   照合は「両方に現れる欄」に絞っているので、持ち上げた欄が (b) から落ちると
+//   **(a) 側からも一緒に落ちて、まさにこの検出網が防ぐはずの並び替えが素通りする**
+//   （実測: `{...titleField}` を `{...{ ...titleField }}` にする・`const { ref, ...rest }`
+//   で受け直す、のどちらかを入れたうえで `const bodyField` を `const titleField` の
+//   手前へ戻すと、PR #347 の退行そのものが再現するのに 2 件とも緑で通った）。
+//   持ち上げた欄は **register の呼び出しが要素から切り離されている唯一の欄**＝この
+//   検出網の対象そのものなので、(b) に現れることを fail-closed で要求する。
+//   インラインの `{...register('x')}` は要素と一緒に動くので順番がずれようが無く、
+//   この要求の対象にしない（辿れない書き方をしても境界どおり照合から外れるだけ）。
 
 // テストの宣言
 import { describe, expect, it } from 'vitest';
@@ -101,6 +112,15 @@ describe('チケット登録フォームの欄の登録順', () => {
     expect(callOrder.length).toBeGreaterThan(1);
     // 要素側も 2 件以上取れていなければ順番を比べる意味がない（fail-closed）
     expect(elementOrder.length).toBeGreaterThan(1);
+  });
+
+  it('持ち上げた欄は必ず要素側にも現れる（照合から落ちない）', () => {
+    // 持ち上げた欄の一覧（`const xField = register('x')` の欄）をソース上の順で作る
+    const hoisted = firstOccurrences([...localToField.values()]);
+    // そのうち要素側の一覧に現れなかったものを拾う（現れないと照合から静かに外れる）
+    const missing = hoisted.filter((name) => !elementOrder.includes(name));
+    // 1 つも無いことを要求する（落ちたら要素側の `{...xField}` を辿れる形へ戻す）
+    expect(missing).toEqual([]);
   });
 
   it('register を呼ぶ順が、画面に出てくる順と一致する', () => {
