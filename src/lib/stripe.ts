@@ -12,7 +12,7 @@ import Stripe from 'stripe';
 // このモジュールで唯一「人が手で書く」バージョン値で、`tests/stripe-api-version-guard.test.ts` が
 // SDK の申告するメジャー版と突き合わせる。Stripe が次のメジャーへ進んだ SDK が Dependabot で
 // 入ってきた時点でそのテストが落ち、移行の要否を人が判断する入口になる (日常の日付更新では鳴らない)。
-export const EXPECTED_STRIPE_MAJOR_API_VERSION = 'dahlia';
+export const EXPECTED_STRIPE_MAJOR_API_VERSION = 'endive';
 
 // Stripe へ送る API バージョン。**SDK が申告する値をそのまま使い、手で書き写さない。**
 //
